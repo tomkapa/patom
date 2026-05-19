@@ -655,6 +655,7 @@ pub async fn build_server(
         memberships,
         prompts: pieces.prompts,
         language_resolver: pieces.language_resolver,
+        web_dist: settings.web_dist.clone(),
     };
 
     Ok(Server {

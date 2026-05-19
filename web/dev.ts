@@ -2,7 +2,10 @@ import index from "./index.html";
 
 const BACKEND = process.env.BACKEND_URL ?? "http://localhost:8080";
 
-const proxyToBackend = (req: Request): Promise<Response> => {
+// Pure pass-through. `/api/*` must not be stripped — BE listens there
+// natively (`src/http/routes/mod.rs`). Everything else falls to the
+// bundled `index` route so deep-links resolve to the SPA shell.
+const forwardAsIs = (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const target = `${BACKEND}${url.pathname}${url.search}`;
   return fetch(target, {
@@ -15,43 +18,13 @@ const proxyToBackend = (req: Request): Promise<Response> => {
   });
 };
 
-// Routes like `/agents/:id` collide between the SPA (browser navigation
-// wants `index.html`) and the BE (XHR wants the JSON API). Discriminate
-// by `Accept`: HTML navigations land on the SPA shell; everything else
-// (XHR / fetch with `application/json`) hits the proxy. This mirrors how
-// production handles the same paths via the BE serving HTML on misses.
-const proxy = async (req: Request): Promise<Response> => {
-  const accept = req.headers.get("accept") ?? "";
-  const method = req.method.toUpperCase();
-  const looksLikeNavigation =
-    method === "GET" && accept.includes("text/html");
-  if (looksLikeNavigation) {
-    return new Response(Bun.file("./index.html"), {
-      headers: { "content-type": "text/html; charset=utf-8" },
-    });
-  }
-  return proxyToBackend(req);
-};
-
 const server = Bun.serve({
   port: 5173,
   development: true,
   routes: {
-    "/prompts": proxy,
-    "/prompts/*": proxy,
-    "/agents": proxy,
-    "/agents/*": proxy,
-    "/requests": proxy,
-    "/requests/*": proxy,
-    "/threads": proxy,
-    "/threads/*": proxy,
-    "/mcp-servers": proxy,
-    "/mcp-servers/*": proxy,
-    "/me": proxy,
-    "/auth/google/login": proxyToBackend,
-    "/auth/google/callback": proxyToBackend,
-    "/auth/switch-org": proxy,
-    "/auth/logout": proxy,
+    "/api/*": forwardAsIs,
+    "/auth/google/*": forwardAsIs,
+    "/mcp-oauth/*": forwardAsIs,
     "/*": index,
   },
 });

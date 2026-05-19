@@ -120,6 +120,7 @@ impl Harness {
             memberships: Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
+            web_dist: std::path::PathBuf::from("."),
         };
 
         Self {
@@ -287,7 +288,7 @@ async fn lists_tool_calls_for_server_with_agent_name_and_error_message() {
     })
     .await;
 
-    let uri = format!("/mcp-servers/{}/tool-calls", server.as_uuid());
+    let uri = format!("/api/mcp-servers/{}/tool-calls", server.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK);
 
@@ -358,7 +359,7 @@ async fn cursor_pagination_walks_backward_in_time() {
     }
 
     // First page of two.
-    let uri = format!("/mcp-servers/{}/tool-calls?limit=2", server.as_uuid());
+    let uri = format!("/api/mcp-servers/{}/tool-calls?limit=2", server.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     let items = body["items"].as_array().expect("array");
@@ -374,7 +375,7 @@ async fn cursor_pagination_walks_backward_in_time() {
     // a UTC ISO-8601 timestamp (`...Z`) — no `+` to interpret as a space,
     // so it's safe to interpolate without URL-encoding.
     let uri = format!(
-        "/mcp-servers/{}/tool-calls?limit=2&before={}",
+        "/api/mcp-servers/{}/tool-calls?limit=2&before={}",
         server.as_uuid(),
         cursor,
     );
@@ -389,7 +390,7 @@ async fn cursor_pagination_walks_backward_in_time() {
     // Last page is the tail — no cursor returned.
     let cursor = body["next_cursor"].as_str().expect("cursor").to_owned();
     let uri = format!(
-        "/mcp-servers/{}/tool-calls?limit=2&before={}",
+        "/api/mcp-servers/{}/tool-calls?limit=2&before={}",
         server.as_uuid(),
         cursor,
     );
@@ -408,7 +409,7 @@ async fn cross_org_server_returns_404() {
     let foreign = seed_principal(&h.state.pool, &h.state.jwt).await;
     let server = h.seed_mcp(foreign.org_id, foreign.user_id, "theirs").await;
 
-    let uri = format!("/mcp-servers/{}/tool-calls", server.as_uuid());
+    let uri = format!("/api/mcp-servers/{}/tool-calls", server.as_uuid());
     let (status, _) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 }
@@ -421,7 +422,7 @@ async fn limit_above_cap_is_clamped() {
         .await;
     // No rows seeded — empty list is fine. We're asserting the parser
     // accepts a large `limit` (clamped by the handler) instead of 4xx-ing.
-    let uri = format!("/mcp-servers/{}/tool-calls?limit=999", server.as_uuid());
+    let uri = format!("/api/mcp-servers/{}/tool-calls?limit=999", server.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert!(body["items"].as_array().expect("array").is_empty());
@@ -435,7 +436,7 @@ async fn unauthenticated_request_returns_401() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/mcp-servers/00000000-0000-0000-0000-000000000000/tool-calls")
+                .uri("/api/mcp-servers/00000000-0000-0000-0000-000000000000/tool-calls")
                 .body(axum::body::Body::empty())
                 .expect("request"),
         )

@@ -128,6 +128,7 @@ impl AuthThreadsHarness {
             memberships: std::sync::Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
+            web_dist: std::path::PathBuf::from("."),
         };
 
         Self {
@@ -192,7 +193,7 @@ async fn unauthenticated_get_threads_returns_401() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/threads")
+                .uri("/api/threads")
                 .body(axum::body::Body::empty())
                 .expect("request"),
         )
@@ -209,7 +210,7 @@ async fn authenticated_new_user_sees_empty_list() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/threads")
+                .uri("/api/threads")
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -256,7 +257,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/threads")
+                .uri("/api/threads")
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -281,7 +282,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/threads")
+                .uri("/api/threads")
                 .header("cookie", other.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),

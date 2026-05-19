@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use sqlx::PgPool;
@@ -100,6 +101,8 @@ pub struct AppState {
     /// invalidates the cache here so a switch propagates to the next
     /// agent turn without waiting for TTL.
     pub language_resolver: SharedOrgLanguageResolver,
+    /// SPA dist path the `ServeDir` fallback reads from.
+    pub web_dist: PathBuf,
 }
 
 impl AppState {

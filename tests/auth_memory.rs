@@ -134,6 +134,7 @@ impl AuthMemoryHarness {
             memberships: std::sync::Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
+            web_dist: std::path::PathBuf::from("."),
         };
 
         Self {
@@ -195,7 +196,7 @@ async fn unauthenticated_get_memory_returns_401() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri(format!("/agents/{}/memory", h.db.default_agent_id))
+                .uri(format!("/api/agents/{}/memory", h.db.default_agent_id))
                 .body(axum::body::Body::empty())
                 .expect("request"),
         )
@@ -214,7 +215,7 @@ async fn authenticated_caller_cannot_see_cross_org_agents_memory() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri(format!("/agents/{}/memory", h.db.default_agent_id))
+                .uri(format!("/api/agents/{}/memory", h.db.default_agent_id))
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -246,7 +247,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri(format!("/agents/{agent_primary}/memory"))
+                .uri(format!("/api/agents/{agent_primary}/memory"))
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -270,7 +271,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri(format!("/agents/{agent_other}/memory"))
+                .uri(format!("/api/agents/{agent_other}/memory"))
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -284,7 +285,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri(format!("/agents/{agent_other}/memory"))
+                .uri(format!("/api/agents/{agent_other}/memory"))
                 .header("cookie", other.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),

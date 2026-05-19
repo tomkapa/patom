@@ -28,6 +28,9 @@ const CSRF_COOKIE = "relay_csrf";
 const CSRF_HEADER = "X-CSRF-Token";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+// JSON endpoints live under this prefix; `/auth/google/*` bypasses it.
+export const API_PREFIX = "/api";
+
 export async function request<T>(
   path: string,
   init?: RequestInit,
@@ -41,7 +44,8 @@ export async function request<T>(
     const csrf = readCookie(CSRF_COOKIE);
     if (csrf) headers.set(CSRF_HEADER, csrf);
   }
-  const res = await fetch(path, { ...init, credentials: "include", headers });
+  const url = path.startsWith("/") ? `${API_PREFIX}${path}` : path;
+  const res = await fetch(url, { ...init, credentials: "include", headers });
 
   if (res.status === 401) {
     // First-touch UX: bounce to the FE /sign-in page so the user sees a

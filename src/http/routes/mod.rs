@@ -1,6 +1,12 @@
 //! Per-domain route modules. Each submodule exposes a `router()` that returns a
 //! `Router<AppState>` for its slice of the wire surface; this module merges them and
 //! attaches global middleware once.
+//!
+//! Three tiers: ops probes (`/healthz`, `/readyz`) and OAuth landing
+//! pads (`/auth/google/*`, `/mcp-oauth/*`) at root because external
+//! systems hold those paths; JSON nested under `/api/*`; SPA shell
+//! served as a `ServeDir` fallback with `index.html` for unknown
+//! paths.
 
 mod agents;
 mod auth;
@@ -13,10 +19,13 @@ mod threads;
 
 use axum::Router;
 use axum::middleware;
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use super::auth_layer::require_principal;
 use super::csrf::require_csrf;
+use super::limits::REQUEST_BODY_LIMIT_BYTES;
 use super::state::AppState;
 
 pub fn router(state: AppState) -> Router {
@@ -48,9 +57,18 @@ pub fn router(state: AppState) -> Router {
             require_principal,
         ));
 
+    // Misses fall to `index.html` so React Router resolves deep links.
+    // Missing files at boot are intentionally not validated — surfacing
+    // as 404s catches a broken deploy at the smoke test instead of at
+    // startup, and lets the BE run without a built FE in dev.
+    let index_html = state.web_dist.join("index.html");
+    let spa_fallback = ServeDir::new(&state.web_dist).not_found_service(ServeFile::new(index_html));
+
     Router::new()
         .merge(public)
-        .merge(private)
+        .nest("/api", private)
+        .fallback_service(spa_fallback)
         .with_state(state)
+        .layer(RequestBodyLimitLayer::new(REQUEST_BODY_LIMIT_BYTES))
         .layer(TraceLayer::new_for_http())
 }

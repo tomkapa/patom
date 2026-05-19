@@ -18,9 +18,10 @@ bun install
 bun run dev
 ```
 
-Open <http://localhost:5173>. The dev server proxies API paths
-(`/prompts`, `/agents`, `/requests`, `/threads`, `/mcp-servers`) to the
-Rust backend on `:8080`. Override with `BACKEND_URL=...`.
+Open <http://localhost:5173>. The dev server proxies `/api/*`,
+`/auth/google/*`, and `/mcp-oauth/*` to the Rust backend on `:8080`
+(override with `BACKEND_URL=...`); everything else serves the bundled
+SPA shell so deep links work on hard refresh.
 
 ## Build
 
@@ -28,8 +29,9 @@ Rust backend on `:8080`. Override with `BACKEND_URL=...`.
 bun run build
 ```
 
-Produces `dist/`. The Rust binary will serve it via `tower-http`'s
-`ServeDir` (wiring in the backend, not here).
+Produces `dist/`. The Rust binary serves it via `tower-http`'s
+`ServeDir` with `index.html` as the SPA fallback. Override the served
+directory with `RELAY_WEB_DIST=/abs/path` (default `./web/dist`).
 
 ## Typecheck
 

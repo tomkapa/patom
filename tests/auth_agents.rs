@@ -127,6 +127,7 @@ impl AuthAgentsHarness {
             memberships: std::sync::Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
+            web_dist: std::path::PathBuf::from("."),
         };
 
         Self {
@@ -163,7 +164,7 @@ async fn unauthenticated_get_agents_returns_401() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/agents")
+                .uri("/api/agents")
                 .body(axum::body::Body::empty())
                 .expect("request"),
         )
@@ -180,7 +181,7 @@ async fn authenticated_new_user_sees_empty_list() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/agents")
+                .uri("/api/agents")
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -215,7 +216,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/agents")
+                .uri("/api/agents")
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -240,7 +241,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/agents")
+                .uri("/api/agents")
                 .header("cookie", other.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),

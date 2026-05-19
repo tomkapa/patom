@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use chrono_tz::Tz;
@@ -7,6 +8,11 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::types::{ModelId, SecretString};
+
+/// Default SPA dist path when `RELAY_WEB_DIST` is unset. Matches
+/// `web/build.ts`'s `outdir`; operators running the binary from outside
+/// the repo root must override.
+const DEFAULT_WEB_DIST: &str = "./web/dist";
 
 #[derive(Debug, Error)]
 pub enum SettingsError {
@@ -58,6 +64,9 @@ pub struct Settings {
     pub default_timezone: Tz,
     /// Auth / tenancy configuration.
     pub auth: AuthSettings,
+    /// SPA dist path the `ServeDir` fallback reads from. Sourced from
+    /// `RELAY_WEB_DIST` (default `./web/dist`).
+    pub web_dist: PathBuf,
 }
 
 /// Auth subsystem configuration. All fields are required; the OAuth
@@ -190,6 +199,12 @@ struct RawSettings {
     // instead of the BE host (dev: FE on Vite/Bun, BE on 8080).
     #[serde(default)]
     relay_web_base_url: Option<String>,
+    #[serde(default = "default_web_dist")]
+    relay_web_dist: PathBuf,
+}
+
+fn default_web_dist() -> PathBuf {
+    PathBuf::from(DEFAULT_WEB_DIST)
 }
 
 const fn default_cookie_secure() -> bool {
@@ -300,6 +315,7 @@ impl TryFrom<RawSettings> for Settings {
             embedding,
             default_timezone,
             auth,
+            web_dist: raw.relay_web_dist,
         })
     }
 }
@@ -358,6 +374,7 @@ mod tests {
             relay_master_kek: secret("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
             relay_oauth_redirect_base: "http://localhost:8080".to_string(),
             relay_web_base_url: None,
+            relay_web_dist: default_web_dist(),
         }
     }
 

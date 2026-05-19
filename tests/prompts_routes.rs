@@ -128,6 +128,7 @@ impl PromptsHarness {
             memberships: std::sync::Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
+            web_dist: std::path::PathBuf::from("."),
         };
 
         Self {
@@ -225,7 +226,7 @@ async fn followup_with_session_id_routes_to_session_agent() {
     // `test-default` agent — wrong receiver, wrong-participant error.
     let (status, body) = post_json(
         h.state.clone(),
-        "/prompts",
+        "/api/prompts",
         serde_json::json!({
             "session_id": session_id.as_uuid(),
             "content": "follow-up",
@@ -256,7 +257,7 @@ async fn followup_with_session_id_routes_to_session_agent() {
     // mismatched override.
     let (status, body) = post_json(
         h.state.clone(),
-        "/prompts",
+        "/api/prompts",
         serde_json::json!({
             "session_id": session_id.as_uuid(),
             "agent_id": h.db.default_agent_id.as_uuid(),
@@ -289,7 +290,7 @@ async fn new_session_without_agent_id_uses_default() {
 
     let (status, body) = post_json(
         h.state.clone(),
-        "/prompts",
+        "/api/prompts",
         serde_json::json!({
             "content": "first hello",
             "idempotency_key": Uuid::new_v4().to_string(),

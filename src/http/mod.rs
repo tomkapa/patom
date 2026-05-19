@@ -4,6 +4,7 @@
 mod auth_layer;
 mod csrf;
 mod error;
+mod limits;
 mod membership_cache;
 mod routes;
 mod state;

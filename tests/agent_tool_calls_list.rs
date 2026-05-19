@@ -122,6 +122,7 @@ impl Harness {
             memberships: Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
+            web_dist: std::path::PathBuf::from("."),
         };
 
         Self {
@@ -283,7 +284,7 @@ async fn lists_tool_calls_for_agent_across_connections_with_server_alias() {
     })
     .await;
 
-    let uri = format!("/agents/{}/tool-calls", h.db.default_agent_id.as_uuid());
+    let uri = format!("/api/agents/{}/tool-calls", h.db.default_agent_id.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK);
 
@@ -313,6 +314,76 @@ async fn lists_tool_calls_for_agent_across_connections_with_server_alias() {
     assert_eq!(items[2]["error_message"], serde_json::Value::Null);
 
     assert_eq!(body["next_cursor"], serde_json::Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn excludes_non_mcp_tool_calls() {
+    // System tools (send_message, search_agents, …) record audit rows with
+    // a null mcp_server_id. The per-agent "Recent activity" panel only
+    // surfaces MCP traffic, so the endpoint must filter those rows out at
+    // the SQL level — otherwise the cursor cap shrinks unpredictably and
+    // mixed payloads leak through.
+    let h = Harness::new().await;
+    let notion = h
+        .seed_mcp(h.db.default_org_id, h.db.default_user_id, "notion")
+        .await;
+
+    let session = human_to_agent_session(
+        h.state.sessions.as_ref(),
+        h.db.default_agent_id,
+        h.db.default_org_id,
+        h.db.default_user_id,
+    )
+    .await;
+    let request = seed_prompt_request(
+        &h.state.pool,
+        session,
+        h.db.default_agent_id,
+        h.db.default_org_id,
+    )
+    .await;
+
+    let now = Utc::now();
+    let base = ToolCallSeed {
+        pool: &h.state.pool,
+        org: h.db.default_org_id,
+        session,
+        request,
+        agent: h.db.default_agent_id,
+        mcp_server: None,
+        tool_name: "",
+        started_at: now,
+        is_error: false,
+        error_message: None,
+    };
+    insert_tool_call(ToolCallSeed {
+        tool_name: "send_message",
+        started_at: now - chrono::Duration::seconds(3),
+        ..base
+    })
+    .await;
+    insert_tool_call(ToolCallSeed {
+        tool_name: "search_agents",
+        started_at: now - chrono::Duration::seconds(2),
+        ..base
+    })
+    .await;
+    insert_tool_call(ToolCallSeed {
+        tool_name: "pages.search",
+        mcp_server: Some(notion),
+        started_at: now - chrono::Duration::seconds(1),
+        ..base
+    })
+    .await;
+
+    let uri = format!("/api/agents/{}/tool-calls", h.db.default_agent_id.as_uuid());
+    let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["tool_name"], "pages.search");
+    assert_eq!(items[0]["mcp_server_alias"].as_str(), Some("notion"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -382,7 +453,7 @@ async fn excludes_calls_from_other_agents() {
     })
     .await;
 
-    let uri = format!("/agents/{}/tool-calls", h.db.default_agent_id.as_uuid());
+    let uri = format!("/api/agents/{}/tool-calls", h.db.default_agent_id.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK);
 
@@ -431,7 +502,7 @@ async fn cursor_pagination_walks_backward_in_time() {
     }
 
     let uri = format!(
-        "/agents/{}/tool-calls?limit=2",
+        "/api/agents/{}/tool-calls?limit=2",
         h.db.default_agent_id.as_uuid()
     );
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
@@ -446,7 +517,7 @@ async fn cursor_pagination_walks_backward_in_time() {
         .to_owned();
 
     let uri = format!(
-        "/agents/{}/tool-calls?limit=2&before={}",
+        "/api/agents/{}/tool-calls?limit=2&before={}",
         h.db.default_agent_id.as_uuid(),
         cursor,
     );
@@ -460,7 +531,7 @@ async fn cursor_pagination_walks_backward_in_time() {
 
     let cursor = body["next_cursor"].as_str().expect("cursor").to_owned();
     let uri = format!(
-        "/agents/{}/tool-calls?limit=2&before={}",
+        "/api/agents/{}/tool-calls?limit=2&before={}",
         h.db.default_agent_id.as_uuid(),
         cursor,
     );
@@ -493,7 +564,7 @@ async fn cross_org_agent_returns_404() {
         .expect("create foreign agent")
         .id;
 
-    let uri = format!("/agents/{}/tool-calls", foreign_agent.as_uuid());
+    let uri = format!("/api/agents/{}/tool-calls", foreign_agent.as_uuid());
     let (status, _) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 }
@@ -506,7 +577,7 @@ async fn unauthenticated_request_returns_401() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/agents/00000000-0000-0000-0000-000000000000/tool-calls")
+                .uri("/api/agents/00000000-0000-0000-0000-000000000000/tool-calls")
                 .body(axum::body::Body::empty())
                 .expect("request"),
         )

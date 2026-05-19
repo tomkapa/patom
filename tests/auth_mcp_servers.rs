@@ -121,6 +121,7 @@ impl AuthMcpHarness {
             memberships: std::sync::Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
+            web_dist: std::path::PathBuf::from("."),
         };
 
         Self {
@@ -166,7 +167,7 @@ async fn unauthenticated_get_mcp_servers_returns_401() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/mcp-servers")
+                .uri("/api/mcp-servers")
                 .body(axum::body::Body::empty())
                 .expect("request"),
         )
@@ -183,7 +184,7 @@ async fn authenticated_new_user_sees_empty_list() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/mcp-servers")
+                .uri("/api/mcp-servers")
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -221,7 +222,7 @@ async fn list_mcp_servers_surfaces_creator_email() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/mcp-servers")
+                .uri("/api/mcp-servers")
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -260,7 +261,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/mcp-servers")
+                .uri("/api/mcp-servers")
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -285,7 +286,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/mcp-servers")
+                .uri("/api/mcp-servers")
                 .header("cookie", other.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -314,7 +315,7 @@ async fn unauthenticated_test_connect_returns_401() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/mcp-servers/test-connect")
+                .uri("/api/mcp-servers/test-connect")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
                     r#"{"config":{"type":"http","url":"http://localhost:1/"}}"#,
@@ -334,7 +335,7 @@ async fn test_connect_against_dead_url_returns_failed_outcome() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/mcp-servers/test-connect")
+                .uri("/api/mcp-servers/test-connect")
                 .header("cookie", h.primary.cookie_header())
                 .header("x-csrf-token", h.primary.csrf_header())
                 .header("content-type", "application/json")
@@ -375,7 +376,7 @@ async fn test_connect_rate_limits_per_user() {
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri("/mcp-servers/test-connect")
+                    .uri("/api/mcp-servers/test-connect")
                     .header("cookie", h.primary.cookie_header())
                     .header("x-csrf-token", h.primary.csrf_header())
                     .header("content-type", "application/json")
@@ -407,7 +408,7 @@ async fn create_with_credentials_seals_to_encrypted_table() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/mcp-servers")
+                .uri("/api/mcp-servers")
                 .header("cookie", h.primary.cookie_header())
                 .header("x-csrf-token", h.primary.csrf_header())
                 .header("content-type", "application/json")
@@ -457,7 +458,7 @@ async fn create_with_credentials_seals_to_encrypted_table() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/mcp-servers")
+                .uri("/api/mcp-servers")
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -499,7 +500,7 @@ async fn put_credentials_replaces_without_revealing_old_value() {
         .oneshot(
             axum::http::Request::builder()
                 .method("PUT")
-                .uri(format!("/mcp-servers/{server_id}/credentials"))
+                .uri(format!("/api/mcp-servers/{server_id}/credentials"))
                 .header("cookie", h.primary.cookie_header())
                 .header("x-csrf-token", h.primary.csrf_header())
                 .header("content-type", "application/json")
@@ -523,7 +524,7 @@ async fn put_credentials_replaces_without_revealing_old_value() {
         .oneshot(
             axum::http::Request::builder()
                 .method("PUT")
-                .uri(format!("/mcp-servers/{server_id}/credentials"))
+                .uri(format!("/api/mcp-servers/{server_id}/credentials"))
                 .header("cookie", h.primary.cookie_header())
                 .header("x-csrf-token", h.primary.csrf_header())
                 .header("content-type", "application/json")

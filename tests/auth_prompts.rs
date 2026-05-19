@@ -132,6 +132,7 @@ impl AuthPromptsHarness {
             memberships: std::sync::Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
+            web_dist: std::path::PathBuf::from("."),
         };
 
         Self {
@@ -175,7 +176,7 @@ async fn unauthenticated_post_prompt_returns_401() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/prompts")
+                .uri("/api/prompts")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
                     serde_json::json!({
@@ -199,7 +200,7 @@ async fn authenticated_post_prompt_returns_202_with_request_id() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/prompts")
+                .uri("/api/prompts")
                 .header("content-type", "application/json")
                 .header("cookie", h.primary.cookie_header())
                 .header("x-csrf-token", h.primary.csrf_header())
@@ -253,7 +254,7 @@ async fn cross_org_cancel_returns_404_and_leaves_row_uncancelled() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/prompts")
+                .uri("/api/prompts")
                 .header("content-type", "application/json")
                 .header("cookie", h.primary.cookie_header())
                 .header("x-csrf-token", h.primary.csrf_header())
@@ -287,7 +288,7 @@ async fn cross_org_cancel_returns_404_and_leaves_row_uncancelled() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri(format!("/requests/{request_id}/cancel"))
+                .uri(format!("/api/requests/{request_id}/cancel"))
                 .header("cookie", other.cookie_header())
                 .header("x-csrf-token", other.csrf_header())
                 .body(axum::body::Body::empty())
@@ -313,7 +314,7 @@ async fn cross_org_cancel_returns_404_and_leaves_row_uncancelled() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri(format!("/requests/{request_id}/cancel"))
+                .uri(format!("/api/requests/{request_id}/cancel"))
                 .header("cookie", h.primary.cookie_header())
                 .header("x-csrf-token", h.primary.csrf_header())
                 .body(axum::body::Body::empty())
@@ -346,7 +347,7 @@ async fn post_without_csrf_header_returns_403() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/prompts")
+                .uri("/api/prompts")
                 .header("content-type", "application/json")
                 .header("cookie", h.primary.cookie_header())
                 // Intentionally omit the x-csrf-token header.
@@ -372,7 +373,7 @@ async fn post_with_mismatched_csrf_header_returns_403() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/prompts")
+                .uri("/api/prompts")
                 .header("content-type", "application/json")
                 .header("cookie", h.primary.cookie_header())
                 .header("x-csrf-token", "different-token")
@@ -401,7 +402,7 @@ async fn get_without_csrf_passes_through() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/agents")
+                .uri("/api/agents")
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),

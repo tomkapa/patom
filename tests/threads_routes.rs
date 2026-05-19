@@ -132,6 +132,7 @@ impl ThreadsHarness {
             memberships: std::sync::Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
+            web_dist: std::path::PathBuf::from("."),
         };
 
         // The threads we enqueue belong to `db.default_org_id`, so the
@@ -185,7 +186,7 @@ async fn list_threads_returns_one_row_per_human_root() {
     let res = app
         .oneshot(
             axum::http::Request::builder()
-                .uri("/threads")
+                .uri("/api/threads")
                 .header("cookie", &h.auth_cookie)
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -225,7 +226,7 @@ async fn thread_messages_returns_empty_for_fresh_dag() {
     let res = app
         .oneshot(
             axum::http::Request::builder()
-                .uri(format!("/threads/{}/messages", root.as_uuid()))
+                .uri(format!("/api/threads/{}/messages", root.as_uuid()))
                 .header("cookie", &h.auth_cookie)
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -286,7 +287,7 @@ async fn thread_messages_includes_request_id_per_row() {
     let res = app
         .oneshot(
             axum::http::Request::builder()
-                .uri(format!("/threads/{}/messages", root.as_uuid()))
+                .uri(format!("/api/threads/{}/messages", root.as_uuid()))
                 .header("cookie", &h.auth_cookie)
                 .body(axum::body::Body::empty())
                 .expect("request"),

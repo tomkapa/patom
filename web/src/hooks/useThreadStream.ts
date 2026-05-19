@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ResponseChunk, ThreadStreamEnvelope } from "../types/api";
+import { API_PREFIX } from "../lib/api";
 import { useThreadStore } from "../stores/threadStore";
 
 // Keyed by `ResponseChunk["kind"]` so a new chunk variant fails the build
@@ -34,7 +35,7 @@ export function useThreadStream(rootId: string | null) {
     if (!rootId) return;
     setStatus(rootId, "connecting");
 
-    const url = `/threads/${rootId}/stream`;
+    const url = `${API_PREFIX}/threads/${rootId}/stream`;
     const es = new EventSource(url, { withCredentials: true });
     let closed = false;
 

@@ -303,10 +303,13 @@ impl AgentRowForList {
 //
 // Mirrors the per-server endpoint in `mcp.rs` for shape/cursor semantics,
 // but pivots on `agent_id` (covered by the `tool_calls_per_agent_mcp_idx`
-// index from migration 25) and LEFT JOINs `mcp_servers` to project the
-// per-row connection id + alias. The join is LEFT because
-// `tool_calls.mcp_server_id` is `ON DELETE SET NULL` — the audit row
-// survives the connection it referenced.
+// index from migration 25). Joined to `mcp_servers` to project the
+// per-row connection id + alias. Scoped to MCP traffic by
+// `tc.mcp_server_id IS NOT NULL` — `tool_calls` is shared with system
+// tools (send_message, search_agents, …) that record a null
+// `mcp_server_id`, and rows from deleted connections (`ON DELETE SET
+// NULL`) collapse to the same shape. Both drop out here so the per-agent
+// "Recent activity" panel renders only resolvable connection chips.
 
 #[derive(Debug, Deserialize)]
 struct AgentToolCallsQuery {
@@ -365,12 +368,20 @@ async fn list_agent_tool_calls(
     let fetch_limit = i64::from(limit) + 1;
 
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
+    // `tc.mcp_server_id IS NOT NULL` scopes the audit list to MCP traffic.
+    // The `tool_calls` table is shared with system tools (send_message,
+    // search_agents, …) which record rows with a null `mcp_server_id`; the
+    // per-agent "Recent activity" panel surfaces connection chips, so
+    // those rows are filtered out at the source. Rows whose connection was
+    // deleted (`ON DELETE SET NULL`) also drop out — acceptable because
+    // the chip would render as "Removed connection" with no usable target.
     let mut items = sqlx::query_as::<_, AgentToolCallResponse>(
         "SELECT tc.id, tc.tool_name, tc.mcp_server_id, s.alias AS mcp_server_alias, \
                 tc.started_at, tc.duration_ms, tc.is_error, tc.error_message \
          FROM tool_calls tc \
-         LEFT JOIN mcp_servers s ON s.id = tc.mcp_server_id \
+         JOIN mcp_servers s ON s.id = tc.mcp_server_id \
          WHERE tc.agent_id = $1 \
+           AND tc.mcp_server_id IS NOT NULL \
            AND ($2::timestamptz IS NULL OR tc.started_at < $2) \
          ORDER BY tc.started_at DESC \
          LIMIT $3",
