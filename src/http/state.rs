@@ -18,6 +18,7 @@ use crate::runtime::{
     SharedThreadStream,
 };
 use crate::session::SharedSessionStore;
+use crate::slack::SlackAppState;
 
 /// Cheaply-cloneable container of every collaborator the HTTP routes need. The router
 /// gets a single `AppState` and threads it through axum's extractors.
@@ -103,6 +104,11 @@ pub struct AppState {
     pub language_resolver: SharedOrgLanguageResolver,
     /// SPA dist path the `ServeDir` fallback reads from.
     pub web_dist: PathBuf,
+    /// Slack adapter wiring — `Some` when `RELAY_SLACK_*` env vars are
+    /// configured, `None` otherwise. Public webhook + OAuth handlers
+    /// 404 cleanly when this is `None`, so deployments without Slack
+    /// stay first-class.
+    pub slack: Option<SlackAppState>,
 }
 
 impl AppState {

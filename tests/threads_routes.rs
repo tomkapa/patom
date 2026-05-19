@@ -133,6 +133,7 @@ impl ThreadsHarness {
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
             web_dist: std::path::PathBuf::from("."),
+            slack: None,
         };
 
         // The threads we enqueue belong to `db.default_org_id`, so the

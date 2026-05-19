@@ -1,0 +1,325 @@
+//! Inbound bridge: Slack `app_mention` event → Relay prompt enqueue.
+//!
+//! One single-consumer worker. The webhook handler hands events here via a
+//! bounded mpsc and ack's Slack in <3 s; this worker does the slow path
+//! (DB lookups, queue enqueue, stream-pump attach) off-line.
+//!
+//! Per-event flow (`process_event`):
+//!
+//! 1. Look up the workspace by `team_id` (privileged, decrypts the bot
+//!    token). Unknown workspace → drop with a warn — Slack will retry,
+//!    but the install was uninstalled.
+//! 2. If the event's user is the bot itself, drop. The bot's own
+//!    `chat.postMessage` posts fire `message` events; we are not
+//!    subscribed to those, but defending here is cheap.
+//! 3. Resolve identity: `slack_identities` lookup → linked user. Miss
+//!    falls back to the workspace's `installed_by_user_id` (Phase 1
+//!    simplification; Phase 2 turns the miss into an ephemeral "link
+//!    your account" prompt — issue #41).
+//! 4. Choose the anchor `thread_ts`. For replies Slack sets
+//!    `event.thread_ts`; for a mention on a top-level message we use
+//!    `event.ts` so the reply auto-creates a thread.
+//! 5. `slack_threads` read-or-create.
+//!    - **Existing row**: continuation. Receiver is the session's
+//!      existing agent participant (HTTP path enforces the same rule —
+//!      a user can't switch agents mid-thread).
+//!    - **No row**: fresh session. Receiver is the mentioned agent, or
+//!      the org's default if the mention parses to nothing /
+//!      unresolvable.
+//! 6. `queue.enqueue_for_user(...)` with
+//!    `idempotency_key = "slack:<team>:<channel>:<event_ts>"`. Slack
+//!    retries deliver the same key → enqueue returns
+//!    `EnqueueOutcome::Existing` and we skip the bind.
+//! 7. On `Inserted`, bind `(team, channel, thread_ts) → root_request_id`
+//!    and attach a stream pump for the root.
+
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tracing::{Instrument, info, info_span, warn};
+
+use crate::agents::{AgentId, AgentName, SharedAgentStore};
+use crate::auth::OrgId;
+use crate::runtime::{EnqueueOutcome, IdempotencyKey, NewPromptRequest, SharedPromptQueue};
+use crate::session::SharedSessionStore;
+use crate::types::{Participant, ParticipantKind, Prompt};
+
+use super::error::SlackError;
+use super::identity::SharedSlackIdentityStore;
+use super::mention;
+use super::poster::SharedSlackPoster;
+use super::thread_map::SharedSlackThreadStore;
+use super::types::{SlackChannelId, SlackTeamId, SlackThreadTs, SlackTs, SlackUserId};
+use super::workspace::SharedSlackWorkspaceStore;
+
+/// Inbound event handed from the webhook handler to the bridge worker.
+#[derive(Debug, Clone)]
+pub struct InboundEvent {
+    pub team_id: SlackTeamId,
+    pub channel_id: SlackChannelId,
+    pub user_id: SlackUserId,
+    pub text: String,
+    /// `thread_ts` when the mention is a reply inside an existing
+    /// thread; `None` when the mention lands on a top-level message
+    /// (caller uses `event_ts` as the anchor in that case).
+    pub thread_ts: Option<SlackThreadTs>,
+    pub event_ts: SlackTs,
+}
+
+/// Dependencies needed to process an event. Held by the worker; cloned
+/// for each event so we can keep `process_event` a free function for
+/// testing.
+#[derive(Clone)]
+pub struct BridgeDeps {
+    pub queue: SharedPromptQueue,
+    pub agents: SharedAgentStore,
+    pub sessions: SharedSessionStore,
+    pub workspaces: SharedSlackWorkspaceStore,
+    pub identities: SharedSlackIdentityStore,
+    pub threads: SharedSlackThreadStore,
+    pub poster: SharedSlackPoster,
+}
+
+impl std::fmt::Debug for BridgeDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BridgeDeps").finish_non_exhaustive()
+    }
+}
+
+/// Handle for the spawned bridge worker. `shutdown` cancels and waits
+/// for the worker to drain the in-flight event.
+#[derive(Debug)]
+pub struct BridgeHandle {
+    cancel: CancellationToken,
+    join: tokio::task::JoinHandle<()>,
+}
+
+impl BridgeHandle {
+    pub async fn shutdown(self) {
+        self.cancel.cancel();
+        let _ = self.join.await;
+    }
+}
+
+/// Spawn the bridge worker. Returns a handle for shutdown plus the
+/// sender end of the mpsc the webhook hands events into.
+pub fn spawn(
+    deps: BridgeDeps,
+    cancel: CancellationToken,
+) -> (BridgeHandle, mpsc::Sender<InboundEvent>) {
+    let (tx, rx) = mpsc::channel::<InboundEvent>(super::limits::SLACK_INBOUND_QUEUE);
+    let cancel_for_handle = cancel.clone();
+    let join = tokio::spawn(run_loop(deps, rx, cancel));
+    (
+        BridgeHandle {
+            cancel: cancel_for_handle,
+            join,
+        },
+        tx,
+    )
+}
+
+async fn run_loop(
+    deps: BridgeDeps,
+    mut rx: mpsc::Receiver<InboundEvent>,
+    cancel: CancellationToken,
+) {
+    info!(event = "slack.bridge.start");
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                info!(event = "slack.bridge.shutdown");
+                return;
+            }
+            maybe = rx.recv() => {
+                let Some(event) = maybe else {
+                    info!(event = "slack.bridge.tx_closed");
+                    return;
+                };
+                let span = info_span!(
+                    "slack.bridge.process",
+                    slack.team = %event.team_id,
+                    slack.channel = %event.channel_id,
+                    slack.event_ts = %event.event_ts,
+                );
+                if let Err(e) = process_event(&deps, event).instrument(span).await {
+                    // Errors here are normal operating failures (unknown
+                    // workspace, parse errors, transient DB hiccups);
+                    // they must not crash the worker.
+                    warn!(error = ?e, event = "slack.bridge.process_failed");
+                }
+            }
+        }
+    }
+}
+
+/// Single-event processing — extracted so unit tests can drive the
+/// happy and error paths without spinning up the mpsc.
+pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(), SlackError> {
+    let workspace = deps.workspaces.read_by_team(&event.team_id).await?;
+    assert_eq!(workspace.team_id.as_str(), event.team_id.as_str());
+    if workspace.bot_user_id.as_str() == event.user_id.as_str() {
+        return Ok(());
+    }
+    let user_id = resolve_user_id(deps, &event, &workspace).await?;
+    let anchor = match event.thread_ts.clone() {
+        Some(t) => t,
+        None => SlackThreadTs::try_from(event.event_ts.as_str())?,
+    };
+    let existing = deps
+        .threads
+        .lookup_by_thread(&event.team_id, &event.channel_id, &anchor)
+        .await?;
+    let receiver_agent_id = match &existing {
+        Some(mapping) => session_agent_participant(deps, mapping.session_id).await?,
+        None => {
+            resolve_mention_or_default(deps, &event, &workspace.bot_user_id, workspace.org_id)
+                .await?
+        }
+    };
+    enqueue_and_bind(
+        deps,
+        &event,
+        &workspace,
+        &anchor,
+        existing.as_ref().map(|m| m.session_id),
+        receiver_agent_id,
+        user_id,
+    )
+    .await
+}
+
+/// Slack user → Relay user. Phase 1 falls back to the workspace
+/// installer when no explicit `slack_identities` row exists.
+async fn resolve_user_id(
+    deps: &BridgeDeps,
+    event: &InboundEvent,
+    workspace: &crate::slack::workspace::WorkspaceWithToken,
+) -> Result<crate::auth::UserId, SlackError> {
+    let linked = deps
+        .identities
+        .lookup(&event.team_id, &event.user_id)
+        .await?;
+    let Some(linked) = linked else {
+        return Ok(workspace.installed_by_user_id);
+    };
+    assert_eq!(
+        linked.org_id, workspace.org_id,
+        "invariant: slack_identities + slack_workspaces FK keeps these aligned"
+    );
+    Ok(linked.user_id)
+}
+
+/// Enqueue a prompt for the resolved receiver and, on a fresh insert,
+/// record the `(team, channel, thread_ts) → root_request_id` mapping.
+/// Idempotency: a retried event with the same `event_ts` re-derives
+/// the same `idempotency_key` and short-circuits at the queue.
+async fn enqueue_and_bind(
+    deps: &BridgeDeps,
+    event: &InboundEvent,
+    workspace: &crate::slack::workspace::WorkspaceWithToken,
+    anchor: &SlackThreadTs,
+    session_id: Option<crate::session::SessionId>,
+    receiver_agent_id: AgentId,
+    user_id: crate::auth::UserId,
+) -> Result<(), SlackError> {
+    let prompt = Prompt::try_from(strip_for_prompt(event, &workspace.bot_user_id))?;
+    let idempotency_key = IdempotencyKey::try_from(format!(
+        "slack:{team}:{channel}:{ts}",
+        team = event.team_id.as_str(),
+        channel = event.channel_id.as_str(),
+        ts = event.event_ts.as_str(),
+    ))?;
+    let req = NewPromptRequest::normal(
+        session_id,
+        Participant::human(),
+        receiver_agent_id,
+        None,
+        prompt,
+        idempotency_key,
+        workspace.org_id,
+        user_id,
+    );
+    let outcome = deps.queue.enqueue_for_user(user_id, req).await?;
+    if let EnqueueOutcome::Inserted {
+        request_id,
+        session,
+        ..
+    } = outcome
+    {
+        deps.threads
+            .bind_root(
+                workspace.org_id,
+                &event.team_id,
+                &event.channel_id,
+                anchor,
+                session,
+                request_id,
+            )
+            .await?;
+        info!(
+            relay.session.id = %session.as_uuid(),
+            relay.request.id = %request_id.as_uuid(),
+            event = "slack.bridge.enqueued",
+        );
+    }
+    Ok(())
+}
+
+/// Read the agent participant of `session`. Mirrors `prompts.rs:126`.
+async fn session_agent_participant(
+    deps: &BridgeDeps,
+    session: crate::session::SessionId,
+) -> Result<AgentId, SlackError> {
+    let (a, b) = deps
+        .sessions
+        .participants(session)
+        .await
+        .map_err(|e| SlackError::Internal(format!("session.participants: {e}")))?;
+    match (a.kind(), b.kind()) {
+        (ParticipantKind::Agent, _) => a
+            .agent_id()
+            .ok_or_else(|| SlackError::Internal("agent kind without id".to_owned())),
+        (_, ParticipantKind::Agent) => b
+            .agent_id()
+            .ok_or_else(|| SlackError::Internal("agent kind without id".to_owned())),
+        _ => Err(SlackError::Internal(
+            "human-rooted session without an agent participant".to_owned(),
+        )),
+    }
+}
+
+/// Resolve `@AgentName` (if any) against the org. Falls back to the
+/// org's default agent on miss.
+async fn resolve_mention_or_default(
+    deps: &BridgeDeps,
+    event: &InboundEvent,
+    bot: &SlackUserId,
+    org_id: OrgId,
+) -> Result<AgentId, SlackError> {
+    let parsed = mention::parse(&event.text, bot);
+    if let Some(name_raw) = parsed.agent_name
+        && let Ok(name) = AgentName::try_from(name_raw.as_str())
+    {
+        match deps.agents.read_by_name_for_org(org_id, &name).await {
+            Ok(record) => return Ok(record.id),
+            Err(crate::agents::AgentStoreError::NameNotFound(_)) => {
+                warn!(
+                    relay.agent.name = %name_raw,
+                    event = "slack.bridge.agent_not_found_falling_back_to_default",
+                );
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(deps.agents.default_id_for(org_id).await?)
+}
+
+/// Strip the bot mention from the text and return the user's
+/// remaining prompt content. If the message is just `@RelayBot` with
+/// no follow-up, send an empty prompt — the prompt newtype rejects
+/// empties so the caller will error out with a parse error and the
+/// webhook handler logs + drops.
+fn strip_for_prompt(event: &InboundEvent, bot: &SlackUserId) -> String {
+    let parsed = mention::parse(&event.text, bot);
+    parsed.stripped
+}

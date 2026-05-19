@@ -122,6 +122,17 @@ pub trait AgentStore: fmt::Debug + Send + Sync {
         name: &AgentName,
     ) -> Result<AgentRecord, AgentStoreError>;
 
+    /// Case-insensitive lookup by [`AgentName`] scoped directly to
+    /// `org_id`. Same semantics as [`Self::read_by_name_for_viewer`] but
+    /// for callers that have no viewer agent — notably the Slack bridge,
+    /// which resolves `@AgentName` mentions before any in-DAG context
+    /// exists.
+    async fn read_by_name_for_org(
+        &self,
+        org_id: OrgId,
+        name: &AgentName,
+    ) -> Result<AgentRecord, AgentStoreError>;
+
     /// Snapshot of every `(id, name)` pair in `viewer`'s org, ordered
     /// alphabetically by `lower(name)`. Used to render the `<agents>`
     /// block; the renderer excludes the caller before formatting.
