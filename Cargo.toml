@@ -170,6 +170,18 @@ zeroize = { version = "1", default-features = false, features = ["alloc", "zeroi
 # top-level surface to a single version and lets us call `OsRng` without
 # digging through transitive re-exports.
 rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
+# §8 (zero-dep bias): HMAC-SHA256 for Slack webhook signature verification
+# (slack/verify.rs). Already in the build via `hkdf` (RustCrypto), but we
+# declare it directly so the security-critical path doesn't depend on a
+# transitive minor bump silently dropping the crate. Pin v0.12 in lockstep
+# with the rest of RustCrypto. Owner: slack/.
+hmac = { version = "0.12", default-features = false }
+# §8 (zero-dep bias): constant-time byte compare for HMAC tag equality
+# (slack/verify.rs). A naive `==` is a textbook timing-channel oracle; the
+# RustCrypto `subtle` crate is the standard primitive. Already pulled in
+# transitively via `aes-gcm`; declaring keeps the import path stable for
+# the verifier. Owner: slack/.
+subtle = { version = "2", default-features = false }
 
 # Binary entry only (CLAUDE.md §12 — `anyhow` may not appear in library signatures).
 anyhow = "1"

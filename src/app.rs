@@ -103,6 +103,9 @@ pub struct Server {
     pub librarian_scheduler: LibrarianScheduler,
     pub scheduling_scheduler: ScheduledTaskScheduler,
     pub http_addr: SocketAddr,
+    /// Optional Slack bridge worker — `Some` iff `settings.slack` is
+    /// `Some`. `run_server` joins on `shutdown()` after HTTP exits.
+    pub slack_bridge: Option<crate::slack::bridge::BridgeHandle>,
 }
 
 /// Pre-built collaborators shared by the agent and the runtime.
@@ -628,6 +631,82 @@ pub async fn build_server(
         redirect_uri: oauth_redirect_uri,
     });
 
+    // Slack adapter — built only when the operator has set the three
+    // `RELAY_SLACK_*` env vars. We construct the stores, mint the
+    // outbound poster, spawn the stream-pump supervisor and the
+    // inbound bridge worker, then expose all of it via
+    // `AppState::slack`. Without the env vars, every Slack route 404s
+    // and no background tasks are spawned.
+    let (slack_app_state, slack_bridge_handle) = match settings.slack.as_ref() {
+        None => (None, None),
+        Some(cfg) => {
+            use crate::slack::bridge::BridgeDeps;
+            use crate::slack::identity::PgSlackIdentityStore;
+            use crate::slack::poster::{HttpSlackPoster, SharedSlackPoster};
+            use crate::slack::state::SlackAppState;
+            use crate::slack::stream_pump::PumpDeps;
+            use crate::slack::thread_map::PgSlackThreadStore;
+            use crate::slack::workspace::PgSlackWorkspaceStore;
+            use crate::slack::{bridge, stream_pump};
+
+            let workspaces = Arc::new(PgSlackWorkspaceStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+                pieces.mcp_encryptor.clone(),
+            ));
+            let identities = Arc::new(PgSlackIdentityStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+            ));
+            let threads_store = Arc::new(PgSlackThreadStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+            ));
+            let slack_http = build_http_client()?;
+            let poster: SharedSlackPoster = Arc::new(HttpSlackPoster::new(slack_http.clone()));
+
+            let pump_handle = stream_pump::spawn(
+                PumpDeps {
+                    thread_stream: thread_stream.clone(),
+                    workspaces: workspaces.clone(),
+                    agents: pieces.agents.clone(),
+                    poster: poster.clone(),
+                },
+                cancel.clone(),
+            );
+
+            let (bridge_handle, bridge_tx) = bridge::spawn(
+                BridgeDeps {
+                    queue: pieces.queue.clone(),
+                    agents: pieces.agents.clone(),
+                    sessions: pieces.sessions.clone(),
+                    workspaces: workspaces.clone(),
+                    identities: identities.clone(),
+                    threads: threads_store.clone(),
+                    poster: poster.clone(),
+                    stream_pump: pump_handle.clone(),
+                },
+                cancel.clone(),
+            );
+
+            let state = SlackAppState {
+                signing_secret: cfg.signing_secret.clone(),
+                client_id: Arc::from(cfg.client_id.as_str()),
+                client_secret: cfg.client_secret.clone(),
+                redirect_url: Arc::from(cfg.redirect_url.as_str()),
+                workspaces,
+                identities,
+                threads: threads_store,
+                poster,
+                http: slack_http,
+                bridge_tx,
+                stream_pump: pump_handle,
+                clock: pieces.clock.clone(),
+            };
+            (Some(state), Some(bridge_handle))
+        }
+    };
+
     let state = AppState {
         queue: pieces.queue,
         leases: pieces.leases,
@@ -656,6 +735,7 @@ pub async fn build_server(
         prompts: pieces.prompts,
         language_resolver: pieces.language_resolver,
         web_dist: settings.web_dist.clone(),
+        slack: slack_app_state,
     };
 
     Ok(Server {
@@ -667,6 +747,7 @@ pub async fn build_server(
         librarian_scheduler,
         scheduling_scheduler,
         http_addr: settings.http_addr,
+        slack_bridge: slack_bridge_handle,
     })
 }
 
@@ -683,7 +764,12 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
         librarian_scheduler,
         scheduling_scheduler,
         http_addr,
+        slack_bridge,
     } = server;
+    // The supervisor task that owns the stream-pump JoinSet is held
+    // behind `state.slack`. Clone the handle out before the state
+    // moves into the axum router so shutdown can still reach it.
+    let slack_pump_handle = state.slack.as_ref().map(|s| s.stream_pump.clone());
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(http_addr)
         .await
@@ -709,6 +795,14 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
     mcp_refresher.shutdown().await;
     oauth_refresher.shutdown().await;
     info!("mcp.refresher.shutdown.complete");
+    if let Some(bridge) = slack_bridge {
+        bridge.shutdown().await;
+        info!("slack.bridge.shutdown.complete");
+    }
+    if let Some(pump) = slack_pump_handle {
+        pump.shutdown().await;
+        info!("slack.stream_pump.shutdown.complete");
+    }
     workers.shutdown().await;
     info!("workers.shutdown.complete");
     Ok(())

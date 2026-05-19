@@ -38,6 +38,15 @@ pub enum SettingsError {
 
     #[error("auth: RELAY_WEB_BASE_URL is not a valid origin: {raw:?} ({reason})")]
     InvalidWebBaseUrl { raw: String, reason: &'static str },
+
+    #[error(
+        "slack: partial configuration; set all of RELAY_SLACK_SIGNING_SECRET, \
+         RELAY_SLACK_CLIENT_ID, RELAY_SLACK_CLIENT_SECRET — or none"
+    )]
+    PartialSlackConfig,
+
+    #[error("slack: RELAY_SLACK_CLIENT_ID must be non-empty after trim")]
+    InvalidSlackClientId,
 }
 
 /// Process-wide configuration loaded once at startup. Secrets are wrapped in
@@ -67,6 +76,27 @@ pub struct Settings {
     /// SPA dist path the `ServeDir` fallback reads from. Sourced from
     /// `RELAY_WEB_DIST` (default `./web/dist`).
     pub web_dist: PathBuf,
+    /// Slack adapter — present iff all `RELAY_SLACK_*` env vars are
+    /// set. `None` is a first-class deployment (the Slack routes and
+    /// background workers stay un-spawned).
+    pub slack: Option<SlackSettings>,
+}
+
+/// Slack-side configuration. All fields required as a group; the
+/// `TryFrom<RawSettings>` impl rejects partial sets via
+/// [`SettingsError::PartialSlackConfig`].
+#[derive(Debug, Clone)]
+pub struct SlackSettings {
+    /// HMAC-SHA256 signing secret from the Slack app's Basic Information
+    /// page. Validates every inbound webhook in `slack::events`.
+    pub signing_secret: SecretString,
+    /// OAuth client id for the Slack app (public; no secret material).
+    pub client_id: String,
+    /// OAuth client secret.
+    pub client_secret: SecretString,
+    /// Derived: `<auth.oauth_redirect_base>/slack/oauth/callback`. Slack
+    /// must whitelist this URL on the app's "OAuth & Permissions" page.
+    pub redirect_url: String,
 }
 
 /// Auth subsystem configuration. All fields are required; the OAuth
@@ -201,6 +231,15 @@ struct RawSettings {
     relay_web_base_url: Option<String>,
     #[serde(default = "default_web_dist")]
     relay_web_dist: PathBuf,
+
+    // Slack adapter — all three are optional individually but accepted
+    // only as a complete set (validation in `TryFrom<RawSettings>`).
+    #[serde(default)]
+    relay_slack_signing_secret: Option<SecretString>,
+    #[serde(default)]
+    relay_slack_client_id: Option<String>,
+    #[serde(default)]
+    relay_slack_client_secret: Option<SecretString>,
 }
 
 fn default_web_dist() -> PathBuf {
@@ -306,6 +345,33 @@ impl TryFrom<RawSettings> for Settings {
             oauth_redirect_base: raw.relay_oauth_redirect_base,
             web_base_url,
         };
+        let slack = match (
+            raw.relay_slack_signing_secret,
+            raw.relay_slack_client_id,
+            raw.relay_slack_client_secret,
+        ) {
+            (None, None, None) => None,
+            (Some(signing_secret), Some(client_id), Some(client_secret)) => {
+                // Trim before non-empty check so " " is rejected.
+                let client_id = client_id.trim().to_owned();
+                if client_id.is_empty() {
+                    return Err(SettingsError::InvalidSlackClientId);
+                }
+                // Normalise a trailing slash on the OAuth redirect base
+                // before composing the Slack callback path — otherwise
+                // `https://example/` + `/slack/oauth/callback` yields a
+                // doubled slash and Slack rejects the install.
+                let redirect_base = auth.oauth_redirect_base.trim_end_matches('/');
+                let redirect_url = format!("{redirect_base}/slack/oauth/callback");
+                Some(SlackSettings {
+                    signing_secret,
+                    client_id,
+                    client_secret,
+                    redirect_url,
+                })
+            }
+            _ => return Err(SettingsError::PartialSlackConfig),
+        };
         Ok(Self {
             provider,
             brave_search_api_key: raw.brave_search_api_key,
@@ -316,6 +382,7 @@ impl TryFrom<RawSettings> for Settings {
             default_timezone,
             auth,
             web_dist: raw.relay_web_dist,
+            slack,
         })
     }
 }
@@ -375,6 +442,9 @@ mod tests {
             relay_oauth_redirect_base: "http://localhost:8080".to_string(),
             relay_web_base_url: None,
             relay_web_dist: default_web_dist(),
+            relay_slack_signing_secret: None,
+            relay_slack_client_id: None,
+            relay_slack_client_secret: None,
         }
     }
 

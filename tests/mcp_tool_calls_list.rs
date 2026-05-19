@@ -121,6 +121,7 @@ impl Harness {
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
             web_dist: std::path::PathBuf::from("."),
+            slack: None,
         };
 
         Self {

@@ -35,7 +35,12 @@ pub fn router(state: AppState) -> Router {
         // The MCP OAuth callback runs without a session cookie — the
         // browser is returning from the vendor. CSRF is provided by the
         // PKCE state column, not the double-submit cookie.
-        .merge(mcp::oauth_callback_router());
+        .merge(mcp::oauth_callback_router())
+        // Slack webhook + OAuth callback also sit outside the cookie
+        // gate. Slack signs each webhook (HMAC-SHA256) and the OAuth
+        // callback validates an HMAC-signed state token.
+        .merge(crate::slack::events::router())
+        .merge(crate::slack::oauth::public_router());
 
     let private = Router::new()
         .merge(prompts::router())
@@ -44,6 +49,8 @@ pub fn router(state: AppState) -> Router {
         .merge(memory::router())
         .merge(threads::router())
         .merge(me::router())
+        // Slack install endpoint — signed-in user only.
+        .merge(crate::slack::oauth::private_router())
         // CSRF guards every state-changing request inside the
         // authenticated subtree. Order matters: it runs AFTER
         // `require_principal` so the public subtree is never reached

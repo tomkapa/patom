@@ -356,6 +356,32 @@ impl AgentStore for PgAgentStore {
         row.try_into()
     }
 
+    async fn read_by_name_for_org(
+        &self,
+        org_id: OrgId,
+        name: &AgentName,
+    ) -> Result<AgentRecord, AgentStoreError> {
+        // Same case-insensitive lookup as `_for_viewer`, but the org
+        // gate is the literal `org_id` instead of one derived from a
+        // viewer agent. Used by Slack/bridge resolution where there is
+        // no in-DAG viewer.
+        let sql = format!(
+            "SELECT {AGENT_COLS} FROM agents \
+             WHERE lower(name) = lower($1) AND org_id = $2"
+        );
+        let name_str = name.as_str().to_owned();
+        let row = run_privileged::<Option<AgentRow>, AgentStoreError>(&self.pool, async |tx| {
+            Ok(sqlx::query_as::<_, AgentRow>(&sql)
+                .bind(&name_str)
+                .bind(org_id)
+                .fetch_optional(&mut **tx)
+                .await?)
+        })
+        .await?;
+        let row = row.ok_or_else(|| AgentStoreError::NameNotFound(name.clone()))?;
+        row.try_into()
+    }
+
     async fn list_names_for_viewer(
         &self,
         viewer: AgentId,

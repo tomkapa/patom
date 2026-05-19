@@ -24,10 +24,11 @@ pub mod provider;
 pub mod runtime;
 pub mod scheduling;
 pub mod session;
+pub mod slack;
 pub mod tools;
 pub mod types;
 
 pub use agent_core::{Agent, AgentBuilder, AgentError};
 pub use agents::{AgentId, AgentRecord, AgentStore, SharedAgentStore};
-pub use config::{ProviderSettings, Settings, SettingsError};
+pub use config::{ProviderSettings, Settings, SettingsError, SlackSettings};
 pub use error::AppError;
