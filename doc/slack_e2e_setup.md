@@ -141,7 +141,7 @@ One row should be visible.
 
 In your Slack workspace pick a test channel (or DM yourself). Type:
 
-```
+```text
 /invite @relay-dev
 ```
 
@@ -154,7 +154,7 @@ mentions in this channel.
 
 In the same channel:
 
-```
+```text
 @relay-dev @<your-agent-name> what's the weather?
 ```
 
@@ -196,7 +196,7 @@ Common failures:
 Reply in the *same* Slack thread (use the "Reply in thread" affordance,
 not a new message):
 
-```
+```text
 @relay-dev tell me more
 ```
 
