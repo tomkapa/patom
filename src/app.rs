@@ -684,6 +684,7 @@ pub async fn build_server(
                     identities: identities.clone(),
                     threads: threads_store.clone(),
                     poster: poster.clone(),
+                    stream_pump: pump_handle.clone(),
                 },
                 cancel.clone(),
             );

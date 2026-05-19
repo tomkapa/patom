@@ -47,6 +47,7 @@ use super::error::SlackError;
 use super::identity::SharedSlackIdentityStore;
 use super::mention;
 use super::poster::SharedSlackPoster;
+use super::stream_pump::{AttachRequest, SharedStreamPumpHandle};
 use super::thread_map::SharedSlackThreadStore;
 use super::types::{SlackChannelId, SlackTeamId, SlackThreadTs, SlackTs, SlackUserId};
 use super::workspace::SharedSlackWorkspaceStore;
@@ -77,6 +78,7 @@ pub struct BridgeDeps {
     pub identities: SharedSlackIdentityStore,
     pub threads: SharedSlackThreadStore,
     pub poster: SharedSlackPoster,
+    pub stream_pump: SharedStreamPumpHandle,
 }
 
 impl std::fmt::Debug for BridgeDeps {
@@ -256,6 +258,15 @@ async fn enqueue_and_bind(
                 request_id,
             )
             .await?;
+        deps.stream_pump
+            .attach(AttachRequest {
+                root: request_id,
+                org_id: workspace.org_id,
+                team_id: event.team_id.clone(),
+                channel_id: event.channel_id.clone(),
+                thread_ts: anchor.clone(),
+            })
+            .await;
         info!(
             relay.session.id = %session.as_uuid(),
             relay.request.id = %request_id.as_uuid(),

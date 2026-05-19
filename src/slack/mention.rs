@@ -40,11 +40,11 @@ pub struct MentionParse {
 ///   the bot mention is present in an `app_mention` event).
 /// - Trim leading whitespace.
 /// - If the next token begins with `@`, treat the rest of that token as
-///   the candidate agent name. Otherwise, take the whole first token
-///   regardless of prefix — users frequently write `@Foo` without
-///   realising Slack doesn't auto-link plain `@names`, and writing it
-///   without the `@` is even more common (`/foo` style).
-/// - Return the remainder as `stripped`.
+///   the candidate agent name and return the remainder as `stripped`.
+/// - Otherwise, surface no agent name and pass through the whole
+///   remaining text as `stripped` — the bridge will route to the org's
+///   default agent. Requiring the leading `@` keeps a plain message
+///   like "how are you" from being misread as `agent="how"`.
 #[must_use]
 pub fn parse(text: &str, bot: &SlackUserId) -> MentionParse {
     let bot_mention = format!("<@{}>", bot.as_str());
@@ -68,8 +68,14 @@ pub fn parse(text: &str, bot: &SlackUserId) -> MentionParse {
     let first = split.next().unwrap_or("");
     let rest = split.next().unwrap_or("").trim();
 
-    // Strip a leading `@` if present.
-    let candidate = first.strip_prefix('@').unwrap_or(first);
+    // Agent tagging is explicit: the token must start with `@`. Without
+    // it, treat the whole remaining text as the prompt body.
+    let Some(candidate) = first.strip_prefix('@') else {
+        return MentionParse {
+            agent_name: None,
+            stripped: trimmed.to_string(),
+        };
+    };
 
     if candidate.is_empty() {
         return MentionParse {
@@ -128,17 +134,27 @@ mod tests {
     }
 
     #[test]
-    fn agent_name_without_leading_at() {
+    fn first_token_without_leading_at_is_not_an_agent_name() {
+        // Without an explicit `@`, the first word is part of the prompt
+        // body — not an agent tag. Prevents "how are you" from being
+        // misread as `agent="how"`.
         let p = parse("<@U0BOT> researcher hello", &bot());
-        assert_eq!(p.agent_name.as_deref(), Some("researcher"));
-        assert_eq!(p.stripped, "hello");
+        assert_eq!(p.agent_name, None);
+        assert_eq!(p.stripped, "researcher hello");
+    }
+
+    #[test]
+    fn plain_message_with_no_at_routes_to_default() {
+        let p = parse("<@U0BOT> how are you", &bot());
+        assert_eq!(p.agent_name, None);
+        assert_eq!(p.stripped, "how are you");
     }
 
     #[test]
     fn agent_name_case_preserved() {
         // The bridge does case-insensitive lookup; we preserve the
         // user's case for diagnostics.
-        let p = parse("<@U0BOT> Researcher hello", &bot());
+        let p = parse("<@U0BOT> @Researcher hello", &bot());
         assert_eq!(p.agent_name.as_deref(), Some("Researcher"));
     }
 
