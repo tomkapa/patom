@@ -16,7 +16,7 @@
 //! separate DM-confirmation flow tracked in GitHub issue #41.
 
 use std::fmt::Write as _;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use axum::Json;
 use axum::Router;
@@ -28,10 +28,11 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use url::Url;
 
 use crate::auth::{OrgId, Principal, UserId};
+use crate::clock::SharedClock;
 use crate::http::AppState;
 use crate::http::HttpError;
 
@@ -75,7 +76,7 @@ async fn install(
         slack.signing_secret.expose().as_bytes(),
         principal.active_org_id,
         principal.user_id,
-        now_secs() + i64::try_from(STATE_TTL.as_secs()).unwrap_or(600),
+        now_secs(&slack.clock) + i64::try_from(STATE_TTL.as_secs()).unwrap_or(600),
     );
     let mut url =
         Url::parse("https://slack.com/oauth/v2/authorize").map_err(|_| HttpError::Internal)?;
@@ -122,7 +123,7 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
     let Some(parsed) = verify_state(
         slack.signing_secret.expose().as_bytes(),
         &state_token,
-        now_secs(),
+        now_secs(&slack.clock),
     ) else {
         warn!(event = "slack.oauth.callback_bad_state");
         return StatusCode::BAD_REQUEST.into_response();
@@ -140,7 +141,7 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
     {
         Ok(e) => e,
         Err(e) => {
-            warn!(error = ?e, event = "slack.oauth.exchange_failed");
+            error!(error = ?e, event = "slack.oauth.exchange_failed");
             return redirect_to_fe(state.web_base_url.as_deref(), Some("exchange_failed"));
         }
     };
@@ -189,7 +190,7 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
         installed_by_user_id: parsed.user_id,
     };
     if let Err(e) = slack.workspaces.upsert(&principal, new).await {
-        warn!(error = ?e, event = "slack.oauth.workspace_upsert_failed");
+        error!(error = ?e, event = "slack.oauth.workspace_upsert_failed");
         return redirect_to_fe(state.web_base_url.as_deref(), Some("install_failed"));
     }
     info!(
@@ -283,8 +284,9 @@ fn verify_state(key: &[u8], token: &str, now_secs: i64) -> Option<StateClaims> {
     Some(StateClaims { org_id, user_id })
 }
 
-fn now_secs() -> i64 {
-    let secs = SystemTime::now()
+fn now_secs(clock: &SharedClock) -> i64 {
+    let secs = clock
+        .now_wall()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);

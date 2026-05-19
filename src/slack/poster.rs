@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
 use super::error::SlackError;
-use super::limits::{SLACK_POST_MAX_RETRIES, SLACK_POST_TIMEOUT};
+use super::limits::{
+    SLACK_POST_BODY_TIMEOUT, SLACK_POST_MAX_RETRIES, SLACK_POST_TIMEOUT, SLACK_RETRY_AFTER_CAP_SECS,
+};
 use super::types::{SlackBotToken, SlackChannelId, SlackThreadTs, SlackTs};
 
 /// What the bridge / stream pump hands to the poster.
@@ -121,7 +123,10 @@ impl SlackPoster for HttpSlackPoster {
             let status = resp.status();
             // Retry on 429 (Retry-After) and 5xx.
             if status.as_u16() == 429 {
-                let retry_after = parse_retry_after_secs(resp.headers()).unwrap_or(1);
+                let raw_retry_after = parse_retry_after_secs(resp.headers()).unwrap_or(1);
+                // Cap the upstream-supplied header value so a hostile or
+                // misbehaving proxy cannot stall us indefinitely.
+                let retry_after = raw_retry_after.min(SLACK_RETRY_AFTER_CAP_SECS);
                 if attempt >= SLACK_POST_MAX_RETRIES {
                     return Err(SlackError::RateLimited {
                         retry_after_secs: retry_after,
@@ -133,7 +138,7 @@ impl SlackPoster for HttpSlackPoster {
             }
             if status.is_server_error() {
                 if attempt >= SLACK_POST_MAX_RETRIES {
-                    let body = resp.text().await.unwrap_or_default();
+                    let body = read_text_with_timeout(resp).await;
                     return Err(SlackError::PostFailed {
                         status: status.as_u16(),
                         body,
@@ -144,7 +149,7 @@ impl SlackPoster for HttpSlackPoster {
                 continue;
             }
             if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
+                let body = read_text_with_timeout(resp).await;
                 return Err(SlackError::PostFailed {
                     status: status.as_u16(),
                     body,
@@ -152,7 +157,12 @@ impl SlackPoster for HttpSlackPoster {
             }
 
             // 2xx — Slack signals success/failure inside the JSON body.
-            let parsed: WirePostResponse = resp.json().await?;
+            let parsed: WirePostResponse =
+                match tokio::time::timeout(SLACK_POST_BODY_TIMEOUT, resp.json()).await {
+                    Ok(Ok(p)) => p,
+                    Ok(Err(e)) => return Err(SlackError::Http(e)),
+                    Err(_) => return Err(SlackError::PostTimeout(SLACK_POST_BODY_TIMEOUT)),
+                };
             if !parsed.ok {
                 // `ratelimited` inside a 200 body is the documented
                 // Slack-side rate-limit path that bypasses HTTP 429.
@@ -176,6 +186,17 @@ impl SlackPoster for HttpSlackPoster {
             })?;
             return Ok(SlackTs::try_from(ts_str)?);
         }
+    }
+}
+
+/// Best-effort body read for diagnostic logging — bounded by
+/// `SLACK_POST_BODY_TIMEOUT`. On timeout or transport failure we
+/// surface an empty body rather than blocking the pump, since the
+/// caller has already classified the response as a failure.
+async fn read_text_with_timeout(resp: reqwest::Response) -> String {
+    match tokio::time::timeout(SLACK_POST_BODY_TIMEOUT, resp.text()).await {
+        Ok(Ok(body)) => body,
+        Ok(Err(_)) | Err(_) => String::new(),
     }
 }
 

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use reqwest::Client;
 use tokio::sync::mpsc;
 
+use crate::clock::SharedClock;
 use crate::types::SecretString;
 
 use super::bridge::InboundEvent;
@@ -38,6 +39,10 @@ pub struct SlackAppState {
     pub bridge_tx: mpsc::Sender<InboundEvent>,
     /// Handle for attaching new stream pumps after a fresh bind.
     pub stream_pump: SharedStreamPumpHandle,
+    /// Injected clock — every now() in Slack route handlers reads
+    /// through here (webhook freshness check, OAuth state TTL) so
+    /// tests can drive time deterministically per CLAUDE.md §11.
+    pub clock: SharedClock,
 }
 
 impl std::fmt::Debug for SlackAppState {

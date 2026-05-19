@@ -14,7 +14,7 @@ use crate::crypto::CryptoError;
 use crate::runtime::PromptError;
 use crate::types::ParseError;
 
-use super::types::SlackUserId;
+use super::types::{SlackTeamId, SlackUserId};
 use super::verify::VerifyError;
 
 #[derive(Debug, Error)]
@@ -30,7 +30,7 @@ pub enum SlackError {
 
     /// Webhook arrived from a workspace we don't have an install for.
     #[error("unknown workspace: team_id={0}")]
-    UnknownWorkspace(String),
+    UnknownWorkspace(SlackTeamId),
 
     /// `@AgentName` parsed out of the mention does not resolve to an
     /// agent within the org. Bridge falls back to the default agent.

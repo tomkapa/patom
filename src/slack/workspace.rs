@@ -161,7 +161,7 @@ impl SlackWorkspaceStore for PgSlackWorkspaceStore {
             key_version,
             installed_by_user_id,
             installed_at,
-        ) = row.ok_or_else(|| SlackError::UnknownWorkspace(team_id.as_str().to_owned()))?;
+        ) = row.ok_or_else(|| SlackError::UnknownWorkspace(team_id.clone()))?;
 
         // Defensive: nonce is fixed-size at the schema level.
         let mut nonce = [0u8; 12];

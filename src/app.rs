@@ -700,6 +700,7 @@ pub async fn build_server(
                 http: slack_http,
                 bridge_tx,
                 stream_pump: pump_handle,
+                clock: pieces.clock.clone(),
             };
             (Some(state), Some(bridge_handle))
         }
@@ -764,6 +765,10 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
         http_addr,
         slack_bridge,
     } = server;
+    // The supervisor task that owns the stream-pump JoinSet is held
+    // behind `state.slack`. Clone the handle out before the state
+    // moves into the axum router so shutdown can still reach it.
+    let slack_pump_handle = state.slack.as_ref().map(|s| s.stream_pump.clone());
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(http_addr)
         .await
@@ -792,6 +797,10 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
     if let Some(bridge) = slack_bridge {
         bridge.shutdown().await;
         info!("slack.bridge.shutdown.complete");
+    }
+    if let Some(pump) = slack_pump_handle {
+        pump.shutdown().await;
+        info!("slack.stream_pump.shutdown.complete");
     }
     workers.shutdown().await;
     info!("workers.shutdown.complete");

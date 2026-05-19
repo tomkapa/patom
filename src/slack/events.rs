@@ -21,7 +21,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{info, warn};
@@ -92,7 +91,7 @@ fn check_signature(
         timestamp,
         &signature,
         body.as_ref(),
-        Utc::now(),
+        slack.clock.now_utc(),
     )
     .map_err(|e| {
         warn!(error = ?e, event = "slack.events.verify_failed");
@@ -117,15 +116,20 @@ fn dispatch_event_callback(
     match slack.bridge_tx.try_send(inbound) {
         Ok(()) => {
             info!(event = "slack.events.enqueued");
+            StatusCode::OK.into_response()
         }
+        // Return 503 so Slack retries (up to 3× with exponential
+        // backoff). Returning 200 here drops the event on the floor —
+        // the idempotency key on retry can recover it; 200 cannot.
         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
             warn!(event = "slack.events.bridge_queue_full");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
         }
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
             warn!(event = "slack.events.bridge_closed");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
         }
     }
-    StatusCode::OK.into_response()
 }
 
 fn build_inbound(

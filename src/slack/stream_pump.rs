@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
@@ -52,13 +52,21 @@ pub struct AttachRequest {
     pub thread_ts: SlackThreadTs,
 }
 
-/// Handle returned to the composition root. `attach` schedules a new
-/// pump (no-op if one is already running for `root`); `shutdown`
-/// cancels every pump and waits for clean exit.
-#[derive(Clone, Debug)]
+/// Handle returned to the composition root.
+///
+/// `attach` schedules a new pump (no-op if one is already running for
+/// `root`); `shutdown` cancels every pump and awaits the supervisor
+/// task so the runtime has no detached pump tasks left at process
+/// exit.
+#[derive(Debug)]
 pub struct StreamPumpHandle {
     tx: mpsc::Sender<AttachRequest>,
     cancel: CancellationToken,
+    /// Supervisor's `JoinHandle`, parked in an async-aware mutex so
+    /// `shutdown` (which takes `&self` because callers hold an `Arc`)
+    /// can `take()` it and `.await` for clean exit. Outside of
+    /// `shutdown` the mutex is uncontended.
+    supervisor: AsyncMutex<Option<JoinHandle<()>>>,
 }
 
 impl StreamPumpHandle {
@@ -70,6 +78,17 @@ impl StreamPumpHandle {
 
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
+    }
+
+    /// Cancel every pump task and await the supervisor's exit. Safe to
+    /// call concurrently; only the first caller sees the supervisor
+    /// `JoinHandle` — subsequent calls are no-ops.
+    pub async fn shutdown(&self) {
+        self.cancel.cancel();
+        let handle = self.supervisor.lock().await.take();
+        if let Some(h) = handle {
+            let _ = h.await;
+        }
     }
 }
 
@@ -95,8 +114,12 @@ impl std::fmt::Debug for PumpDeps {
 pub fn spawn(deps: PumpDeps, cancel: CancellationToken) -> SharedStreamPumpHandle {
     let (tx, rx) = mpsc::channel::<AttachRequest>(MAX_SLACK_STREAM_PUMPS);
     let supervisor_cancel = cancel.clone();
-    tokio::spawn(supervisor(deps, rx, supervisor_cancel));
-    Arc::new(StreamPumpHandle { tx, cancel })
+    let supervisor_handle = tokio::spawn(supervisor(deps, rx, supervisor_cancel));
+    Arc::new(StreamPumpHandle {
+        tx,
+        cancel,
+        supervisor: AsyncMutex::new(Some(supervisor_handle)),
+    })
 }
 
 /// Pump supervisor. Owns the set of live pump tasks; bounded.
@@ -273,6 +296,9 @@ async fn resolve_agent_name(deps: &PumpDeps, from: crate::agents::AgentId) -> St
 /// Trim `text` to fit Slack's per-message length cap with a graceful
 /// ellipsis. Slice on a char boundary so we don't split a UTF-8 codepoint.
 fn clip(text: String, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
     if text.chars().count() <= max_chars {
         return text;
     }
@@ -341,5 +367,10 @@ mod tests {
         let out = clip(s, 10);
         assert_eq!(out.chars().count(), 10);
         assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn clip_zero_max_returns_empty() {
+        assert_eq!(clip("anything".to_owned(), 0), "");
     }
 }

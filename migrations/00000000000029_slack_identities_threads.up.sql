@@ -65,10 +65,9 @@ CREATE TABLE slack_threads (
         ON DELETE CASCADE
 );
 
--- Stream pump lookup: given a `root_request_id` from a broadcast event,
--- find the channel + thread_ts to post into. UNIQUE column already
--- yields an index, but name it explicitly for clarity.
-CREATE INDEX slack_threads_root_idx ON slack_threads(root_request_id);
+-- Stream pump lookup is `WHERE root_request_id = $1`; the UNIQUE
+-- constraint on `root_request_id` already creates the supporting
+-- index, no extra CREATE INDEX needed.
 
 ALTER TABLE slack_threads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE slack_threads FORCE ROW LEVEL SECURITY;

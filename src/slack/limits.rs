@@ -54,6 +54,18 @@ pub const SLACK_PUMP_IDLE_TTL: Duration = Duration::from_secs(60 * 30);
 /// are GitHub issue #44 (post outbox).
 pub const SLACK_POST_MAX_RETRIES: u8 = 3;
 
+/// Cap on the `Retry-After` value the poster will honour. Slack-issued
+/// values are typically <30s; clamping protects us from a misbehaving
+/// upstream or a hostile MITM stalling the pump task indefinitely.
+pub const SLACK_RETRY_AFTER_CAP_SECS: u32 = 30;
+
+/// Per-attempt timeout for reading the response body from Slack.
+///
+/// Separate from the request-level `SLACK_POST_TIMEOUT` because
+/// reqwest's response stream is its own I/O surface (CLAUDE.md §5 —
+/// every await against I/O is timed).
+pub const SLACK_POST_BODY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Cap on the agent-reply text length we forward to Slack. Slack's
 /// `chat.postMessage` accepts up to 40 000 characters, but we clip a bit
 /// lower so block/markdown overhead never tips us over.

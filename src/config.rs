@@ -44,6 +44,9 @@ pub enum SettingsError {
          RELAY_SLACK_CLIENT_ID, RELAY_SLACK_CLIENT_SECRET — or none"
     )]
     PartialSlackConfig,
+
+    #[error("slack: RELAY_SLACK_CLIENT_ID must be non-empty after trim")]
+    InvalidSlackClientId,
 }
 
 /// Process-wide configuration loaded once at startup. Secrets are wrapped in
@@ -349,7 +352,17 @@ impl TryFrom<RawSettings> for Settings {
         ) {
             (None, None, None) => None,
             (Some(signing_secret), Some(client_id), Some(client_secret)) => {
-                let redirect_url = format!("{}/slack/oauth/callback", auth.oauth_redirect_base);
+                // Trim before non-empty check so " " is rejected.
+                let client_id = client_id.trim().to_owned();
+                if client_id.is_empty() {
+                    return Err(SettingsError::InvalidSlackClientId);
+                }
+                // Normalise a trailing slash on the OAuth redirect base
+                // before composing the Slack callback path — otherwise
+                // `https://example/` + `/slack/oauth/callback` yields a
+                // doubled slash and Slack rejects the install.
+                let redirect_base = auth.oauth_redirect_base.trim_end_matches('/');
+                let redirect_url = format!("{redirect_base}/slack/oauth/callback");
                 Some(SlackSettings {
                     signing_secret,
                     client_id,
