@@ -415,7 +415,7 @@ async fn create_with_credentials_seals_to_encrypted_table() {
     let app = router(h.state.clone());
     // Create a server *with* a secret-bearing header in one request.
     let body = r#"{
-        "catalog_id": "secret1",
+        "catalog_id": "notion",
         "config": {"type": "http", "url": "http://127.0.0.1:1/"},
         "credentials": {
             "kind": "static_headers",

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::warn;
+use tracing::{error, instrument};
 
 use crate::mcp::{McpCatalogId, SharedMcpCatalogStore, SharedMcpServerStore};
 use crate::runtime::{ResponseChunk, SharedResponseSink};
@@ -127,6 +127,15 @@ impl Tool for RequestUserWireMcpTool {
         self.input_schema.clone()
     }
 
+    #[instrument(
+        name = "tool.request_user_wire_mcp",
+        skip_all,
+        fields(
+            relay.org.id = %ctx.org_id,
+            relay.catalog.id = tracing::field::Empty,
+        ),
+        err,
+    )]
     async fn execute(&self, input: Value, ctx: &ToolCallContext) -> Result<String, ToolError> {
         let parsed: Input = serde_json::from_value(input)?;
         if parsed.reason.trim().is_empty() {
@@ -134,12 +143,23 @@ impl Tool for RequestUserWireMcpTool {
                 "request_user_wire_mcp: reason must not be empty".into(),
             ));
         }
+        // Schema enforces the cap, but a non-HTTP caller (or a future
+        // bypass) shouldn't be able to slip past — re-check at the
+        // boundary so persisted/emitted `WireMcpRequest` payloads stay
+        // bounded.
+        if parsed.reason.len() > REASON_MAX_BYTES {
+            return Err(ToolError::InvalidInput(format!(
+                "request_user_wire_mcp: reason exceeds {REASON_MAX_BYTES} bytes"
+            )));
+        }
 
         let viewer_agent_id = ctx.viewer.agent_id().ok_or_else(|| {
             ToolError::InvalidInput(
                 "request_user_wire_mcp: caller must be an agent (not human)".into(),
             )
         })?;
+
+        tracing::Span::current().record("relay.catalog.id", parsed.catalog_id.as_str());
 
         // Validate the catalog id resolves AND isn't already wired. The
         // two reads are independent — fan out so the model doesn't pay
@@ -149,13 +169,16 @@ impl Tool for RequestUserWireMcpTool {
                 self.catalog
                     .get_for_org(ctx.org_id, &parsed.catalog_id)
                     .await
-                    .map_err(|e| ToolError::Backend(format!("request_user_wire_mcp catalog: {e}")))
+                    .map_err(|e| {
+                        error!(error = ?e, "request_user_wire_mcp.catalog.failed");
+                        ToolError::Backend(format!("request_user_wire_mcp catalog: {e}"))
+                    })
             },
             async {
-                self.servers
-                    .list_for_org(ctx.org_id)
-                    .await
-                    .map_err(|e| ToolError::Backend(format!("request_user_wire_mcp servers: {e}")))
+                self.servers.list_for_org(ctx.org_id).await.map_err(|e| {
+                    error!(error = ?e, "request_user_wire_mcp.servers.failed");
+                    ToolError::Backend(format!("request_user_wire_mcp servers: {e}"))
+                })
             },
         )?;
         let entry = entry.ok_or_else(|| {
@@ -190,7 +213,7 @@ impl Tool for RequestUserWireMcpTool {
             .publish_for_user(ctx.acting_user_id, ctx.request_id, chunk)
             .await
             .map_err(|e| {
-                warn!(error = %e, "request_user_wire_mcp.publish.failed");
+                error!(error = ?e, "request_user_wire_mcp.publish.failed");
                 ToolError::Backend(format!("request_user_wire_mcp publish: {e}"))
             })?;
 

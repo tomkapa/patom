@@ -15,6 +15,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{Value, json};
+use tracing::{error, instrument};
 
 use crate::auth::OrgId;
 use crate::mcp::{
@@ -59,6 +60,8 @@ struct OutputItem {
     catalog_id: String,
     display_name: String,
     description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    homepage_url: Option<String>,
     auth_kind: McpAuthKind,
     wired: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,16 +111,16 @@ impl SearchToolsTool {
         // caller's slice.
         let (entries, wired) = tokio::try_join!(
             async {
-                self.catalog
-                    .list_for_org(org_id)
-                    .await
-                    .map_err(|e| ToolError::Backend(format!("search_tools catalog: {e}")))
+                self.catalog.list_for_org(org_id).await.map_err(|e| {
+                    error!(error = ?e, "search_tools.catalog.failed");
+                    ToolError::Backend(format!("search_tools catalog: {e}"))
+                })
             },
             async {
-                self.servers
-                    .list_for_org(org_id)
-                    .await
-                    .map_err(|e| ToolError::Backend(format!("search_tools servers: {e}")))
+                self.servers.list_for_org(org_id).await.map_err(|e| {
+                    error!(error = ?e, "search_tools.servers.failed");
+                    ToolError::Backend(format!("search_tools servers: {e}"))
+                })
             },
         )?;
 
@@ -156,6 +159,7 @@ fn build_item(
         catalog_id: entry.id.as_str().to_owned(),
         display_name: entry.display_name.as_str().to_owned(),
         description: entry.description.as_str().to_owned(),
+        homepage_url: entry.homepage_url,
         auth_kind: entry.auth_kind,
         wired: wired_row.is_some(),
         exposed_tools,
@@ -178,7 +182,25 @@ impl Tool for SearchToolsTool {
         true
     }
 
-    async fn execute(&self, _input: Value, ctx: &ToolCallContext) -> Result<String, ToolError> {
+    #[instrument(
+        name = "tool.search_tools",
+        skip_all,
+        fields(relay.org.id = %ctx.org_id),
+        err,
+    )]
+    async fn execute(&self, input: Value, ctx: &ToolCallContext) -> Result<String, ToolError> {
+        // Schema says no arguments — reject unexpected keys at runtime so
+        // a non-HTTP caller can't slip past `additionalProperties: false`.
+        let empty = match &input {
+            Value::Null => true,
+            Value::Object(o) => o.is_empty(),
+            _ => false,
+        };
+        if !empty {
+            return Err(ToolError::InvalidInput(
+                "search_tools: no arguments accepted".into(),
+            ));
+        }
         let out = self.collect(ctx.org_id).await?;
         Ok(serde_json::to_string(&out)?)
     }

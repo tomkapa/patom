@@ -63,6 +63,9 @@ export function useMcpServer(
 
 function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: LIST_KEY });
+  // Wired/unwired state on `useMcpCatalog` is derived from the same
+  // backend join — drop the catalog cache too or tiles stay stale.
+  qc.invalidateQueries({ queryKey: CATALOG_KEY });
 }
 
 export function useCreateMcpServer() {

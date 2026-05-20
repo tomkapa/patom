@@ -41,7 +41,8 @@ export function CapabilitySummary({
   // server. Stale entries from connections that have been disabled or
   // deleted otherwise inflate the numerator past the denominator.
   const connectionsEnabled = servers.reduce(
-    (n, s) => (s.catalog_id in list ? n + 1 : n),
+    (n, s) =>
+      Object.prototype.hasOwnProperty.call(list, s.catalog_id) ? n + 1 : n,
     0,
   );
   const toolsAllowed = totalToolsAllowed(list, toolsByServer);

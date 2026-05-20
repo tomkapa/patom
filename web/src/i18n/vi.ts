@@ -286,7 +286,7 @@ const vi: TranslationTable = {
   "thread.wireRequest.connect": "Kết nối {name}",
   "thread.wireRequest.connecting": "Đang mở…",
   "thread.wireRequest.created":
-    "Đã tạo — hoàn tất ở mục Connections.",
+    "Đã tạo — hoàn tất ở mục Kết nối.",
   "thread.wireRequest.error.generic":
     "Không khởi động được kết nối. Hãy thử lại từ mục Connections.",
 };

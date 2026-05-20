@@ -279,9 +279,7 @@ async fn create_mcp_server(
                 .get_for_org(principal.active_org_id, &catalog_id)
                 .await?
                 .ok_or_else(|| {
-                    HttpError::Mcp(crate::mcp::McpError::CatalogIdUnknown(
-                        catalog_id.as_str().to_owned(),
-                    ))
+                    HttpError::Mcp(crate::mcp::McpError::CatalogIdUnknown(catalog_id.clone()))
                 })?
                 .default_transport
         }

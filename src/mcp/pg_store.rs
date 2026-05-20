@@ -344,8 +344,8 @@ impl McpServerStore for PgMcpServerStore {
 fn map_create_violation(err: sqlx::Error, catalog_id: &McpCatalogId) -> McpError {
     if let sqlx::Error::Database(db) = &err {
         match db.code().as_deref() {
-            Some("23505") => return McpError::CatalogIdTaken(catalog_id.as_str().to_owned()),
-            Some("23503") => return McpError::CatalogIdUnknown(catalog_id.as_str().to_owned()),
+            Some("23505") => return McpError::CatalogIdTaken(catalog_id.clone()),
+            Some("23503") => return McpError::CatalogIdUnknown(catalog_id.clone()),
             _ => {}
         }
     }

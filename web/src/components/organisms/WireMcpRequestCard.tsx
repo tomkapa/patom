@@ -9,6 +9,19 @@ import {
 import { entryById } from "../../data/mcpCatalog";
 import type { McpWireRequest } from "../../types/api";
 
+/** Parse a URL and only return it if the scheme is http(s). Anything
+ *  else — `javascript:`, `data:`, malformed strings — collapses to
+ *  `null` so the renderer drops the link entirely. */
+function safeHttpUrl(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Inline click-to-wire card rendered inside an agent's reply bubble in
  *  response to a `request_user_wire_mcp` tool call.
  *
@@ -33,6 +46,11 @@ export function WireMcpRequestCard({
   const create = useCreateMcpServer();
   const startOAuth = useStartOAuth();
   const visual = entryById(entry.catalog_id);
+  // Catalog rows are operator-controlled today, but defense in depth —
+  // refuse to render anything other than http/https on the user-clickable
+  // "Learn more" link so a future bad row can't smuggle a `javascript:`
+  // URL into the chat surface.
+  const homepageUrl = safeHttpUrl(entry.homepage_url);
   const submitting = create.isPending || startOAuth.isPending;
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -92,9 +110,9 @@ export function WireMcpRequestCard({
               {t("thread.wireRequest.badge")}
             </span>
           </div>
-          {entry.homepage_url ? (
+          {homepageUrl ? (
             <a
-              href={entry.homepage_url}
+              href={homepageUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="mt-0.5 inline-flex items-center gap-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)] hover:text-[var(--color-ink)]"

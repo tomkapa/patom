@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::crypto::CryptoError;
 use crate::types::ParseError;
 
-use super::types::McpServerId;
+use super::types::{McpCatalogId, McpServerId};
 
 /// Module error type for the MCP subsystem. CLAUDE.md §12: every public function in
 /// `mcp::` returns `Result<T, McpError>` so callers can `match` exhaustively.
@@ -13,10 +13,10 @@ pub enum McpError {
     NotFound(McpServerId),
 
     #[error("mcp server with catalog id `{0}` already wired in this org")]
-    CatalogIdTaken(String),
+    CatalogIdTaken(McpCatalogId),
 
     #[error("mcp catalog id `{0}` does not resolve to a known catalog entry")]
-    CatalogIdUnknown(String),
+    CatalogIdUnknown(McpCatalogId),
 
     #[error("server cap reached (max {max})")]
     ServerCapExceeded { max: usize },

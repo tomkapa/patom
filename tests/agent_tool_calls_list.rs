@@ -140,6 +140,18 @@ impl Harness {
     }
 
     async fn seed_mcp(&self, org: OrgId, created_by: UserId, catalog_id: &str) -> McpServerId {
+        // FK trigger requires a matching `mcp_catalog` row. Tests use
+        // bespoke ids; seed each one as a global default before create.
+        sqlx::query(
+            "INSERT INTO mcp_catalog \
+                (id, org_id, display_name, description, default_transport, auth_kind) \
+             VALUES ($1, NULL, $1, $1, '{\"type\":\"http\",\"url\":\"https://example.com/mcp\"}'::jsonb, 'none') \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(catalog_id)
+        .execute(&self.state.pool)
+        .await
+        .expect("seed mcp_catalog");
         let catalog_id = McpCatalogId::try_from(catalog_id).expect("valid catalog id");
         let config = McpTransport::Http {
             url: McpHttpUrl::try_from("http://localhost:9000/probe").expect("valid url"),

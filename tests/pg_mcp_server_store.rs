@@ -39,14 +39,14 @@ fn cat(s: &str) -> McpCatalogId {
 /// Insert a global `mcp_catalog` row for the test. Tests that re-use
 /// the migration-seeded `notion` / `linear` / `slack` / `jira` ids can
 /// skip this; tests that need bespoke ids call it first.
-async fn seed_catalog(db: &TestDb, id: &str) {
+async fn seed_catalog(db: &TestDb, id: &McpCatalogId) {
     sqlx::query(
         "INSERT INTO mcp_catalog \
             (id, org_id, display_name, description, default_transport, auth_kind) \
          VALUES ($1, NULL, $1, $1, '{\"type\":\"http\",\"url\":\"https://example.com/mcp\"}'::jsonb, 'none') \
          ON CONFLICT DO NOTHING",
     )
-    .bind(id)
+    .bind(id.as_str())
     .execute(&db.pool)
     .await
     .expect("seed mcp_catalog");
@@ -106,7 +106,7 @@ async fn duplicate_catalog_id_is_rejected() {
         })
         .await
         .expect_err("second create");
-    assert!(matches!(err, McpError::CatalogIdTaken(a) if a == "linear"));
+    assert!(matches!(err, McpError::CatalogIdTaken(ref a) if a.as_str() == "linear"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -126,7 +126,7 @@ async fn unknown_catalog_id_is_rejected() {
         })
         .await
         .expect_err("create with unknown catalog id");
-    assert!(matches!(err, McpError::CatalogIdUnknown(a) if a == "phantom"));
+    assert!(matches!(err, McpError::CatalogIdUnknown(ref a) if a.as_str() == "phantom"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -276,12 +276,13 @@ async fn update_health_persists_discovered_tools() {
     let db = TestDb::fresh().await;
     let store = store(&db);
     // Bespoke catalog id — exercises the seed_catalog helper.
-    seed_catalog(&db, "health").await;
+    let health = cat("health");
+    seed_catalog(&db, &health).await;
     let row = store
         .create(McpServerCreate {
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            catalog_id: cat("health"),
+            catalog_id: health,
             config: http_transport("http://localhost:9000/"),
             description: None,
             enabled: true,
