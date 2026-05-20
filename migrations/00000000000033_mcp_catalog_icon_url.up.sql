@@ -26,17 +26,17 @@ ALTER TABLE mcp_catalog
     CHECK (icon_url IS NULL OR octet_length(icon_url) <= 2048);
 
 UPDATE mcp_catalog
-   SET icon_url = 'https://assets.relay.dev/mcp/notion.svg'
+   SET icon_url = 'https://asset.tomkapa.uk/mcp/notion.svg'
  WHERE id = 'notion' AND org_id IS NULL;
 
 UPDATE mcp_catalog
-   SET icon_url = 'https://assets.relay.dev/mcp/linear.svg'
+   SET icon_url = 'https://asset.tomkapa.uk/mcp/linear.svg'
  WHERE id = 'linear' AND org_id IS NULL;
 
 UPDATE mcp_catalog
-   SET icon_url = 'https://assets.relay.dev/mcp/slack.svg'
+   SET icon_url = 'https://asset.tomkapa.uk/mcp/slack.svg'
  WHERE id = 'slack' AND org_id IS NULL;
 
 UPDATE mcp_catalog
-   SET icon_url = 'https://assets.relay.dev/mcp/jira.svg'
+   SET icon_url = 'https://asset.tomkapa.uk/mcp/jira.svg'
  WHERE id = 'jira' AND org_id IS NULL;

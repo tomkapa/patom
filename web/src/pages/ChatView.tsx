@@ -24,7 +24,7 @@ import {
   DEMO_USER,
 } from "../lib/demo";
 import { decodeBody } from "../lib/chatBody";
-import type { Bubble, RootMessage } from "../lib/foldHistory";
+import type { Bubble, Poster, RootMessage } from "../lib/foldHistory";
 import { uuidv7 } from "../lib/utils";
 import { prefixMention } from "../lib/mentions";
 import { useT } from "../i18n";
@@ -63,7 +63,13 @@ export function ChatView() {
   const isDemo = forcedDemo;
   const agents = isDemo ? DEMO_AGENTS : (agentsQ.data ?? []);
   const threads = isDemo ? DEMO_THREADS : (threadsQ.data ?? []);
-  const poster = isDemo ? DEMO_HUMAN_POSTER : DEMO_USER;
+  const poster = isDemo
+    ? { ...DEMO_HUMAN_POSTER, avatar_url: null }
+    : {
+        name: me?.user.display_name ?? me?.user.email ?? DEMO_USER.name,
+        id: me?.user.id ?? DEMO_USER.id,
+        avatar_url: me?.user.avatar_url ?? null,
+      };
 
   // SSE stream + view selector are skipped in demo mode by passing null.
   const liveRootId = isDemo ? null : selectedRoot;
@@ -183,8 +189,8 @@ export function ChatView() {
           <MessageList
             threads={visibleThreads}
             channel={selectedAgent ? `dm/${selectedAgent.name}` : CHANNEL}
-            userName={me?.user.display_name ?? me?.user.email ?? DEMO_USER.name}
-            humanPoster={isDemo ? DEMO_HUMAN_POSTER : undefined}
+            userName={poster.name}
+            humanPoster={poster}
             onOpenThread={(rootId) => {
               setSelectedRoot(rootId);
               setShowPanel(true);
@@ -227,7 +233,7 @@ export function ChatView() {
  * entirely — each demo reply maps to one bubble whose `key` matches
  * `DEMO_REPLY_META` (so reasoning / tool / token decorations attach).
  */
-function buildDemoView(poster: { name: string; id: string }): {
+function buildDemoView(poster: Poster): {
   bubbles: Bubble[];
   rootMessage: RootMessage | undefined;
 } {
@@ -236,6 +242,7 @@ function buildDemoView(poster: { name: string; id: string }): {
     ? {
         name: poster.name,
         id: poster.id,
+        avatar_url: poster.avatar_url,
         ts: first.created_at,
         text: decodeBody(first.body).text,
       }
@@ -252,6 +259,7 @@ function buildDemoView(poster: { name: string; id: string }): {
         agent_name: null,
         human_name: null,
         human_id: null,
+        human_avatar_url: null,
         ts: m.created_at,
         text,
         reasoning: "",
@@ -268,6 +276,7 @@ function buildDemoView(poster: { name: string; id: string }): {
       agent_name: null,
       human_name: poster.name,
       human_id: poster.id,
+      human_avatar_url: poster.avatar_url,
       ts: m.created_at,
       text,
       reasoning: "",

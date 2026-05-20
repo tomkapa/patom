@@ -10,7 +10,7 @@ import { clockTime } from "../../lib/time";
 import type { AgentRef } from "../../types/api";
 
 export type BubbleSender =
-  | { kind: "human"; name: string; id?: string }
+  | { kind: "human"; name: string; id?: string; avatarUrl?: string | null }
   | { kind: "agent"; agent: AgentRef };
 
 type MessageBubbleProps = {
@@ -37,6 +37,7 @@ export const MessageBubble = memo(function MessageBubble({
   const isHuman = sender.kind === "human";
   const senderName = isHuman ? sender.name : sender.agent.name;
   const senderId = isHuman ? sender.id ?? "user" : sender.agent.id;
+  const senderAvatar = isHuman ? sender.avatarUrl ?? null : null;
 
   return (
     <article
@@ -51,6 +52,7 @@ export const MessageBubble = memo(function MessageBubble({
           id={senderId}
           tone={isHuman ? undefined : "moss"}
           size={32}
+          avatarUrl={senderAvatar}
         />
       </div>
       <div className="min-w-0 flex-1">

@@ -42,6 +42,8 @@ export type Bubble = {
   /** Display name + id for human bubbles. */
   human_name: string | null;
   human_id: string | null;
+  /** Avatar URL for the human poster; `null` when they haven't set one. */
+  human_avatar_url: string | null;
   ts: string;
   text: string;
   reasoning: string;
@@ -56,6 +58,7 @@ export type Bubble = {
 export type RootMessage = {
   name: string;
   id: string;
+  avatar_url: string | null;
   ts: string;
   text: string;
 };
@@ -75,10 +78,16 @@ type Pending = {
 
 const newPending = (): Pending => ({ reasoning: "", tool_calls: [] });
 
+export type Poster = {
+  name: string;
+  id: string;
+  avatar_url: string | null;
+};
+
 export function foldHistory(
   history: ThreadMessage[],
   agents: Agent[],
-  poster: { name: string; id: string },
+  poster: Poster,
 ): FoldedHistory {
   const agentsById = new Map(agents.map((a) => [a.id, a]));
   const bubbles: Bubble[] = [];
@@ -163,6 +172,7 @@ export function foldHistory(
             agent_name: a?.name ?? null,
             human_name: null,
             human_id: null,
+            human_avatar_url: null,
             ts: m.created_at,
             text: prefixWithReceiver(input.content ?? "", recv, agentsById),
             reasoning,
@@ -199,6 +209,7 @@ export function foldHistory(
         rootMessage = {
           name: poster.name,
           id: poster.id,
+          avatar_url: poster.avatar_url,
           ts: m.created_at,
           text: prefixWithReceiver(decoded.text, receiverFrom(m.receiver), agentsById),
         };
@@ -212,6 +223,7 @@ export function foldHistory(
           agent_name: null,
           human_name: poster.name,
           human_id: poster.id,
+          human_avatar_url: poster.avatar_url,
           ts: m.created_at,
           text: prefixWithReceiver(decoded.text, recv, agentsById),
           reasoning: "",

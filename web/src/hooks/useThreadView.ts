@@ -4,7 +4,12 @@
 
 import { useMemo } from "react";
 
-import { foldHistory, type Bubble, type RootMessage } from "../lib/foldHistory";
+import {
+  foldHistory,
+  type Bubble,
+  type Poster,
+  type RootMessage,
+} from "../lib/foldHistory";
 import { useThreadHistory } from "./useThreads";
 import { useThreadStore, type StreamStatus } from "../stores/threadStore";
 import type { Agent } from "../types/api";
@@ -23,7 +28,7 @@ export type ThreadView = {
 export function useThreadView(
   rootId: string | null,
   agents: Agent[],
-  poster: { name: string; id: string },
+  poster: Poster,
 ): ThreadView {
   // History keeps a low-frequency poll only while we have unconfirmed
   // pending submits, so the panel catches up even if SSE drops chunks. Once
@@ -64,6 +69,7 @@ export function useThreadView(
             agents.find((a) => a.id === lb.agent_id)?.name ?? null,
           human_name: null,
           human_id: null,
+          human_avatar_url: null,
           ts: lb.ts,
           text: lb.message,
           reasoning: lb.reasoning,
@@ -90,6 +96,7 @@ export function useThreadView(
           agent_name: null,
           human_name: poster.name,
           human_id: poster.id,
+          human_avatar_url: poster.avatar_url,
           ts: p.ts,
           text: p.text,
           reasoning: "",
