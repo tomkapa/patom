@@ -1,10 +1,18 @@
 //! Per-agent view of the MCP tool catalogue.
 //!
-//! Strict-by-default: a server id absent from the allowlist exposes none of
-//! that server's tools. Within an allowed server, the value carried by the
-//! [`AllowedMcpTools`] map decides whether every tool is exposed
-//! ([`ToolScope::All`]) or only a named subset ([`ToolScope::Some`]).
+//! Strict-by-default: a catalog id absent from the allowlist exposes none
+//! of that integration's tools. Within an allowed catalog, the value
+//! carried by the [`AllowedMcpTools`] map decides whether every tool is
+//! exposed ([`ToolScope::All`]) or only a named subset
+//! ([`ToolScope::Some`]).
+//!
+//! Catalog → server resolution is supplied at construction (built once
+//! per session in the composition root from the org's wired
+//! `mcp_servers`). A catalog id present in the allowlist but absent from
+//! the resolution map contributes zero tools — the recruiter is expected
+//! to have asked the user to wire it via `request_user_wire_mcp` first.
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::agents::{AllowedMcpTools, ToolScope};
@@ -12,35 +20,67 @@ use crate::provider::ToolSpec;
 use crate::tools::{DynamicToolSource, SharedTool};
 
 use super::registry::McpRegistry;
-use super::types::{McpServerId, McpToolRemoteName};
+use super::types::{McpCatalogId, McpServerId, McpToolRemoteName};
 
 #[derive(Debug, Clone)]
 pub struct ScopedMcpSource {
     registry: McpRegistry,
-    allowed: AllowedMcpTools,
+    /// Pre-resolved view: catalog ids in the allowlist that have a wired
+    /// connection in this org, indexed by the concrete `McpServerId` the
+    /// tool dispatcher matches against. Catalog ids without a wired
+    /// connection drop out at construction (no entry here) so the per-tool
+    /// permits() check stays O(log n) on a small map.
+    by_server: BTreeMap<McpServerId, Option<BTreeSet<McpToolRemoteName>>>,
 }
 
 impl ScopedMcpSource {
+    /// Build the per-agent filter view.
+    ///
+    /// `catalog_to_server` is the org's "this catalog is wired as this
+    /// concrete server" map — built once per session from
+    /// `McpServerStore::list_for_org`. Catalog ids in `allowed` that are
+    /// absent from the map are silently dropped (see module docs).
     #[must_use]
-    pub fn new(registry: McpRegistry, allowed: &AllowedMcpTools) -> Self {
+    pub fn new(
+        registry: McpRegistry,
+        allowed: &AllowedMcpTools,
+        catalog_to_server: &HashMap<McpCatalogId, McpServerId>,
+    ) -> Self {
+        let mut by_server: BTreeMap<McpServerId, Option<BTreeSet<McpToolRemoteName>>> =
+            BTreeMap::new();
+        for (catalog, scope) in allowed.iter() {
+            let Some(server) = catalog_to_server.get(catalog) else {
+                continue;
+            };
+            let value = match scope {
+                ToolScope::None => continue,
+                ToolScope::All => None,
+                ToolScope::Some(set) => Some(set.clone()),
+            };
+            by_server.insert(*server, value);
+        }
         Self {
             registry,
-            allowed: allowed.clone(),
+            by_server,
         }
     }
 
     fn permits(&self, server: McpServerId, remote: &McpToolRemoteName) -> bool {
-        match self.allowed.tools_for(server) {
-            ToolScope::None => false,
-            ToolScope::All => true,
-            ToolScope::Some(set) => set.contains(remote),
+        match self.by_server.get(&server) {
+            None => false,
+            Some(None) => true,
+            Some(Some(set)) => set.contains(remote),
         }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.by_server.is_empty()
     }
 }
 
 impl DynamicToolSource for ScopedMcpSource {
     fn specs(&self) -> Arc<[ToolSpec]> {
-        if self.allowed.is_empty() {
+        if self.is_empty() {
             return Arc::default();
         }
         let snapshot = self.registry.snapshot();
@@ -56,7 +96,7 @@ impl DynamicToolSource for ScopedMcpSource {
     }
 
     fn get(&self, name: &str) -> Option<SharedTool> {
-        if self.allowed.is_empty() {
+        if self.is_empty() {
             return None;
         }
         let (tool, origin) = self.registry.lookup(name)?;
@@ -65,7 +105,7 @@ impl DynamicToolSource for ScopedMcpSource {
     }
 
     fn server_id_for(&self, name: &str) -> Option<McpServerId> {
-        if self.allowed.is_empty() {
+        if self.is_empty() {
             return None;
         }
         let (_tool, origin) = self.registry.lookup(name)?;
@@ -126,16 +166,29 @@ mod tests {
         specs.iter().map(|s| s.name.as_str().to_owned()).collect()
     }
 
-    /// Build an [`AllowedMcpTools`] from a list of `(server, scope)` entries
-    /// where `scope = None` means "all tools" and `scope = Some(&[..])`
-    /// means "only these remote names."
-    fn allow(entries: &[(McpServerId, Option<&[&str]>)]) -> AllowedMcpTools {
-        let mut raw: BTreeMap<McpServerId, Option<Vec<String>>> = BTreeMap::new();
+    fn cat(id: &str) -> McpCatalogId {
+        McpCatalogId::try_from(id).expect("valid catalog id")
+    }
+
+    /// Build an [`AllowedMcpTools`] from a list of `(catalog_id, scope)`
+    /// entries where `scope = None` means "all tools" and
+    /// `scope = Some(&[..])` means "only these remote names."
+    fn allow(entries: &[(&str, Option<&[&str]>)]) -> AllowedMcpTools {
+        let mut raw: BTreeMap<String, Option<Vec<String>>> = BTreeMap::new();
         for (id, names) in entries {
             let v = names.map(|list| list.iter().map(|s| (*s).to_owned()).collect());
-            raw.insert(*id, v);
+            raw.insert((*id).to_owned(), v);
         }
         AllowedMcpTools::try_from(raw).expect("valid scope")
+    }
+
+    /// Build the catalog → server resolution map the runtime composes from
+    /// `McpServerStore::list_for_org` at session-build time.
+    fn resolve(entries: &[(&str, McpServerId)]) -> HashMap<McpCatalogId, McpServerId> {
+        entries
+            .iter()
+            .map(|(id, server)| (cat(id), *server))
+            .collect()
     }
 
     #[test]
@@ -145,13 +198,17 @@ mod tests {
             (s1, "alpha".into(), fake("mcp_one_alpha")),
             (s1, "beta".into(), fake("mcp_one_beta")),
         ]);
-        let scoped = ScopedMcpSource::new(registry, &AllowedMcpTools::empty());
+        let scoped = ScopedMcpSource::new(
+            registry,
+            &AllowedMcpTools::empty(),
+            &resolve(&[("one", s1)]),
+        );
         assert!(scoped.specs().is_empty());
         assert!(scoped.get("mcp_one_alpha").is_none());
     }
 
     #[test]
-    fn allowed_server_with_none_scope_exposes_every_tool() {
+    fn allowed_catalog_with_none_scope_exposes_every_tool() {
         let s1 = McpServerId::new();
         let s2 = McpServerId::new();
         let registry = McpRegistry::for_test_with_remote_names(vec![
@@ -159,7 +216,11 @@ mod tests {
             (s2, "beta".into(), fake("mcp_two_beta")),
             (s2, "gamma".into(), fake("mcp_two_gamma")),
         ]);
-        let scoped = ScopedMcpSource::new(registry, &allow(&[(s2, None)]));
+        let scoped = ScopedMcpSource::new(
+            registry,
+            &allow(&[("two", None)]),
+            &resolve(&[("one", s1), ("two", s2)]),
+        );
         let names = spec_names(&scoped.specs());
         assert_eq!(names.len(), 2);
         assert!(names.iter().any(|n| n == "mcp_two_beta"));
@@ -176,7 +237,11 @@ mod tests {
             (s1, "beta".into(), fake("mcp_one_beta")),
             (s1, "gamma".into(), fake("mcp_one_gamma")),
         ]);
-        let scoped = ScopedMcpSource::new(registry, &allow(&[(s1, Some(&["alpha", "gamma"]))]));
+        let scoped = ScopedMcpSource::new(
+            registry,
+            &allow(&[("one", Some(&["alpha", "gamma"]))]),
+            &resolve(&[("one", s1)]),
+        );
         let names = spec_names(&scoped.specs());
         assert_eq!(names.len(), 2);
         assert!(names.iter().any(|n| n == "mcp_one_alpha"));
@@ -185,13 +250,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_subset_locks_down_an_allowed_server() {
+    fn empty_subset_locks_down_an_allowed_catalog() {
         let s1 = McpServerId::new();
         let registry = McpRegistry::for_test_with_remote_names(vec![
             (s1, "alpha".into(), fake("mcp_one_alpha")),
             (s1, "beta".into(), fake("mcp_one_beta")),
         ]);
-        let scoped = ScopedMcpSource::new(registry, &allow(&[(s1, Some(&[]))]));
+        let scoped = ScopedMcpSource::new(
+            registry,
+            &allow(&[("one", Some(&[]))]),
+            &resolve(&[("one", s1)]),
+        );
         assert!(scoped.specs().is_empty());
         assert!(scoped.get("mcp_one_alpha").is_none());
     }
@@ -204,12 +273,13 @@ mod tests {
             "alpha".into(),
             fake("mcp_one_alpha"),
         )]);
-        let scoped = ScopedMcpSource::new(registry, &allow(&[(s1, None)]));
+        let scoped =
+            ScopedMcpSource::new(registry, &allow(&[("one", None)]), &resolve(&[("one", s1)]));
         assert!(scoped.get("mcp_one_does_not_exist").is_none());
     }
 
     #[test]
-    fn allowing_multiple_servers_unions_their_tools() {
+    fn allowing_multiple_catalogs_unions_their_tools() {
         let s1 = McpServerId::new();
         let s2 = McpServerId::new();
         let s3 = McpServerId::new();
@@ -218,7 +288,11 @@ mod tests {
             (s2, "beta".into(), fake("mcp_two_beta")),
             (s3, "gamma".into(), fake("mcp_three_gamma")),
         ]);
-        let scoped = ScopedMcpSource::new(registry, &allow(&[(s1, None), (s3, None)]));
+        let scoped = ScopedMcpSource::new(
+            registry,
+            &allow(&[("one", None), ("three", None)]),
+            &resolve(&[("one", s1), ("two", s2), ("three", s3)]),
+        );
         let names = spec_names(&scoped.specs());
         assert_eq!(names.len(), 2);
         assert!(names.iter().any(|n| n == "mcp_one_alpha"));
@@ -227,18 +301,22 @@ mod tests {
     }
 
     #[test]
-    fn dangling_allowlist_id_is_inert() {
-        // Operator deleted MCP server s2 but the agent's allowlist still
-        // names it. The filter must not error and must not surface
-        // anything — the registry no longer carries s2's tools.
+    fn unwired_catalog_in_allowlist_is_inert() {
+        // The recruiter assigned `two` to the agent, but the user never
+        // wired it — `resolve` has no entry for `two`. The filter must
+        // not error and must surface only tools whose catalog is both in
+        // the allowlist *and* in the resolution map.
         let s1 = McpServerId::new();
-        let s2 = McpServerId::new();
         let registry = McpRegistry::for_test_with_remote_names(vec![(
             s1,
             "alpha".into(),
             fake("mcp_one_alpha"),
         )]);
-        let scoped = ScopedMcpSource::new(registry, &allow(&[(s1, None), (s2, None)]));
+        let scoped = ScopedMcpSource::new(
+            registry,
+            &allow(&[("one", None), ("two", None)]),
+            &resolve(&[("one", s1)]),
+        );
         let names = spec_names(&scoped.specs());
         assert_eq!(names, vec!["mcp_one_alpha".to_owned()]);
     }
@@ -253,7 +331,11 @@ mod tests {
             (s1, "alpha".into(), fake("mcp_one_alpha")),
             (s1, "beta".into(), fake("mcp_one_beta")),
         ]);
-        let scoped = ScopedMcpSource::new(registry, &allow(&[(s1, Some(&["phantom"]))]));
+        let scoped = ScopedMcpSource::new(
+            registry,
+            &allow(&[("one", Some(&["phantom"]))]),
+            &resolve(&[("one", s1)]),
+        );
         assert!(scoped.specs().is_empty());
         assert!(scoped.get("mcp_one_alpha").is_none());
     }

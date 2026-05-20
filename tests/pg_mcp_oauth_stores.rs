@@ -17,7 +17,7 @@ use relay_rs::mcp::oauth::{
     PendingAuthorizationWrite, PgMcpOAuthClientStore, PgMcpOAuthPendingStore, TokenAuthMethod,
 };
 use relay_rs::mcp::{
-    ConnectionStatus, McpHttpUrl, McpServerAlias, McpServerCreate, McpServerStore, McpTransport,
+    ConnectionStatus, McpCatalogId, McpHttpUrl, McpServerCreate, McpServerStore, McpTransport,
     PgMcpServerStore,
 };
 use relay_rs::types::SecretString;
@@ -123,7 +123,9 @@ async fn seed_server(db: &TestDb) -> relay_rs::mcp::McpServerId {
         .create(McpServerCreate {
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            alias: McpServerAlias::try_from("oauth").expect("alias"),
+            // Migration 30 seeds `notion` globally, so it satisfies the
+            // FK trigger without per-test seed work.
+            catalog_id: McpCatalogId::try_from("notion").expect("catalog id"),
             config: McpTransport::Http {
                 url: McpHttpUrl::try_from("http://localhost:9000").expect("url"),
             },

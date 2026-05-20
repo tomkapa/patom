@@ -30,8 +30,8 @@ use crate::mcp::oauth::{
     register_dynamic_client,
 };
 use crate::mcp::{
-    ConnectionStatus, CredentialPayload, DiscoveredTool, MCP_CREDENTIAL_READ_TIMEOUT, McpClient,
-    McpCredentialWrite, McpDescription, McpError, McpServerAlias, McpServerCreate, McpServerId,
+    ConnectionStatus, CredentialPayload, DiscoveredTool, MCP_CREDENTIAL_READ_TIMEOUT, McpCatalogId,
+    McpClient, McpCredentialWrite, McpDescription, McpError, McpServerCreate, McpServerId,
     McpServerRecord, McpServerUpdate, McpTransport, OAUTH2_KIND_LABEL, OAuth2Payload,
 };
 use crate::tools::{DEFAULT_TOOL_CALLS_PAGE, MAX_TOOL_CALLS_PAGE, ToolCallRowId};
@@ -42,6 +42,9 @@ use super::super::state::AppState;
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
+        // Read-only catalog listing for the frontend connections page.
+        // RLS already cuts to global + the caller's org rows.
+        .route("/mcp-catalog", get(list_mcp_catalog))
         // The static path goes first so `/mcp-servers/test-connect` is not
         // captured by the `{id}` route.
         .route("/mcp-servers/test-connect", post(test_connect_mcp_server))
@@ -77,6 +80,52 @@ pub(super) fn oauth_callback_router() -> Router<AppState> {
     Router::new().route("/mcp-oauth/callback", get(handle_oauth_callback))
 }
 
+/// Wire shape for the catalog listing. Mirrors [`crate::mcp::McpCatalogEntry`]
+/// minus `default_transport` (operators don't need to see the URL on the
+/// listing — they just click "Connect") and minus the per-row timestamps.
+#[derive(Debug, Serialize)]
+struct McpCatalogResponse {
+    catalog_id: String,
+    display_name: String,
+    description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    homepage_url: Option<String>,
+    auth_kind: crate::mcp::McpAuthKind,
+    /// `true` when the entry is tenant-custom (org_id set). UI uses this
+    /// to surface a "managed by your org" badge.
+    is_custom: bool,
+    /// `true` when the tenant has a wired `mcp_servers` row for this
+    /// catalog id; the UI uses this to hide the Connect button.
+    wired: bool,
+}
+
+async fn list_mcp_catalog(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<Json<Vec<McpCatalogResponse>>, HttpError> {
+    let org_id = principal.active_org_id;
+    // Catalog + wired-servers reads are independent — fan out.
+    let (entries, wired) = tokio::try_join!(
+        state.mcp_catalog.list_for_org(org_id),
+        state.mcp_store.list_for_org(org_id),
+    )?;
+    let wired_ids: std::collections::HashSet<&str> =
+        wired.iter().map(|r| r.catalog_id.as_str()).collect();
+    let out: Vec<McpCatalogResponse> = entries
+        .into_iter()
+        .map(|e| McpCatalogResponse {
+            wired: wired_ids.contains(e.id.as_str()),
+            is_custom: e.org_id.is_some(),
+            catalog_id: e.id.as_str().to_owned(),
+            display_name: e.display_name.as_str().to_owned(),
+            description: e.description.as_str().to_owned(),
+            homepage_url: e.homepage_url,
+            auth_kind: e.auth_kind,
+        })
+        .collect();
+    Ok(Json(out))
+}
+
 /// What we hand back on every CRUD response. Mirrors `mcp_servers` plus a flag
 /// telling the operator whether the row is currently exposed by the live registry.
 ///
@@ -87,7 +136,7 @@ pub(super) fn oauth_callback_router() -> Router<AppState> {
 #[derive(Debug, Serialize)]
 struct McpServerResponse {
     id: McpServerId,
-    alias: String,
+    catalog_id: String,
     enabled: bool,
     config: McpTransport,
     description: Option<String>,
@@ -120,7 +169,7 @@ impl McpServerResponse {
     fn from_record(r: McpServerRecord, credentials_kind: Option<String>) -> Self {
         Self {
             id: r.id,
-            alias: r.alias.as_str().to_owned(),
+            catalog_id: r.catalog_id.as_str().to_owned(),
             enabled: r.enabled,
             config: r.config,
             description: r.description.map(|d| d.as_str().to_owned()),
@@ -139,14 +188,31 @@ impl McpServerResponse {
     }
 }
 
+/// Two shapes for `POST /mcp-servers`:
+///   * **Short form** — `{"catalog_id": "notion"}`. Backend looks up the
+///     catalog entry, fills `config` from `default_transport`, defaults
+///     `enabled = true`, omits inline credentials (OAuth-style catalogs
+///     drive credentials via the follow-up `oauth/start` flow). The UI's
+///     click-to-wire button uses this.
+///   * **Full form** — every field present. Operators with tenant-custom
+///     transport needs (e.g. self-hosted endpoint with static headers)
+///     can supply the whole payload.
+///
+/// The two are mutually exclusive at the request schema level: presence
+/// of `config` forces the full-form path; absence forces short-form. The
+/// `catalog_id` is required in both, since it's the FK target.
 #[derive(Debug, Deserialize)]
 struct CreateMcpServerRequest {
-    alias: String,
-    config: McpTransport,
+    catalog_id: String,
+    #[serde(default)]
+    config: Option<McpTransport>,
     #[serde(default)]
     description: Option<String>,
-    #[serde(default = "default_enabled")]
-    enabled: bool,
+    /// Default `None` so the short form can omit it and we infer
+    /// `enabled = true` from the catalog defaults; the full form should
+    /// always supply.
+    #[serde(default)]
+    enabled: Option<bool>,
     /// Optional credentials, set in the same request the row is created in.
     /// When present, sealed under the org KEK and written to
     /// `mcp_server_credentials` before the create returns.
@@ -154,14 +220,8 @@ struct CreateMcpServerRequest {
     credentials: Option<CredentialInput>,
 }
 
-fn default_enabled() -> bool {
-    true
-}
-
 #[derive(Debug, Deserialize)]
 struct UpdateMcpServerRequest {
-    #[serde(default)]
-    alias: Option<String>,
     #[serde(default)]
     config: Option<McpTransport>,
     /// HTTP PATCH semantics: outer `Option` distinguishes "field omitted (no change)"
@@ -193,7 +253,7 @@ async fn create_mcp_server(
     principal: Principal,
     Json(payload): Json<CreateMcpServerRequest>,
 ) -> Result<(StatusCode, Json<McpServerResponse>), HttpError> {
-    let alias = McpServerAlias::try_from(payload.alias).map_err(HttpError::Parse)?;
+    let catalog_id = McpCatalogId::try_from(payload.catalog_id).map_err(HttpError::Parse)?;
     let description = payload
         .description
         .map(McpDescription::try_from)
@@ -206,6 +266,25 @@ async fn create_mcp_server(
         }
         None => None,
     };
+
+    // Short-form path: only `catalog_id` (+ optional credentials) supplied.
+    // Look the entry up and use `default_transport` / catalog defaults so
+    // the click-to-wire button on the UI can fire `POST /mcp-servers
+    // {catalog_id}` without knowing the URL.
+    let config = match payload.config {
+        Some(c) => c,
+        None => {
+            state
+                .mcp_catalog
+                .get_for_org(principal.active_org_id, &catalog_id)
+                .await?
+                .ok_or_else(|| {
+                    HttpError::Mcp(crate::mcp::McpError::CatalogIdUnknown(catalog_id.clone()))
+                })?
+                .default_transport
+        }
+    };
+    let enabled = payload.enabled.unwrap_or(true);
 
     // A row without inline credentials is parked in `AuthPending` so
     // the registry refresher skips it until the OAuth callback's
@@ -223,10 +302,10 @@ async fn create_mcp_server(
         .create(McpServerCreate {
             org_id: principal.active_org_id,
             created_by_user_id: principal.user_id,
-            alias,
-            config: payload.config,
+            catalog_id,
+            config,
             description,
-            enabled: payload.enabled,
+            enabled,
             connection_status,
         })
         .await?;
@@ -269,13 +348,13 @@ async fn list_mcp_servers(
     // round-trip through the privileged `users` store after the tx commits.
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let rows = sqlx::query_as::<_, McpServerRowForList>(
-        "SELECT s.id, s.org_id, s.alias, s.enabled, s.config, s.description, \
+        "SELECT s.id, s.org_id, s.catalog_id, s.enabled, s.config, s.description, \
                 s.last_seen_at, s.last_error, s.discovered_tools, \
                 s.created_by_user_id, s.connection_status, s.created_at, s.updated_at, \
                 c.kind AS credentials_kind \
          FROM mcp_servers s \
          LEFT JOIN mcp_server_credentials c ON c.server_id = s.id \
-         ORDER BY s.alias ASC",
+         ORDER BY s.catalog_id ASC",
     )
     .fetch_all(&mut *tx)
     .await
@@ -303,7 +382,7 @@ async fn read_mcp_server(
     let id = McpServerId::from(id);
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let row = sqlx::query_as::<_, McpServerRowForList>(
-        "SELECT s.id, s.org_id, s.alias, s.enabled, s.config, s.description, \
+        "SELECT s.id, s.org_id, s.catalog_id, s.enabled, s.config, s.description, \
                 s.last_seen_at, s.last_error, s.discovered_tools, \
                 s.created_by_user_id, s.connection_status, s.created_at, s.updated_at, \
                 c.kind AS credentials_kind \
@@ -413,11 +492,6 @@ async fn update_mcp_server(
     Json(payload): Json<UpdateMcpServerRequest>,
 ) -> Result<Json<McpServerResponse>, HttpError> {
     let id = McpServerId::from(id);
-    let alias = payload
-        .alias
-        .map(McpServerAlias::try_from)
-        .transpose()
-        .map_err(HttpError::Parse)?;
     let description = payload
         .description
         .map(|inner| inner.map(McpDescription::try_from).transpose())
@@ -441,7 +515,6 @@ async fn update_mcp_server(
             id,
             principal.active_org_id,
             McpServerUpdate {
-                alias,
                 config: payload.config,
                 description,
                 enabled: payload.enabled,
@@ -713,7 +786,7 @@ fn redact_error(err: &McpError) -> String {
 struct McpServerRowForList {
     id: McpServerId,
     org_id: crate::auth::OrgId,
-    alias: String,
+    catalog_id: String,
     enabled: bool,
     config: serde_json::Value,
     description: Option<String>,
@@ -741,7 +814,7 @@ impl McpServerRowForList {
         // Rebuild the typed record exactly as the store does so the
         // response shape matches whether the call path is via the store
         // or via a tenant-scoped raw query here.
-        let alias = McpServerAlias::try_from(self.alias).map_err(HttpError::Parse)?;
+        let catalog_id = McpCatalogId::try_from(self.catalog_id).map_err(HttpError::Parse)?;
         let config: McpTransport = serde_json::from_value(self.config).map_err(|e| {
             tracing::error!(error = ?e, "mcp.row.deserialize_transport");
             HttpError::Internal
@@ -762,7 +835,7 @@ impl McpServerRowForList {
         let _ = self.org_id; // not on the wire shape — RLS already filtered.
         Ok(McpServerResponse {
             id: self.id,
-            alias: alias.as_str().to_owned(),
+            catalog_id: catalog_id.as_str().to_owned(),
             enabled: self.enabled,
             config,
             description: description.map(|d| d.as_str().to_owned()),

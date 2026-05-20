@@ -10,7 +10,7 @@
 
 use relay_rs::agents::{AgentName, AllowedMcpTools, SharedAgentStore, ToolScope};
 use relay_rs::clock::SystemClock;
-use relay_rs::mcp::McpServerId;
+use relay_rs::mcp::McpCatalogId;
 use relay_rs::runtime::{PromptRequestId, RequestKindPayload};
 use relay_rs::session::{PgSessionStore, SharedSessionStore};
 use relay_rs::tools::system::CreateAgentTool;
@@ -121,16 +121,18 @@ async fn allowlist_round_trips_on_persisted_record() {
     let db = TestDb::fresh().await;
     let f = fixture(&db).await;
 
-    let server_a = McpServerId::new();
-    let server_b = McpServerId::new();
+    // After the catalog rekey, allowlist keys are stable catalog ids
+    // (notion / linear / …) rather than per-tenant server UUIDs.
+    let cat_notion = McpCatalogId::try_from("notion").expect("catalog id");
+    let cat_linear = McpCatalogId::try_from("linear").expect("catalog id");
     let input = json!({
         "name": "ops",
         "system_prompt": "You are the ops agent. Report to the human.",
         "description": "ops role for testing",
-        // server_a: every tool. server_b: only `issues.create`.
+        // notion: every tool. linear: only `issues.create`.
         "allowed_mcp_tools": {
-            server_a.to_string(): null,
-            server_b.to_string(): ["issues.create"],
+            "notion": null,
+            "linear": ["issues.create"],
         },
     });
 
@@ -148,15 +150,15 @@ async fn allowlist_round_trips_on_persisted_record() {
     assert_eq!(record.id.as_uuid(), agent_uuid);
     assert_eq!(record.allowed_mcp_tools.len(), 2);
     assert!(matches!(
-        record.allowed_mcp_tools.tools_for(server_a),
+        record.allowed_mcp_tools.tools_for_catalog(&cat_notion),
         ToolScope::All
     ));
-    let set_b = match record.allowed_mcp_tools.tools_for(server_b) {
+    let set_linear = match record.allowed_mcp_tools.tools_for_catalog(&cat_linear) {
         ToolScope::Some(set) => set,
         other => panic!("expected Some, got {other:?}"),
     };
-    assert_eq!(set_b.len(), 1);
-    assert!(set_b.iter().any(|n| n.as_str() == "issues.create"));
+    assert_eq!(set_linear.len(), 1);
+    assert!(set_linear.iter().any(|n| n.as_str() == "issues.create"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

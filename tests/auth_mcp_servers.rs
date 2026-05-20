@@ -14,7 +14,7 @@ use relay_rs::auth::OrgId;
 use relay_rs::clock::SystemClock;
 use relay_rs::http::{AppState, router};
 use relay_rs::mcp::{
-    ConnectionStatus, McpHttpUrl, McpRefresher, McpRegistry, McpServerAlias, McpServerCreate,
+    ConnectionStatus, McpCatalogId, McpHttpUrl, McpRefresher, McpRegistry, McpServerCreate,
     McpTransport, PgMcpServerStore, SharedMcpServerStore,
 };
 use relay_rs::runtime::{
@@ -81,6 +81,9 @@ impl AuthMcpHarness {
         let users = common::auth::user_store(pool.clone());
         let primary = seed_principal(&pool, &jwt).await;
 
+        let mcp_catalog: relay_rs::mcp::SharedMcpCatalogStore =
+            Arc::new(relay_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
+
         let state = AppState {
             queue,
             leases,
@@ -90,6 +93,7 @@ impl AuthMcpHarness {
             dag,
             memory_store,
             mcp_store: mcp_store.clone(),
+            mcp_catalog,
             mcp_refresh,
             mcp_credentials: std::sync::Arc::new(relay_rs::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
@@ -138,18 +142,32 @@ impl AuthMcpHarness {
         &self,
         org: OrgId,
         created_by_user_id: relay_rs::auth::UserId,
-        alias_str: &str,
+        catalog_id_str: &str,
     ) {
-        let alias = McpServerAlias::try_from(alias_str).expect("valid alias");
+        // Each unique test catalog id needs a matching `mcp_catalog` row
+        // (the validation trigger added by migration 31). Seed it as a
+        // global default so the trigger passes regardless of which test
+        // org calls in.
+        sqlx::query(
+            "INSERT INTO mcp_catalog \
+                (id, org_id, display_name, description, default_transport, auth_kind) \
+             VALUES ($1, NULL, $1, $1, '{\"type\":\"http\",\"url\":\"https://example.com/mcp\"}'::jsonb, 'none') \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(catalog_id_str)
+        .execute(&self.db.pool)
+        .await
+        .expect("seed mcp_catalog");
+        let catalog_id = McpCatalogId::try_from(catalog_id_str).expect("valid catalog id");
         let config = McpTransport::Http {
-            url: McpHttpUrl::try_from(&*format!("http://localhost:9000/{alias_str}"))
+            url: McpHttpUrl::try_from(&*format!("http://localhost:9000/{catalog_id_str}"))
                 .expect("valid url"),
         };
         self.mcp_store
             .create(McpServerCreate {
                 org_id: org,
                 created_by_user_id,
-                alias,
+                catalog_id,
                 config,
                 description: None,
                 enabled: true,
@@ -278,7 +296,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .as_array()
         .expect("array")
         .iter()
-        .map(|r| r["alias"].as_str().expect("alias"))
+        .map(|r| r["catalog_id"].as_str().expect("catalog_id"))
         .collect();
     assert_eq!(aliases, vec!["mine"]);
 
@@ -303,7 +321,7 @@ async fn cross_org_isolation_filters_to_caller_org() {
         .as_array()
         .expect("array")
         .iter()
-        .map(|r| r["alias"].as_str().expect("alias"))
+        .map(|r| r["catalog_id"].as_str().expect("catalog_id"))
         .collect();
     assert_eq!(aliases, vec!["theirs"]);
 }
@@ -397,7 +415,7 @@ async fn create_with_credentials_seals_to_encrypted_table() {
     let app = router(h.state.clone());
     // Create a server *with* a secret-bearing header in one request.
     let body = r#"{
-        "alias": "secret1",
+        "catalog_id": "notion",
         "config": {"type": "http", "url": "http://127.0.0.1:1/"},
         "credentials": {
             "kind": "static_headers",
@@ -486,12 +504,13 @@ async fn put_credentials_replaces_without_revealing_old_value() {
     let h = AuthMcpHarness::new().await;
     h.seed_mcp(h.primary.org_id, h.primary.user_id, "rotate")
         .await;
-    let server_id: uuid::Uuid =
-        sqlx::query_scalar("SELECT id FROM mcp_servers WHERE alias = 'rotate' AND org_id = $1")
-            .bind(h.primary.org_id)
-            .fetch_one(&h.state.pool)
-            .await
-            .expect("seeded id");
+    let server_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM mcp_servers WHERE catalog_id = 'rotate' AND org_id = $1",
+    )
+    .bind(h.primary.org_id)
+    .fetch_one(&h.state.pool)
+    .await
+    .expect("seeded id");
 
     let app = router(h.state.clone());
     // First write

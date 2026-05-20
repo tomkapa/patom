@@ -27,7 +27,7 @@ use super::limits::{MAX_MCP_SERVERS, MAX_TOOLS_PER_SERVER};
 use super::store::{McpHealthUpdate, SharedMcpServerStore};
 use super::tool::McpTool;
 use super::types::{
-    DiscoveredTool, McpServerAlias, McpServerId, McpServerRecord, McpToolRemoteName, McpTransport,
+    DiscoveredTool, McpCatalogId, McpServerId, McpServerRecord, McpToolRemoteName, McpTransport,
 };
 
 /// Cheap-clone handle to the live MCP tool catalogue.
@@ -96,6 +96,12 @@ struct McpState {
     /// hasn't changed (avoids re-running the MCP `initialize` handshake on every CRUD
     /// edit to an unrelated row).
     servers: HashMap<McpServerId, ConnectedServer>,
+    /// Per-org catalog→server resolution snapshot. Populated by
+    /// [`McpRegistry::refresh`] from the same `mcp_servers` rows; consumed
+    /// (cheaply, by `Arc` clone) by the composition root when building a
+    /// session's [`super::ScopedMcpSource`] without needing a DB round-trip
+    /// on every turn.
+    org_catalog_servers: Arc<HashMap<crate::auth::OrgId, Arc<HashMap<McpCatalogId, McpServerId>>>>,
 }
 
 struct ConnectedServer {
@@ -158,6 +164,18 @@ impl McpRegistry {
     #[must_use]
     pub fn lookup(&self, name: &str) -> Option<(SharedTool, ToolOrigin)> {
         self.0.lookup(name)
+    }
+
+    /// Snapshot of `org_id`'s catalog → server resolution. Returns the
+    /// per-org `Arc` directly so the composition root pays a single
+    /// pointer clone per session-build. Empty when the org has no wired
+    /// MCPs (and when called before the first [`refresh`](Self::refresh)).
+    #[must_use]
+    pub fn catalog_to_server_for_org(
+        &self,
+        org_id: crate::auth::OrgId,
+    ) -> Arc<HashMap<McpCatalogId, McpServerId>> {
+        self.0.catalog_to_server_for_org(org_id)
     }
 
     /// Re-read enabled servers, refresh tool lists, atomically swap state.
@@ -227,6 +245,7 @@ impl McpRegistry {
                 tool_origins: Arc::new(tool_origins),
                 specs: Arc::from(specs),
                 servers: HashMap::new(),
+                org_catalog_servers: Arc::new(HashMap::new()),
             }),
             // The store and clock are only consulted by `refresh`; tests
             // that build via `for_test` never call refresh, so the
@@ -270,6 +289,18 @@ impl McpRegistryInner {
         let origin = guard.tool_origins.get(name).cloned()?;
         let tool = guard.by_name.get(name).cloned()?;
         Some((tool, origin))
+    }
+
+    fn catalog_to_server_for_org(
+        &self,
+        org_id: crate::auth::OrgId,
+    ) -> Arc<HashMap<McpCatalogId, McpServerId>> {
+        let guard = self.inner.read().expect("registry lock poisoned");
+        guard
+            .org_catalog_servers
+            .get(&org_id)
+            .cloned()
+            .unwrap_or_else(|| Arc::new(HashMap::new()))
     }
 
     fn len(&self) -> usize {
@@ -328,22 +359,40 @@ impl McpRegistryInner {
         let McpServerRecord {
             id,
             org_id,
-            alias,
+            catalog_id,
             config,
             ..
         } = row;
+
+        // Always record the catalog → server resolution for this org —
+        // even if the connect fails — so the recruiter's allowlist still
+        // resolves while one server is in `Error` / `ReconnectRequired`.
+        // ScopedMcpSource will safely surface zero tools when the
+        // registry's tool map is empty for that server.
+        builder
+            .org_catalog_servers
+            .entry(org_id)
+            .or_default()
+            .insert(catalog_id.clone(), id);
 
         // Load credentials before connecting. Servers without a row decrypt
         // to `None` and connect with no auth; the path is unchanged for
         // them. A decrypt failure is recorded against the server's
         // `last_error` and the row is skipped this refresh.
-        let credentials = match self.load_credentials(id, org_id, &alias).await {
+        let credentials = match self.load_credentials(id, org_id, &catalog_id).await {
             Ok(c) => c,
             Err(()) => return,
         };
 
         let client = match self
-            .connect_or_reuse(id, org_id, &alias, &config, credentials.as_ref(), prior)
+            .connect_or_reuse(
+                id,
+                org_id,
+                &catalog_id,
+                &config,
+                credentials.as_ref(),
+                prior,
+            )
             .await
         {
             Some(c) => c,
@@ -355,7 +404,7 @@ impl McpRegistryInner {
             Err(e) => {
                 warn!(
                     relay.mcp.server.id = %id,
-                    relay.mcp.server.alias = %alias,
+                    relay.mcp.server.catalog_id = %catalog_id,
                     error = %e,
                     "mcp.refresh.list_tools_failed",
                 );
@@ -376,7 +425,7 @@ impl McpRegistryInner {
         };
 
         let now = self.clock.now_utc();
-        let discovered = ingest_tools(id, &alias, &client, remote_tools, builder);
+        let discovered = ingest_tools(id, &catalog_id, &client, remote_tools, builder);
 
         let _ = self
             .store
@@ -406,7 +455,7 @@ impl McpRegistryInner {
         &self,
         id: McpServerId,
         org_id: crate::auth::OrgId,
-        alias: &McpServerAlias,
+        catalog_id: &McpCatalogId,
     ) -> Result<Option<CredentialPayload>, ()> {
         let Some(store) = self.credentials.as_ref() else {
             return Ok(None);
@@ -421,7 +470,7 @@ impl McpRegistryInner {
                 // schema drift) and an operator needs to see it.
                 error!(
                     relay.mcp.server.id = %id,
-                    relay.mcp.server.alias = %alias,
+                    relay.mcp.server.catalog_id = %catalog_id,
                     error = ?e,
                     "mcp.refresh.credential_load_failed",
                 );
@@ -456,7 +505,7 @@ impl McpRegistryInner {
         &self,
         id: McpServerId,
         org_id: crate::auth::OrgId,
-        alias: &McpServerAlias,
+        catalog_id: &McpCatalogId,
         config: &McpTransport,
         credentials: Option<&CredentialPayload>,
         prior: &mut HashMap<McpServerId, ConnectedServer>,
@@ -476,7 +525,7 @@ impl McpRegistryInner {
             Err(e) => {
                 warn!(
                     relay.mcp.server.id = %id,
-                    relay.mcp.server.alias = %alias,
+                    relay.mcp.server.catalog_id = %catalog_id,
                     error = %e,
                     "mcp.refresh.connect_failed",
                 );
@@ -502,18 +551,18 @@ impl McpRegistryInner {
 /// the per-row `discovered_tools` snapshot that the store records.
 fn ingest_tools(
     server_id: McpServerId,
-    alias: &McpServerAlias,
+    catalog_id: &McpCatalogId,
     client: &Arc<McpClient>,
     remote_tools: Vec<rmcp::model::Tool>,
     builder: &mut McpStateBuilder,
 ) -> Vec<DiscoveredTool> {
     let mut discovered: Vec<DiscoveredTool> = Vec::with_capacity(remote_tools.len());
     for remote in remote_tools.into_iter().take(MAX_TOOLS_PER_SERVER) {
-        let prefixed = match prefixed_name(alias, remote.name.as_ref()) {
+        let prefixed = match prefixed_name(catalog_id, remote.name.as_ref()) {
             Ok(n) => n,
             Err(e) => {
                 warn!(
-                    relay.mcp.server.alias = %alias,
+                    relay.mcp.server.catalog_id = %catalog_id,
                     relay.mcp.tool.remote = %remote.name,
                     error = %e,
                     "mcp.tool.name_too_long",
@@ -548,7 +597,7 @@ fn ingest_tools(
             Ok(n) => n,
             Err(e) => {
                 warn!(
-                    relay.mcp.server.alias = %alias,
+                    relay.mcp.server.catalog_id = %catalog_id,
                     relay.mcp.tool.remote = %remote.name,
                     error = %e,
                     "mcp.tool.remote_name_invalid",
@@ -594,6 +643,12 @@ struct McpStateBuilder {
     tool_origins: HashMap<ToolName, ToolOrigin>,
     specs: Vec<ToolSpec>,
     servers: HashMap<McpServerId, ConnectedServer>,
+    /// Mirror of the per-org catalog → server map populated by
+    /// [`refresh_one`] before connect — included regardless of connect
+    /// outcome so the recruiter's allowlist still resolves while a single
+    /// server is temporarily in `Error` / `ReconnectRequired`. Frozen into
+    /// per-org `Arc`s on `finish`.
+    org_catalog_servers: HashMap<crate::auth::OrgId, HashMap<McpCatalogId, McpServerId>>,
 }
 
 impl McpStateBuilder {
@@ -603,23 +658,30 @@ impl McpStateBuilder {
             tool_origins: HashMap::new(),
             specs: Vec::new(),
             servers: HashMap::with_capacity(server_count),
+            org_catalog_servers: HashMap::new(),
         }
     }
 
     fn finish(mut self) -> McpState {
         self.specs
             .sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        let org_catalog_servers: HashMap<_, _> = self
+            .org_catalog_servers
+            .into_iter()
+            .map(|(org, inner)| (org, Arc::new(inner)))
+            .collect();
         McpState {
             by_name: self.by_name,
             tool_origins: Arc::new(self.tool_origins),
             specs: Arc::from(self.specs),
             servers: self.servers,
+            org_catalog_servers: Arc::new(org_catalog_servers),
         }
     }
 }
 
-fn prefixed_name(alias: &McpServerAlias, remote: &str) -> Result<ToolName, ParseError> {
-    let raw = format!("mcp_{}_{}", alias.as_str(), remote);
+fn prefixed_name(catalog_id: &McpCatalogId, remote: &str) -> Result<ToolName, ParseError> {
+    let raw = format!("mcp_{}_{}", catalog_id.as_str(), remote);
     ToolName::try_from(raw.as_str())
 }
 

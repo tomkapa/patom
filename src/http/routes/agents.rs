@@ -329,7 +329,7 @@ struct AgentToolCallResponse {
     /// `mcp_servers` row is ever deleted (`ON DELETE SET NULL`).
     mcp_server_id: Option<McpServerId>,
     /// LEFT JOIN: nullable for the same reason as `mcp_server_id`.
-    mcp_server_alias: Option<String>,
+    mcp_server_catalog_id: Option<String>,
     started_at: DateTime<Utc>,
     duration_ms: i32,
     is_error: bool,
@@ -376,7 +376,7 @@ async fn list_agent_tool_calls(
     // deleted (`ON DELETE SET NULL`) also drop out — acceptable because
     // the chip would render as "Removed connection" with no usable target.
     let mut items = sqlx::query_as::<_, AgentToolCallResponse>(
-        "SELECT tc.id, tc.tool_name, tc.mcp_server_id, s.alias AS mcp_server_alias, \
+        "SELECT tc.id, tc.tool_name, tc.mcp_server_id, s.catalog_id AS mcp_server_catalog_id, \
                 tc.started_at, tc.duration_ms, tc.is_error, tc.error_message \
          FROM tool_calls tc \
          JOIN mcp_servers s ON s.id = tc.mcp_server_id \

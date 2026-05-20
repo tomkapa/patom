@@ -27,10 +27,10 @@ use tracing::{error, info};
 use crate::agents::{
     AGENT_DESCRIPTION_MAX_LEN, AGENT_NAME_MAX_LEN, AGENT_SYSTEM_PROMPT_MAX_LEN, AgentDescription,
     AgentId, AgentName, AgentStoreError, AgentSystemPrompt, AllowedMcpTools,
-    MAX_ALLOWED_MCP_SERVERS_PER_AGENT, MAX_ALLOWED_MCP_TOOLS_PER_SERVER_PER_AGENT, NewAgent,
+    MAX_ALLOWED_MCP_CATALOGS_PER_AGENT, MAX_ALLOWED_MCP_TOOLS_PER_CATALOG_PER_AGENT, NewAgent,
     SharedAgentStore,
 };
-use crate::mcp::MCP_TOOL_REMOTE_NAME_MAX_LEN;
+use crate::mcp::{MCP_CATALOG_ID_MAX_LEN, MCP_TOOL_REMOTE_NAME_MAX_LEN};
 use crate::tools::{RequestKindModes, Tool, ToolCallContext, ToolError};
 use crate::types::ToolName;
 
@@ -47,10 +47,12 @@ const TOOL_DESCRIPTION: &str = "Hire a new agent into the team. Use this only af
       hire should pay attention to and remember as they work.\n\
     - `description`: one sentence other agents read when deciding whether to delegate \
       here. Operator-facing, model-readable; embedded for `search_agents`.\n\
-    - `allowed_mcp_tools` (optional): object mapping MCP server UUID to either \
-      `null` (= every tool from that server) or an array of remote tool names \
-      (= only those tools). Default empty `{}` = no MCP access. Stale ids are \
-      inert; the runtime filters live tools.\n\
+    - `allowed_mcp_tools` (optional): object mapping MCP catalog id \
+      (e.g. \"notion\", \"linear\" — see `search_tools`) to either \
+      `null` (= every tool from that catalog's wired connection) or an \
+      array of remote tool names (= only those tools). Default empty \
+      `{}` = no MCP access. Catalog ids that the tenant hasn't wired \
+      are inert; ask the user to wire via `request_user_wire_mcp` first.\n\
     \n\
     The created agent is never the default. After it's created, tell the customer to \
     open a new session with the returned name — do not `send_message` the new hire \
@@ -110,14 +112,19 @@ impl CreateAgentTool {
                 },
                 "allowed_mcp_tools": {
                     "type": "object",
-                    "description": "Map MCP server UUID to `null` (all tools) or array of remote tool names.",
-                    "maxProperties": MAX_ALLOWED_MCP_SERVERS_PER_AGENT,
+                    "description": "Map MCP catalog id to `null` (all tools) or array of remote tool names.",
+                    "maxProperties": MAX_ALLOWED_MCP_CATALOGS_PER_AGENT,
+                    "propertyNames": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+                        "maxLength": MCP_CATALOG_ID_MAX_LEN,
+                    },
                     "additionalProperties": {
                         "oneOf": [
                             { "type": "null" },
                             {
                                 "type": "array",
-                                "maxItems": MAX_ALLOWED_MCP_TOOLS_PER_SERVER_PER_AGENT,
+                                "maxItems": MAX_ALLOWED_MCP_TOOLS_PER_CATALOG_PER_AGENT,
                                 "uniqueItems": true,
                                 "items": {
                                     "type": "string",

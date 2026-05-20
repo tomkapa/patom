@@ -62,7 +62,7 @@ export function OAuthCallback() {
   }, [view]);
 
   const entry = polling.data ? entryForServer(polling.data) : undefined;
-  const name = entry?.name ?? polling.data?.alias ?? "the provider";
+  const name = entry?.name ?? polling.data?.catalog_id ?? "the provider";
 
   if (view === "failed") {
     return (

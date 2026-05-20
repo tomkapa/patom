@@ -28,6 +28,27 @@ pub const MCP_TOOL_REMOTE_NAME_MAX_LEN: usize = 64;
 /// `4 + 16 + 1 + 43 = 64`.
 pub const MCP_ALIAS_MAX_LEN: usize = 16;
 
+/// Cap on a catalog id (e.g. `"notion"`). Matches the regex in
+/// `mcp_catalog.id`'s CHECK constraint (`^[a-z][a-z0-9_-]{0,39}$`) so the
+/// HTTP boundary and the DB enforce the same length.
+///
+/// Sized so the prefixed tool name `mcp_<catalog_id>_<remote_name>` stays
+/// within the 64-byte `ToolName` cap when the remote name is up to
+/// `MCP_TOOL_REMOTE_NAME_MAX_LEN`: `4 + 40 + 1 + 19 = 64`. A longer remote
+/// name is rejected at registry-ingest time with a warn.
+pub const MCP_CATALOG_ID_MAX_LEN: usize = 40;
+
+/// Cap on `mcp_catalog.display_name` ("Notion", "Linear", …). Matches the
+/// schema CHECK.
+pub const MCP_CATALOG_DISPLAY_NAME_MAX_LEN: usize = 100;
+
+/// Cap on `mcp_catalog.description` (recruiter-facing summary).
+///
+/// Matches the schema CHECK. Larger than `MCP_DESCRIPTION_MAX_LEN` because
+/// the catalog description carries the "what is this for" framing the
+/// recruiter reasons over.
+pub const MCP_CATALOG_DESCRIPTION_MAX_LEN: usize = 1024;
+
 /// Description (operator-facing notes) cap; matches the schema CHECK.
 pub const MCP_DESCRIPTION_MAX_LEN: usize = 512;
 

@@ -1,5 +1,10 @@
 //! Trait-contract tests for [`relay_rs::mcp::PgMcpServerStore`]. Each test owns its
 //! own schema via `TestDb::fresh` so they can run in parallel.
+//!
+//! Note: every `McpServerCreate` requires a matching row in `mcp_catalog`
+//! (the validation trigger added by migration 31). Migration 30 already
+//! seeds `notion`, `linear`, `slack`, `jira` globally; tests that need
+//! extra ids insert them via [`seed_catalog`] inside the per-test schema.
 
 #![allow(clippy::expect_used)]
 
@@ -7,7 +12,7 @@ use std::sync::Arc;
 
 use relay_rs::clock::SystemClock;
 use relay_rs::mcp::{
-    ConnectionStatus, DiscoveredTool, McpError, McpHealthUpdate, McpHttpUrl, McpServerAlias,
+    ConnectionStatus, DiscoveredTool, McpCatalogId, McpError, McpHealthUpdate, McpHttpUrl,
     McpServerCreate, McpServerId, McpServerStore, McpServerUpdate, McpTransport, PgMcpServerStore,
 };
 
@@ -27,8 +32,24 @@ fn http_transport(url: &str) -> McpTransport {
     }
 }
 
-fn alias(s: &str) -> McpServerAlias {
-    McpServerAlias::try_from(s).expect("valid alias")
+fn cat(s: &str) -> McpCatalogId {
+    McpCatalogId::try_from(s).expect("valid catalog id")
+}
+
+/// Insert a global `mcp_catalog` row for the test. Tests that re-use
+/// the migration-seeded `notion` / `linear` / `slack` / `jira` ids can
+/// skip this; tests that need bespoke ids call it first.
+async fn seed_catalog(db: &TestDb, id: &McpCatalogId) {
+    sqlx::query(
+        "INSERT INTO mcp_catalog \
+            (id, org_id, display_name, description, default_transport, auth_kind) \
+         VALUES ($1, NULL, $1, $1, '{\"type\":\"http\",\"url\":\"https://example.com/mcp\"}'::jsonb, 'none') \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(id.as_str())
+    .execute(&db.pool)
+    .await
+    .expect("seed mcp_catalog");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -39,7 +60,7 @@ async fn create_read_roundtrip() {
     let payload = McpServerCreate {
         org_id: db.default_org_id,
         created_by_user_id: db.default_user_id,
-        alias: alias("every"),
+        catalog_id: cat("notion"),
         config: http_transport("http://localhost:9000/"),
         description: None,
         enabled: true,
@@ -48,7 +69,7 @@ async fn create_read_roundtrip() {
     let row = store.create(payload).await.expect("create");
     let read = store.read(row.id, db.default_org_id).await.expect("read");
     assert_eq!(read.id, row.id);
-    assert_eq!(read.alias.as_str(), "every");
+    assert_eq!(read.catalog_id.as_str(), "notion");
     assert!(read.enabled);
     assert_eq!(read.last_seen_at, None);
     assert_eq!(read.last_error, None);
@@ -57,7 +78,7 @@ async fn create_read_roundtrip() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn duplicate_alias_is_rejected() {
+async fn duplicate_catalog_id_is_rejected() {
     let db = TestDb::fresh().await;
     let store = store(&db);
 
@@ -65,7 +86,7 @@ async fn duplicate_alias_is_rejected() {
         .create(McpServerCreate {
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            alias: alias("dup"),
+            catalog_id: cat("linear"),
             config: http_transport("http://localhost:9000/"),
             description: None,
             enabled: true,
@@ -77,7 +98,7 @@ async fn duplicate_alias_is_rejected() {
         .create(McpServerCreate {
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            alias: alias("dup"),
+            catalog_id: cat("linear"),
             config: http_transport("http://localhost:9001/"),
             description: None,
             enabled: true,
@@ -85,33 +106,55 @@ async fn duplicate_alias_is_rejected() {
         })
         .await
         .expect_err("second create");
-    assert!(matches!(err, McpError::AliasTaken(a) if a == "dup"));
+    assert!(matches!(err, McpError::CatalogIdTaken(ref a) if a.as_str() == "linear"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn list_orders_by_alias() {
+async fn unknown_catalog_id_is_rejected() {
     let db = TestDb::fresh().await;
     let store = store(&db);
-    for name in ["zeta", "alpha", "mid"] {
+    // No mcp_catalog row for "phantom" — the validation trigger rejects.
+    let err = store
+        .create(McpServerCreate {
+            org_id: db.default_org_id,
+            created_by_user_id: db.default_user_id,
+            catalog_id: cat("phantom"),
+            config: http_transport("http://localhost:9000/"),
+            description: None,
+            enabled: true,
+            connection_status: ConnectionStatus::Ok,
+        })
+        .await
+        .expect_err("create with unknown catalog id");
+    assert!(matches!(err, McpError::CatalogIdUnknown(ref a) if a.as_str() == "phantom"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_orders_by_catalog_id() {
+    let db = TestDb::fresh().await;
+    let store = store(&db);
+    // Use the four migration-seeded ids. Disable "slack" so list_enabled
+    // can prove the partial-index filter.
+    for (name, enabled) in [("notion", true), ("jira", true), ("slack", false)] {
         store
             .create(McpServerCreate {
                 org_id: db.default_org_id,
                 created_by_user_id: db.default_user_id,
-                alias: alias(name),
+                catalog_id: cat(name),
                 config: http_transport(&format!("http://localhost:9000/{name}")),
                 description: None,
-                enabled: name != "mid",
+                enabled,
                 connection_status: ConnectionStatus::Ok,
             })
             .await
             .expect("create");
     }
     let all = store.list().await.expect("list");
-    let names: Vec<&str> = all.iter().map(|r| r.alias.as_str()).collect();
-    assert_eq!(names, vec!["alpha", "mid", "zeta"]);
+    let names: Vec<&str> = all.iter().map(|r| r.catalog_id.as_str()).collect();
+    assert_eq!(names, vec!["jira", "notion", "slack"]);
     let enabled = store.list_enabled().await.expect("list_enabled");
-    let enabled_names: Vec<&str> = enabled.iter().map(|r| r.alias.as_str()).collect();
-    assert_eq!(enabled_names, vec!["alpha", "zeta"]);
+    let enabled_names: Vec<&str> = enabled.iter().map(|r| r.catalog_id.as_str()).collect();
+    assert_eq!(enabled_names, vec!["jira", "notion"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -127,7 +170,7 @@ async fn list_enabled_skips_auth_pending_rows() {
         .create(McpServerCreate {
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            alias: alias("ready"),
+            catalog_id: cat("notion"),
             config: http_transport("http://localhost:9000/ready"),
             description: None,
             enabled: true,
@@ -139,7 +182,7 @@ async fn list_enabled_skips_auth_pending_rows() {
         .create(McpServerCreate {
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            alias: alias("pending"),
+            catalog_id: cat("linear"),
             config: http_transport("http://localhost:9000/pending"),
             description: None,
             enabled: true,
@@ -149,23 +192,27 @@ async fn list_enabled_skips_auth_pending_rows() {
         .expect("create pending");
 
     let enabled = store.list_enabled().await.expect("list_enabled");
-    let names: Vec<&str> = enabled.iter().map(|r| r.alias.as_str()).collect();
-    assert_eq!(names, vec!["ready"]);
+    let names: Vec<&str> = enabled.iter().map(|r| r.catalog_id.as_str()).collect();
+    assert_eq!(names, vec!["notion"]);
 
     let all = store.list().await.expect("list");
-    let all_names: Vec<&str> = all.iter().map(|r| r.alias.as_str()).collect();
-    assert_eq!(all_names, vec!["pending", "ready"]);
+    let all_names: Vec<&str> = all.iter().map(|r| r.catalog_id.as_str()).collect();
+    assert_eq!(all_names, vec!["linear", "notion"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn update_changes_alias_and_config() {
+async fn update_changes_config_only() {
+    // `catalog_id` is immutable post-create — the UNIQUE constraint and
+    // FK trigger together make a rename equivalent to delete + create.
+    // The update path only edits the mutable subset (config, description,
+    // enabled).
     let db = TestDb::fresh().await;
     let store = store(&db);
     let row = store
         .create(McpServerCreate {
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            alias: alias("first"),
+            catalog_id: cat("slack"),
             config: http_transport("http://localhost:9000/"),
             description: None,
             enabled: true,
@@ -178,7 +225,6 @@ async fn update_changes_alias_and_config() {
             row.id,
             db.default_org_id,
             McpServerUpdate {
-                alias: Some(alias("renamed")),
                 config: Some(http_transport("http://localhost:9100/")),
                 description: None,
                 enabled: Some(false),
@@ -186,7 +232,7 @@ async fn update_changes_alias_and_config() {
         )
         .await
         .expect("update");
-    assert_eq!(updated.alias.as_str(), "renamed");
+    assert_eq!(updated.catalog_id.as_str(), "slack");
     assert!(!updated.enabled);
     let read = store.read(row.id, db.default_org_id).await.expect("read");
     let McpTransport::Http { url, .. } = &read.config;
@@ -201,7 +247,7 @@ async fn delete_returns_not_found_after() {
         .create(McpServerCreate {
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            alias: alias("temp"),
+            catalog_id: cat("jira"),
             config: http_transport("http://localhost:9000/"),
             description: None,
             enabled: true,
@@ -229,11 +275,14 @@ async fn delete_returns_not_found_after() {
 async fn update_health_persists_discovered_tools() {
     let db = TestDb::fresh().await;
     let store = store(&db);
+    // Bespoke catalog id — exercises the seed_catalog helper.
+    let health = cat("health");
+    seed_catalog(&db, &health).await;
     let row = store
         .create(McpServerCreate {
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            alias: alias("health"),
+            catalog_id: health,
             config: http_transport("http://localhost:9000/"),
             description: None,
             enabled: true,

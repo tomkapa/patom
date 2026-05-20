@@ -12,7 +12,7 @@ use super::error::McpError;
 use super::limits::MAX_MCP_SERVERS;
 use super::store::{McpHealthUpdate, McpServerCreate, McpServerStore, McpServerUpdate};
 use super::types::{
-    DiscoveredTool, McpDescription, McpServerAlias, McpServerId, McpServerRecord, McpTransport,
+    DiscoveredTool, McpCatalogId, McpDescription, McpServerId, McpServerRecord, McpTransport,
 };
 
 /// Transaction-scoped advisory-lock key used by `create` to serialise the count + insert
@@ -28,7 +28,7 @@ const MCP_CREATE_LOCK_KEY: i64 = 0x006D_6370_5F63_7265;
 /// `format!`-assembled SQL (CLAUDE.md §10).
 macro_rules! mcp_row_cols {
     () => {
-        "id, org_id, alias, enabled, config, description, last_seen_at, last_error, \
+        "id, org_id, catalog_id, enabled, config, description, last_seen_at, last_error, \
          discovered_tools, created_by_user_id, connection_status, created_at, updated_at"
     };
 }
@@ -73,7 +73,7 @@ impl McpServerStore for PgMcpServerStore {
         let McpServerCreate {
             org_id,
             created_by_user_id,
-            alias,
+            catalog_id,
             config,
             description,
             enabled,
@@ -84,7 +84,7 @@ impl McpServerStore for PgMcpServerStore {
         let config_json = serde_json::to_value(&config)
             .map_err(|e| McpError::Backend(format!("serialize transport: {e}")))?;
         let server_cap = self.server_cap;
-        let alias_str = alias.clone();
+        let catalog_id_for_err = catalog_id.clone();
 
         // Store-internal SQL runs privileged because the registry refresher
         // and the HTTP handler share this trait; the per-org cap check
@@ -109,13 +109,13 @@ impl McpServerStore for PgMcpServerStore {
             }
             sqlx::query(
                 "INSERT INTO mcp_servers \
-                 (id, org_id, alias, enabled, config, description, \
+                 (id, org_id, catalog_id, enabled, config, description, \
                   created_by_user_id, connection_status, created_at, updated_at) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)",
             )
             .bind(id)
             .bind(org_id)
-            .bind(alias_str.as_str())
+            .bind(catalog_id_for_err.as_str())
             .bind(enabled)
             .bind(&config_json)
             .bind(description.as_ref().map(McpDescription::as_str))
@@ -124,7 +124,7 @@ impl McpServerStore for PgMcpServerStore {
             .bind(now)
             .execute(&mut **tx)
             .await
-            .map_err(|e| map_unique_violation(e, &alias_str))?;
+            .map_err(|e| map_create_violation(e, &catalog_id_for_err))?;
             Ok(())
         })
         .await?;
@@ -132,7 +132,7 @@ impl McpServerStore for PgMcpServerStore {
         Ok(McpServerRecord {
             id,
             org_id,
-            alias,
+            catalog_id,
             enabled,
             config,
             description,
@@ -152,7 +152,7 @@ impl McpServerStore for PgMcpServerStore {
                 Ok(sqlx::query_as::<_, McpServerRow>(concat!(
                     "SELECT ",
                     mcp_row_cols!(),
-                    " FROM mcp_servers ORDER BY alias ASC",
+                    " FROM mcp_servers ORDER BY catalog_id ASC",
                 ))
                 .fetch_all(&mut **tx)
                 .await?)
@@ -175,8 +175,27 @@ impl McpServerStore for PgMcpServerStore {
                     mcp_row_cols!(),
                     " FROM mcp_servers \
                      WHERE enabled = TRUE AND connection_status <> 'auth_pending' \
-                     ORDER BY alias ASC",
+                     ORDER BY catalog_id ASC",
                 ))
+                .fetch_all(&mut **tx)
+                .await?)
+            })
+            .await?;
+        rows.into_iter().map(McpServerRow::into_record).collect()
+    }
+
+    async fn list_for_org(
+        &self,
+        org_id: crate::auth::OrgId,
+    ) -> Result<Vec<McpServerRecord>, McpError> {
+        let rows =
+            crate::auth::run_privileged::<Vec<McpServerRow>, McpError>(&self.pool, async |tx| {
+                Ok(sqlx::query_as::<_, McpServerRow>(concat!(
+                    "SELECT ",
+                    mcp_row_cols!(),
+                    " FROM mcp_servers WHERE org_id = $1 ORDER BY catalog_id ASC",
+                ))
+                .bind(org_id)
                 .fetch_all(&mut **tx)
                 .await?)
             })
@@ -229,9 +248,6 @@ impl McpServerStore for PgMcpServerStore {
             let existing = existing.ok_or(McpError::NotFound(id))?;
             let mut current = existing.into_record()?;
 
-            if let Some(alias) = payload.alias {
-                current.alias = alias;
-            }
             if let Some(config) = payload.config {
                 current.config = config;
             }
@@ -246,21 +262,22 @@ impl McpServerStore for PgMcpServerStore {
             let config_json = serde_json::to_value(&current.config)
                 .map_err(|e| McpError::Backend(format!("serialize transport: {e}")))?;
 
+            // `catalog_id` is immutable post-create — the FK trigger and
+            // the (org, catalog) UNIQUE together make a rename equivalent
+            // to delete + create. Update only touches the mutable subset.
             sqlx::query(
-                "UPDATE mcp_servers SET alias = $3, enabled = $4, config = $5, description = $6, \
-                                        updated_at = $7 \
+                "UPDATE mcp_servers SET enabled = $3, config = $4, description = $5, \
+                                        updated_at = $6 \
                  WHERE id = $1 AND org_id = $2",
             )
             .bind(id)
             .bind(org_id)
-            .bind(current.alias.as_str())
             .bind(current.enabled)
             .bind(&config_json)
             .bind(current.description.as_ref().map(McpDescription::as_str))
             .bind(now)
             .execute(&mut **tx)
-            .await
-            .map_err(|e| map_unique_violation(e, &current.alias))?;
+            .await?;
             Ok(current)
         })
         .await
@@ -320,11 +337,16 @@ impl McpServerStore for PgMcpServerStore {
     }
 }
 
-fn map_unique_violation(err: sqlx::Error, alias: &McpServerAlias) -> McpError {
+/// Map an insert-time DB error to a typed [`McpError`]. The
+/// per-(org, catalog) UNIQUE constraint surfaces as 23505; the validation
+/// trigger on `mcp_servers` (catalog-id-must-exist) raises 23503
+/// (foreign_key_violation).
+fn map_create_violation(err: sqlx::Error, catalog_id: &McpCatalogId) -> McpError {
     if let sqlx::Error::Database(db) = &err {
-        // 23505 == unique_violation in Postgres SQLSTATE.
-        if db.code().as_deref() == Some("23505") {
-            return McpError::AliasTaken(alias.as_str().to_owned());
+        match db.code().as_deref() {
+            Some("23505") => return McpError::CatalogIdTaken(catalog_id.clone()),
+            Some("23503") => return McpError::CatalogIdUnknown(catalog_id.clone()),
+            _ => {}
         }
     }
     McpError::Db(err)
@@ -334,7 +356,7 @@ fn map_unique_violation(err: sqlx::Error, alias: &McpServerAlias) -> McpError {
 struct McpServerRow {
     id: McpServerId,
     org_id: crate::auth::OrgId,
-    alias: String,
+    catalog_id: String,
     enabled: bool,
     config: serde_json::Value,
     description: Option<String>,
@@ -349,7 +371,7 @@ struct McpServerRow {
 
 impl McpServerRow {
     fn into_record(self) -> Result<McpServerRecord, McpError> {
-        let alias = McpServerAlias::try_from(self.alias).map_err(McpError::Parse)?;
+        let catalog_id = McpCatalogId::try_from(self.catalog_id).map_err(McpError::Parse)?;
         let config: McpTransport = serde_json::from_value(self.config)
             .map_err(|e| McpError::Backend(format!("deserialize transport: {e}")))?;
         let description = self
@@ -365,7 +387,7 @@ impl McpServerRow {
         Ok(McpServerRecord {
             id: self.id,
             org_id: self.org_id,
-            alias,
+            catalog_id,
             enabled: self.enabled,
             config,
             description,

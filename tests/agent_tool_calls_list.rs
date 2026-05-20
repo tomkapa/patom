@@ -15,7 +15,7 @@ use relay_rs::auth::{OrgId, UserId};
 use relay_rs::clock::{SharedClock, SystemClock};
 use relay_rs::http::{AppState, router};
 use relay_rs::mcp::{
-    ConnectionStatus, McpHttpUrl, McpRefresher, McpRegistry, McpServerAlias, McpServerCreate,
+    ConnectionStatus, McpCatalogId, McpHttpUrl, McpRefresher, McpRegistry, McpServerCreate,
     McpServerId, McpTransport, PgMcpServerStore, SharedMcpServerStore,
 };
 use relay_rs::runtime::{
@@ -65,6 +65,8 @@ impl Harness {
 
         let mcp_store: SharedMcpServerStore =
             Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
+        let mcp_catalog: relay_rs::mcp::SharedMcpCatalogStore =
+            Arc::new(relay_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
         let mcp_registry = McpRegistry::new(mcp_store.clone(), clock.clone());
         let (refresher, mcp_refresh) = McpRefresher::spawn(mcp_registry);
 
@@ -92,6 +94,7 @@ impl Harness {
             dag,
             memory_store,
             mcp_store: mcp_store.clone(),
+            mcp_catalog,
             mcp_refresh,
             mcp_credentials: Arc::new(relay_rs::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
@@ -136,8 +139,20 @@ impl Harness {
         }
     }
 
-    async fn seed_mcp(&self, org: OrgId, created_by: UserId, alias: &str) -> McpServerId {
-        let alias = McpServerAlias::try_from(alias).expect("valid alias");
+    async fn seed_mcp(&self, org: OrgId, created_by: UserId, catalog_id: &str) -> McpServerId {
+        // FK trigger requires a matching `mcp_catalog` row. Tests use
+        // bespoke ids; seed each one as a global default before create.
+        sqlx::query(
+            "INSERT INTO mcp_catalog \
+                (id, org_id, display_name, description, default_transport, auth_kind) \
+             VALUES ($1, NULL, $1, $1, '{\"type\":\"http\",\"url\":\"https://example.com/mcp\"}'::jsonb, 'none') \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(catalog_id)
+        .execute(&self.state.pool)
+        .await
+        .expect("seed mcp_catalog");
+        let catalog_id = McpCatalogId::try_from(catalog_id).expect("valid catalog id");
         let config = McpTransport::Http {
             url: McpHttpUrl::try_from("http://localhost:9000/probe").expect("valid url"),
         };
@@ -145,7 +160,7 @@ impl Harness {
             .create(McpServerCreate {
                 org_id: org,
                 created_by_user_id: created_by,
-                alias,
+                catalog_id,
                 config,
                 description: None,
                 enabled: true,
@@ -297,9 +312,9 @@ async fn lists_tool_calls_for_agent_across_connections_with_server_alias() {
     assert_eq!(items[2]["tool_name"], "pages.search");
 
     // Per-row server projection lets the FE chip render without a second fetch.
-    assert_eq!(items[0]["mcp_server_alias"].as_str(), Some("linear"));
-    assert_eq!(items[1]["mcp_server_alias"].as_str(), Some("linear"));
-    assert_eq!(items[2]["mcp_server_alias"].as_str(), Some("notion"));
+    assert_eq!(items[0]["mcp_server_catalog_id"].as_str(), Some("linear"));
+    assert_eq!(items[1]["mcp_server_catalog_id"].as_str(), Some("linear"));
+    assert_eq!(items[2]["mcp_server_catalog_id"].as_str(), Some("notion"));
     assert_eq!(
         items[0]["mcp_server_id"].as_str(),
         Some(linear.as_uuid().to_string().as_str())
@@ -384,7 +399,7 @@ async fn excludes_non_mcp_tool_calls() {
     let items = body["items"].as_array().expect("items array");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["tool_name"], "pages.search");
-    assert_eq!(items[0]["mcp_server_alias"].as_str(), Some("notion"));
+    assert_eq!(items[0]["mcp_server_catalog_id"].as_str(), Some("notion"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

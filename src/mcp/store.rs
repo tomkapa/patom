@@ -13,7 +13,7 @@ use crate::auth::{OrgId, UserId};
 
 use super::error::McpError;
 use super::types::{
-    ConnectionStatus, DiscoveredTool, McpDescription, McpServerAlias, McpServerId, McpServerRecord,
+    ConnectionStatus, DiscoveredTool, McpCatalogId, McpDescription, McpServerId, McpServerRecord,
     McpTransport,
 };
 
@@ -27,7 +27,7 @@ pub struct McpServerCreate {
     /// Audit field: the user that initiated the create through the HTTP API.
     /// Required because `mcp_servers.created_by_user_id` is `NOT NULL`.
     pub created_by_user_id: UserId,
-    pub alias: McpServerAlias,
+    pub catalog_id: McpCatalogId,
     pub config: McpTransport,
     pub description: Option<McpDescription>,
     pub enabled: bool,
@@ -41,7 +41,6 @@ pub struct McpServerCreate {
 /// Update payload. `None` fields keep the current value; `Some` replaces it.
 #[derive(Debug, Clone, Default)]
 pub struct McpServerUpdate {
-    pub alias: Option<McpServerAlias>,
     pub config: Option<McpTransport>,
     pub description: Option<Option<McpDescription>>,
     pub enabled: Option<bool>,
@@ -68,6 +67,13 @@ pub trait McpServerStore: fmt::Debug + Send + Sync {
 
     /// **PRIVILEGED — cross-tenant.** Same caveat as [`Self::list`].
     async fn list_enabled(&self) -> Result<Vec<McpServerRecord>, McpError>;
+
+    /// Tenant-scoped list of every row in `org_id`'s slice. Used by the
+    /// session-build wire-up (catalog_id → server_id resolution map) and
+    /// by the `search_tools` system tool (wired vs unwired flag). Safe to
+    /// call from a tenant-scoped HTTP handler — RLS would already cut to
+    /// the caller's slice; the explicit `WHERE org_id` is belt-and-braces.
+    async fn list_for_org(&self, org_id: OrgId) -> Result<Vec<McpServerRecord>, McpError>;
 
     async fn read(&self, id: McpServerId, org_id: OrgId) -> Result<McpServerRecord, McpError>;
 
@@ -115,6 +121,9 @@ pub(crate) mod test_support {
             panic!("invariant: McpRegistry::for_test must not consult the store");
         }
         async fn list_enabled(&self) -> Result<Vec<McpServerRecord>, McpError> {
+            panic!("invariant: McpRegistry::for_test must not consult the store");
+        }
+        async fn list_for_org(&self, _: OrgId) -> Result<Vec<McpServerRecord>, McpError> {
             panic!("invariant: McpRegistry::for_test must not consult the store");
         }
         async fn read(&self, _: McpServerId, _: OrgId) -> Result<McpServerRecord, McpError> {

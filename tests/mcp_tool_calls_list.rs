@@ -12,7 +12,7 @@ use relay_rs::auth::{OrgId, UserId};
 use relay_rs::clock::{SharedClock, SystemClock};
 use relay_rs::http::{AppState, router};
 use relay_rs::mcp::{
-    ConnectionStatus, McpHttpUrl, McpRefresher, McpRegistry, McpServerAlias, McpServerCreate,
+    ConnectionStatus, McpCatalogId, McpHttpUrl, McpRefresher, McpRegistry, McpServerCreate,
     McpServerId, McpTransport, PgMcpServerStore, SharedMcpServerStore,
 };
 use relay_rs::runtime::{
@@ -63,6 +63,8 @@ impl Harness {
 
         let mcp_store: SharedMcpServerStore =
             Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
+        let mcp_catalog: relay_rs::mcp::SharedMcpCatalogStore =
+            Arc::new(relay_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
         let mcp_registry = McpRegistry::new(mcp_store.clone(), clock.clone());
         let (refresher, mcp_refresh) = McpRefresher::spawn(mcp_registry);
 
@@ -90,6 +92,7 @@ impl Harness {
             dag,
             memory_store,
             mcp_store: mcp_store.clone(),
+            mcp_catalog,
             mcp_refresh,
             mcp_credentials: Arc::new(relay_rs::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
@@ -134,8 +137,20 @@ impl Harness {
         }
     }
 
-    async fn seed_mcp(&self, org: OrgId, created_by: UserId, alias: &str) -> McpServerId {
-        let alias = McpServerAlias::try_from(alias).expect("valid alias");
+    async fn seed_mcp(&self, org: OrgId, created_by: UserId, catalog_id: &str) -> McpServerId {
+        // FK trigger requires a matching `mcp_catalog` row. Tests use
+        // bespoke ids; seed each one as a global default before create.
+        sqlx::query(
+            "INSERT INTO mcp_catalog \
+                (id, org_id, display_name, description, default_transport, auth_kind) \
+             VALUES ($1, NULL, $1, $1, '{\"type\":\"http\",\"url\":\"https://example.com/mcp\"}'::jsonb, 'none') \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(catalog_id)
+        .execute(&self.state.pool)
+        .await
+        .expect("seed mcp_catalog");
+        let catalog_id = McpCatalogId::try_from(catalog_id).expect("valid catalog id");
         let config = McpTransport::Http {
             url: McpHttpUrl::try_from("http://localhost:9000/probe").expect("valid url"),
         };
@@ -143,7 +158,7 @@ impl Harness {
             .create(McpServerCreate {
                 org_id: org,
                 created_by_user_id: created_by,
-                alias,
+                catalog_id,
                 config,
                 description: None,
                 enabled: true,

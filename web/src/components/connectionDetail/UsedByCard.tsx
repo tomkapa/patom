@@ -7,17 +7,27 @@ import { SectionHeader } from "../atoms/SectionHeader";
 import { SectionCard } from "../molecules/SectionCard";
 import { useAgents } from "../../hooks/useAgents";
 import { useT } from "../../i18n";
+import { useMcpServers } from "../../hooks/useMcpServers";
 import type { Agent } from "../../types/api";
 
 export function UsedByCard({ serverId }: { serverId: string }) {
   const { t } = useT();
   const agentsQuery = useAgents();
+  const serversQuery = useMcpServers();
   const agents = useMemo<Agent[]>(() => {
+    // `allowed_mcp_tools` is keyed by catalog_id, not server UUID — look
+    // up the wired server's catalog_id, then filter agents whose
+    // allowlist names it.
+    const server = (serversQuery.data ?? []).find((s) => s.id === serverId);
+    if (!server) return [];
     const all = (agentsQuery.data ?? []) as Agent[];
     return all.filter((a) =>
-      Object.prototype.hasOwnProperty.call(a.allowed_mcp_tools ?? {}, serverId),
+      Object.prototype.hasOwnProperty.call(
+        a.allowed_mcp_tools ?? {},
+        server.catalog_id,
+      ),
     );
-  }, [agentsQuery.data, serverId]);
+  }, [agentsQuery.data, serversQuery.data, serverId]);
 
   return (
     <SectionCard

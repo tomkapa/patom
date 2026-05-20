@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  McpWireRequest,
   ResponseChunk,
   ThreadStreamEnvelope,
   ToolCallEntry,
@@ -31,6 +32,9 @@ export type LiveAgent = {
   message: string;
   reasoning: string;
   tool_calls: Map<string, ToolCallEntry>;
+  /** In-turn wire-MCP requests. Empty in the common case; non-empty when
+   *  the recruiter asked the user to wire one or more catalog entries. */
+  wire_requests: McpWireRequest[];
   status: LiveStatus;
   error?: string;
   /** Captured on first chunk; stable thereafter. */
@@ -79,6 +83,30 @@ function applyChunk(b: LiveAgent, chunk: ResponseChunk): LiveAgent {
         message: b.message + chunk.content,
         agent_id: b.agent_id ?? chunk.from,
       };
+    case "wire_mcp_request": {
+      // Append; duplicates (same catalog_id) collapse on stream replay.
+      // When the chunk is a replay with nothing to add, return `b`
+      // unchanged so subscribers don't re-render — the dedup check in
+      // `applyEnvelope` below relies on same-reference returns.
+      if (b.wire_requests.some((w) => w.catalog_id === chunk.catalog_id)) {
+        if (b.agent_id !== null || chunk.from === b.agent_id) return b;
+        return { ...b, agent_id: chunk.from };
+      }
+      return {
+        ...b,
+        agent_id: b.agent_id ?? chunk.from,
+        wire_requests: [
+          ...b.wire_requests,
+          {
+            catalog_id: chunk.catalog_id,
+            display_name: chunk.display_name,
+            reason: chunk.reason,
+            auth_kind: chunk.auth_kind,
+            homepage_url: chunk.homepage_url,
+          },
+        ],
+      };
+    }
     case "tool_call": {
       const tool_calls = new Map(b.tool_calls);
       tool_calls.set(chunk.id, {
@@ -188,6 +216,7 @@ export const useThreadStore = create<Store>((set) => ({
           message: "",
           reasoning: "",
           tool_calls: new Map(),
+          wire_requests: [],
           status: "streaming",
           ts: new Date().toISOString(),
         };

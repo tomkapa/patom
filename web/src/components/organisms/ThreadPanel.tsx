@@ -13,6 +13,7 @@ import { Button } from "../atoms/Button";
 import { Monogram } from "../atoms/Monogram";
 import { Markdown } from "../molecules/Markdown";
 import { ToolCallLine } from "../molecules/ToolCallLine";
+import { WireMcpRequestCard } from "./WireMcpRequestCard";
 import { MentionInput } from "../molecules/MentionInput";
 import { clockTime, formatMs } from "../../lib/time";
 import { cn, insertAtCaret } from "../../lib/utils";
@@ -292,6 +293,17 @@ function AgentReplyCard({
           <ThinkingIndicator />
         ) : null}
       </div>
+
+      {bubble.wire_requests.length > 0 && (
+        <div className="mt-1">
+          {bubble.wire_requests.map((req) => (
+            <WireMcpRequestCard
+              key={`wire:${req.catalog_id}`}
+              entry={req}
+            />
+          ))}
+        </div>
+      )}
 
       {hasMeta && (
         <button

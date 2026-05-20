@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agents::AgentId;
 use crate::auth::UserId;
+use crate::mcp::{McpAuthKind, McpCatalogId};
 use crate::provider::{ToolCall, ToolResult};
 
 use super::error::ResponseError;
@@ -48,6 +49,25 @@ pub enum ResponseChunk {
     /// stream. Non-terminal — the `Done` chunk fires only on DAG quiescence.
     /// `from` lets clients render which agent authored each message.
     AgentMessage { from: AgentId, content: String },
+    /// Interactive prompt: the agent is asking the user to wire an MCP
+    /// integration from inside the chat thread.
+    ///
+    /// Emitted by the `request_user_wire_mcp` tool when the recruiter
+    /// (or any other agent) decides a still-unwired catalog entry would
+    /// fit the role being scoped. The UI renders this as a click-to-wire
+    /// card with the recruiter's `reason`, optionally a "Learn more"
+    /// link from `homepage_url`, and a "Connect <display_name>" button.
+    /// Non-terminal; the recruiter resumes on the user's next turn.
+    /// `from` attributes the request to the asking agent.
+    WireMcpRequest {
+        from: AgentId,
+        catalog_id: McpCatalogId,
+        display_name: String,
+        reason: String,
+        auth_kind: McpAuthKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        homepage_url: Option<String>,
+    },
     /// Turn completed normally. The full assistant text is included for late
     /// subscribers that don't want to reconstitute from `Text` chunks.
     Done { final_text: String },
@@ -73,6 +93,7 @@ impl ResponseChunk {
             Self::ToolCall(_) => "tool_call",
             Self::ToolResult(_) => "tool_result",
             Self::AgentMessage { .. } => "agent_message",
+            Self::WireMcpRequest { .. } => "wire_mcp_request",
             Self::Done { .. } => "done",
             Self::Error { .. } => "error",
             Self::Stalled => "stalled",
@@ -89,6 +110,19 @@ impl ResponseChunk {
             Self::Error { reason } => reason.len(),
             Self::Done { final_text } => final_text.len(),
             Self::AgentMessage { content, .. } => content.len() + 36, // 36 = uuid str
+            Self::WireMcpRequest {
+                catalog_id,
+                display_name,
+                reason,
+                homepage_url,
+                ..
+            } => {
+                catalog_id.as_str().len()
+                    + display_name.len()
+                    + reason.len()
+                    + homepage_url.as_deref().map_or(0, str::len)
+                    + 36 // from agent id
+            }
             Self::ToolCall(c) => {
                 c.id.as_str().len() + c.name.as_str().len() + c.input.to_string().len()
             }

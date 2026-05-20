@@ -27,8 +27,10 @@
 mod create_agent;
 mod get_session;
 mod memory;
+mod request_user_wire_mcp;
 mod scheduling;
 mod search_agents;
+mod search_tools;
 mod send_message;
 mod web_fetch;
 mod web_search;
@@ -39,8 +41,10 @@ pub use memory::{
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
     RecallTool,
 };
+pub use request_user_wire_mcp::RequestUserWireMcpTool;
 pub use scheduling::{CancelScheduledTaskTool, ListScheduledTasksTool, ScheduleTaskTool};
 pub use search_agents::SearchAgentsTool;
+pub use search_tools::SearchToolsTool;
 pub use send_message::SendMessageTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
