@@ -128,7 +128,7 @@ impl AssetStore for R2AssetStore {
         // — clippy::large_futures otherwise flags ~21 KB of inline.
         Box::pin(run_with_timeout(R2_PUT_TIMEOUT, put))
             .await
-            .map_err(|e| AssetError::R2Put(e.to_string()))?;
+            .map_err(SdkOutcome::into_put_error)?;
         self.build_public_url(&key)
     }
 
@@ -142,21 +142,46 @@ impl AssetStore for R2AssetStore {
             .send();
         Box::pin(run_with_timeout(R2_DELETE_TIMEOUT, del))
             .await
-            .map_err(|e| AssetError::R2Delete(e.to_string()))?;
+            .map_err(SdkOutcome::into_delete_error)?;
         Ok(())
     }
 }
 
+/// Per-op-neutral outcome from [`run_with_timeout`]. The caller maps
+/// this onto its specific [`AssetError`] variant (R2Put vs R2Delete) so
+/// errors carry the correct operation label.
+enum SdkOutcome {
+    Timeout,
+    Sdk(String),
+}
+
+impl SdkOutcome {
+    fn into_put_error(self) -> AssetError {
+        match self {
+            Self::Timeout => AssetError::Timeout,
+            Self::Sdk(msg) => AssetError::R2Put(msg),
+        }
+    }
+
+    fn into_delete_error(self) -> AssetError {
+        match self {
+            Self::Timeout => AssetError::Timeout,
+            Self::Sdk(msg) => AssetError::R2Delete(msg),
+        }
+    }
+}
+
 /// Wrap an async S3 future in `tokio::time::timeout` and surface the
-/// SDK's full error context. Two-tier `Result` because the timeout is a
-/// distinct failure from a fast SDK error.
-async fn run_with_timeout<F, T, E>(dur: Duration, fut: F) -> Result<T, AssetError>
+/// SDK's full error chain. Returns [`SdkOutcome`] — the caller maps it
+/// to the operation-specific [`AssetError`] variant so a delete failure
+/// doesn't surface as `R2Put` and vice versa.
+async fn run_with_timeout<F, T, E>(dur: Duration, fut: F) -> Result<T, SdkOutcome>
 where
     F: std::future::Future<Output = Result<T, E>>,
     E: std::error::Error,
 {
     match timeout(dur, fut).await {
-        Err(_) => Err(AssetError::Timeout),
+        Err(_) => Err(SdkOutcome::Timeout),
         Ok(Ok(v)) => Ok(v),
         Ok(Err(e)) => {
             // Surface the chain so operators see the inner SDK reason,
@@ -168,10 +193,7 @@ where
                 msg.push_str(&next.to_string());
                 cause = next;
             }
-            // Map back into either R2Put / R2Delete by the caller;
-            // we don't know the op here, so emit a generic-ish variant
-            // and let the caller wrap.
-            Err(AssetError::R2Put(msg))
+            Err(SdkOutcome::Sdk(msg))
         }
     }
 }

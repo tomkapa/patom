@@ -49,3 +49,11 @@ pub const R2_PUT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How long we'll wait on a single R2 DeleteObject round-trip.
 pub const R2_DELETE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Per-await cap on the multipart trust boundary.
+///
+/// `next_field()`, `field.bytes()`, etc. each get this budget so a
+/// client trickling bytes can't hold the request task indefinitely.
+/// The body itself is size-capped by `DefaultBodyLimit`. CLAUDE.md §5:
+/// every I/O await is wrapped in `tokio::time::timeout`.
+pub const MULTIPART_IO_TIMEOUT: Duration = Duration::from_secs(15);

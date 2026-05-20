@@ -29,21 +29,23 @@ struct UploadResponse {
 }
 
 pub(super) fn router() -> Router<AppState> {
+    // Body limits are attached to each `MethodRouter` so the cap is
+    // unambiguously scoped to its own route. Attaching them as
+    // `Router::layer` calls would stack and the second one could be
+    // applied to the first route too.
     Router::new()
-        .route("/uploads/avatar", post(upload_avatar))
-        // Per-route body limit overrides the global
-        // RequestBodyLimitLayer so an oversized payload is rejected at
-        // the framework boundary before we allocate.
-        .layer(DefaultBodyLimit::max(
-            AssetKind::Avatar.max_bytes() + MULTIPART_OVERHEAD,
-        ))
+        .route(
+            "/uploads/avatar",
+            post(upload_avatar).layer(DefaultBodyLimit::max(
+                AssetKind::Avatar.max_bytes() + MULTIPART_OVERHEAD,
+            )),
+        )
         .route(
             "/uploads/mcp-catalog/{catalog_id}",
-            post(upload_mcp_catalog_icon),
+            post(upload_mcp_catalog_icon).layer(DefaultBodyLimit::max(
+                AssetKind::McpCatalogIcon.max_bytes() + MULTIPART_OVERHEAD,
+            )),
         )
-        .layer(DefaultBodyLimit::max(
-            AssetKind::McpCatalogIcon.max_bytes() + MULTIPART_OVERHEAD,
-        ))
 }
 
 /// Headroom on top of the per-kind byte cap for the multipart envelope

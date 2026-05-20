@@ -106,7 +106,7 @@ export function UserMenu() {
               currentUrl={me.user.avatar_url}
               size={48}
               fallback={
-                <span className="font-mono text-[11px] font-bold tracking-tight text-white">
+                <span className="font-mono text-[11px] font-bold tracking-tight text-[var(--color-muted)]">
                   {initials(displayName)}
                 </span>
               }

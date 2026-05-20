@@ -282,6 +282,7 @@ function CatalogTileButton({
   onClick: () => void;
 }) {
   const { t } = useT();
+  const [iconFailed, setIconFailed] = useState(false);
   const monogram = tile.fe?.monogram ?? (tile.name[0] ?? "?").toUpperCase();
   const tileBg = tile.fe?.tileBg ?? "var(--color-rail)";
   const tileFg = tile.fe?.tileFg ?? "#fff";
@@ -290,6 +291,7 @@ function CatalogTileButton({
     toolCount === 1
       ? t("connections.catalog.tool")
       : t("connections.catalog.tools");
+  const showImage: string | null = !iconFailed && tile.iconUrl ? tile.iconUrl : null;
   return (
     <button
       type="button"
@@ -297,10 +299,11 @@ function CatalogTileButton({
       className="flex flex-col gap-3 border border-[var(--color-line)] bg-[var(--color-card)] p-5 text-left transition-colors hover:border-[var(--color-moss)] hover:bg-[var(--color-paper-2)]"
     >
       <div className="flex items-center justify-between gap-2">
-        {tile.iconUrl ? (
+        {showImage ? (
           <img
-            src={tile.iconUrl}
+            src={showImage}
             alt=""
+            onError={() => setIconFailed(true)}
             className="h-8 w-8 shrink-0 border border-[var(--color-line)] bg-white object-contain p-1"
           />
         ) : (

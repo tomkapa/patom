@@ -12,12 +12,29 @@
 //!      claimed type. Defends against an `evil.svg` mis-claiming
 //!      `image/png` to dodge the SVG-XSS denial on the avatar path.
 
+use std::future::Future;
+
 use axum::extract::Multipart;
 use bytes::Bytes;
+use tokio::time::timeout;
 
 use super::error::AssetError;
-use super::limits::SNIFF_PREFIX_BYTES;
+use super::limits::{MULTIPART_IO_TIMEOUT, SNIFF_PREFIX_BYTES};
 use super::traits::{AssetKind, ImageContentType};
+
+/// Wrap a multipart I/O await in `MULTIPART_IO_TIMEOUT`. A slow client
+/// trickling bytes can't hold the request task indefinitely.
+async fn with_timeout<F, T, E>(fut: F) -> Result<T, AssetError>
+where
+    F: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    match timeout(MULTIPART_IO_TIMEOUT, fut).await {
+        Err(_) => Err(AssetError::Timeout),
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(AssetError::Multipart(e.to_string())),
+    }
+}
 
 /// Single image part extracted from a multipart body. Returned by
 /// [`extract_single_image_field`].
@@ -37,11 +54,9 @@ pub async fn extract_single_image_field(
     mut multipart: Multipart,
     kind: AssetKind,
 ) -> Result<UploadedImage, AssetError> {
-    let first = multipart
-        .next_field()
-        .await
-        .map_err(|e| AssetError::Multipart(e.to_string()))?;
-    let field = first.ok_or(AssetError::MissingField)?;
+    let field = with_timeout(multipart.next_field())
+        .await?
+        .ok_or(AssetError::MissingField)?;
 
     if field.name() != Some("file") {
         return Err(AssetError::MissingField);
@@ -58,18 +73,11 @@ pub async fn extract_single_image_field(
         return Err(AssetError::ContentTypeNotAllowed(claimed.as_mime().into()));
     }
 
-    let bytes = field
-        .bytes()
-        .await
-        .map_err(|e| AssetError::Multipart(e.to_string()))?;
+    let bytes = with_timeout(field.bytes()).await?;
 
     // After reading the first field, the multipart stream MUST end. A
     // second field is a misshaped request — refuse before we touch R2.
-    let trailing = multipart
-        .next_field()
-        .await
-        .map_err(|e| AssetError::Multipart(e.to_string()))?;
-    if trailing.is_some() {
+    if with_timeout(multipart.next_field()).await?.is_some() {
         return Err(AssetError::TooManyFields);
     }
 
