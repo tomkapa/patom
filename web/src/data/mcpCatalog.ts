@@ -214,15 +214,16 @@ export function entryById(id: string): CatalogEntry | undefined {
   return MCP_CATALOG.find((e) => e.id === id);
 }
 
-/** Match a saved MCP server back to its catalog entry. Falls back on
- *  alias equality first, then on URL host match — the alias is the
- *  authoritative tie because that's what the FE seeded at create time. */
+/** Match a saved MCP server back to its catalog entry. The backend
+ *  `catalog_id` field is the authoritative tie (it's the FK target);
+ *  the URL-host fallback covers tenant-custom rows whose `catalog_id`
+ *  doesn't exist as a tile in this hard-coded visual catalog. */
 export function entryForServer(server: {
-  alias: string;
+  catalog_id: string;
   config: { type: "http"; url: string };
 }): CatalogEntry | undefined {
-  const byAlias = entryById(server.alias);
-  if (byAlias) return byAlias;
+  const byId = entryById(server.catalog_id);
+  if (byId) return byId;
   try {
     const host = new URL(server.config.url).host;
     return MCP_CATALOG.find((e) => new URL(e.defaultUrl).host === host);

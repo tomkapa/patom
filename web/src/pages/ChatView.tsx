@@ -241,6 +241,7 @@ function buildDemoView(poster: { name: string; id: string }): {
         text,
         reasoning: "",
         tool_calls: [],
+        wire_requests: [],
         phase: "persisted",
       };
     }
@@ -256,6 +257,7 @@ function buildDemoView(poster: { name: string; id: string }): {
       text,
       reasoning: "",
       tool_calls: [],
+      wire_requests: [],
       phase: "persisted",
     };
   });

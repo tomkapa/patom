@@ -5,6 +5,7 @@
 //! downstream constructs them directly.
 
 use std::fmt;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -12,13 +13,105 @@ use url::Url;
 use crate::types::ParseError;
 
 use super::limits::{
-    MCP_ALIAS_MAX_LEN, MCP_DESCRIPTION_MAX_LEN, MCP_HEADER_NAME_MAX_LEN, MCP_HEADER_VALUE_MAX_LEN,
-    MCP_TOOL_REMOTE_NAME_MAX_LEN, MCP_URL_MAX_LEN,
+    MCP_ALIAS_MAX_LEN, MCP_CATALOG_ID_MAX_LEN, MCP_DESCRIPTION_MAX_LEN, MCP_HEADER_NAME_MAX_LEN,
+    MCP_HEADER_VALUE_MAX_LEN, MCP_TOOL_REMOTE_NAME_MAX_LEN, MCP_URL_MAX_LEN,
 };
 
 crate::uuid_newtype! {
     /// Opaque identifier for a registered MCP server row.
     pub McpServerId
+}
+
+/// Stable, human-readable id of an entry in `mcp_catalog` (e.g. "notion").
+///
+/// Drives the tool prefix on every tool a wired server exposes
+/// (`mcp_<catalog_id>_<remote_name>`) and is the key the recruiter agent
+/// uses in `allowed_mcp_tools` when hiring a new agent.
+///
+/// Regex (mirrors the `mcp_catalog.id` CHECK): `^[a-z][a-z0-9_-]{0,39}$`.
+/// Bounded so the prefixed tool name always fits within `ToolName`'s
+/// 64-byte cap (4 + 40 + 1 + 19 = 64 bytes worst case before the cap
+/// kicks in on the remote name).
+///
+/// Reference-counted (`Arc<str>`) so the runtime can clone the same key
+/// through many layers (catalog store → resolver → scoped source) without
+/// per-clone allocations.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct McpCatalogId(Arc<str>);
+
+impl McpCatalogId {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for McpCatalogId {
+    type Error = ParseError;
+
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        if raw.is_empty() {
+            return Err(ParseError::Empty {
+                field: "mcp_catalog_id",
+            });
+        }
+        if raw.len() > MCP_CATALOG_ID_MAX_LEN {
+            return Err(ParseError::TooLong {
+                field: "mcp_catalog_id",
+                max: MCP_CATALOG_ID_MAX_LEN,
+                got: raw.len(),
+            });
+        }
+        let mut chars = raw.chars();
+        let first = chars.next().expect("invariant: non-empty by check above");
+        if !first.is_ascii_lowercase() {
+            return Err(ParseError::Malformed {
+                field: "mcp_catalog_id",
+                detail: "must start with a-z",
+            });
+        }
+        let rest_ok =
+            chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+        if !rest_ok {
+            return Err(ParseError::Malformed {
+                field: "mcp_catalog_id",
+                detail: "allowed: a-z 0-9 _ -",
+            });
+        }
+        Ok(Self(Arc::from(raw)))
+    }
+}
+
+impl TryFrom<String> for McpCatalogId {
+    type Error = ParseError;
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        Self::try_from(raw.as_str())
+    }
+}
+
+impl fmt::Debug for McpCatalogId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("McpCatalogId").field(&&*self.0).finish()
+    }
+}
+
+impl fmt::Display for McpCatalogId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for McpCatalogId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for McpCatalogId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::try_from(raw).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Operator-chosen short name. Drives the prefix on every tool the server exposes
@@ -375,11 +468,17 @@ impl<'de> Deserialize<'de> for McpHeaderValue {
 }
 
 /// One row in `mcp_servers`. Returned by the store; consumed by `McpRegistry::refresh`.
+///
+/// `catalog_id` is the stable, human-readable id of the [`mcp_catalog`]
+/// entry this server is wired against (e.g. `"notion"`). The per-tenant
+/// uniqueness constraint (one wired connection per (org, catalog_id))
+/// and the tool prefix (`mcp_<catalog_id>_<remote_name>`) both key off
+/// this field.
 #[derive(Debug, Clone)]
 pub struct McpServerRecord {
     pub id: McpServerId,
     pub org_id: crate::auth::OrgId,
-    pub alias: McpServerAlias,
+    pub catalog_id: McpCatalogId,
     pub enabled: bool,
     pub config: McpTransport,
     pub description: Option<McpDescription>,

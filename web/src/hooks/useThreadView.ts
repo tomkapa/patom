@@ -68,6 +68,7 @@ export function useThreadView(
           text: lb.message,
           reasoning: lb.reasoning,
           tool_calls: Array.from(lb.tool_calls.values()),
+          wire_requests: lb.wire_requests,
           phase: "streaming",
         });
       }
@@ -93,6 +94,7 @@ export function useThreadView(
           text: p.text,
           reasoning: "",
           tool_calls: [],
+          wire_requests: [],
           phase: "optimistic",
         });
       }

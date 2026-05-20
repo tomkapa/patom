@@ -130,7 +130,7 @@ function OAuthBody({
   const onContinue = () =>
     run(async () => {
       const server = await create.mutateAsync({
-        alias: entry.id,
+        catalog_id: entry.id,
         config: { type: "http", url: entry.defaultUrl },
         description: entry.blurb,
         enabled: true,
@@ -212,7 +212,7 @@ function ApiTokenBody({
         return;
       }
       await create.mutateAsync({
-        alias: entry.id,
+        catalog_id: entry.id,
         config: { type: "http", url: entry.defaultUrl },
         description: entry.blurb,
         enabled: true,
@@ -300,7 +300,7 @@ function ReconnectBody({
 }) {
   const { t } = useT();
   const entry = entryForServer(server);
-  const name = entry?.name ?? server.alias;
+  const name = entry?.name ?? server.catalog_id;
   const startOAuth = useStartOAuth();
   const { errorText, run } = useAsyncSubmit();
 
@@ -335,11 +335,11 @@ function ReconnectBody({
             <EntryTile entry={entry} />
           ) : (
             <Monogram
-              name={server.alias}
+              name={server.catalog_id}
               size={36}
               bg="var(--color-rail)"
               fg="#fff"
-              glyph={(server.alias[0] ?? "?").toUpperCase()}
+              glyph={(server.catalog_id[0] ?? "?").toUpperCase()}
             />
           )
         }
@@ -416,25 +416,28 @@ function DiagRow({
   );
 }
 
-// Alias charset/length mirror src/mcp/types.rs::McpServerAlias.
-const ALIAS_RE = /^[a-z0-9_-]{1,16}$/;
+// Catalog-id charset/length mirror src/mcp/types.rs::McpCatalogId.
+// The custom-URL form requires the user to type an id that matches an
+// existing tenant-custom `mcp_catalog` row — the backend FK trigger
+// rejects an unknown id with HTTP 400 (`CatalogIdUnknown`).
+const CATALOG_ID_RE = /^[a-z][a-z0-9_-]{0,39}$/;
 const URL_RE = /^https:\/\/[^\s]+$/i;
 
 function CustomUrlBody({ onClose }: { onClose: () => void }) {
   const { t } = useT();
   const create = useCreateMcpServer();
-  const [alias, setAlias] = useState("");
+  const [catalogId, setCatalogId] = useState("");
   const [url, setUrl] = useState("https://");
   const [auth, setAuth] = useState<"none" | "apiToken">("none");
   const [token, setToken] = useState("");
   const { errorText, setErrorText, run } = useAsyncSubmit();
 
-  const aliasValid = useMemo(() => ALIAS_RE.test(alias), [alias]);
+  const catalogIdValid = useMemo(() => CATALOG_ID_RE.test(catalogId), [catalogId]);
   const urlValid = useMemo(() => URL_RE.test(url), [url]);
 
   const onAdd = () =>
     run(async () => {
-      if (!aliasValid) {
+      if (!catalogIdValid) {
         setErrorText(t("connections.modal.custom.error.alias"));
         return;
       }
@@ -443,7 +446,7 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
         return;
       }
       await create.mutateAsync({
-        alias,
+        catalog_id: catalogId,
         config: { type: "http", url },
         enabled: true,
         credentials:
@@ -476,8 +479,8 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
       <div className="flex flex-col gap-4 px-5 py-5">
         <Field label={t("connections.modal.custom.nameLabel")}>
           <input
-            value={alias}
-            onChange={(e) => setAlias(e.target.value)}
+            value={catalogId}
+            onChange={(e) => setCatalogId(e.target.value)}
             placeholder={t("connections.modal.custom.namePlaceholder")}
             className="w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-2 font-[var(--font-mono)] text-[12.5px] text-[var(--color-ink)] outline-none focus:border-[var(--color-moss)]"
           />

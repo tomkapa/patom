@@ -271,11 +271,15 @@ fn payload_for_post(chunk: &ResponseChunk) -> Option<String> {
         ResponseChunk::AgentMessage { content, .. } => Some(content.clone()),
         ResponseChunk::Error { reason } => Some(format!(":warning: Error: {reason}")),
         // Streaming-only chunks — dropped under the "post once on Final"
-        // user choice.
+        // user choice. WireMcpRequest is an interactive artifact for the
+        // web UI's connect card; it has no useful Slack rendering today
+        // (no inline OAuth callback path), so we drop it here rather
+        // than spamming the channel with an unactionable summary.
         ResponseChunk::Text { .. }
         | ResponseChunk::Reasoning { .. }
         | ResponseChunk::ToolCall(_)
         | ResponseChunk::ToolResult(_)
+        | ResponseChunk::WireMcpRequest { .. }
         | ResponseChunk::Stalled => None,
     }
 }

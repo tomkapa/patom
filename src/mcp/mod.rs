@@ -5,6 +5,7 @@
 //! [`McpClient`] (rmcp wrapper), and exposes the union of remote tools as
 //! [`McpTool`] instances. The agent sees them through [`crate::tools::ToolBox`].
 
+mod catalog;
 mod client;
 pub mod credentials;
 mod error;
@@ -20,6 +21,10 @@ mod store;
 mod tool;
 mod types;
 
+pub use catalog::{
+    McpAuthKind, McpCatalogDescription, McpCatalogDisplayName, McpCatalogEntry, McpCatalogStore,
+    PgMcpCatalogStore, SharedMcpCatalogStore,
+};
 pub use client::McpClient;
 pub use credentials::{
     CredentialPayload, MAX_CREDENTIAL_PLAINTEXT, McpCredentialRecord, McpCredentialStore,
@@ -29,6 +34,7 @@ pub use credentials::{
 pub use error::McpError;
 pub use limits::{
     MAX_MCP_SERVERS, MAX_TOOLS_PER_SERVER, MCP_ALIAS_MAX_LEN, MCP_CALL_TIMEOUT,
+    MCP_CATALOG_DESCRIPTION_MAX_LEN, MCP_CATALOG_DISPLAY_NAME_MAX_LEN, MCP_CATALOG_ID_MAX_LEN,
     MCP_CONNECT_TIMEOUT, MCP_CREDENTIAL_READ_TIMEOUT, MCP_DESCRIPTION_MAX_LEN,
     MCP_HEADER_NAME_MAX_LEN, MCP_HEADER_VALUE_MAX_LEN, MCP_LIST_TOOLS_TIMEOUT, MCP_MAX_HEADERS,
     MCP_RESULT_RENDER_CAP, MCP_TEST_CONNECT_BUCKETS_MAX, MCP_TEST_CONNECT_PER_MIN,
@@ -45,6 +51,6 @@ pub use store::{
 };
 pub use tool::McpTool;
 pub use types::{
-    ConnectionStatus, DiscoveredTool, McpDescription, McpHeaderName, McpHeaderValue, McpHttpUrl,
-    McpServerAlias, McpServerId, McpServerRecord, McpToolRemoteName, McpTransport,
+    ConnectionStatus, DiscoveredTool, McpCatalogId, McpDescription, McpHeaderName, McpHeaderValue,
+    McpHttpUrl, McpServerAlias, McpServerId, McpServerRecord, McpToolRemoteName, McpTransport,
 };

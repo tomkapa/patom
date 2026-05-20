@@ -12,8 +12,11 @@ pub enum McpError {
     #[error("mcp server {0} not found")]
     NotFound(McpServerId),
 
-    #[error("mcp server alias `{0}` already in use")]
-    AliasTaken(String),
+    #[error("mcp server with catalog id `{0}` already wired in this org")]
+    CatalogIdTaken(String),
+
+    #[error("mcp catalog id `{0}` does not resolve to a known catalog entry")]
+    CatalogIdUnknown(String),
 
     #[error("server cap reached (max {max})")]
     ServerCapExceeded { max: usize },

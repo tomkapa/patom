@@ -37,17 +37,17 @@ export function DetailHeader({
     <header className="flex items-center justify-between gap-4 border-b border-[var(--color-line)] px-8 pb-6 pt-2">
       <div className="flex min-w-0 items-center gap-4">
         <Monogram
-          name={entry?.name ?? server.alias}
+          name={entry?.name ?? server.catalog_id}
           size={56}
           bg={entry?.tileBg ?? "var(--color-rail)"}
           fg={entry?.tileFg ?? "#ffffff"}
-          glyph={entry?.monogram ?? (server.alias[0] ?? "?").toUpperCase()}
+          glyph={entry?.monogram ?? (server.catalog_id[0] ?? "?").toUpperCase()}
           iconSlug={entry?.iconSlug}
         />
         <div className="flex min-w-0 flex-col gap-1.5">
           <div className="flex items-center gap-2.5">
             <h1 className="truncate font-[var(--font-display)] text-[28px] font-bold leading-none text-[var(--color-ink)]">
-              {entry?.name ?? server.alias}
+              {entry?.name ?? server.catalog_id}
             </h1>
             <StatusPill tone={tone} label={t(STATUS_KEY[tone])} />
           </div>

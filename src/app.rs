@@ -36,8 +36,8 @@ use crate::mcp::oauth::{
     SharedMcpOAuthClientStore, SharedMcpOAuthPendingStore,
 };
 use crate::mcp::{
-    McpRefresher, McpRegistry, PgMcpCredentialStore, PgMcpServerStore, ScopedMcpSource,
-    SharedMcpCredentialStore, SharedMcpServerStore,
+    McpRefresher, McpRegistry, PgMcpCatalogStore, PgMcpCredentialStore, PgMcpServerStore,
+    ScopedMcpSource, SharedMcpCatalogStore, SharedMcpCredentialStore, SharedMcpServerStore,
 };
 use crate::memory::{
     AgentMemory, LibrarianScheduler, MemorySectionLoader, PgMemoryStore, ReflectionScheduler,
@@ -61,7 +61,8 @@ use crate::session::{PgSessionStore, SharedSessionStore};
 use crate::tools::system::{
     CancelScheduledTaskTool, CreateAgentTool, GetSessionTool, ListScheduledTasksTool,
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
-    RecallTool, ScheduleTaskTool, SearchAgentsTool, SendMessageTool, WebFetchTool, WebSearchTool,
+    RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchAgentsTool, SearchToolsTool,
+    SendMessageTool, WebFetchTool, WebSearchTool,
 };
 use crate::tools::{ToolBox, ToolRegistry};
 
@@ -125,6 +126,7 @@ struct Collaborators {
     sink: SharedResponseSink,
     responses: SharedResponseSource,
     mcp_store: SharedMcpServerStore,
+    mcp_catalog: SharedMcpCatalogStore,
     mcp_credentials: SharedMcpCredentialStore,
     mcp_oauth_clients: SharedMcpOAuthClientStore,
     mcp_oauth_pending: SharedMcpOAuthPendingStore,
@@ -230,6 +232,7 @@ impl Collaborators {
 
         let mcp_store: SharedMcpServerStore =
             Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
+        let mcp_catalog: SharedMcpCatalogStore = Arc::new(PgMcpCatalogStore::new(pool.clone()));
         let encryptor = Arc::new(
             OrgEncryptor::from_settings(&settings.auth.master_kek)
                 .map_err(|e| AppError::Misconfigured(format!("RELAY_MASTER_KEK: {e}")))?,
@@ -299,6 +302,8 @@ impl Collaborators {
             default_tz,
             clock: clock.clone(),
             pool: pool.clone(),
+            mcp_catalog: mcp_catalog.clone(),
+            mcp_store: mcp_store.clone(),
         })?;
 
         // `memory_store` and `session_memory_cache` are not held on
@@ -321,6 +326,7 @@ impl Collaborators {
             sink,
             responses,
             mcp_store,
+            mcp_catalog,
             mcp_credentials,
             mcp_oauth_clients,
             mcp_oauth_pending,
@@ -352,9 +358,14 @@ struct AgentFactoryPieces {
 
 impl AgentFactoryPieces {
     fn build(&self, record: &crate::agents::AgentRecord) -> Agent {
+        // Catalog → server resolution is computed once per refresh and
+        // held inside the registry; this returns an `Arc<HashMap<…>>`
+        // pointer clone, no DB round-trip on the per-session hot path.
+        let catalog_to_server = self.mcp_registry.catalog_to_server_for_org(record.org_id);
         let dynamic = Arc::new(ScopedMcpSource::new(
             self.mcp_registry.clone(),
             &record.allowed_mcp_tools,
+            &catalog_to_server,
         ));
         let toolbox = ToolBox::new(self.builtin_tools.clone(), dynamic);
         AgentBuilder::new(
@@ -391,6 +402,11 @@ struct BuiltinToolDeps<'a> {
     /// Pool handle threaded through to the scheduling tools so they can
     /// open `begin_as_user` tx for tenant-side visibility gating.
     pool: PgPool,
+    /// Catalog store consumed by `search_tools` and `request_user_wire_mcp`.
+    mcp_catalog: SharedMcpCatalogStore,
+    /// MCP server store consumed by `search_tools` for the wired-vs-unwired
+    /// view and by `request_user_wire_mcp` for the already-wired guard.
+    mcp_store: SharedMcpServerStore,
 }
 
 /// Register every system tool into a [`ToolRegistry`]. Lives at the
@@ -424,6 +440,15 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.embedding_provider,
         )))
         .with(Arc::new(CreateAgentTool::new(deps.agents.clone())))
+        .with(Arc::new(SearchToolsTool::new(
+            deps.mcp_catalog.clone(),
+            deps.mcp_store.clone(),
+        )))
+        .with(Arc::new(RequestUserWireMcpTool::new(
+            deps.mcp_catalog,
+            deps.mcp_store,
+            deps.sink.clone(),
+        )))
         .with(Arc::new(ScheduleTaskTool::new(
             deps.scheduled_tasks.clone(),
             deps.agents.clone(),
@@ -716,6 +741,7 @@ pub async fn build_server(
         dag: pieces.dag,
         memory_store: pieces.memory_store.clone(),
         mcp_store: pieces.mcp_store,
+        mcp_catalog: pieces.mcp_catalog,
         mcp_credentials: pieces.mcp_credentials,
         mcp_refresh,
         mcp_test_rate,

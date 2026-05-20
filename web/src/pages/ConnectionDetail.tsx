@@ -51,7 +51,7 @@ export function ConnectionDetail() {
   }, [server, disconnectOAuth, deleteCredentials]);
 
   const breadcrumbLabel = server
-    ? (entryForServer(server)?.name ?? server.alias)
+    ? (entryForServer(server)?.name ?? server.catalog_id)
     : t("connections.breadcrumb.connections");
 
   return (

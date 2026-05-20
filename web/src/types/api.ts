@@ -144,6 +144,13 @@ export type ResponseChunk =
   | { kind: "tool_call"; id: string; name: string; input: unknown }
   | { kind: "tool_result"; call_id: string; output: string; is_error?: boolean }
   | { kind: "agent_message"; from: string; content: string }
+  /** Interactive prompt: the agent is asking the user to wire an MCP
+   *  integration from inside the chat. Rendered as a click-to-wire card
+   *  (`WireMcpRequestCard`) inline with the agent's other turn output.
+   *  Non-terminal — the agent's turn continues; the user wires the MCP
+   *  via a follow-up flow and the agent sees the new state on its next
+   *  turn. */
+  | ({ kind: "wire_mcp_request"; from: string } & McpWireRequest)
   | { kind: "done"; final_text: string }
   | { kind: "error"; reason: string }
   | { kind: "stalled" };
@@ -197,7 +204,12 @@ export const CREDENTIALS_KIND = {
 
 export type McpServer = {
   id: string;
-  alias: string;
+  /** Stable id of the `mcp_catalog` entry this server is wired against
+   *  ("notion", "linear", …). Drives the tool prefix
+   *  (`mcp_<catalog_id>_<remote_name>`) and is what the recruiter uses
+   *  in `create_agent.allowed_mcp_tools`. Replaces the pre-launch
+   *  operator-chosen `alias`. */
+  catalog_id: string;
   enabled: boolean;
   config: McpTransport;
   description: string | null;
@@ -249,7 +261,8 @@ export type AgentToolCall = {
   id: string;
   tool_name: string;
   mcp_server_id: string | null;
-  mcp_server_alias: string | null;
+  /** Catalog id of the originating server (replaces `mcp_server_alias`). */
+  mcp_server_catalog_id: string | null;
   started_at: string;
   duration_ms: number;
   is_error: boolean;
@@ -268,19 +281,58 @@ export type CredentialInput = {
   headers: Record<string, string>;
 };
 
+/** Two shapes:
+ *   * **Short form** — only `catalog_id`. Backend fills `config` from the
+ *     catalog default. Drives the click-to-wire button on the connections
+ *     page.
+ *   * **Full form** — every field present. Lets operators with tenant-
+ *     custom transport supply the whole payload. */
 export type CreateMcpServerRequest = {
-  alias: string;
-  config: McpTransport;
+  catalog_id: string;
+  config?: McpTransport;
   description?: string | null;
   enabled?: boolean;
   credentials?: CredentialInput;
 };
 
+/** `catalog_id` is immutable post-create — to switch a connection's
+ *  integration, delete the row and create a new one. */
 export type UpdateMcpServerRequest = {
-  alias?: string;
   config?: McpTransport;
   description?: string | null;
   enabled?: boolean;
+};
+
+/** Auth mechanism a catalog entry expects when wiring. Wire-stable
+ *  labels match the backend `McpAuthKind`. */
+export type McpAuthKind = "oauth2" | "static_headers" | "none";
+
+/** Materialised wire-MCP request payload. Used both as the SSE chunk
+ *  surface (`ResponseChunk { kind: "wire_mcp_request" }`) shorn of its
+ *  `from` field, and as the inline-bubble entry the renderer pulls from
+ *  the live store and history fold. Single source of truth so a field
+ *  change ripples through both. */
+export type McpWireRequest = {
+  catalog_id: string;
+  display_name: string;
+  reason: string;
+  auth_kind: McpAuthKind;
+  homepage_url?: string;
+};
+
+/** One row from `GET /mcp-catalog`. The frontend connections page reads
+ *  this list and joins it against `GET /mcp-servers` to render
+ *  wired-vs-unwired tiles. */
+export type McpCatalogEntry = {
+  catalog_id: string;
+  display_name: string;
+  description: string;
+  homepage_url?: string;
+  auth_kind: McpAuthKind;
+  /** `true` when the entry was added by the tenant (not a global built-in). */
+  is_custom: boolean;
+  /** `true` when this org has a wired `mcp_servers` row for this catalog id. */
+  wired: boolean;
 };
 
 export type TestConnectRequest = {

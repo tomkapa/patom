@@ -94,8 +94,11 @@ impl IntoResponse for HttpError {
                 | AgentStoreError::InUse(_)
                 | AgentStoreError::NameTaken(_),
             )
-            | Self::Mcp(McpError::AliasTaken(_)) => (StatusCode::CONFLICT, self.to_string()),
-            Self::Agent(AgentStoreError::Parse(_)) => (StatusCode::BAD_REQUEST, self.to_string()),
+            | Self::Mcp(McpError::CatalogIdTaken(_)) => (StatusCode::CONFLICT, self.to_string()),
+            Self::Agent(AgentStoreError::Parse(_))
+            | Self::Mcp(
+                McpError::Parse(_) | McpError::InvalidConfig(_) | McpError::CatalogIdUnknown(_),
+            ) => (StatusCode::BAD_REQUEST, self.to_string()),
             Self::Agent(AgentStoreError::NoDefault) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "default agent not seeded".into(),
@@ -114,9 +117,6 @@ impl IntoResponse for HttpError {
             Self::Response(e) => (StatusCode::BAD_GATEWAY, e.to_string()),
             Self::Mcp(McpError::NotFound(_)) => {
                 (StatusCode::NOT_FOUND, "mcp server not found".into())
-            }
-            Self::Mcp(McpError::Parse(_) | McpError::InvalidConfig(_)) => {
-                (StatusCode::BAD_REQUEST, self.to_string())
             }
             Self::Mcp(_) => (StatusCode::INTERNAL_SERVER_ERROR, "mcp store error".into()),
             Self::Auth(

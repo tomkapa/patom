@@ -9,7 +9,8 @@ use crate::clock::SharedClock;
 use crate::http::MembershipCache;
 use crate::mcp::oauth::{OAuthFlowClient, SharedMcpOAuthClientStore, SharedMcpOAuthPendingStore};
 use crate::mcp::{
-    McpRefreshTrigger, SharedMcpCredentialStore, SharedMcpServerStore, TestConnectRateLimiter,
+    McpRefreshTrigger, SharedMcpCatalogStore, SharedMcpCredentialStore, SharedMcpServerStore,
+    TestConnectRateLimiter,
 };
 use crate::memory::SharedMemoryStore;
 use crate::prompts::Prompts;
@@ -38,6 +39,11 @@ pub struct AppState {
     /// under `/agents/{id}/memory*` read and mutate through this handle.
     pub memory_store: SharedMemoryStore,
     pub mcp_store: SharedMcpServerStore,
+    /// MCP catalog (known integrations: notion, linear, …). Read by
+    /// `GET /mcp-catalog` for the frontend connections page and by the
+    /// `POST /mcp-servers {catalog_id}` short-form to look up the default
+    /// transport / auth_kind.
+    pub mcp_catalog: SharedMcpCatalogStore,
     /// Envelope-encrypted credential seam paired with `mcp_store`. CRUD
     /// handlers route header / bearer-token writes through this store; the
     /// registry refresher reads via it on every connect.

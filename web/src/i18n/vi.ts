@@ -280,6 +280,15 @@ const vi: TranslationTable = {
   "agent.detail.loadError.body":
     "Có lỗi khi lấy thông tin agent. Vui lòng thử lại sau.",
   "agent.detail.loadError.cta": "Thử lại",
+
+  "thread.wireRequest.badge": "Đề xuất kết nối",
+  "thread.wireRequest.learnMore": "Tìm hiểu thêm",
+  "thread.wireRequest.connect": "Kết nối {name}",
+  "thread.wireRequest.connecting": "Đang mở…",
+  "thread.wireRequest.created":
+    "Đã tạo — hoàn tất ở mục Connections.",
+  "thread.wireRequest.error.generic":
+    "Không khởi động được kết nối. Hãy thử lại từ mục Connections.",
 };
 
 export default vi;

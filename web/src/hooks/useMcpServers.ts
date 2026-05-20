@@ -18,12 +18,25 @@ const LIST_KEY = ["mcp-servers"] as const;
 const ONE_KEY = (id: string) => ["mcp-servers", id] as const;
 const TOOL_CALLS_KEY = (id: string) =>
   ["mcp-servers", id, "tool-calls"] as const;
+const CATALOG_KEY = ["mcp-catalog"] as const;
 
 export function useMcpServers() {
   return useQuery({
     queryKey: LIST_KEY,
     queryFn: api.mcpServers,
     staleTime: 15_000,
+  });
+}
+
+/** Server-managed list of MCP catalog entries the workspace can wire
+ *  (global built-ins + tenant-custom). Backend source of truth — the
+ *  hard-coded `MCP_CATALOG` in `data/mcpCatalog.ts` is kept only for
+ *  visual metadata (icons, brand colors) keyed by `catalog_id`. */
+export function useMcpCatalog() {
+  return useQuery({
+    queryKey: CATALOG_KEY,
+    queryFn: api.mcpCatalog,
+    staleTime: 60_000,
   });
 }
 

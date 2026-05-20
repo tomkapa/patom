@@ -5,6 +5,7 @@ import type {
   CredentialInput,
   Language,
   Me,
+  McpCatalogEntry,
   McpServer,
   OAuthStartRequest,
   OAuthStartResponse,
@@ -146,6 +147,7 @@ export const api = {
 
   // ─── MCP servers ────────────────────────────────────────────────────
   mcpServers: () => request<McpServer[]>("/mcp-servers"),
+  mcpCatalog: () => request<McpCatalogEntry[]>("/mcp-catalog"),
   mcpServer: (id: string) => request<McpServer>(`/mcp-servers/${id}`),
   createMcpServer: (input: CreateMcpServerRequest) =>
     request<McpServer>("/mcp-servers", {

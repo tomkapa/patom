@@ -12,7 +12,7 @@ use relay_rs::agents::{
     AgentUpdate, AllowedMcpTools, DefaultAgentSeed, NewAgent, PgAgentStore,
 };
 use relay_rs::clock::SystemClock;
-use relay_rs::mcp::McpServerId;
+use relay_rs::mcp::McpCatalogId;
 use relay_rs::session::PgSessionStore;
 
 mod common;
@@ -41,14 +41,19 @@ fn new_agent(db: &TestDb, name: &str, prompt: &str, is_default: bool) -> NewAgen
     }
 }
 
-/// Grant each server full ("all tools") access — mirrors the old
-/// `AllowedMcpServers::try_from(Vec<McpServerId>)` convenience.
-fn allowed(ids: &[McpServerId]) -> AllowedMcpTools {
-    let mut raw: BTreeMap<McpServerId, Option<Vec<String>>> = BTreeMap::new();
+/// Grant each catalog id full ("all tools") access. After the catalog
+/// rekey the allowlist is keyed by stable catalog ids rather than wired-
+/// server UUIDs.
+fn allowed(ids: &[&str]) -> AllowedMcpTools {
+    let mut raw: BTreeMap<String, Option<Vec<String>>> = BTreeMap::new();
     for id in ids {
-        raw.insert(*id, None);
+        raw.insert((*id).to_owned(), None);
     }
     AllowedMcpTools::try_from(raw).expect("under cap")
+}
+
+fn cat(id: &str) -> McpCatalogId {
+    McpCatalogId::try_from(id).expect("valid catalog id")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -290,34 +295,32 @@ async fn create_with_explicit_allowed_mcp_tools_round_trips() {
     let db = TestDb::fresh().await;
     let store = store(&db);
 
-    let s1 = McpServerId::new();
-    let s2 = McpServerId::new();
     let payload = NewAgent {
         org_id: db.default_org_id,
         name: AgentName::try_from("scoped").expect("name"),
         system_prompt: AgentSystemPrompt::try_from("scoped agent").expect("prompt"),
         description: AgentDescription::try_from("Scoped agent.").expect("desc"),
         is_default: false,
-        allowed_mcp_tools: allowed(&[s1, s2]),
+        allowed_mcp_tools: allowed(&["notion", "linear"]),
     };
     let created = store.create(payload).await.expect("create");
     assert_eq!(created.allowed_mcp_tools.len(), 2);
     assert!(matches!(
-        created.allowed_mcp_tools.tools_for(s1),
+        created.allowed_mcp_tools.tools_for_catalog(&cat("notion")),
         ToolScope::All
     ));
     assert!(matches!(
-        created.allowed_mcp_tools.tools_for(s2),
+        created.allowed_mcp_tools.tools_for_catalog(&cat("linear")),
         ToolScope::All
     ));
 
     let reread = store.read(created.id).await.expect("read");
     assert!(matches!(
-        reread.allowed_mcp_tools.tools_for(s1),
+        reread.allowed_mcp_tools.tools_for_catalog(&cat("notion")),
         ToolScope::All
     ));
     assert!(matches!(
-        reread.allowed_mcp_tools.tools_for(s2),
+        reread.allowed_mcp_tools.tools_for_catalog(&cat("linear")),
         ToolScope::All
     ));
 }
@@ -328,10 +331,6 @@ async fn update_replaces_allowed_mcp_tools() {
     let db = TestDb::fresh().await;
     let store = store(&db);
 
-    let s1 = McpServerId::new();
-    let s2 = McpServerId::new();
-    let s3 = McpServerId::new();
-
     let agent = store
         .create(NewAgent {
             org_id: db.default_org_id,
@@ -339,7 +338,7 @@ async fn update_replaces_allowed_mcp_tools() {
             system_prompt: AgentSystemPrompt::try_from("rotating MCP").expect("prompt"),
             description: AgentDescription::try_from("Rotating MCP agent.").expect("desc"),
             is_default: false,
-            allowed_mcp_tools: allowed(&[s1, s2]),
+            allowed_mcp_tools: allowed(&["notion", "linear"]),
         })
         .await
         .expect("create");
@@ -348,7 +347,7 @@ async fn update_replaces_allowed_mcp_tools() {
         .update(
             agent.id,
             AgentUpdate {
-                allowed_mcp_tools: Some(allowed(&[s3])),
+                allowed_mcp_tools: Some(allowed(&["jira"])),
                 ..Default::default()
             },
         )
@@ -356,7 +355,7 @@ async fn update_replaces_allowed_mcp_tools() {
         .expect("update");
     assert_eq!(updated.allowed_mcp_tools.len(), 1);
     assert!(matches!(
-        updated.allowed_mcp_tools.tools_for(s3),
+        updated.allowed_mcp_tools.tools_for_catalog(&cat("jira")),
         ToolScope::All
     ));
 
@@ -378,7 +377,7 @@ async fn update_replaces_allowed_mcp_tools() {
         .update(
             agent.id,
             AgentUpdate {
-                allowed_mcp_tools: Some(allowed(&[s1])),
+                allowed_mcp_tools: Some(allowed(&["notion"])),
                 ..Default::default()
             },
         )

@@ -282,6 +282,14 @@ const en = {
   "agent.detail.loadError.body":
     "Something went wrong fetching this agent. Try again in a moment.",
   "agent.detail.loadError.cta": "Retry",
+
+  "thread.wireRequest.badge": "Connect requested",
+  "thread.wireRequest.learnMore": "Learn more",
+  "thread.wireRequest.connect": "Connect {name}",
+  "thread.wireRequest.connecting": "Opening…",
+  "thread.wireRequest.created": "Created — finish setup in Connections.",
+  "thread.wireRequest.error.generic":
+    "Couldn't start the connection. Try again from Connections.",
 } as const;
 
 export type TranslationKey = keyof typeof en;

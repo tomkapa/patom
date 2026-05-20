@@ -72,6 +72,8 @@ impl AuthMemoryHarness {
 
         let mcp_store: SharedMcpServerStore =
             Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
+        let mcp_catalog: relay_rs::mcp::SharedMcpCatalogStore =
+            Arc::new(relay_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
         let mcp_registry = McpRegistry::new(mcp_store.clone(), clock.clone());
         let (refresher, mcp_refresh) = McpRefresher::spawn(mcp_registry);
 
@@ -103,6 +105,7 @@ impl AuthMemoryHarness {
             dag,
             memory_store: memory_store.clone(),
             mcp_store,
+            mcp_catalog,
             mcp_refresh,
             mcp_credentials: std::sync::Arc::new(relay_rs::mcp::PgMcpCredentialStore::new(
                 pool.clone(),

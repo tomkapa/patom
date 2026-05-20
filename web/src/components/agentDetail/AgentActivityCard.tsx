@@ -125,11 +125,13 @@ function ActivityRow({
   const { t } = useT();
   const timeAgo = useTimeAgo();
   const server = row.mcp_server_id ? serversById.get(row.mcp_server_id) : null;
-  const catalog = row.mcp_server_alias ? entryById(row.mcp_server_alias) : undefined;
+  const catalog = row.mcp_server_catalog_id
+    ? entryById(row.mcp_server_catalog_id)
+    : undefined;
   const connLabel =
     catalog?.name ??
-    server?.alias ??
-    row.mcp_server_alias ??
+    server?.catalog_id ??
+    row.mcp_server_catalog_id ??
     t("agent.detail.activity.unknownConnection");
   const outcomeText = row.is_error
     ? (row.error_message ?? t("agent.detail.activity.outcomeError"))

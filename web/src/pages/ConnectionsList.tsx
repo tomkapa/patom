@@ -246,16 +246,16 @@ function ConnectionRow({
         className="flex min-w-0 items-center gap-3.5 outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-moss)]"
       >
         <Monogram
-          name={entry?.name ?? server.alias}
+          name={entry?.name ?? server.catalog_id}
           size={36}
           bg={entry?.tileBg ?? "var(--color-rail)"}
           fg={entry?.tileFg ?? "#ffffff"}
-          glyph={entry?.monogram ?? (server.alias[0] ?? "?").toUpperCase()}
+          glyph={entry?.monogram ?? (server.catalog_id[0] ?? "?").toUpperCase()}
           iconSlug={entry?.iconSlug}
         />
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="truncate font-semibold text-[var(--color-ink)] hover:text-[var(--color-moss-deep)] hover:underline">
-            {entry?.name ?? server.alias}
+            {entry?.name ?? server.catalog_id}
           </div>
           <div className="truncate font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
             {hostFromConfig}
@@ -286,7 +286,7 @@ function ConnectionRow({
           type="button"
           role="switch"
           aria-checked={server.enabled}
-          aria-label={`${t("connections.list.col.enable")} ${server.alias}`}
+          aria-label={`${t("connections.list.col.enable")} ${server.catalog_id}`}
           onClick={() => onToggle(!server.enabled)}
           className={cn(
             "flex h-5 w-9 items-center p-0.5 transition-colors",
@@ -303,7 +303,7 @@ function ConnectionRow({
           <button
             type="button"
             onClick={onReconnect}
-            aria-label={`${t("connections.row.reconnect")} ${server.alias}`}
+            aria-label={`${t("connections.row.reconnect")} ${server.catalog_id}`}
             className="flex h-[30px] w-[30px] items-center justify-center bg-[var(--color-amber)] text-white hover:opacity-90"
           >
             <RefreshCw className="h-3.5 w-3.5" strokeWidth={2} />
@@ -312,7 +312,7 @@ function ConnectionRow({
         <button
           type="button"
           onClick={onRemove}
-          aria-label={`${t("connections.row.remove")} ${server.alias}`}
+          aria-label={`${t("connections.row.remove")} ${server.catalog_id}`}
           title={t("connections.row.remove")}
           className="flex h-[30px] w-[30px] items-center justify-center border border-[var(--color-line)] text-[var(--color-muted)] hover:border-[var(--color-rose)] hover:text-[var(--color-rose)]"
         >

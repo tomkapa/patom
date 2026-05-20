@@ -6,6 +6,7 @@
 import { decodeBody } from "./chatBody";
 import type {
   Agent,
+  McpWireRequest,
   ThreadMessage,
   ToolCallEntry,
   Participant,
@@ -44,6 +45,10 @@ export type Bubble = {
   text: string;
   reasoning: string;
   tool_calls: ToolCallEntry[];
+  /** Inline `WireMcpRequestCard` payloads emitted by
+   *  `request_user_wire_mcp` during this turn. Empty for persisted /
+   *  human bubbles. */
+  wire_requests: McpWireRequest[];
   phase: BubblePhase;
 };
 
@@ -161,6 +166,7 @@ export function foldHistory(
             text: prefixWithReceiver(input.content ?? "", recv, agentsById),
             reasoning,
             tool_calls: tools,
+            wire_requests: [],
             phase: "persisted",
           };
           bubbles.push(bubble);
@@ -209,6 +215,7 @@ export function foldHistory(
           text: prefixWithReceiver(decoded.text, recv, agentsById),
           reasoning: "",
           tool_calls: [],
+          wire_requests: [],
           phase: "persisted",
         });
       }

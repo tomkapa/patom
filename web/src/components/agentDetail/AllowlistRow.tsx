@@ -39,7 +39,7 @@ export function AllowlistRow({
     [tools],
   );
   const catalog = useMemo(() => entryForServer(server), [server]);
-  const shape = shapeOf(list, server.id, toolNames);
+  const shape = shapeOf(list, server.catalog_id, toolNames);
   const isOn = shape !== "unchecked";
   const [open, setOpen] = useState<boolean>(false);
   const canExpand = isOn && tools.length > 0;
@@ -48,7 +48,7 @@ export function AllowlistRow({
     shape === "all"
       ? tools.length
       : shape === "mixed"
-        ? (list[server.id] as string[]).length
+        ? (list[server.catalog_id] as string[]).length
         : 0;
   const summary = t(SUMMARY_KEY[shape], {
     total: String(tools.length),
@@ -67,15 +67,15 @@ export function AllowlistRow({
         <Checkbox
           checked={isOn}
           onChange={(next) => {
-            onChange(toggleServer(list, server.id, next));
+            onChange(toggleServer(list, server.catalog_id, next));
             if (!next) setOpen(false);
           }}
           aria-label={t("agent.detail.tools.row.toggleAria", {
-            name: server.alias,
+            name: server.catalog_id,
           })}
         />
         <Monogram
-          name={catalog?.name ?? server.alias}
+          name={catalog?.name ?? server.catalog_id}
           id={server.id}
           size={32}
           bg={catalog?.tileBg}
@@ -86,7 +86,7 @@ export function AllowlistRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate font-[var(--font-display)] text-[14px] font-semibold text-[var(--color-ink)]">
-              {catalog?.name ?? server.alias}
+              {catalog?.name ?? server.catalog_id}
             </span>
             {server.connection_status !== "ok" ? (
               <span className="font-[var(--font-mono)] text-[10px] tracking-[0.1em] text-[var(--color-amber)] uppercase">
@@ -131,7 +131,7 @@ export function AllowlistRow({
       {open ? (
         <div className="flex flex-col gap-1 px-5 pt-1 pb-4 pl-[68px]">
           {tools.map((tool) => {
-            const checked = isToolAllowed(list, server.id, tool.remote_name);
+            const checked = isToolAllowed(list, server.catalog_id, tool.remote_name);
             return (
               <label
                 key={tool.remote_name}
@@ -144,7 +144,7 @@ export function AllowlistRow({
                       onChange(
                         toggleTool(
                           list,
-                          server.id,
+                          server.catalog_id,
                           tool.remote_name,
                           toolNames,
                           next,

@@ -29,7 +29,10 @@ export function CapabilitySummary({
       const names = (server.discovered_tools ?? []).map(
         (tool) => tool.remote_name,
       );
-      map[server.id] = names;
+      // `allowed_mcp_tools` is keyed by catalog_id, so the per-server
+      // tool catalog the totaliser consumes must also be keyed by
+      // catalog_id for the counts to line up.
+      map[server.catalog_id] = names;
       total += names.length;
     }
     return { toolsByServer: map, totalToolsKnown: total };
@@ -38,7 +41,7 @@ export function CapabilitySummary({
   // server. Stale entries from connections that have been disabled or
   // deleted otherwise inflate the numerator past the denominator.
   const connectionsEnabled = servers.reduce(
-    (n, s) => (s.id in list ? n + 1 : n),
+    (n, s) => (s.catalog_id in list ? n + 1 : n),
     0,
   );
   const toolsAllowed = totalToolsAllowed(list, toolsByServer);

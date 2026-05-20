@@ -43,7 +43,7 @@ export function ConnectionsCatalog() {
   const [pending, setPending] = useState<Pending | null>(null);
 
   const aliases = useMemo(
-    () => new Set((servers.data ?? []).map((s) => s.alias)),
+    () => new Set((servers.data ?? []).map((s) => s.catalog_id)),
     [servers.data],
   );
 

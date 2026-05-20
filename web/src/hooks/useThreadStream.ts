@@ -12,6 +12,7 @@ const KINDS = {
   tool_call: 1,
   tool_result: 1,
   agent_message: 1,
+  wire_mcp_request: 1,
   done: 1,
   error: 1,
   stalled: 1,

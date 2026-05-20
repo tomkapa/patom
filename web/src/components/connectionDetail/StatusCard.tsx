@@ -60,7 +60,7 @@ export function StatusCard({ server }: { server: McpServer }) {
               className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-moss-deep)] hover:underline"
             >
               {t("connections.detail.status.manageOn", {
-                name: entry?.name ?? server.alias,
+                name: entry?.name ?? server.catalog_id,
               })}
               <ExternalLink className="h-3 w-3" strokeWidth={1.75} />
             </a>
