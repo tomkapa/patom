@@ -7,6 +7,7 @@
 pub mod agent_core;
 pub mod agents;
 pub mod app;
+pub mod assets;
 pub mod auth;
 pub mod cache;
 pub mod clock;
@@ -30,5 +31,5 @@ pub mod types;
 
 pub use agent_core::{Agent, AgentBuilder, AgentError};
 pub use agents::{AgentId, AgentRecord, AgentStore, SharedAgentStore};
-pub use config::{ProviderSettings, Settings, SettingsError, SlackSettings};
+pub use config::{ProviderSettings, R2Settings, Settings, SettingsError, SlackSettings};
 pub use error::AppError;

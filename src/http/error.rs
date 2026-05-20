@@ -5,6 +5,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::agents::AgentStoreError;
+use crate::assets::AssetError;
 use crate::auth::AuthError;
 use crate::mcp::McpError;
 use crate::runtime::{PromptError, ResponseError};
@@ -57,11 +58,23 @@ pub enum HttpError {
     #[error("auth: {0}")]
     Auth(#[from] AuthError),
 
+    #[error("asset: {0}")]
+    Asset(#[from] AssetError),
+
+    /// Upload endpoint reached while `AppState.assets` is `None` — i.e.
+    /// the operator hasn't configured R2. Distinct from `Internal` so
+    /// the dashboard can dedicate an alert to it.
+    #[error("asset storage not configured")]
+    AssetStorageMissing,
+
     #[error("internal error")]
     Internal,
 }
 
 impl IntoResponse for HttpError {
+    // One big exhaustive match — adding a variant must touch this
+    // function. Splitting into helpers would split the contract.
+    #[allow(clippy::too_many_lines)]
     fn into_response(self) -> Response {
         let (status, message) = match &self {
             Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
@@ -131,6 +144,35 @@ impl IntoResponse for HttpError {
                 (StatusCode::BAD_GATEWAY, "oauth provider unavailable".into())
             }
             Self::Auth(_) => (StatusCode::INTERNAL_SERVER_ERROR, "auth error".into()),
+            Self::Asset(AssetError::TooLarge { .. }) => {
+                (StatusCode::PAYLOAD_TOO_LARGE, self.to_string())
+            }
+            Self::Asset(AssetError::Timeout) => {
+                (StatusCode::GATEWAY_TIMEOUT, "asset upload timed out".into())
+            }
+            Self::Asset(AssetError::R2Put(_) | AssetError::R2Delete(_)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "asset storage error".into(),
+            ),
+            // Validation-style asset failures map to 400. The
+            // `Asset(Parse)` arm shares its body with the
+            // `Agent(Parse) | Mcp(Parse|...)` arm above; clippy
+            // suggests merging the two but they sit in different
+            // domains and we keep them split for readability.
+            #[allow(clippy::match_same_arms)]
+            Self::Asset(
+                AssetError::ContentTypeNotAllowed(_)
+                | AssetError::MagicByteMismatch { .. }
+                | AssetError::UnknownFileType
+                | AssetError::MissingField
+                | AssetError::TooManyFields
+                | AssetError::Multipart(_)
+                | AssetError::Parse(_),
+            ) => (StatusCode::BAD_REQUEST, self.to_string()),
+            Self::AssetStorageMissing => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "asset storage not configured".into(),
+            ),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
         };
         // CLAUDE.md §2: every error response that maps to a 5xx is a

@@ -13,7 +13,7 @@ publish = false
 [dependencies]
 async-openai = { version = "0.36", default-features = false, features = ["rustls", "chat-completion", "byot", "embedding"] }
 async-trait = "0.1"
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "tower-log", "tracing", "macros", "query"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "tower-log", "tracing", "macros", "query", "multipart"] }
 # §8 (zero-dep bias): typed cookie extractor for the auth middleware. We need
 # `CookieJar` to read/write the session cookie without hand-parsing the
 # `Cookie:` header (RFC 6265 quoting, escaping, multi-value). Pinned next to
@@ -182,6 +182,33 @@ hmac = { version = "0.12", default-features = false }
 # transitively via `aes-gcm`; declaring keeps the import path stable for
 # the verifier. Owner: slack/.
 subtle = { version = "2", default-features = false }
+
+# §8 (zero-dep bias): the AWS-maintained S3 client, pointed at Cloudflare R2
+# (S3-compatible API). We need PutObject + DeleteObject + Sigv4 signing for
+# user-avatar and MCP-catalog-logo uploads. The signing protocol alone
+# (canonical request, string-to-sign, chunked payload hashing) is firmly over
+# the 200-LOC bar and a known footgun; the SDK is the upstream-maintained
+# reference. We disable defaults and re-enable only `rt-tokio` + `rustls` so
+# we stay on a single TLS stack with `reqwest`/`sqlx` and don't pull in
+# `hyper-tls`/`openssl`. `aws-config` builds the credential + endpoint
+# resolution chain; `aws-credential-types` is the small types crate it shares
+# with `aws-sdk-s3`. Owner: assets/.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"] }
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"] }
+aws-credential-types = { version = "1", default-features = false }
+# §8 (zero-dep bias): magic-byte file type sniffer. The upload boundary
+# (assets/) MUST verify that an `image/png`-claimed body actually starts
+# with the PNG signature before we hand the bytes to R2 — defends against a
+# renamed `evil.svg` claiming `image/png` (XSS via SVG served from the
+# assets origin). The crate is ~80 LOC of magic-byte tables; in-lining is
+# under the §8 bar but the crate is the de-facto choice, no-std-friendly,
+# and zero-dep. Owner: assets/.
+infer = { version = "0.16", default-features = false }
+# §8 (zero-dep bias): `bytes::Bytes` is the standard immutable-byte buffer
+# already used transitively by axum, reqwest, rmcp, and aws-sdk-s3.
+# Declaring it directly lets the assets-module API accept/return `Bytes`
+# without leaking transitive re-exports. Owner: assets/.
+bytes = { version = "1", default-features = false }
 
 # Binary entry only (CLAUDE.md §12 — `anyhow` may not appear in library signatures).
 anyhow = "1"

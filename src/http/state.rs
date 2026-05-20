@@ -4,6 +4,7 @@ use std::sync::Arc;
 use sqlx::PgPool;
 
 use crate::agents::SharedAgentStore;
+use crate::assets::SharedAssetStore;
 use crate::auth::{GoogleOAuth, JwtSigner, SharedOrgLanguageResolver, SharedUserStore};
 use crate::clock::SharedClock;
 use crate::http::MembershipCache;
@@ -115,6 +116,10 @@ pub struct AppState {
     /// 404 cleanly when this is `None`, so deployments without Slack
     /// stay first-class.
     pub slack: Option<SlackAppState>,
+    /// Object-storage seam for user avatars and MCP catalog icons.
+    /// `Some` when `RELAY_R2_*` env vars are configured; `None` makes
+    /// the upload routes 503 with "asset storage not configured".
+    pub assets: Option<SharedAssetStore>,
 }
 
 impl AppState {

@@ -18,6 +18,7 @@ import type {
   ToolCallList,
   UpdateAgentRequest,
   UpdateMcpServerRequest,
+  UploadResponse,
 } from "../types/api";
 import { ApiError, AuthRedirect } from "./errors";
 import { readCookie } from "./cookies";
@@ -38,7 +39,12 @@ export async function request<T>(
 ): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const headers = new Headers(init?.headers);
-  if (!headers.has("content-type")) {
+  // FormData bodies must set their own multipart boundary; if we hand the
+  // browser our own Content-Type the boundary is lost and the server
+  // can't parse the envelope.
+  const isFormData =
+    typeof FormData !== "undefined" && init?.body instanceof FormData;
+  if (!isFormData && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
   if (!SAFE_METHODS.has(method)) {
@@ -192,6 +198,28 @@ export const api = {
     const q = search.toString();
     return request<ToolCallList>(
       `/mcp-servers/${serverId}/tool-calls${q ? `?${q}` : ""}`,
+    );
+  },
+
+  /** Upload a new avatar for the signed-in user. The backend writes the
+   *  object to R2 and persists the URL on `users.avatar_url`. */
+  uploadAvatar: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<UploadResponse>("/uploads/avatar", {
+      method: "POST",
+      body: form,
+    });
+  },
+
+  /** Upload a tile icon for an org-scoped MCP catalog entry. Owner/admin
+   *  only; built-in (global) catalog ids return 403. */
+  uploadMcpCatalogIcon: (catalogId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<UploadResponse>(
+      `/uploads/mcp-catalog/${encodeURIComponent(catalogId)}`,
+      { method: "POST", body: form },
     );
   },
 };

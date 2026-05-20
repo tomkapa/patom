@@ -119,6 +119,17 @@ pub trait UserStore: std::fmt::Debug + Send + Sync + 'static {
         now: DateTime<Utc>,
     ) -> Result<Language, AuthError>;
 
+    /// Set the user's avatar URL. `None` clears it. Returns
+    /// [`AuthError::Unauthenticated`] mapped from a missing row — the
+    /// handler treats that as "user vanished mid-request", same as
+    /// `read_user` returning `None`.
+    async fn set_avatar_url(
+        &self,
+        user_id: UserId,
+        avatar_url: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(), AuthError>;
+
     /// Insert a `oauth_login_states` row. Caller has minted the random
     /// `state` + PKCE verifier.
     async fn insert_oauth_state(&self, row: &OAuthStateRow) -> Result<(), AuthError>;

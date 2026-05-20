@@ -46,6 +46,10 @@ type CatalogTile = {
   wired: boolean;
   fe?: CatalogEntry;
   auth: McpCatalogEntry["auth_kind"];
+  /** R2-hosted tile icon — built-ins seeded via migration 33, org-scoped
+   *  entries via the upload endpoint. Renders inline; falls back to the
+   *  FE-side Monogram when absent. */
+  iconUrl: string | null;
 };
 
 function toTile(row: McpCatalogEntry): CatalogTile {
@@ -60,6 +64,7 @@ function toTile(row: McpCatalogEntry): CatalogTile {
     wired: row.wired,
     fe,
     auth: row.auth_kind,
+    iconUrl: row.icon_url ?? null,
   };
 }
 
@@ -252,6 +257,7 @@ function materializeEntry(tile: CatalogTile): CatalogEntry {
       ...tile.fe,
       name: tile.name,
       blurb: tile.blurb,
+      iconUrl: tile.iconUrl ?? tile.fe.iconUrl,
     };
   }
   return {
@@ -262,6 +268,7 @@ function materializeEntry(tile: CatalogTile): CatalogEntry {
     monogram: (tile.name[0] ?? "?").toUpperCase(),
     tileBg: "var(--color-rail)",
     tileFg: "#fff",
+    iconUrl: tile.iconUrl ?? undefined,
     defaultUrl: "",
     auth: tile.auth === "oauth2" ? "oauth" : "apiToken",
   };
@@ -290,14 +297,22 @@ function CatalogTileButton({
       className="flex flex-col gap-3 border border-[var(--color-line)] bg-[var(--color-card)] p-5 text-left transition-colors hover:border-[var(--color-moss)] hover:bg-[var(--color-paper-2)]"
     >
       <div className="flex items-center justify-between gap-2">
-        <Monogram
-          name={tile.name}
-          size={32}
-          bg={tileBg}
-          fg={tileFg}
-          glyph={monogram}
-          iconSlug={tile.fe?.iconSlug}
-        />
+        {tile.iconUrl ? (
+          <img
+            src={tile.iconUrl}
+            alt=""
+            className="h-8 w-8 shrink-0 border border-[var(--color-line)] bg-white object-contain p-1"
+          />
+        ) : (
+          <Monogram
+            name={tile.name}
+            size={32}
+            bg={tileBg}
+            fg={tileFg}
+            glyph={monogram}
+            iconSlug={tile.fe?.iconSlug}
+          />
+        )}
         <span
           className={cn(
             "font-[var(--font-mono)] text-[10px] uppercase",
