@@ -1,15 +1,10 @@
-// Hardcoded catalog of well-known MCP servers shown on the
-// `/connections/catalog` page. The backend has no catalog endpoint —
-// each tile here is just metadata the FE uses to render and to seed a
-// `POST /mcp-servers` request. URLs are placeholders that match the
-// canonical hosted MCP endpoints documented by each vendor at time of
-// writing; users can override them via the "Custom" tile.
-//
-// To add or modify an entry: update this file, no backend change
-// required. If the auth method is `apiToken`, `apiTokenHeader` is the
-// HTTP header the backend will send (e.g. `Authorization`) and
-// `apiTokenPrefix` is concatenated in front of the user-supplied token
-// (e.g. `Bearer ` so the wire value becomes `Bearer <token>`).
+// Visual + API-token wiring metadata for well-known MCP catalog ids.
+// The authoritative catalog listing now lives on the backend
+// (`GET /mcp-catalog`); this file supplies what the wire shape does
+// not — brand monogram/colors, `iconSlug` for `simple-icons`, and the
+// `apiTokenHeader`/`apiTokenPrefix`/`apiTokenHelpUrl` triple that the
+// API-token flow needs to build the static-headers credential. Keyed
+// by `catalog_id` and looked up via `entryById` / `entryForServer`.
 
 export type CatalogCategory =
   | "productivity"

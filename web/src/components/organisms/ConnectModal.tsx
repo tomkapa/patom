@@ -129,9 +129,14 @@ function OAuthBody({
 
   const onContinue = () =>
     run(async () => {
+      // Short-form when the FE doesn't know the URL (tenant-custom catalog
+      // entry surfaced from the backend); full-form when it does, so the
+      // operator's tile-level expectation matches the persisted row.
       const server = await create.mutateAsync({
         catalog_id: entry.id,
-        config: { type: "http", url: entry.defaultUrl },
+        config: entry.defaultUrl
+          ? { type: "http", url: entry.defaultUrl }
+          : undefined,
         description: entry.blurb,
         enabled: true,
       });

@@ -57,10 +57,19 @@ struct Input {
     reason: String,
 }
 
+/// Mirrors `ResponseChunk::WireMcpRequest` so the persisted tool result
+/// is self-sufficient: the FE's `foldHistory` rehydrates the inline
+/// connect card from this row after the SSE stream drops, without a
+/// follow-up catalog round-trip.
 #[derive(Debug, Serialize)]
 struct Output {
     status: &'static str,
     catalog_id: String,
+    display_name: String,
+    reason: String,
+    auth_kind: crate::mcp::McpAuthKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    homepage_url: Option<String>,
 }
 
 pub struct RequestUserWireMcpTool {
@@ -195,13 +204,18 @@ impl Tool for RequestUserWireMcpTool {
             )));
         }
 
+        let display_name = entry.display_name.as_str().to_owned();
+        let auth_kind = entry.auth_kind;
+        let homepage_url = entry.homepage_url;
+        let reason = parsed.reason;
+
         let chunk = ResponseChunk::WireMcpRequest {
             from: viewer_agent_id,
             catalog_id: parsed.catalog_id.clone(),
-            display_name: entry.display_name.as_str().to_owned(),
-            reason: parsed.reason,
-            auth_kind: entry.auth_kind,
-            homepage_url: entry.homepage_url,
+            display_name: display_name.clone(),
+            reason: reason.clone(),
+            auth_kind,
+            homepage_url: homepage_url.clone(),
         };
 
         // Publish on the active claim's SSE stream so the UI sees the
@@ -220,6 +234,10 @@ impl Tool for RequestUserWireMcpTool {
         let out = Output {
             status: "requested",
             catalog_id: parsed.catalog_id.as_str().to_owned(),
+            display_name,
+            reason,
+            auth_kind,
+            homepage_url,
         };
         Ok(serde_json::to_string(&out)?)
     }

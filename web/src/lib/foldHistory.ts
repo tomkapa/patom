@@ -13,6 +13,7 @@ import type {
 } from "../types/api";
 
 const SEND_MESSAGE = "send_message";
+const WIRE_MCP_TOOL_NAME = "request_user_wire_mcp";
 
 type ReceiverInput =
   | { kind: "human" }
@@ -222,7 +223,49 @@ export function foldHistory(
     }
   }
 
+  // The live `WireMcpRequest` chunk doesn't survive into chat_messages —
+  // rehydrate the inline card from the persisted tool result, which the
+  // backend tool mirrors field-for-field.
+  for (const b of bubbles) {
+    if (b.kind !== "agent") continue;
+    for (const tc of b.tool_calls) {
+      if (tc.name !== WIRE_MCP_TOOL_NAME) continue;
+      if (tc.status !== "ok" || !tc.output) continue;
+      const req = parseWireMcpOutput(tc.output);
+      if (!req) continue;
+      if (b.wire_requests.some((w) => w.catalog_id === req.catalog_id)) continue;
+      b.wire_requests.push(req);
+    }
+  }
+
   return { rootMessage, bubbles };
+}
+
+function parseWireMcpOutput(output: string): McpWireRequest | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const o = parsed as Record<string, unknown>;
+  if (o.status !== "requested") return null;
+  if (typeof o.catalog_id !== "string") return null;
+  if (typeof o.display_name !== "string") return null;
+  if (typeof o.reason !== "string") return null;
+  if (o.auth_kind !== "oauth2" && o.auth_kind !== "static_headers" && o.auth_kind !== "none") {
+    return null;
+  }
+  const homepage_url =
+    typeof o.homepage_url === "string" ? o.homepage_url : undefined;
+  return {
+    catalog_id: o.catalog_id,
+    display_name: o.display_name,
+    reason: o.reason,
+    auth_kind: o.auth_kind,
+    homepage_url,
+  };
 }
 
 function receiverFrom(p: Participant): ReceiverInput | null {

@@ -5,10 +5,12 @@ import {
   ConnectionsLayout,
 } from "../components/templates/ConnectionsLayout";
 import { Monogram } from "../components/atoms/Monogram";
+import { Spinner } from "../components/atoms/Spinner";
 import { ConnectModal } from "../components/organisms/ConnectModal";
-import { useMcpServers } from "../hooks/useMcpServers";
+import { useMcpCatalog } from "../hooks/useMcpServers";
 import { useT } from "../i18n";
-import { MCP_CATALOG, type CatalogCategory, type CatalogEntry } from "../data/mcpCatalog";
+import { entryById, type CatalogCategory, type CatalogEntry } from "../data/mcpCatalog";
+import type { McpCatalogEntry } from "../types/api";
 import { cn } from "../lib/utils";
 
 type Tab = "all" | CatalogCategory;
@@ -31,47 +33,77 @@ const TAB_LABEL: Record<Tab, Parameters<ReturnType<typeof useT>["t"]>[0]> = {
   custom: "connections.catalog.tabs.custom",
 };
 
+/** Merged view-model for one catalog tile. Backend is the source of truth
+ *  for identity (`catalog_id`, `display_name`, `description`, `auth_kind`,
+ *  `wired`); the FE-side `mcpCatalog.ts` contributes visual metadata
+ *  (monogram, brand colors, icon slug) plus API-token wiring hints (header
+ *  name/prefix/help URL) that the backend wire shape does not yet expose. */
+type CatalogTile = {
+  id: string;
+  name: string;
+  blurb: string;
+  category: CatalogCategory;
+  wired: boolean;
+  fe?: CatalogEntry;
+  auth: McpCatalogEntry["auth_kind"];
+};
+
+function toTile(row: McpCatalogEntry): CatalogTile {
+  const fe = entryById(row.catalog_id);
+  const category: CatalogCategory =
+    fe?.category ?? (row.is_custom ? "custom" : "productivity");
+  return {
+    id: row.catalog_id,
+    name: row.display_name,
+    blurb: row.description,
+    category,
+    wired: row.wired,
+    fe,
+    auth: row.auth_kind,
+  };
+}
+
 type Pending =
   | { kind: "entry"; entry: CatalogEntry }
   | { kind: "custom" };
 
 export function ConnectionsCatalog() {
   const { t } = useT();
-  const servers = useMcpServers();
+  const catalog = useMcpCatalog();
   const [tab, setTab] = useState<Tab>("all");
   const [query, setQuery] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
 
-  const aliases = useMemo(
-    () => new Set((servers.data ?? []).map((s) => s.catalog_id)),
-    [servers.data],
+  const tiles = useMemo<CatalogTile[]>(
+    () => (catalog.data ?? []).map(toTile),
+    [catalog.data],
   );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return MCP_CATALOG.filter((e) => {
+    return tiles.filter((e) => {
       if (tab !== "all" && e.category !== tab) return false;
       if (!q) return true;
       return (
         e.name.toLowerCase().includes(q) || e.blurb.toLowerCase().includes(q)
       );
     });
-  }, [tab, query]);
+  }, [tiles, tab, query]);
 
   const showCustomTile = tab === "all" || tab === "custom";
 
   const tabCounts = useMemo<Record<Tab, number>>(() => {
-    const counts = {
-      all: MCP_CATALOG.length,
+    const counts: Record<Tab, number> = {
+      all: tiles.length,
       productivity: 0,
       dev: 0,
       comms: 0,
       data: 0,
       custom: 0,
     };
-    for (const e of MCP_CATALOG) counts[e.category]++;
+    for (const e of tiles) counts[e.category]++;
     return counts;
-  }, []);
+  }, [tiles]);
 
   return (
     <ConnectionsLayout active="catalog">
@@ -144,18 +176,27 @@ export function ConnectionsCatalog() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto px-8 pt-6 pb-10">
-        {filtered.length === 0 && !showCustomTile ? (
+        {catalog.isLoading ? (
+          <div className="flex items-center justify-center py-10 text-[var(--color-muted)]">
+            <Spinner />
+          </div>
+        ) : filtered.length === 0 && !showCustomTile ? (
           <p className="py-10 text-center text-[13px] text-[var(--color-muted)]">
             {t("connections.catalog.empty")}
           </p>
         ) : (
           <div className="grid grid-cols-4 gap-4">
-            {filtered.map((entry) => (
-              <CatalogTile
-                key={entry.id}
-                entry={entry}
-                added={aliases.has(entry.id)}
-                onClick={() => setPending({ kind: "entry", entry })}
+            {filtered.map((tile) => (
+              <CatalogTileButton
+                key={tile.id}
+                tile={tile}
+                onClick={() => {
+                  // Synthesize a `CatalogEntry` from the backend row +
+                  // (when known) FE visual metadata, so `ConnectModal`
+                  // can stay shaped around `CatalogEntry`.
+                  const entry = materializeEntry(tile);
+                  setPending({ kind: "entry", entry });
+                }}
               />
             ))}
             {showCustomTile ? (
@@ -200,18 +241,46 @@ export function ConnectionsCatalog() {
   );
 }
 
-function CatalogTile({
-  entry,
-  added,
+/** Adapt a backend tile to the `CatalogEntry` shape `ConnectModal`
+ *  takes. Backend `display_name`/`description` always win; FE visuals
+ *  + API-token hints come from the hardcoded entry when known.
+ *  Unknown ids get a monogram fallback and an empty `defaultUrl`, which
+ *  OAuthBody treats as a signal to use the backend short-form create. */
+function materializeEntry(tile: CatalogTile): CatalogEntry {
+  if (tile.fe) {
+    return {
+      ...tile.fe,
+      name: tile.name,
+      blurb: tile.blurb,
+    };
+  }
+  return {
+    id: tile.id,
+    name: tile.name,
+    blurb: tile.blurb,
+    category: tile.category,
+    monogram: (tile.name[0] ?? "?").toUpperCase(),
+    tileBg: "var(--color-rail)",
+    tileFg: "#fff",
+    defaultUrl: "",
+    auth: tile.auth === "oauth2" ? "oauth" : "apiToken",
+  };
+}
+
+function CatalogTileButton({
+  tile,
   onClick,
 }: {
-  entry: CatalogEntry;
-  added: boolean;
+  tile: CatalogTile;
   onClick: () => void;
 }) {
   const { t } = useT();
+  const monogram = tile.fe?.monogram ?? (tile.name[0] ?? "?").toUpperCase();
+  const tileBg = tile.fe?.tileBg ?? "var(--color-rail)";
+  const tileFg = tile.fe?.tileFg ?? "#fff";
+  const toolCount = tile.fe?.toolCount;
   const toolsLabel =
-    entry.toolCount === 1
+    toolCount === 1
       ? t("connections.catalog.tool")
       : t("connections.catalog.tools");
   return (
@@ -222,33 +291,33 @@ function CatalogTile({
     >
       <div className="flex items-center justify-between gap-2">
         <Monogram
-          name={entry.name}
+          name={tile.name}
           size={32}
-          bg={entry.tileBg}
-          fg={entry.tileFg}
-          glyph={entry.monogram}
-          iconSlug={entry.iconSlug}
+          bg={tileBg}
+          fg={tileFg}
+          glyph={monogram}
+          iconSlug={tile.fe?.iconSlug}
         />
         <span
           className={cn(
             "font-[var(--font-mono)] text-[10px] uppercase",
-            added
+            tile.wired
               ? "text-[var(--color-moss-deep)]"
               : "text-[var(--color-muted)]",
           )}
         >
-          {added
+          {tile.wired
             ? t("connections.catalog.added")
-            : entry.toolCount
-              ? `+${entry.toolCount} ${toolsLabel}`
+            : toolCount
+              ? `+${toolCount} ${toolsLabel}`
               : ""}
         </span>
       </div>
       <div className="font-[var(--font-display)] text-[18px] font-bold text-[var(--color-ink)]">
-        {entry.name}
+        {tile.name}
       </div>
       <p className="text-[13px] leading-[1.4] text-[var(--color-muted)]">
-        {entry.blurb}
+        {tile.blurb}
       </p>
     </button>
   );

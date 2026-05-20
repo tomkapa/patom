@@ -284,10 +284,14 @@ const en = {
   "agent.detail.loadError.cta": "Retry",
 
   "thread.wireRequest.badge": "Connect requested",
+  "thread.wireRequest.badgeConnected": "Connected",
   "thread.wireRequest.learnMore": "Learn more",
   "thread.wireRequest.connect": "Connect {name}",
   "thread.wireRequest.connecting": "Opening…",
+  "thread.wireRequest.connected": "{name} connected",
   "thread.wireRequest.created": "Created — finish setup in Connections.",
+  "thread.wireRequest.resumePrompt":
+    "I've connected {name}. Please continue.",
   "thread.wireRequest.error.generic":
     "Couldn't start the connection. Try again from Connections.",
 } as const;

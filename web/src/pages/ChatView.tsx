@@ -27,6 +27,8 @@ import { decodeBody } from "../lib/chatBody";
 import type { Bubble, RootMessage } from "../lib/foldHistory";
 import { uuidv7 } from "../lib/utils";
 import { prefixMention } from "../lib/mentions";
+import { useT } from "../i18n";
+import type { McpWireRequest } from "../types/api";
 
 const CHANNEL = "general";
 
@@ -112,6 +114,8 @@ export function ChatView() {
     setSelectedRoot(res.request_id);
   };
 
+  const { t } = useT();
+
   const onThreadReply = async (input: { content: string }) => {
     if (isDemo || !selectedThread) return;
     const root = selectedThread.root_request_id;
@@ -137,6 +141,16 @@ export function ChatView() {
       removePending(root, idempotency_key);
       throw e;
     }
+  };
+
+  // Auto-resume after the inline wire-MCP card flips to wired. The
+  // card guards against double-firing (initiated-in-session +
+  // sessionStorage marker), so we just dispatch a reply on the same
+  // thread and let the agent's next turn pick up the new capability.
+  const onWireConnected = (req: McpWireRequest) => {
+    void onThreadReply({
+      content: t("thread.wireRequest.resumePrompt", { name: req.display_name }),
+    });
   };
 
   return (
@@ -198,6 +212,7 @@ export function ChatView() {
             showThinking={showThinking}
             pending={submit.isPending}
             onReply={onThreadReply}
+            onWireConnected={onWireConnected}
             onClose={() => setShowPanel(false)}
           />
         ) : null

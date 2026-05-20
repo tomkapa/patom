@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { ExternalLink, Plug } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Check, ExternalLink, Plug } from "lucide-react";
 import { Monogram } from "../atoms/Monogram";
 import { useT } from "../../i18n";
 import {
   useCreateMcpServer,
+  useMcpServers,
   useStartOAuth,
 } from "../../hooks/useMcpServers";
 import { entryById } from "../../data/mcpCatalog";
@@ -22,42 +23,102 @@ function safeHttpUrl(raw: string | undefined): string | null {
   }
 }
 
+// Set before the OAuth nav, consumed on bounce-back so the auto-resume
+// fires exactly once across the page reload. TTL bounds stale leftovers
+// from abandoned auths.
+const RESUME_MARKER_PREFIX = "relay:wire-resume:";
+const RESUME_TTL_MS = 15 * 60 * 1000;
+
+function markResumeTarget(catalogId: string): void {
+  try {
+    sessionStorage.setItem(
+      RESUME_MARKER_PREFIX + catalogId,
+      String(Date.now()),
+    );
+  } catch {
+    // Private-mode / sandboxed contexts can throw — degrade to no auto-resume.
+  }
+}
+
+function consumeResumeMarker(catalogId: string): boolean {
+  try {
+    const key = RESUME_MARKER_PREFIX + catalogId;
+    const v = sessionStorage.getItem(key);
+    if (!v) return false;
+    sessionStorage.removeItem(key);
+    const ts = Number(v);
+    if (!Number.isFinite(ts)) return false;
+    return Date.now() - ts <= RESUME_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
 /** Inline click-to-wire card rendered inside an agent's reply bubble in
- *  response to a `request_user_wire_mcp` tool call.
+ *  response to a `request_user_wire_mcp` tool call. `oauth2` runs the
+ *  full create + `oauth/start` + redirect path; `static_headers` /
+ *  `none` stop at create and finish from the connections page.
  *
- *  Connect flow:
- *    1. `POST /mcp-servers {catalog_id}` mints the `mcp_servers` row
- *       from catalog defaults.
- *    2. For `auth_kind === "oauth2"`, kick `POST /mcp-servers/:id/oauth/start`
- *       and redirect to the returned authorize URL — the OAuth round-trip
- *       lands on `GET /mcp-oauth/callback`.
- *    3. `static_headers` / `none` finish at step 1; the user completes
- *       setup from the connections page. */
+ *  `onConnected` fires once when the catalog_id transitions to wired
+ *  AND we initiated the wire in this card (gated by an in-session ref
+ *  for the non-OAuth path plus a sessionStorage marker that survives
+ *  the OAuth bounce) — so already-wired cards loaded from history
+ *  never trigger spurious follow-ups. */
 export function WireMcpRequestCard({
   entry,
   callbackUrl,
+  onConnected,
 }: {
   entry: McpWireRequest;
   /** Where the OAuth flow should return the user after vendor consent.
    *  Defaults to the current location. */
   callbackUrl?: (serverId: string) => string;
+  /** Fires once after the catalog_id transitions to wired AND this card
+   *  initiated the wire (mid-session for static_headers / none, or
+   *  before the OAuth bounce for oauth2). Parents typically respond by
+   *  submitting an auto-resume prompt back to the same thread. */
+  onConnected?: (entry: McpWireRequest) => void;
 }) {
   const { t } = useT();
   const create = useCreateMcpServer();
   const startOAuth = useStartOAuth();
+  const servers = useMcpServers();
   const visual = entryById(entry.catalog_id);
-  // Catalog rows are operator-controlled today, but defense in depth —
-  // refuse to render anything other than http/https on the user-clickable
-  // "Learn more" link so a future bad row can't smuggle a `javascript:`
-  // URL into the chat surface.
   const homepageUrl = safeHttpUrl(entry.homepage_url);
   const submitting = create.isPending || startOAuth.isPending;
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
+  // initiatedRef covers the non-OAuth path (ref survives in-tab);
+  // OAuth additionally writes the sessionStorage marker since the ref
+  // dies in the page reload.
+  const initiatedRef = useRef(false);
+  const firedRef = useRef(false);
+
+  const wired = useMemo(
+    () =>
+      (servers.data ?? []).some(
+        (s) =>
+          s.catalog_id === entry.catalog_id &&
+          s.has_credentials &&
+          s.connection_status === "ok",
+      ),
+    [servers.data, entry.catalog_id],
+  );
+
+  useEffect(() => {
+    if (firedRef.current) return;
+    if (!wired) return;
+    const fromMarker = consumeResumeMarker(entry.catalog_id);
+    if (!initiatedRef.current && !fromMarker) return;
+    firedRef.current = true;
+    onConnected?.(entry);
+  }, [wired, entry, onConnected]);
+
   const onConnect = async () => {
     setError(null);
     try {
+      initiatedRef.current = true;
       const server = await create.mutateAsync({
         catalog_id: entry.catalog_id,
       });
@@ -70,14 +131,17 @@ export function WireMcpRequestCard({
               : window.location.pathname,
           },
         });
+        // Set the marker before the redirect so the freshly-mounted
+        // card on bounce-back fires onConnected exactly once.
+        markResumeTarget(entry.catalog_id);
         window.location.href = res.authorize_url;
         return;
       }
-      // static_headers / none: server row created in AuthPending /
-      // unwired state. The connections page handles the rest; surface a
-      // gentle "open settings" hint here.
+      // static_headers / none land in AuthPending — show the "finish
+      // setup in Connections" hint until the user wires credentials.
       setDone(true);
     } catch (e) {
+      initiatedRef.current = false;
       setError(
         e instanceof Error
           ? e.message
@@ -106,8 +170,16 @@ export function WireMcpRequestCard({
             <span className="font-[var(--font-display)] text-[13px] font-semibold text-[var(--color-ink)]">
               {entry.display_name}
             </span>
-            <span className="border border-[var(--color-moss)] px-1 font-[var(--font-mono)] text-[9.5px] font-bold uppercase tracking-[0.14em] text-[var(--color-moss)]">
-              {t("thread.wireRequest.badge")}
+            <span
+              className={
+                wired
+                  ? "border border-[var(--color-moss-deep)] bg-[var(--color-moss-deep)] px-1 font-[var(--font-mono)] text-[9.5px] font-bold uppercase tracking-[0.14em] text-white"
+                  : "border border-[var(--color-moss)] px-1 font-[var(--font-mono)] text-[9.5px] font-bold uppercase tracking-[0.14em] text-[var(--color-moss)]"
+              }
+            >
+              {wired
+                ? t("thread.wireRequest.badgeConnected")
+                : t("thread.wireRequest.badge")}
             </span>
           </div>
           {homepageUrl ? (
@@ -132,7 +204,12 @@ export function WireMcpRequestCard({
         </p>
       ) : null}
       <div className="mt-3 flex items-center justify-end gap-2">
-        {done ? (
+        {wired ? (
+          <span className="inline-flex items-center gap-1.5 font-[var(--font-mono)] text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--color-moss-deep)]">
+            <Check className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
+            {t("thread.wireRequest.connected", { name: entry.display_name })}
+          </span>
+        ) : done ? (
           <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-moss)]">
             {t("thread.wireRequest.created")}
           </span>

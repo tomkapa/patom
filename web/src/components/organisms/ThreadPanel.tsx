@@ -17,7 +17,12 @@ import { WireMcpRequestCard } from "./WireMcpRequestCard";
 import { MentionInput } from "../molecules/MentionInput";
 import { clockTime, formatMs } from "../../lib/time";
 import { cn, insertAtCaret } from "../../lib/utils";
-import type { Agent, ThreadSummary, ToolCallEntry } from "../../types/api";
+import type {
+  Agent,
+  McpWireRequest,
+  ThreadSummary,
+  ToolCallEntry,
+} from "../../types/api";
 import type { Bubble, RootMessage } from "../../lib/foldHistory";
 import { DEMO_REPLY_META } from "../../lib/demo";
 import { renderMentions } from "../../lib/mentions";
@@ -36,6 +41,7 @@ export function ThreadPanel({
   showThinking,
   pending,
   onReply,
+  onWireConnected,
   onClose,
 }: {
   channel: string;
@@ -49,6 +55,10 @@ export function ThreadPanel({
   /** Composer "Send" spinner — `/prompts` mutation in flight. */
   pending?: boolean;
   onReply?: (input: { content: string }) => void;
+  /** Fires once when an inline wire-MCP card transitions to wired in
+   *  this session. Parent submits an auto-resume prompt so the agent
+   *  picks the work back up without the user having to type. */
+  onWireConnected?: (entry: McpWireRequest) => void;
   onClose?: () => void;
 }) {
   const [reply, setReply] = useState("");
@@ -150,7 +160,12 @@ export function ThreadPanel({
             b.kind === "human" ? (
               <HumanReplyCard key={b.key} bubble={b} />
             ) : (
-              <AgentReplyCard key={b.key} bubble={b} agents={agents} />
+              <AgentReplyCard
+                key={b.key}
+                bubble={b}
+                agents={agents}
+                onWireConnected={onWireConnected}
+              />
             ),
           )}
           {showThinking && <ThinkingCard />}
@@ -239,9 +254,11 @@ function HumanReplyCard({ bubble }: { bubble: Bubble }) {
 function AgentReplyCard({
   bubble,
   agents,
+  onWireConnected,
 }: {
   bubble: Bubble;
   agents: Agent[];
+  onWireConnected?: (entry: McpWireRequest) => void;
 }) {
   // Demo metas pre-populate reasoning + tool calls when the bubble doesn't
   // yet carry them — keeps the design-reference panel honest without
@@ -300,6 +317,7 @@ function AgentReplyCard({
             <WireMcpRequestCard
               key={`wire:${req.catalog_id}`}
               entry={req}
+              onConnected={onWireConnected}
             />
           ))}
         </div>
