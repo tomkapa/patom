@@ -387,27 +387,18 @@ pub async fn enqueue_from_slash(
         return Err(SlackError::AgentNotFound(agent.name.as_str().to_owned()));
     }
 
-    // Post the user's prompt as a top-level channel message so the
-    // agent reply has a thread root to land in. Username override
-    // attributes it to the human who invoked `/relay`.
-    let prompt_post = deps
-        .poster
-        .post(super::poster::PostRequest {
-            token: workspace.bot_token.clone(),
-            channel: submit.channel_id.clone(),
-            thread_ts: None,
-            text: submit.prompt.as_str().to_owned(),
-            username: format!("via /relay ({})", submit.slack_user_id.as_str()),
-        })
-        .await?;
-    let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
-
+    // Try the queue idempotency gate BEFORE posting the synthetic
+    // prompt mirror to Slack. Slack retries `view_submission` on
+    // upstream 5xx / timeouts; if we posted first, the retry would
+    // produce duplicate top-level channel messages even though the
+    // queue would collapse the duplicate enqueue.
     let idempotency_key = IdempotencyKey::try_from(format!(
         "slack-slash:{team}:{channel}:{view}",
         team = submit.team_id.as_str(),
         channel = submit.channel_id.as_str(),
         view = submit.view_id,
     ))?;
+    let prompt_text = submit.prompt.as_str().to_owned();
     let req = NewPromptRequest::normal(
         None,
         Participant::human(),
@@ -419,37 +410,58 @@ pub async fn enqueue_from_slash(
         user_id,
     );
     let outcome = deps.queue.enqueue_for_user(user_id, req).await?;
-    if let EnqueueOutcome::Inserted {
+    let EnqueueOutcome::Inserted {
         request_id,
         session,
         ..
     } = outcome
-    {
-        deps.threads
-            .bind_root(
-                workspace.org_id,
-                &submit.team_id,
-                &submit.channel_id,
-                &anchor,
-                session,
-                request_id,
-            )
-            .await?;
-        deps.stream_pump
-            .attach(AttachRequest {
-                root: request_id,
-                org_id: workspace.org_id,
-                team_id: submit.team_id.clone(),
-                channel_id: submit.channel_id.clone(),
-                thread_ts: anchor.clone(),
-            })
-            .await;
-        info!(
-            relay.session.id = %session.as_uuid(),
-            relay.request.id = %request_id.as_uuid(),
-            relay.slack.source = "slash",
-            event = "slack.bridge.enqueued",
-        );
-    }
+    else {
+        // Idempotent retry: the original invocation already posted +
+        // bound the thread. Nothing to do.
+        info!(event = "slack.bridge.slash_retry_skipped");
+        return Ok(());
+    };
+
+    // Fresh invocation — post the user's prompt as a top-level
+    // channel message so the agent reply has a thread root to land
+    // in. Username override attributes it to the human who invoked
+    // `/relay`.
+    let prompt_post = deps
+        .poster
+        .post(super::poster::PostRequest {
+            token: workspace.bot_token.clone(),
+            channel: submit.channel_id.clone(),
+            thread_ts: None,
+            text: prompt_text,
+            username: format!("via /relay ({})", submit.slack_user_id.as_str()),
+        })
+        .await?;
+    let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
+
+    deps.threads
+        .bind_root(
+            workspace.org_id,
+            &submit.team_id,
+            &submit.channel_id,
+            &anchor,
+            session,
+            request_id,
+        )
+        .await?;
+    deps.stream_pump
+        .attach(AttachRequest {
+            root: request_id,
+            org_id: workspace.org_id,
+            team_id: submit.team_id.clone(),
+            channel_id: submit.channel_id.clone(),
+            thread_ts: anchor,
+        })
+        .await;
+    info!(
+        relay.session.id = %session.as_uuid(),
+        relay.request.id = %request_id.as_uuid(),
+        relay.slack.source = "slash",
+        event = "slack.bridge.enqueued",
+    );
     Ok(())
 }

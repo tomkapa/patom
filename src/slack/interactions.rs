@@ -39,7 +39,10 @@ use crate::http::AppState;
 use crate::types::Prompt;
 
 use super::bridge::{SlashCommandSubmit, enqueue_from_slash};
-use super::limits::{MAX_PRIVATE_METADATA_BYTES, SLACK_POST_TIMEOUT, SLACK_WEBHOOK_MAX_BYTES};
+use super::limits::{
+    MAX_PRIVATE_METADATA_BYTES, SLACK_POST_BODY_TIMEOUT, SLACK_POST_TIMEOUT,
+    SLACK_WEBHOOK_MAX_BYTES,
+};
 use super::modal::{
     AGENT_ACTION_ID, AGENT_BLOCK_ID, COMPOSE_CALLBACK_ID, PROMPT_ACTION_ID, PROMPT_BLOCK_ID,
     build_compose_modal,
@@ -66,6 +69,14 @@ pub fn router() -> Router<AppState> {
 // Slash command (`POST /slack/commands`)
 // ────────────────────────────────────────────────────────────────────
 
+#[tracing::instrument(
+    name = "slack.commands.handle",
+    skip_all,
+    fields(
+        relay.slack.team = tracing::field::Empty,
+        relay.tenant.id = tracing::field::Empty,
+    ),
+)]
 async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(slack) = state.slack.as_ref() else {
         return StatusCode::NOT_FOUND.into_response();
@@ -91,6 +102,7 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
             return StatusCode::BAD_REQUEST.into_response();
         }
     };
+    tracing::Span::current().record("relay.slack.team", tracing::field::display(&team_id));
     let channel_id = match SlackChannelId::try_from(parsed.channel_id.as_str()) {
         Ok(c) => c,
         Err(e) => {
@@ -116,6 +128,10 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
             );
         }
     };
+    tracing::Span::current().record(
+        "relay.tenant.id",
+        tracing::field::display(workspace.org_id.as_uuid()),
+    );
 
     let agents = match state.agents.list_for_org(workspace.org_id).await {
         Ok(rows) => rows,
@@ -191,13 +207,27 @@ async fn open_view(
     };
     let status = resp.status();
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        // Bound the diagnostic body read so a hung Slack edge cannot
+        // stall the slash command handler past the 3 s ack window
+        // (CLAUDE.md §5: every await against I/O is timed).
+        let body = match tokio::time::timeout(SLACK_POST_BODY_TIMEOUT, resp.text()).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(_)) | Err(_) => String::new(),
+        };
         return Err(super::error::SlackError::PostFailed {
             status: status.as_u16(),
             body,
         });
     }
-    let parsed: OpenResp = resp.json().await?;
+    let parsed: OpenResp = match tokio::time::timeout(SLACK_POST_BODY_TIMEOUT, resp.json()).await {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => return Err(super::error::SlackError::Http(e)),
+        Err(_) => {
+            return Err(super::error::SlackError::PostTimeout(
+                SLACK_POST_BODY_TIMEOUT,
+            ));
+        }
+    };
     if !parsed.ok {
         return Err(super::error::SlackError::PostFailed {
             status: 200,
@@ -211,6 +241,11 @@ async fn open_view(
 // View submission (`POST /slack/interactions`)
 // ────────────────────────────────────────────────────────────────────
 
+#[tracing::instrument(
+    name = "slack.interactions.handle",
+    skip_all,
+    fields(payload_type = tracing::field::Empty),
+)]
 async fn handle_interaction(state: State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(slack) = state.slack.as_ref() else {
         return StatusCode::NOT_FOUND.into_response();
@@ -230,8 +265,12 @@ async fn handle_interaction(state: State<AppState>, headers: HeaderMap, body: By
         }
     };
     match envelope {
-        InteractionEnvelope::ViewSubmission(view) => handle_view_submission(state, view).await,
+        InteractionEnvelope::ViewSubmission(view) => {
+            tracing::Span::current().record("payload_type", "view_submission");
+            handle_view_submission(state, view).await
+        }
         InteractionEnvelope::Other => {
+            tracing::Span::current().record("payload_type", "other");
             // Ack any forward-compatible interactivity type we don't
             // route on yet so Slack does not retry.
             StatusCode::OK.into_response()
