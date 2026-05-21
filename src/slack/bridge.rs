@@ -334,3 +334,122 @@ fn strip_for_prompt(event: &InboundEvent, bot: &SlackUserId) -> String {
     let parsed = mention::parse(&event.text, bot);
     parsed.stripped
 }
+
+/// Routing payload for a `/relay` slash command submission. Constructed
+/// by the interactions handler after validating the `view_submission`
+/// envelope; the bridge takes it from here.
+#[derive(Debug, Clone)]
+pub struct SlashCommandSubmit {
+    pub team_id: SlackTeamId,
+    pub channel_id: SlackChannelId,
+    pub slack_user_id: SlackUserId,
+    pub agent_id: AgentId,
+    pub prompt: Prompt,
+    /// Stable per-modal identifier (Slack's `view.id`). Folded into the
+    /// idempotency key so a re-submission of the same modal collapses
+    /// into a single prompt at the queue.
+    pub view_id: String,
+}
+
+/// Drive the slash command path.
+///
+/// Post the synthetic prompt mirror as a channel-top-level message
+/// (becomes the thread root), enqueue the agent prompt, and bind the
+/// resulting session to `(team, channel, thread_ts)` so future replies
+/// via stickiness and the outbound stream pump land in the right thread.
+///
+/// Defence-in-depth: the caller is expected to have already re-checked
+/// that `submit.agent_id` belongs to the workspace's `org_id`; this
+/// function asserts the invariant via the agent lookup (`read` returns
+/// only when the row exists, and the lookup is org-scoped through the
+/// workspace).
+pub async fn enqueue_from_slash(
+    deps: &BridgeDeps,
+    submit: SlashCommandSubmit,
+) -> Result<(), SlackError> {
+    let workspace = deps.workspaces.read_by_team(&submit.team_id).await?;
+    let user_id = match deps
+        .identities
+        .lookup(&submit.team_id, &submit.slack_user_id)
+        .await?
+    {
+        Some(linked) => {
+            assert_eq!(linked.org_id, workspace.org_id);
+            linked.user_id
+        }
+        None => workspace.installed_by_user_id,
+    };
+    // Defence-in-depth: re-validate that the chosen agent belongs to
+    // the workspace's org. The modal options carry agent ids the
+    // client could in principle forge.
+    let agent = deps.agents.read(submit.agent_id).await?;
+    if agent.org_id != workspace.org_id {
+        return Err(SlackError::AgentNotFound(agent.name.as_str().to_owned()));
+    }
+
+    // Post the user's prompt as a top-level channel message so the
+    // agent reply has a thread root to land in. Username override
+    // attributes it to the human who invoked `/relay`.
+    let prompt_post = deps
+        .poster
+        .post(super::poster::PostRequest {
+            token: workspace.bot_token.clone(),
+            channel: submit.channel_id.clone(),
+            thread_ts: None,
+            text: submit.prompt.as_str().to_owned(),
+            username: format!("via /relay ({})", submit.slack_user_id.as_str()),
+        })
+        .await?;
+    let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
+
+    let idempotency_key = IdempotencyKey::try_from(format!(
+        "slack-slash:{team}:{channel}:{view}",
+        team = submit.team_id.as_str(),
+        channel = submit.channel_id.as_str(),
+        view = submit.view_id,
+    ))?;
+    let req = NewPromptRequest::normal(
+        None,
+        Participant::human(),
+        submit.agent_id,
+        None,
+        submit.prompt,
+        idempotency_key,
+        workspace.org_id,
+        user_id,
+    );
+    let outcome = deps.queue.enqueue_for_user(user_id, req).await?;
+    if let EnqueueOutcome::Inserted {
+        request_id,
+        session,
+        ..
+    } = outcome
+    {
+        deps.threads
+            .bind_root(
+                workspace.org_id,
+                &submit.team_id,
+                &submit.channel_id,
+                &anchor,
+                session,
+                request_id,
+            )
+            .await?;
+        deps.stream_pump
+            .attach(AttachRequest {
+                root: request_id,
+                org_id: workspace.org_id,
+                team_id: submit.team_id.clone(),
+                channel_id: submit.channel_id.clone(),
+                thread_ts: anchor.clone(),
+            })
+            .await;
+        info!(
+            relay.session.id = %session.as_uuid(),
+            relay.request.id = %request_id.as_uuid(),
+            relay.slack.source = "slash",
+            event = "slack.bridge.enqueued",
+        );
+    }
+    Ok(())
+}

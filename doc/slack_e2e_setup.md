@@ -1,7 +1,8 @@
 # Slack adapter — manual end-to-end setup
 
 How to wire Phase 1 to a real Slack workspace and smoke-test the full
-flow: mention → bridge → queue → worker → `chat.postMessage` reply.
+flow: mention → bridge → queue → worker → `chat.postMessage` reply, and
+the `/relay` slash command modal-driven compose flow.
 
 Prereqs:
 - Relay running locally (`cargo run`) on `http://localhost:8080`.
@@ -53,10 +54,11 @@ Still inside the Slack app config:
 
 **OAuth & Permissions** (left sidebar):
 
-- **Bot Token Scopes** — add all three:
+- **Bot Token Scopes** — add all four:
   - `app_mentions:read`
   - `chat:write`
   - `chat:write.customize` ← required for per-agent `username` override
+  - `commands` ← required to register the `/relay` slash command
 - **Redirect URLs** — add `https://abc123.ngrok.app/slack/oauth/callback`
   (use your tunnel URL). Save.
 
@@ -69,6 +71,27 @@ Still inside the Slack app config:
   red error here, Relay isn't reachable through the tunnel or the
   signing secret in `.env` is wrong — fix and click **Retry**.
 - **Subscribe to bot events** → add `app_mention`. Save.
+
+**Slash Commands** (left sidebar):
+
+- **Create New Command**.
+  - Command: `/relay`
+  - Request URL: `https://abc123.ngrok.app/slack/commands`
+  - Short Description: `Send a prompt to a Relay agent`
+  - Usage Hint: `pick an agent and type a prompt`
+- Save.
+
+**Interactivity & Shortcuts** (left sidebar):
+
+- Toggle **Interactivity** → ON.
+- **Request URL**: `https://abc123.ngrok.app/slack/interactions`
+- Save. This is the endpoint that receives the modal submission
+  (`view_submission`) when the user clicks **Send** in `/relay`.
+
+> ⚠️ **If you are upgrading an existing install**: adding the
+> `commands` scope (or any new scope) requires you to **reinstall**
+> the app in the workspace. Run the `DELETE FROM slack_workspaces …`
+> in the teardown section, then redo steps 5–6.
 
 **Basic Information** → grab the **Client ID** and **Client Secret** —
 these are `RELAY_SLACK_CLIENT_ID` and `RELAY_SLACK_CLIENT_SECRET`.
@@ -186,6 +209,47 @@ Common failures:
 - No `slack.events.enqueued` at all → the webhook never reached you;
   check ngrok tunnel output and Slack's **Event Subscriptions** page
   shows recent successful deliveries.
+
+---
+
+## 7b. Send a `/relay` slash command
+
+In the same channel (the bot doesn't need to be a member for slash
+commands to work, but the resulting reply has to land somewhere — keep
+it in a channel the bot is invited to):
+
+```text
+/relay
+```
+
+Expected:
+
+- **<1s**: a modal pops up titled "Relay" with two fields — an agent
+  picker (populated from your tenant's roster) and a multiline prompt
+  text area.
+- Pick an agent, type a prompt, click **Send**.
+- A top-level channel message appears with your prompt (attributed
+  `via /relay (U…)` as the username).
+- The agent's reply lands as a reply in the thread under that message.
+- Subsequent `@relay-dev` messages in that thread route to the same
+  agent automatically (sticky-thread routing) — no need to retype the
+  name.
+
+If the modal does not appear, check Relay logs:
+
+```bash
+grep "slack\.commands" relay.log
+```
+
+Common failures:
+
+- `slack.commands.unknown_workspace` → step 5 wasn't run for this team,
+  or the workspace was uninstalled.
+- `slack.commands.views_open_failed` → bot lacks `commands` scope, the
+  trigger_id expired (took >3s), or the bot token was revoked.
+- The slash command shows "Sorry, that didn't work" in Slack itself
+  → Relay returned non-200 on `/slack/commands`. Check the tunnel and
+  the **Slash Commands** request URL field in the Slack app config.
 
 ---
 

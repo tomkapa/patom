@@ -3,6 +3,10 @@
 //! Surface (Phase 1):
 //! - `POST /slack/events` — public webhook; verifies HMAC, acks `200` in
 //!   <3s, hands off to the bridge worker via a bounded mpsc.
+//! - `POST /slack/commands` — public; receives `/relay` slash command
+//!   invocations and opens the agent-picker modal via `views.open`.
+//! - `POST /slack/interactions` — public; receives modal
+//!   `view_submission`, enqueues the prompt, and binds the thread.
 //! - `GET /slack/oauth/callback` — public; finishes the Slack v2 install.
 //! - `POST /api/slack/install` — private; returns the authorize URL.
 //!
@@ -24,8 +28,10 @@ pub mod error;
 pub mod events;
 mod hex;
 pub mod identity;
+pub mod interactions;
 pub mod limits;
 pub mod mention;
+pub mod modal;
 pub mod oauth;
 pub mod poster;
 pub mod state;

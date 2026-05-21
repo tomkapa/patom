@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         // gate. Slack signs each webhook (HMAC-SHA256) and the OAuth
         // callback validates an HMAC-signed state token.
         .merge(crate::slack::events::router())
+        .merge(crate::slack::interactions::router())
         .merge(crate::slack::oauth::public_router());
 
     let private = Router::new()

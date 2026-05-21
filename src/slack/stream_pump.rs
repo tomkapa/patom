@@ -240,7 +240,7 @@ async fn run_pump(
                                 .post(PostRequest {
                                     token: workspace.bot_token.clone(),
                                     channel: req.channel_id.clone(),
-                                    thread_ts: req.thread_ts.clone(),
+                                    thread_ts: Some(req.thread_ts.clone()),
                                     text,
                                     username,
                                 })

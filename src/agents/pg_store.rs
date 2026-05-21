@@ -406,6 +406,30 @@ impl AgentStore for PgAgentStore {
         Ok(out)
     }
 
+    async fn list_for_org(
+        &self,
+        org_id: OrgId,
+    ) -> Result<Vec<(AgentId, AgentName)>, AgentStoreError> {
+        let rows =
+            run_privileged::<Vec<(AgentId, String)>, AgentStoreError>(&self.pool, async |tx| {
+                Ok(sqlx::query_as(
+                    "SELECT id, name FROM agents \
+                     WHERE org_id = $1 \
+                     ORDER BY lower(name) ASC LIMIT $2",
+                )
+                .bind(org_id)
+                .bind(LIST_NAMES_MAX_ROWS)
+                .fetch_all(&mut **tx)
+                .await?)
+            })
+            .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, name) in rows {
+            out.push((id, AgentName::try_from(name)?));
+        }
+        Ok(out)
+    }
+
     async fn search_by_description(
         &self,
         embedding: &[f32],
