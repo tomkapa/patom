@@ -27,7 +27,7 @@ use tracing::{info, warn};
 
 use crate::http::AppState;
 
-use super::bridge::InboundEvent;
+use super::bridge::{InboundEvent, InboundSource};
 use super::limits::SLACK_WEBHOOK_MAX_BYTES;
 use super::types::{
     SlackChannelId, SlackEventTimestamp, SlackSignature, SlackTeamId, SlackThreadTs, SlackTs,
@@ -105,11 +105,13 @@ fn dispatch_event_callback(
     team_id: String,
     event: Value,
 ) -> Response {
-    let Some(payload) = parse_event(event) else {
-        // Unknown sub-type — ack to avoid retries.
+    let Some((source, payload)) = parse_event(event) else {
+        // Unknown sub-type or one we deliberately filter (bot
+        // echo, message_changed, top-level chatter without
+        // thread_ts, …) — ack to avoid retries.
         return StatusCode::OK.into_response();
     };
-    let inbound = match build_inbound(team_id, payload) {
+    let inbound = match build_inbound(team_id, payload, source) {
         Ok(i) => i,
         Err(status) => return status.into_response(),
     };
@@ -135,6 +137,7 @@ fn dispatch_event_callback(
 fn build_inbound(
     team_id_raw: String,
     payload: AppMentionEvent,
+    source: InboundSource,
 ) -> Result<InboundEvent, StatusCode> {
     let team_id = SlackTeamId::try_from(team_id_raw).map_err(|e| {
         warn!(error = %e, event = "slack.events.bad_team_id");
@@ -166,6 +169,7 @@ fn build_inbound(
         text: payload.text,
         thread_ts,
         event_ts,
+        source,
     })
 }
 
@@ -218,12 +222,139 @@ struct AppMentionEvent {
     event_ts: Option<String>,
 }
 
-/// Decode `event` to `AppMentionEvent` iff `event.type == "app_mention"`.
-/// Any other event sub-type returns `None`; the handler still acks 200.
-fn parse_event(value: Value) -> Option<AppMentionEvent> {
+/// Decode an inbound event envelope to `(InboundSource, AppMentionEvent)`.
+///
+/// Two event types are routed:
+///
+/// - `app_mention` — the bot was `@`-mentioned. Always processed by
+///   the bridge, falling back to the default agent on an unresolvable
+///   name.
+/// - `message` — a non-mention message in a channel. Only processed
+///   if it is a reply inside an existing thread (`thread_ts` set) and
+///   carries no `subtype` (i.e. is a normal user message, not a
+///   bot-message echo, edit, deletion, channel-join, etc.) and no
+///   `bot_id` (Slack stamps bot-attributed posts with one even when
+///   `subtype` is absent). The bridge drops the event further if the
+///   thread has no `slack_threads` binding.
+///
+/// Any other event type — or a `message` event we filtered — returns
+/// `None`; the handler still acks 200 so Slack doesn't retry.
+fn parse_event(value: Value) -> Option<(InboundSource, AppMentionEvent)> {
     let ty = value.get("type")?.as_str()?;
-    if ty != "app_mention" {
-        return None;
+    match ty {
+        "app_mention" => {
+            let m: AppMentionEvent = serde_json::from_value(value).ok()?;
+            Some((InboundSource::AppMention, m))
+        }
+        "message" => {
+            // Filter out edits, deletions, channel joins, file shares,
+            // bot-message echoes, etc. Any non-empty `subtype` means
+            // this is not a plain user message.
+            if value.get("subtype").and_then(Value::as_str).is_some() {
+                return None;
+            }
+            // Slack stamps bot-attributed posts with `bot_id` even
+            // when `subtype` is missing — drop those too to avoid the
+            // bot reacting to itself.
+            if value.get("bot_id").and_then(Value::as_str).is_some() {
+                return None;
+            }
+            // Only react to thread replies; top-level channel chatter
+            // is not a Relay surface.
+            value.get("thread_ts").and_then(Value::as_str)?;
+            let m: AppMentionEvent = serde_json::from_value(value).ok()?;
+            Some((InboundSource::ThreadMessage, m))
+        }
+        _ => None,
     }
-    serde_json::from_value(value).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(extra: Value) -> Value {
+        let mut base = json!({
+            "type": "message",
+            "channel": "C1",
+            "user": "U1",
+            "text": "hi",
+            "ts": "1700000000.000100",
+        });
+        if let Value::Object(ref mut m) = base
+            && let Value::Object(extra_map) = extra
+        {
+            for (k, v) in extra_map {
+                m.insert(k, v);
+            }
+        }
+        base
+    }
+
+    #[test]
+    fn parse_app_mention_routes_to_appmention_source() {
+        let v = json!({
+            "type": "app_mention",
+            "channel": "C1",
+            "user": "U1",
+            "text": "<@U_BOT> hi",
+            "ts": "1700000000.000100",
+        });
+        let (source, _) = parse_event(v).expect("app_mention");
+        assert_eq!(source, InboundSource::AppMention);
+    }
+
+    #[test]
+    fn parse_message_routes_thread_reply_to_threadmessage_source() {
+        let v = msg(json!({ "thread_ts": "1700000000.000050" }));
+        let (source, m) = parse_event(v).expect("thread message");
+        assert_eq!(source, InboundSource::ThreadMessage);
+        assert_eq!(m.thread_ts.as_deref(), Some("1700000000.000050"));
+    }
+
+    #[test]
+    fn parse_message_drops_top_level_chatter() {
+        // No thread_ts → not a Relay surface, drop.
+        let v = msg(json!({}));
+        assert!(parse_event(v).is_none());
+    }
+
+    #[test]
+    fn parse_message_drops_bot_message_subtype() {
+        // Slack stamps the bot's own posts with subtype="bot_message".
+        let v = msg(json!({
+            "thread_ts": "1700000000.000050",
+            "subtype": "bot_message",
+        }));
+        assert!(parse_event(v).is_none());
+    }
+
+    #[test]
+    fn parse_message_drops_bot_id_messages() {
+        // Some bot posts carry bot_id without subtype.
+        let v = msg(json!({
+            "thread_ts": "1700000000.000050",
+            "bot_id": "B12345",
+        }));
+        assert!(parse_event(v).is_none());
+    }
+
+    #[test]
+    fn parse_message_drops_edits_and_deletions() {
+        // Any non-empty subtype is filtered (edits, deletions,
+        // channel joins, file shares, …).
+        for sub in &["message_changed", "message_deleted", "channel_join"] {
+            let v = msg(json!({
+                "thread_ts": "1700000000.000050",
+                "subtype": *sub,
+            }));
+            assert!(parse_event(v).is_none(), "subtype {sub} not filtered");
+        }
+    }
+
+    #[test]
+    fn parse_unknown_type_returns_none() {
+        let v = json!({ "type": "reaction_added" });
+        assert!(parse_event(v).is_none());
+    }
 }

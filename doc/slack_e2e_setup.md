@@ -54,8 +54,9 @@ Still inside the Slack app config:
 
 **OAuth & Permissions** (left sidebar):
 
-- **Bot Token Scopes** — add all four:
+- **Bot Token Scopes** — add all five:
   - `app_mentions:read`
+  - `channels:history` ← lets the bot see in-thread replies that don't `@`-mention it (sticky-thread continuation)
   - `chat:write`
   - `chat:write.customize` ← required for per-agent `username` override
   - `commands` ← required to register the `/relay` slash command
@@ -70,7 +71,15 @@ Still inside the Slack app config:
   challenge. **Wait for the green "Verified" check.** If you get a
   red error here, Relay isn't reachable through the tunnel or the
   signing secret in `.env` is wrong — fix and click **Retry**.
-- **Subscribe to bot events** → add `app_mention`. Save.
+- **Subscribe to bot events** → add both:
+  - `app_mention`
+  - `message.channels` ← so untagged thread replies route to the bound agent
+- Save.
+
+> The bot only acts on `message.channels` events whose `thread_ts` is
+> already bound in `slack_threads` (i.e. a previous `@RelayBot` or
+> `/relay` started the thread). All other channel chatter is dropped
+> at the event boundary — Relay does not store or process it.
 
 **Slash Commands** (left sidebar):
 
@@ -229,11 +238,12 @@ Expected:
   text area.
 - Pick an agent, type a prompt, click **Send**.
 - A top-level channel message appears with your prompt (attributed
-  `via /relay (U…)` as the username).
+  with your Slack handle as the username; the `APP` badge next to it
+  is unavoidable on bot-token posts).
 - The agent's reply lands as a reply in the thread under that message.
-- Subsequent `@relay-dev` messages in that thread route to the same
-  agent automatically (sticky-thread routing) — no need to retype the
-  name.
+- **Subsequent messages in that thread route to the same agent
+  automatically** — no `@RelayBot` mention needed. Just type your
+  follow-up in the thread reply box and Send.
 
 If the modal does not appear, check Relay logs:
 
@@ -258,16 +268,21 @@ Common failures:
 **Continuation** (same thread, same agent):
 
 Reply in the *same* Slack thread (use the "Reply in thread" affordance,
-not a new message):
+not a new message). You can either keep typing without a mention:
 
 ```text
-@relay-dev tell me more
+tell me more
 ```
 
-Expected: the same agent replies. Phase 1 binds the thread to its
-original agent; tagging a different agent in a reply is ignored (the
-mention is still parsed, but `process_event` reads the session's
-existing participant). This matches the web UI's HTTP behaviour.
+…or include `@relay-dev` — both route to the bound agent. The bot
+sees plain in-thread replies via the `message.channels` event
+subscription, looks them up in `slack_threads`, and routes to the
+thread's existing agent.
+
+Expected: the same agent replies. Tagging a different agent in a
+reply is ignored (the mention is still parsed, but `process_event`
+reads the session's existing participant). This matches the web UI's
+HTTP behaviour.
 
 **Cross-agent handoff**:
 

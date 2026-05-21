@@ -41,10 +41,20 @@ use super::workspace::NewWorkspace;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Scopes requested at install. `chat:write.customize` is what lets us
-/// override `username` + `icon_url` per message (Phase 1 uses
-/// `username` only; `icon_url` is issue #43).
-const SLACK_SCOPES: &str = "app_mentions:read,chat:write,chat:write.customize";
+/// Scopes requested at install.
+///
+/// - `app_mentions:read` — receive `app_mention` events.
+/// - `chat:write` — post replies via `chat.postMessage`.
+/// - `chat:write.customize` — override `username` + `icon_url` per
+///   message (Phase 1 uses `username` only; `icon_url` is issue #43).
+/// - `channels:history` — receive `message.channels` events for the
+///   bot's invited channels so that untagged in-thread replies route
+///   to the agent already bound in `slack_threads`. The bot only acts
+///   on messages whose `thread_ts` is in `slack_threads`; everything
+///   else is dropped at the boundary.
+/// - `commands` — register the `/relay` slash command.
+const SLACK_SCOPES: &str =
+    "app_mentions:read,channels:history,chat:write,chat:write.customize,commands";
 
 /// State token lifetime — long enough for a user to complete the
 /// Slack consent screen, short enough that a leaked state is useless.

@@ -141,7 +141,7 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
         }
     };
 
-    let metadata = build_private_metadata(&team_id, &channel_id, &user_id);
+    let metadata = build_private_metadata(&team_id, &channel_id, &user_id, &parsed.user_name);
     if metadata.len() > MAX_PRIVATE_METADATA_BYTES {
         // Impossible in practice (three short ids), but assert at the
         // boundary so a future field addition cannot silently overflow.
@@ -371,6 +371,7 @@ fn build_submit(view: &ViewSubmission) -> Result<SlashCommandSubmit, Vec<(&'stat
         team_id,
         channel_id,
         slack_user_id,
+        slack_user_name: routing.user_name,
         agent_id,
         prompt,
         view_id: view.view.id.clone(),
@@ -463,11 +464,13 @@ fn build_private_metadata(
     team_id: &SlackTeamId,
     channel_id: &SlackChannelId,
     user_id: &SlackUserId,
+    user_name: &str,
 ) -> String {
     json!({
         "team_id": team_id.as_str(),
         "channel_id": channel_id.as_str(),
         "user_id": user_id.as_str(),
+        "user_name": user_name,
     })
     .to_string()
 }
@@ -485,6 +488,10 @@ struct SlashPayload {
     team_id: String,
     channel_id: String,
     user_id: String,
+    /// User's @handle (e.g. `tomkapa`). Slack always includes this in
+    /// the slash command form; we cache it in `private_metadata` so
+    /// it survives to the `view_submission` handler.
+    user_name: String,
     trigger_id: String,
 }
 
@@ -494,6 +501,7 @@ impl SlashPayload {
         let mut team_id = None;
         let mut channel_id = None;
         let mut user_id = None;
+        let mut user_name = None;
         let mut trigger_id = None;
         for (k, v) in url::form_urlencoded::parse(body.as_ref()).into_owned() {
             match k.as_str() {
@@ -501,12 +509,19 @@ impl SlashPayload {
                 "team_id" => team_id = Some(v),
                 "channel_id" => channel_id = Some(v),
                 "user_id" => user_id = Some(v),
+                "user_name" => user_name = Some(v),
                 "trigger_id" => trigger_id = Some(v),
                 _ => {}
             }
         }
-        let (Some(command), Some(team_id), Some(channel_id), Some(user_id), Some(trigger_id)) =
-            (command, team_id, channel_id, user_id, trigger_id)
+        let (
+            Some(command),
+            Some(team_id),
+            Some(channel_id),
+            Some(user_id),
+            Some(user_name),
+            Some(trigger_id),
+        ) = (command, team_id, channel_id, user_id, user_name, trigger_id)
         else {
             warn!(event = "slack.commands.missing_form_fields");
             return Err(StatusCode::BAD_REQUEST);
@@ -516,6 +531,7 @@ impl SlashPayload {
             team_id,
             channel_id,
             user_id,
+            user_name,
             trigger_id,
         })
     }
@@ -570,6 +586,10 @@ struct PrivateMetadata {
     team_id: String,
     channel_id: String,
     user_id: String,
+    /// Slack `user_name` (e.g. `tomkapa`). Used as the attribution
+    /// label on the synthetic prompt-mirror post; required so the
+    /// post reads as that user rather than the raw `U…` id.
+    user_name: String,
 }
 
 #[cfg(test)]
@@ -580,20 +600,23 @@ mod tests {
     fn slash_payload_extracts_required_fields() {
         let body = Bytes::from(
             "command=%2Frelay&team_id=T123&channel_id=C456&user_id=U789&\
-             text=hello&trigger_id=ABC.123",
+             user_name=tomkapa&text=hello&trigger_id=ABC.123",
         );
         let p = SlashPayload::from_form(&body).expect("parse");
         assert_eq!(p.command, "/relay");
         assert_eq!(p.team_id, "T123");
         assert_eq!(p.channel_id, "C456");
         assert_eq!(p.user_id, "U789");
+        assert_eq!(p.user_name, "tomkapa");
         assert_eq!(p.trigger_id, "ABC.123");
     }
 
     #[test]
     fn slash_payload_rejects_missing_trigger_id() {
         // Without trigger_id we cannot open a modal — fail fast.
-        let body = Bytes::from("command=%2Frelay&team_id=T123&channel_id=C456&user_id=U789");
+        let body = Bytes::from(
+            "command=%2Frelay&team_id=T123&channel_id=C456&user_id=U789&user_name=tomkapa",
+        );
         assert!(SlashPayload::from_form(&body).is_err());
     }
 
@@ -608,11 +631,12 @@ mod tests {
         let team = SlackTeamId::try_from("T123").expect("ok");
         let chan = SlackChannelId::try_from("C456").expect("ok");
         let user = SlackUserId::try_from("U789").expect("ok");
-        let s = build_private_metadata(&team, &chan, &user);
+        let s = build_private_metadata(&team, &chan, &user, "tomkapa");
         let parsed: PrivateMetadata = serde_json::from_str(&s).expect("decode");
         assert_eq!(parsed.team_id, "T123");
         assert_eq!(parsed.channel_id, "C456");
         assert_eq!(parsed.user_id, "U789");
+        assert_eq!(parsed.user_name, "tomkapa");
         assert!(s.len() <= MAX_PRIVATE_METADATA_BYTES);
     }
 
