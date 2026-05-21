@@ -39,6 +39,7 @@ use crate::http::AppState;
 use crate::types::Prompt;
 
 use super::bridge::{SlashCommandSubmit, enqueue_from_slash};
+use super::events::check_signature;
 use super::limits::{
     MAX_PRIVATE_METADATA_BYTES, SLACK_POST_BODY_TIMEOUT, SLACK_POST_TIMEOUT,
     SLACK_WEBHOOK_MAX_BYTES,
@@ -47,10 +48,7 @@ use super::modal::{
     AGENT_ACTION_ID, AGENT_BLOCK_ID, COMPOSE_CALLBACK_ID, PROMPT_ACTION_ID, PROMPT_BLOCK_ID,
     build_compose_modal,
 };
-use super::types::{
-    SlackBotToken, SlackChannelId, SlackEventTimestamp, SlackSignature, SlackTeamId, SlackUserId,
-};
-use super::verify;
+use super::types::{SlackBotToken, SlackChannelId, SlackTeamId, SlackUserId};
 
 /// Command literal Slack sends in `command` for the `/relay`
 /// invocation. Must match the value registered in the Slack app
@@ -397,56 +395,16 @@ fn validation_errors_response(errors: Vec<(&'static str, String)>) -> Response {
 // Shared helpers
 // ────────────────────────────────────────────────────────────────────
 
-fn check_signature(
-    slack: &crate::slack::SlackAppState,
-    headers: &HeaderMap,
-    body: &Bytes,
-) -> Result<(), StatusCode> {
-    let ts_header = header_str(headers, "X-Slack-Request-Timestamp")?;
-    let sig_header = header_str(headers, "X-Slack-Signature")?;
-    let timestamp = SlackEventTimestamp::try_from(ts_header.as_str()).map_err(|e| {
-        warn!(error = %e, event = "slack.interactions.bad_timestamp");
-        StatusCode::BAD_REQUEST
-    })?;
-    let signature = SlackSignature::try_from(sig_header).map_err(|e| {
-        warn!(error = %e, event = "slack.interactions.bad_signature_shape");
-        StatusCode::BAD_REQUEST
-    })?;
-    verify::verify(
-        &slack.signing_secret,
-        timestamp,
-        &signature,
-        body.as_ref(),
-        slack.clock.now_utc(),
-    )
-    .map_err(|e| {
-        warn!(error = ?e, event = "slack.interactions.verify_failed");
-        StatusCode::UNAUTHORIZED
-    })?;
-    Ok(())
-}
-
-fn header_str(headers: &HeaderMap, name: &str) -> Result<String, StatusCode> {
-    let Some(value) = headers.get(name) else {
-        warn!(event = "slack.interactions.missing_header", header = %name);
-        return Err(StatusCode::BAD_REQUEST);
-    };
-    let Ok(s) = value.to_str() else {
-        warn!(event = "slack.interactions.non_ascii_header", header = %name);
-        return Err(StatusCode::BAD_REQUEST);
-    };
-    Ok(s.to_owned())
-}
-
 fn extract_payload(body: &Bytes) -> Result<Value, StatusCode> {
-    let pairs: Vec<(String, String)> = url::form_urlencoded::parse(body.as_ref())
-        .into_owned()
-        .collect();
-    let Some((_, payload)) = pairs.iter().find(|(k, _)| k == "payload") else {
+    // Stream the urlencoded pairs once — no `.into_owned().collect()`
+    // intermediate allocation. We only own the one value we need.
+    let payload = url::form_urlencoded::parse(body.as_ref())
+        .find_map(|(k, v)| (k == "payload").then(|| v.into_owned()));
+    let Some(payload) = payload else {
         warn!(event = "slack.interactions.missing_payload_field");
         return Err(StatusCode::BAD_REQUEST);
     };
-    serde_json::from_str(payload).map_err(|e| {
+    serde_json::from_str(&payload).map_err(|e| {
         warn!(error = %e, event = "slack.interactions.payload_decode_failed");
         StatusCode::BAD_REQUEST
     })
@@ -497,20 +455,23 @@ struct SlashPayload {
 
 impl SlashPayload {
     fn from_form(body: &Bytes) -> Result<Self, StatusCode> {
+        // Stream the pairs once; only own the values we actually keep.
+        // Keys are borrowed `Cow<str>` from the decoder — match without
+        // allocating.
         let mut command = None;
         let mut team_id = None;
         let mut channel_id = None;
         let mut user_id = None;
         let mut user_name = None;
         let mut trigger_id = None;
-        for (k, v) in url::form_urlencoded::parse(body.as_ref()).into_owned() {
-            match k.as_str() {
-                "command" => command = Some(v),
-                "team_id" => team_id = Some(v),
-                "channel_id" => channel_id = Some(v),
-                "user_id" => user_id = Some(v),
-                "user_name" => user_name = Some(v),
-                "trigger_id" => trigger_id = Some(v),
+        for (k, v) in url::form_urlencoded::parse(body.as_ref()) {
+            match k.as_ref() {
+                "command" => command = Some(v.into_owned()),
+                "team_id" => team_id = Some(v.into_owned()),
+                "channel_id" => channel_id = Some(v.into_owned()),
+                "user_id" => user_id = Some(v.into_owned()),
+                "user_name" => user_name = Some(v.into_owned()),
+                "trigger_id" => trigger_id = Some(v.into_owned()),
                 _ => {}
             }
         }

@@ -71,7 +71,11 @@ async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
     }
 }
 
-fn check_signature(
+/// Verify the HMAC signature on an inbound Slack webhook. Shared with
+/// [`super::interactions`] — every Slack webhook uses the same header
+/// pair and the same signing secret, so the extraction + verify glue
+/// has no reason to be per-module.
+pub(super) fn check_signature(
     slack: &crate::slack::SlackAppState,
     headers: &HeaderMap,
     body: &Bytes,
@@ -79,11 +83,11 @@ fn check_signature(
     let ts_header = header_str(headers, "X-Slack-Request-Timestamp")?;
     let sig_header = header_str(headers, "X-Slack-Signature")?;
     let timestamp = SlackEventTimestamp::try_from(ts_header.as_str()).map_err(|e| {
-        warn!(error = %e, event = "slack.events.bad_timestamp");
+        warn!(error = %e, event = "slack.webhook.bad_timestamp");
         StatusCode::BAD_REQUEST
     })?;
     let signature = SlackSignature::try_from(sig_header).map_err(|e| {
-        warn!(error = %e, event = "slack.events.bad_signature_shape");
+        warn!(error = %e, event = "slack.webhook.bad_signature_shape");
         StatusCode::BAD_REQUEST
     })?;
     verify::verify(
@@ -94,7 +98,7 @@ fn check_signature(
         slack.clock.now_utc(),
     )
     .map_err(|e| {
-        warn!(error = ?e, event = "slack.events.verify_failed");
+        warn!(error = ?e, event = "slack.webhook.verify_failed");
         StatusCode::UNAUTHORIZED
     })?;
     Ok(())
@@ -173,13 +177,13 @@ fn build_inbound(
     })
 }
 
-fn header_str(headers: &HeaderMap, name: &str) -> Result<String, StatusCode> {
+pub(super) fn header_str(headers: &HeaderMap, name: &str) -> Result<String, StatusCode> {
     let Some(value) = headers.get(name) else {
-        warn!(event = "slack.events.missing_header", header = %name);
+        warn!(event = "slack.webhook.missing_header", header = %name);
         return Err(StatusCode::BAD_REQUEST);
     };
     let Ok(s) = value.to_str() else {
-        warn!(event = "slack.events.non_ascii_header", header = %name);
+        warn!(event = "slack.webhook.non_ascii_header", header = %name);
         return Err(StatusCode::BAD_REQUEST);
     };
     Ok(s.to_owned())
