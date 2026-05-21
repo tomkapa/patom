@@ -127,6 +127,7 @@ impl AuthMcpHarness {
             language_resolver: common::lang::english_resolver(),
             web_dist: std::path::PathBuf::from("."),
             slack: None,
+            assets: None,
         };
 
         Self {

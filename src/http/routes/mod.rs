@@ -16,6 +16,7 @@ mod me;
 mod memory;
 mod prompts;
 mod threads;
+mod uploads;
 
 use axum::Router;
 use axum::middleware;
@@ -49,6 +50,7 @@ pub fn router(state: AppState) -> Router {
         .merge(memory::router())
         .merge(threads::router())
         .merge(me::router())
+        .merge(uploads::router())
         // Slack install endpoint — signed-in user only.
         .merge(crate::slack::oauth::private_router())
         // CSRF guards every state-changing request inside the

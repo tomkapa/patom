@@ -83,6 +83,15 @@ function renderBody(props: Props) {
 }
 
 function EntryTile({ entry }: { entry: CatalogEntry }) {
+  if (entry.iconUrl) {
+    return (
+      <img
+        src={entry.iconUrl}
+        alt=""
+        className="h-9 w-9 shrink-0 border border-[var(--color-line)] bg-white object-contain p-1"
+      />
+    );
+  }
   return (
     <Monogram
       name={entry.name}

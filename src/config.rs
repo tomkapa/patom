@@ -47,6 +47,16 @@ pub enum SettingsError {
 
     #[error("slack: RELAY_SLACK_CLIENT_ID must be non-empty after trim")]
     InvalidSlackClientId,
+
+    #[error(
+        "r2: partial configuration; set all of RELAY_R2_ACCOUNT_ID, \
+         RELAY_R2_BUCKET, RELAY_R2_ACCESS_KEY_ID, RELAY_R2_SECRET_ACCESS_KEY, \
+         RELAY_R2_PUBLIC_HOST — or none"
+    )]
+    PartialR2Config,
+
+    #[error("r2: RELAY_R2_PUBLIC_HOST {raw:?} is not a valid https origin ({reason})")]
+    InvalidR2PublicHost { raw: String, reason: &'static str },
 }
 
 /// Process-wide configuration loaded once at startup. Secrets are wrapped in
@@ -80,6 +90,41 @@ pub struct Settings {
     /// set. `None` is a first-class deployment (the Slack routes and
     /// background workers stay un-spawned).
     pub slack: Option<SlackSettings>,
+    /// Cloudflare R2 (S3-compatible) object storage. Present iff all
+    /// `RELAY_R2_*` env vars are set. When `None`, the upload endpoints
+    /// 503 with "asset storage not configured" — deployments that don't
+    /// care about avatar/icon uploads stay first-class.
+    pub r2: Option<R2Settings>,
+}
+
+/// R2 object-storage configuration. All five fields are required as a
+/// group; the `TryFrom<RawSettings>` impl rejects partial sets via
+/// [`SettingsError::PartialR2Config`].
+#[derive(Debug, Clone)]
+pub struct R2Settings {
+    /// Cloudflare account id — used to compose the S3 endpoint URL.
+    pub account_id: SecretString,
+    /// R2 bucket name (e.g. `relay-assets-prod`).
+    pub bucket: String,
+    /// Scoped R2 API token: access key id.
+    pub access_key_id: SecretString,
+    /// Scoped R2 API token: secret access key.
+    pub secret_access_key: SecretString,
+    /// Public-facing base URL (custom domain) the FE renders. Validated
+    /// at the boundary: `https://` scheme, no path/query/fragment, no
+    /// trailing slash.
+    pub public_host: String,
+}
+
+impl R2Settings {
+    /// Compose the S3-compatible endpoint URL for the account.
+    #[must_use]
+    pub fn endpoint(&self) -> String {
+        format!(
+            "https://{account}.r2.cloudflarestorage.com",
+            account = self.account_id.expose(),
+        )
+    }
 }
 
 /// Slack-side configuration. All fields required as a group; the
@@ -240,6 +285,18 @@ struct RawSettings {
     relay_slack_client_id: Option<String>,
     #[serde(default)]
     relay_slack_client_secret: Option<SecretString>,
+
+    // R2 object storage — same all-or-nothing rule as Slack.
+    #[serde(default)]
+    relay_r2_account_id: Option<SecretString>,
+    #[serde(default)]
+    relay_r2_bucket: Option<String>,
+    #[serde(default)]
+    relay_r2_access_key_id: Option<SecretString>,
+    #[serde(default)]
+    relay_r2_secret_access_key: Option<SecretString>,
+    #[serde(default)]
+    relay_r2_public_host: Option<String>,
 }
 
 fn default_web_dist() -> PathBuf {
@@ -250,31 +307,44 @@ const fn default_cookie_secure() -> bool {
     true
 }
 
-/// Validate and normalize `RELAY_WEB_BASE_URL`: must be an absolute
-/// http(s) origin — no path, query, fragment, or userinfo — so callers
-/// can prepend it directly to a `/`-anchored route without producing
-/// malformed redirects.
-fn parse_web_base_url(raw: &str) -> Result<String, SettingsError> {
-    let reject = |reason: &'static str| SettingsError::InvalidWebBaseUrl {
-        raw: raw.to_owned(),
-        reason,
-    };
-    let parsed = url::Url::parse(raw).map_err(|_| reject("not a valid url"))?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(reject("scheme must be http or https"));
+/// Validate that `raw` is an absolute `scheme://host[:port]` origin —
+/// no path, query, fragment, or userinfo — and return its canonical
+/// (trailing-slash-stripped) serialization. Returns the failure reason
+/// as `Err` so the caller can wrap it into a per-field error variant.
+///
+/// `allowed_schemes` is the set the URL must match (e.g. `&["https"]`
+/// for R2, `&["http", "https"]` for the SPA base url).
+fn parse_origin(raw: &str, allowed_schemes: &[&str]) -> Result<String, &'static str> {
+    let parsed = url::Url::parse(raw).map_err(|_| "not a valid url")?;
+    if !allowed_schemes.iter().any(|&s| s == parsed.scheme()) {
+        return Err(match allowed_schemes {
+            ["https"] => "scheme must be https",
+            ["http", "https"] | ["https", "http"] => "scheme must be http or https",
+            _ => "scheme not allowed",
+        });
     }
     if parsed.path() != "/" && !parsed.path().is_empty() {
-        return Err(reject("must be an origin with no path"));
+        return Err("must be an origin with no path");
     }
     if parsed.query().is_some() || parsed.fragment().is_some() {
-        return Err(reject("must not include query or fragment"));
+        return Err("must not include query or fragment");
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(reject("userinfo is not allowed"));
+        return Err("userinfo is not allowed");
     }
     // `Origin::ascii_serialization` yields `scheme://host[:port]` with no
     // trailing slash, regardless of whether `raw` ended with one.
     Ok(parsed.origin().ascii_serialization())
+}
+
+/// Validate `RELAY_WEB_BASE_URL` — must be an http(s) origin so callers
+/// can prepend it directly to a `/`-anchored route without producing
+/// malformed redirects.
+fn parse_web_base_url(raw: &str) -> Result<String, SettingsError> {
+    parse_origin(raw, &["http", "https"]).map_err(|reason| SettingsError::InvalidWebBaseUrl {
+        raw: raw.to_owned(),
+        reason,
+    })
 }
 
 fn default_timezone_raw() -> String {
@@ -292,6 +362,10 @@ fn default_http_addr() -> SocketAddr {
 impl TryFrom<RawSettings> for Settings {
     type Error = SettingsError;
 
+    // Boundary parser: every required field gets one validation step.
+    // The function is straight-line guard + assignment, no branching;
+    // splitting it into helpers per field would obscure that.
+    #[allow(clippy::too_many_lines)]
     fn try_from(raw: RawSettings) -> Result<Self, Self::Error> {
         // Provider is inferred from which `*_API_KEY` is set. Refusing the ambiguous
         // "both set" case is intentional: silently picking one would mask a copy-paste
@@ -372,6 +446,32 @@ impl TryFrom<RawSettings> for Settings {
             }
             _ => return Err(SettingsError::PartialSlackConfig),
         };
+        let r2 = match (
+            raw.relay_r2_account_id,
+            raw.relay_r2_bucket,
+            raw.relay_r2_access_key_id,
+            raw.relay_r2_secret_access_key,
+            raw.relay_r2_public_host,
+        ) {
+            (None, None, None, None, None) => None,
+            (
+                Some(account_id),
+                Some(bucket),
+                Some(access_key_id),
+                Some(secret_access_key),
+                Some(public_host_raw),
+            ) => {
+                let public_host = parse_r2_public_host(&public_host_raw)?;
+                Some(R2Settings {
+                    account_id,
+                    bucket,
+                    access_key_id,
+                    secret_access_key,
+                    public_host,
+                })
+            }
+            _ => return Err(SettingsError::PartialR2Config),
+        };
         Ok(Self {
             provider,
             brave_search_api_key: raw.brave_search_api_key,
@@ -383,8 +483,19 @@ impl TryFrom<RawSettings> for Settings {
             auth,
             web_dist: raw.relay_web_dist,
             slack,
+            r2,
         })
     }
+}
+
+/// Validate `RELAY_R2_PUBLIC_HOST` — must be an `https://` origin so the
+/// asset module can join it to object keys with a single `/` without
+/// producing `//<key>` URLs.
+fn parse_r2_public_host(raw: &str) -> Result<String, SettingsError> {
+    parse_origin(raw, &["https"]).map_err(|reason| SettingsError::InvalidR2PublicHost {
+        raw: raw.to_owned(),
+        reason,
+    })
 }
 
 /// Default vector dimension. Matches `text-embedding-3-small` / the
@@ -445,6 +556,11 @@ mod tests {
             relay_slack_signing_secret: None,
             relay_slack_client_id: None,
             relay_slack_client_secret: None,
+            relay_r2_account_id: None,
+            relay_r2_bucket: None,
+            relay_r2_access_key_id: None,
+            relay_r2_secret_access_key: None,
+            relay_r2_public_host: None,
         }
     }
 

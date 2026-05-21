@@ -29,6 +29,11 @@ export type CatalogEntry = {
    *  is shown instead of the monogram character. Slug must match a key in
    *  `src/data/brandIcons.ts` (all lowercase, no spaces). */
   iconSlug?: string;
+  /** R2-hosted tile icon URL — passed through from the backend
+   *  `mcp_catalog.icon_url`. Takes precedence over `iconSlug`/monogram
+   *  when present. Set by the materialiser in `ConnectionsCatalog`; the
+   *  hardcoded entries in this file leave it undefined. */
+  iconUrl?: string;
   /** Canonical hosted MCP URL. The user can override it before submit. */
   defaultUrl: string;
   auth: "oauth" | "apiToken";

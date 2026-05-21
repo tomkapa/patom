@@ -123,7 +123,12 @@ export function ThreadPanel({
         {/* Root post */}
         {rootMessage && (
           <article className="flex gap-3 border-b border-[var(--color-line)] px-5 py-4">
-            <Monogram name={rootMessage.name} id={rootMessage.id} size={28} />
+            <Monogram
+            name={rootMessage.name}
+            id={rootMessage.id}
+            size={28}
+            avatarUrl={rootMessage.avatar_url}
+          />
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2">
                 <span className="font-[var(--font-display)] text-[13.5px] font-bold text-[var(--color-ink)]">
@@ -233,7 +238,13 @@ function HumanReplyCard({ bubble }: { bubble: Bubble }) {
   const name = bubble.human_name ?? "you";
   return (
     <article className="flex gap-3 border-b border-[var(--color-line)] px-5 py-4">
-      <Monogram name={name} id={bubble.human_id ?? name} size={22} tone="user" />
+      <Monogram
+        name={name}
+        id={bubble.human_id ?? name}
+        size={22}
+        tone="user"
+        avatarUrl={bubble.human_avatar_url}
+      />
       <div className="min-w-0 flex-1">
         <header className="flex items-baseline gap-2">
           <span className="font-[var(--font-display)] text-[13px] font-bold text-[var(--color-ink)]">

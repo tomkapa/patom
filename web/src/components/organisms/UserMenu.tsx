@@ -8,6 +8,7 @@ import type { TranslationKey } from "../../i18n/en";
 import { api } from "../../lib/api";
 import { initials } from "../../lib/utils";
 import type { Language } from "../../types/api";
+import { ImageUploader } from "../molecules/ImageUploader";
 
 // Exhaustive list of selectable languages. Adding a `Language` variant
 // without extending this array is a TypeScript error at the `label` key
@@ -70,11 +71,19 @@ export function UserMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="flex h-9 w-9 items-center justify-center border border-white bg-[var(--color-moss)] transition-colors hover:bg-[var(--color-moss-deep)]"
+        className="flex h-9 w-9 items-center justify-center overflow-hidden border border-white bg-[var(--color-moss)] transition-colors hover:bg-[var(--color-moss-deep)]"
       >
-        <span className="font-mono text-[11px] font-bold tracking-tight text-white">
-          {initials(displayName)}
-        </span>
+        {me.user.avatar_url ? (
+          <img
+            src={me.user.avatar_url}
+            alt=""
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <span className="font-mono text-[11px] font-bold tracking-tight text-white">
+            {initials(displayName)}
+          </span>
+        )}
       </button>
 
       {open ? (
@@ -89,6 +98,30 @@ export function UserMenu() {
             <div className="truncate font-[var(--font-mono)] text-[10.5px] text-[var(--color-muted)]">
               {me.user.email}
             </div>
+          </div>
+
+          <div className="border-b border-[var(--color-line)] px-3 py-3">
+            <ImageUploader
+              kind="avatar"
+              currentUrl={me.user.avatar_url}
+              size={48}
+              fallback={
+                <span className="font-mono text-[11px] font-bold tracking-tight text-[var(--color-muted)]">
+                  {initials(displayName)}
+                </span>
+              }
+              onUpload={async (file) => {
+                const { url } = await api.uploadAvatar(file);
+                const latest = useAuthStore.getState().me;
+                if (latest) {
+                  useAuthStore.getState().setMe({
+                    ...latest,
+                    user: { ...latest.user, avatar_url: url },
+                  });
+                }
+                return url;
+              }}
+            />
           </div>
 
           {canSwitchLanguage ? (

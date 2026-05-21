@@ -328,12 +328,20 @@ export type McpCatalogEntry = {
   display_name: string;
   description: string;
   homepage_url?: string;
+  /** Public URL of the tile icon (R2-hosted). Built-ins land here via
+   *  migration 33; org-scoped entries via `POST /api/uploads/mcp-catalog/:id`.
+   *  Falls back to the FE's Monogram tile when absent. */
+  icon_url?: string;
   auth_kind: McpAuthKind;
   /** `true` when the entry was added by the tenant (not a global built-in). */
   is_custom: boolean;
   /** `true` when this org has a wired `mcp_servers` row for this catalog id. */
   wired: boolean;
 };
+
+/** Response envelope shared by both upload endpoints. The URL is the
+ *  public asset URL the frontend should render. */
+export type UploadResponse = { url: string };
 
 export type TestConnectRequest = {
   config: McpTransport;

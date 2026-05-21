@@ -23,6 +23,7 @@ export function Monogram({
   fg,
   glyph,
   iconSlug,
+  avatarUrl,
   className,
 }: {
   name: string;
@@ -38,11 +39,25 @@ export function Monogram({
   /** simple-icons slug. When present the brand SVG icon is shown instead
    *  of a monogram character. Pairs with `bg` for the tile background. */
   iconSlug?: string;
+  /** When set, render the image instead of the monogram glyph. Takes
+   *  precedence over `iconSlug` / `glyph` / initials. */
+  avatarUrl?: string | null;
   className?: string;
 }) {
   const useExplicit = bg !== undefined;
   const t = tone ?? toneById(id);
   const iconSize = Math.round(size * 0.55);
+  if (avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt={name}
+        aria-label={name}
+        className={cn("inline-block shrink-0 object-cover select-none", className)}
+        style={{ width: size, height: size }}
+      />
+    );
+  }
   return (
     <span
       className={cn(

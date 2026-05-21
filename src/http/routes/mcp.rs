@@ -90,6 +90,10 @@ struct McpCatalogResponse {
     description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     homepage_url: Option<String>,
+    /// Public URL of the tile icon, or `None` when the FE should fall
+    /// back to its `Monogram` rendering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon_url: Option<String>,
     auth_kind: crate::mcp::McpAuthKind,
     /// `true` when the entry is tenant-custom (org_id set). UI uses this
     /// to surface a "managed by your org" badge.
@@ -120,6 +124,7 @@ async fn list_mcp_catalog(
             display_name: e.display_name.as_str().to_owned(),
             description: e.description.as_str().to_owned(),
             homepage_url: e.homepage_url,
+            icon_url: e.icon_url,
             auth_kind: e.auth_kind,
         })
         .collect();

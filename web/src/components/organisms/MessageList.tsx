@@ -20,7 +20,7 @@ export function MessageList({
   threads: ThreadSummary[];
   channel: string;
   userName: string;
-  humanPoster?: { name: string; id: string };
+  humanPoster?: { name: string; id: string; avatar_url?: string | null };
   onOpenThread?: (rootId: string) => void;
 }) {
   const dated = useMemo<DatedGroup[]>(() => {
@@ -47,7 +47,7 @@ export function MessageList({
     );
   }
 
-  const human = humanPoster ?? { name: userName, id: "user" };
+  const human = humanPoster ?? { name: userName, id: "user", avatar_url: null };
 
   return (
     <div className="flex-1 overflow-y-auto scroll-thin grain-paper">
@@ -64,6 +64,7 @@ export function MessageList({
                     kind: "human",
                     name: human.name,
                     id: human.id,
+                    avatarUrl: human.avatar_url ?? null,
                   }}
                   body={text}
                   ts={it.t.created_at}

@@ -21,6 +21,7 @@ use crate::agents::{
     AgentNamesCache, AgentPromptCache, AgentStoreError, AgentSystemPrompt, CachedAgents,
     DefaultAgentSeed, PgAgentStore, SharedAgentStore, SharedAgents,
 };
+use crate::assets::{R2AssetStore, SharedAssetStore};
 use crate::auth::{
     GoogleOAuth, JwtSigner, Language, OrgId, PgOrgLanguageResolver, PgUserStore,
     SharedOrgLanguageResolver, SharedUserStore,
@@ -732,6 +733,15 @@ pub async fn build_server(
         }
     };
 
+    // Object-storage seam — built once at startup from R2 settings when
+    // present. Holding `None` is a first-class deployment shape; the
+    // upload routes 503 cleanly instead of every other handler refusing
+    // to start. CLAUDE.md §9: pool sized + endpoint resolved at boot.
+    let assets: Option<SharedAssetStore> = settings.r2.as_ref().map(|cfg| {
+        let shared: SharedAssetStore = Arc::new(R2AssetStore::new(cfg));
+        shared
+    });
+
     let state = AppState {
         queue: pieces.queue,
         leases: pieces.leases,
@@ -762,6 +772,7 @@ pub async fn build_server(
         language_resolver: pieces.language_resolver,
         web_dist: settings.web_dist.clone(),
         slack: slack_app_state,
+        assets,
     };
 
     Ok(Server {

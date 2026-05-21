@@ -1,0 +1,376 @@
+//! Public surface for the asset module: newtypes, content-type allowlist,
+//! and the [`AssetStore`] trait. CLAUDE.md §1: ids are typed, parsing
+//! happens once at the boundary via `TryFrom`.
+
+use std::fmt;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+
+use crate::types::ParseError;
+
+use super::error::AssetError;
+use super::limits::{ASSET_URL_MAX_LEN, MAX_AVATAR_BYTES, MAX_MCP_ICON_BYTES, OBJECT_KEY_MAX_LEN};
+
+/// Image content-type allowed at the upload boundary.
+///
+/// A sum type, not a `&str`, so exhaustive `match` proves we've covered
+/// every variant in the SDK PutObject call, the magic-byte cross-check,
+/// and the URL-extension derivation (CLAUDE.md §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageContentType {
+    Png,
+    Jpeg,
+    Webp,
+    Svg,
+}
+
+impl ImageContentType {
+    /// Wire-form `Content-Type` header value.
+    #[must_use]
+    pub fn as_mime(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
+            Self::Svg => "image/svg+xml",
+        }
+    }
+
+    /// Canonical file extension (no leading dot) for derived object keys.
+    #[must_use]
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Webp => "webp",
+            Self::Svg => "svg",
+        }
+    }
+
+    /// Parse a wire-form `Content-Type` header value. Returns `None` for
+    /// any value outside the allow-list — the caller maps that into
+    /// [`AssetError::ContentTypeNotAllowed`].
+    #[must_use]
+    pub fn from_mime(raw: &str) -> Option<Self> {
+        // Trim any `; charset=...` parameter the client may attach.
+        let canonical = raw
+            .split(';')
+            .next()
+            .unwrap_or(raw)
+            .trim()
+            .to_ascii_lowercase();
+        match canonical.as_str() {
+            "image/png" => Some(Self::Png),
+            "image/jpeg" | "image/jpg" => Some(Self::Jpeg),
+            "image/webp" => Some(Self::Webp),
+            "image/svg+xml" | "image/svg" => Some(Self::Svg),
+            _ => None,
+        }
+    }
+}
+
+/// The "kind" of asset being stored. Drives per-kind byte caps, SVG
+/// allow/deny rules, and key prefixes — encoded once here instead of
+/// scattered through the upload handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetKind {
+    /// User profile avatar. SVG denied (XSS risk if the URL is ever
+    /// embedded inline on the app origin); served from the assets origin.
+    Avatar,
+    /// MCP catalog tile icon. SVG allowed because vendor logos are
+    /// distributed as SVG and the assets origin is a separate host.
+    McpCatalogIcon,
+}
+
+impl AssetKind {
+    /// Whether this kind accepts the given content type.
+    #[must_use]
+    pub fn accepts(self, content_type: ImageContentType) -> bool {
+        match (self, content_type) {
+            (Self::Avatar, ImageContentType::Svg) => false,
+            (Self::Avatar | Self::McpCatalogIcon, _) => true,
+        }
+    }
+
+    /// Key prefix this kind writes under in the bucket.
+    #[must_use]
+    pub fn key_prefix(self) -> &'static str {
+        match self {
+            Self::Avatar => "avatars",
+            Self::McpCatalogIcon => "mcp",
+        }
+    }
+
+    /// Telemetry label, used as `relay.asset.kind` on tracing spans + the
+    /// `kind` attribute on upload metrics.
+    #[must_use]
+    pub fn telemetry_label(self) -> &'static str {
+        match self {
+            Self::Avatar => "avatar",
+            Self::McpCatalogIcon => "mcp_icon",
+        }
+    }
+
+    /// Maximum body bytes accepted for this kind.
+    #[must_use]
+    pub const fn max_bytes(self) -> usize {
+        match self {
+            Self::Avatar => MAX_AVATAR_BYTES,
+            Self::McpCatalogIcon => MAX_MCP_ICON_BYTES,
+        }
+    }
+}
+
+/// A validated key into the asset bucket. CLAUDE.md §1: every id is a
+/// newtype, every parse is fallible.
+///
+/// Allowed characters: `[A-Za-z0-9_./-]`. Specifically rejects the empty
+/// string, leading `/`, and `..` so a malicious caller cannot construct a
+/// path that escapes its intended prefix.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ObjectKey(Arc<str>);
+
+impl ObjectKey {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Build a deterministic key for an asset kind + stable id + content
+    /// type. Used by the upload handlers so re-uploading replaces in
+    /// place — no orphan-cleanup job needed.
+    pub fn derive(
+        kind: AssetKind,
+        stable_id: &str,
+        content_type: ImageContentType,
+    ) -> Result<Self, ParseError> {
+        let raw = format!(
+            "{prefix}/{id}.{ext}",
+            prefix = kind.key_prefix(),
+            id = stable_id,
+            ext = content_type.extension(),
+        );
+        Self::try_from(raw.as_str())
+    }
+}
+
+impl TryFrom<&str> for ObjectKey {
+    type Error = ParseError;
+
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        if raw.is_empty() {
+            return Err(ParseError::Empty {
+                field: "asset.object_key",
+            });
+        }
+        if raw.len() > OBJECT_KEY_MAX_LEN {
+            return Err(ParseError::TooLong {
+                field: "asset.object_key",
+                max: OBJECT_KEY_MAX_LEN,
+                got: raw.len(),
+            });
+        }
+        if raw.starts_with('/') {
+            return Err(ParseError::Malformed {
+                field: "asset.object_key",
+                detail: "must not start with '/'",
+            });
+        }
+        if raw.contains("..") {
+            return Err(ParseError::Malformed {
+                field: "asset.object_key",
+                detail: "must not contain '..'",
+            });
+        }
+        for b in raw.bytes() {
+            let ok = b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'.' | b'-');
+            if !ok {
+                return Err(ParseError::Malformed {
+                    field: "asset.object_key",
+                    detail: "only [A-Za-z0-9_./-] allowed",
+                });
+            }
+        }
+        Ok(Self(Arc::from(raw)))
+    }
+}
+
+impl fmt::Debug for ObjectKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ObjectKey").field(&&*self.0).finish()
+    }
+}
+
+impl fmt::Display for ObjectKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Public-facing URL for a stored asset. CLAUDE.md §1: parse at the
+/// boundary; the smart constructor enforces `https` + length cap.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AssetUrl(Arc<str>);
+
+impl AssetUrl {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for AssetUrl {
+    type Error = ParseError;
+
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        if raw.is_empty() {
+            return Err(ParseError::Empty { field: "asset.url" });
+        }
+        if raw.len() > ASSET_URL_MAX_LEN {
+            return Err(ParseError::TooLong {
+                field: "asset.url",
+                max: ASSET_URL_MAX_LEN,
+                got: raw.len(),
+            });
+        }
+        if !raw.starts_with("https://") {
+            return Err(ParseError::Malformed {
+                field: "asset.url",
+                detail: "must be https://",
+            });
+        }
+        Ok(Self(Arc::from(raw)))
+    }
+}
+
+impl fmt::Debug for AssetUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("AssetUrl").field(&&*self.0).finish()
+    }
+}
+
+impl fmt::Display for AssetUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl serde::Serialize for AssetUrl {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(&self.0)
+    }
+}
+
+/// Storage seam for image-style assets. Two ops cover today's needs;
+/// fancier features (presigned URLs, lifecycle policies) stay out of the
+/// trait until there's a concrete consumer.
+#[async_trait]
+pub trait AssetStore: fmt::Debug + Send + Sync + 'static {
+    /// Upload `bytes` under `key` with the given content type. Returns
+    /// the public URL the FE renders. Overwrites if `key` already exists.
+    async fn put(
+        &self,
+        key: ObjectKey,
+        bytes: Bytes,
+        content_type: ImageContentType,
+    ) -> Result<AssetUrl, AssetError>;
+
+    /// Delete an object. Idempotent — deleting a missing key is `Ok(())`.
+    async fn delete(&self, key: ObjectKey) -> Result<(), AssetError>;
+}
+
+pub type SharedAssetStore = Arc<dyn AssetStore>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn object_key_rejects_empty() {
+        assert!(matches!(
+            ObjectKey::try_from(""),
+            Err(ParseError::Empty { .. })
+        ));
+    }
+
+    #[test]
+    fn object_key_rejects_leading_slash() {
+        assert!(matches!(
+            ObjectKey::try_from("/avatars/x.png"),
+            Err(ParseError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn object_key_rejects_traversal() {
+        assert!(matches!(
+            ObjectKey::try_from("avatars/../etc"),
+            Err(ParseError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn object_key_rejects_oversize() {
+        let huge = "a".repeat(OBJECT_KEY_MAX_LEN + 1);
+        assert!(matches!(
+            ObjectKey::try_from(huge.as_str()),
+            Err(ParseError::TooLong { .. })
+        ));
+    }
+
+    #[test]
+    fn object_key_rejects_bad_chars() {
+        for raw in ["spa ce.png", "weird?.png", "ümlaut.png"] {
+            assert!(
+                matches!(ObjectKey::try_from(raw), Err(ParseError::Malformed { .. })),
+                "expected malformed for {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn object_key_accepts_valid() {
+        let k = ObjectKey::try_from("avatars/abc-123_v1.png").expect("valid");
+        assert_eq!(k.as_str(), "avatars/abc-123_v1.png");
+    }
+
+    #[test]
+    fn derive_builds_kinded_key() {
+        let k = ObjectKey::derive(AssetKind::Avatar, "abc", ImageContentType::Png).expect("ok");
+        assert_eq!(k.as_str(), "avatars/abc.png");
+        let k = ObjectKey::derive(AssetKind::McpCatalogIcon, "notion", ImageContentType::Svg)
+            .expect("ok");
+        assert_eq!(k.as_str(), "mcp/notion.svg");
+    }
+
+    #[test]
+    fn asset_url_requires_https() {
+        assert!(matches!(
+            AssetUrl::try_from("http://assets.example/x.png"),
+            Err(ParseError::Malformed { .. })
+        ));
+        assert!(AssetUrl::try_from("https://assets.example/x.png").is_ok());
+    }
+
+    #[test]
+    fn content_type_normalises_charset() {
+        assert_eq!(
+            ImageContentType::from_mime("image/svg+xml; charset=utf-8"),
+            Some(ImageContentType::Svg)
+        );
+        assert_eq!(
+            ImageContentType::from_mime("image/PNG"),
+            Some(ImageContentType::Png)
+        );
+        assert_eq!(ImageContentType::from_mime("text/plain"), None);
+    }
+
+    #[test]
+    fn avatar_rejects_svg() {
+        assert!(!AssetKind::Avatar.accepts(ImageContentType::Svg));
+        assert!(AssetKind::Avatar.accepts(ImageContentType::Png));
+        assert!(AssetKind::McpCatalogIcon.accepts(ImageContentType::Svg));
+    }
+}

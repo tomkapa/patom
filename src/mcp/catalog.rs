@@ -156,6 +156,11 @@ pub struct McpCatalogEntry {
     pub description: McpCatalogDescription,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub homepage_url: Option<String>,
+    /// Public URL of the tile icon (R2-hosted). Built-ins seed via
+    /// migration 33; org-scoped entries upload via the asset module.
+    /// `None` falls back to the FE's `Monogram` rendering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
     pub default_transport: McpTransport,
     pub auth_kind: McpAuthKind,
     pub created_at: DateTime<Utc>,
@@ -184,6 +189,21 @@ pub trait McpCatalogStore: fmt::Debug + Send + Sync {
         org_id: OrgId,
         id: &McpCatalogId,
     ) -> Result<Option<McpCatalogEntry>, McpError>;
+
+    /// Set the `icon_url` on an org-scoped catalog row. Refuses to touch
+    /// global (built-in) rows — those are migration-only. Returns
+    /// [`McpError::CatalogIdUnknown`] if no row matches `(org_id, id)`.
+    ///
+    /// The caller (HTTP upload handler) is responsible for length
+    /// validation; this call relies on the schema CHECK as a last-line
+    /// guard.
+    async fn set_icon_url(
+        &self,
+        org_id: OrgId,
+        id: &McpCatalogId,
+        icon_url: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), McpError>;
 }
 
 pub type SharedMcpCatalogStore = Arc<dyn McpCatalogStore>;
@@ -217,6 +237,7 @@ struct CatalogRow {
     display_name: String,
     description: String,
     homepage_url: Option<String>,
+    icon_url: Option<String>,
     default_transport: serde_json::Value,
     auth_kind: String,
     created_at: DateTime<Utc>,
@@ -241,6 +262,7 @@ impl TryFrom<CatalogRow> for McpCatalogEntry {
             display_name,
             description,
             homepage_url: row.homepage_url,
+            icon_url: row.icon_url,
             default_transport,
             auth_kind,
             created_at: row.created_at,
@@ -256,7 +278,7 @@ impl McpCatalogStore for PgMcpCatalogStore {
         // `WHERE` is belt-and-braces against the rare case the caller
         // forgets to wrap in `begin_as`. Order by id for stable iteration.
         let rows: Vec<CatalogRow> = sqlx::query_as::<_, CatalogRow>(
-            "SELECT id, org_id, display_name, description, homepage_url, \
+            "SELECT id, org_id, display_name, description, homepage_url, icon_url, \
                     default_transport, auth_kind, created_at, updated_at \
                FROM mcp_catalog \
               WHERE org_id IS NULL OR org_id = $1 \
@@ -268,6 +290,35 @@ impl McpCatalogStore for PgMcpCatalogStore {
         rows.into_iter().map(McpCatalogEntry::try_from).collect()
     }
 
+    async fn set_icon_url(
+        &self,
+        org_id: OrgId,
+        id: &McpCatalogId,
+        icon_url: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), McpError> {
+        // Org-scoped only — global rows have org_id IS NULL and the
+        // UPDATE policy rejects them anyway, but we lead with an
+        // explicit predicate so the error is clear instead of a 0-row
+        // surprise.
+        let updated: u64 = sqlx::query(
+            "UPDATE mcp_catalog \
+                SET icon_url = $3, updated_at = $4 \
+              WHERE id = $1 AND org_id = $2",
+        )
+        .bind(id.as_str())
+        .bind(org_id.as_uuid())
+        .bind(icon_url)
+        .bind(now)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            return Err(McpError::CatalogIdUnknown(id.clone()));
+        }
+        Ok(())
+    }
+
     async fn get_for_org(
         &self,
         org_id: OrgId,
@@ -277,7 +328,7 @@ impl McpCatalogStore for PgMcpCatalogStore {
         // org_id IS NULL` sorts FALSE (org-scoped) before TRUE (global);
         // LIMIT 1 picks the preferred row.
         let row: Option<CatalogRow> = sqlx::query_as::<_, CatalogRow>(
-            "SELECT id, org_id, display_name, description, homepage_url, \
+            "SELECT id, org_id, display_name, description, homepage_url, icon_url, \
                     default_transport, auth_kind, created_at, updated_at \
                FROM mcp_catalog \
               WHERE id = $1 \

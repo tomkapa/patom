@@ -80,3 +80,10 @@ export function toneById(id?: string | null): IdTone {
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
   return ID_TONE_PALETTE[Math.abs(h) % ID_TONE_PALETTE.length]!;
 }
+
+/** Human-readable byte size: `1500` → `"1 KB"`, `2000000` → `"2 MB"`. */
+export function formatBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${Math.round(n / (1024 * 1024))} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}

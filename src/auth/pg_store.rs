@@ -293,6 +293,31 @@ impl UserStore for PgUserStore {
         ))
     }
 
+    async fn set_avatar_url(
+        &self,
+        user_id: UserId,
+        avatar_url: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(), AuthError> {
+        let mut tx = super::begin_privileged(&self.pool).await?;
+        let rows = sqlx::query(
+            "UPDATE users
+             SET avatar_url = $2, updated_at = $3
+             WHERE id = $1",
+        )
+        .bind(user_id)
+        .bind(avatar_url)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        if rows == 0 {
+            return Err(AuthError::Unauthenticated);
+        }
+        Ok(())
+    }
+
     async fn insert_oauth_state(&self, row: &OAuthStateRow) -> Result<(), AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
         sqlx::query(
