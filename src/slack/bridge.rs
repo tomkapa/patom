@@ -52,6 +52,22 @@ use super::thread_map::SharedSlackThreadStore;
 use super::types::{SlackChannelId, SlackTeamId, SlackThreadTs, SlackTs, SlackUserId};
 use super::workspace::SharedSlackWorkspaceStore;
 
+/// Where this event came from.
+///
+/// The bridge applies a different routing rule for each: an
+/// `AppMention` always processes (falling back to the default agent
+/// on an unknown name); a `ThreadMessage` only processes when the
+/// thread is already bound, because we don't want arbitrary
+/// in-channel chatter to mint fresh agent sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboundSource {
+    /// The bot was `@`-mentioned in the message.
+    AppMention,
+    /// A non-mention message in a thread. Routed only if
+    /// `slack_threads` already has a binding for the thread anchor.
+    ThreadMessage,
+}
+
 /// Inbound event handed from the webhook handler to the bridge worker.
 #[derive(Debug, Clone)]
 pub struct InboundEvent {
@@ -64,6 +80,7 @@ pub struct InboundEvent {
     /// (caller uses `event_ts` as the anchor in that case).
     pub thread_ts: Option<SlackThreadTs>,
     pub event_ts: SlackTs,
+    pub source: InboundSource,
 }
 
 /// Dependencies needed to process an event. Held by the worker; cloned
@@ -171,9 +188,16 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
         .threads
         .lookup_by_thread(&event.team_id, &event.channel_id, &anchor)
         .await?;
-    let receiver_agent_id = match &existing {
-        Some(mapping) => session_agent_participant(deps, mapping.session_id).await?,
-        None => {
+    let receiver_agent_id = match (&existing, event.source) {
+        (Some(mapping), _) => session_agent_participant(deps, mapping.session_id).await?,
+        // Plain in-thread messages without a binding are dropped —
+        // we never start a fresh agent session from random channel
+        // chatter; that's the mention path's job.
+        (None, InboundSource::ThreadMessage) => {
+            info!(event = "slack.bridge.thread_message_unbound_dropped");
+            return Ok(());
+        }
+        (None, InboundSource::AppMention) => {
             resolve_mention_or_default(deps, &event, &workspace.bot_user_id, workspace.org_id)
                 .await?
         }
@@ -333,4 +357,144 @@ async fn resolve_mention_or_default(
 fn strip_for_prompt(event: &InboundEvent, bot: &SlackUserId) -> String {
     let parsed = mention::parse(&event.text, bot);
     parsed.stripped
+}
+
+/// Routing payload for a `/relay` slash command submission. Constructed
+/// by the interactions handler after validating the `view_submission`
+/// envelope; the bridge takes it from here.
+#[derive(Debug, Clone)]
+pub struct SlashCommandSubmit {
+    pub team_id: SlackTeamId,
+    pub channel_id: SlackChannelId,
+    pub slack_user_id: SlackUserId,
+    /// Slack `user_name` (e.g. `tomkapa`) — the human-readable handle,
+    /// captured from the slash command form. Used as the `username`
+    /// override on the synthetic prompt-mirror post so the message
+    /// reads as that user rather than the raw `U…` id. (The Slack
+    /// "APP" badge is unavoidable when posting via a bot token.)
+    pub slack_user_name: String,
+    pub agent_id: AgentId,
+    pub prompt: Prompt,
+    /// Stable per-modal identifier (Slack's `view.id`). Folded into the
+    /// idempotency key so a re-submission of the same modal collapses
+    /// into a single prompt at the queue.
+    pub view_id: String,
+}
+
+/// Drive the slash command path.
+///
+/// Post the synthetic prompt mirror as a channel-top-level message
+/// (becomes the thread root), enqueue the agent prompt, and bind the
+/// resulting session to `(team, channel, thread_ts)` so future replies
+/// via stickiness and the outbound stream pump land in the right thread.
+///
+/// Defence-in-depth: the caller is expected to have already re-checked
+/// that `submit.agent_id` belongs to the workspace's `org_id`; this
+/// function asserts the invariant via the agent lookup (`read` returns
+/// only when the row exists, and the lookup is org-scoped through the
+/// workspace).
+pub async fn enqueue_from_slash(
+    deps: &BridgeDeps,
+    submit: SlashCommandSubmit,
+) -> Result<(), SlackError> {
+    let workspace = deps.workspaces.read_by_team(&submit.team_id).await?;
+    let user_id = match deps
+        .identities
+        .lookup(&submit.team_id, &submit.slack_user_id)
+        .await?
+    {
+        Some(linked) => {
+            assert_eq!(linked.org_id, workspace.org_id);
+            linked.user_id
+        }
+        None => workspace.installed_by_user_id,
+    };
+    // Defence-in-depth: re-validate that the chosen agent belongs to
+    // the workspace's org. The modal options carry agent ids the
+    // client could in principle forge.
+    let agent = deps.agents.read(submit.agent_id).await?;
+    if agent.org_id != workspace.org_id {
+        return Err(SlackError::AgentNotFound(agent.name.as_str().to_owned()));
+    }
+
+    // Try the queue idempotency gate BEFORE posting the synthetic
+    // prompt mirror to Slack. Slack retries `view_submission` on
+    // upstream 5xx / timeouts; if we posted first, the retry would
+    // produce duplicate top-level channel messages even though the
+    // queue would collapse the duplicate enqueue.
+    let idempotency_key = IdempotencyKey::try_from(format!(
+        "slack-slash:{team}:{channel}:{view}",
+        team = submit.team_id.as_str(),
+        channel = submit.channel_id.as_str(),
+        view = submit.view_id,
+    ))?;
+    let prompt_text = submit.prompt.as_str().to_owned();
+    let req = NewPromptRequest::normal(
+        None,
+        Participant::human(),
+        submit.agent_id,
+        None,
+        submit.prompt,
+        idempotency_key,
+        workspace.org_id,
+        user_id,
+    );
+    let outcome = deps.queue.enqueue_for_user(user_id, req).await?;
+    let EnqueueOutcome::Inserted {
+        request_id,
+        session,
+        ..
+    } = outcome
+    else {
+        // Idempotent retry: the original invocation already posted +
+        // bound the thread. Nothing to do.
+        info!(event = "slack.bridge.slash_retry_skipped");
+        return Ok(());
+    };
+
+    // Fresh invocation — post the user's prompt as a top-level
+    // channel message so the agent reply has a thread root to land
+    // in. Username override attributes it to the human who invoked
+    // `/relay`.
+    let prompt_post = deps
+        .poster
+        .post(super::poster::PostRequest {
+            token: workspace.bot_token.clone(),
+            channel: submit.channel_id.clone(),
+            thread_ts: None,
+            text: prompt_text,
+            // The `APP` badge next to the username is unavoidable on
+            // bot-token posts. Using the user's @handle keeps the
+            // mirror visually attributable to them at a glance.
+            username: submit.slack_user_name.clone(),
+        })
+        .await?;
+    let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
+
+    deps.threads
+        .bind_root(
+            workspace.org_id,
+            &submit.team_id,
+            &submit.channel_id,
+            &anchor,
+            session,
+            request_id,
+        )
+        .await?;
+    deps.stream_pump
+        .attach(AttachRequest {
+            root: request_id,
+            org_id: workspace.org_id,
+            team_id: submit.team_id.clone(),
+            channel_id: submit.channel_id.clone(),
+            thread_ts: anchor,
+        })
+        .await;
+    info!(
+        relay.session.id = %session.as_uuid(),
+        relay.request.id = %request_id.as_uuid(),
+        relay.slack.source = "slash",
+        event = "slack.bridge.enqueued",
+    );
+    Ok(())
 }

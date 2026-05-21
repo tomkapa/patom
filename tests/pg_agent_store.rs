@@ -400,6 +400,54 @@ async fn update_replaces_allowed_mcp_tools() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn list_for_org_returns_alphabetised_pairs_scoped_to_org() {
+    let db = TestDb::fresh().await;
+    let store = store(&db);
+
+    let _zeta = store
+        .create(new_agent(&db, "zeta", "z", false))
+        .await
+        .expect("create zeta");
+    let _alpha = store
+        .create(new_agent(&db, "alpha", "a", false))
+        .await
+        .expect("create alpha");
+    let _mike = store
+        .create(new_agent(&db, "mike", "m", false))
+        .await
+        .expect("create mike");
+
+    let pairs = store
+        .list_for_org(db.default_org_id)
+        .await
+        .expect("list_for_org");
+
+    // Seeded default + 3 created = 4. Order is alphabetical by lower(name).
+    let names: Vec<&str> = pairs.iter().map(|(_, n)| n.as_str()).collect();
+    assert_eq!(names, vec!["alpha", "mike", "test-default", "zeta"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_for_org_excludes_other_orgs() {
+    use relay_rs::auth::OrgId;
+    let db = TestDb::fresh().await;
+    let store = store(&db);
+
+    let _local = store
+        .create(new_agent(&db, "local", "in our org", false))
+        .await
+        .expect("create local");
+
+    // A different org id should return zero rows. We don't bother
+    // seeding that org — the only assertion is "different org_id ⇒
+    // empty result", and SELECT against an absent org_id returns 0
+    // regardless of RLS state.
+    let other = OrgId::new();
+    let pairs = store.list_for_org(other).await.expect("list_for_org other");
+    assert!(pairs.is_empty(), "got: {pairs:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn delete_refuses_when_referenced_by_a_session() {
     let db = TestDb::fresh().await;
     let store = store(&db);

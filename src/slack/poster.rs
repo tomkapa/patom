@@ -31,11 +31,18 @@ use super::limits::{
 use super::types::{SlackBotToken, SlackChannelId, SlackThreadTs, SlackTs};
 
 /// What the bridge / stream pump hands to the poster.
+///
+/// `thread_ts` is `Some(_)` for the common case — an agent reply that
+/// must thread under the user's originating message. It is `None`
+/// only for the `/relay` slash command's synthetic prompt mirror,
+/// which lands as a top-level channel post to become the thread root
+/// itself. Slack's `chat.postMessage` API omits the `thread_ts` field
+/// from the wire body in that case.
 #[derive(Debug, Clone)]
 pub struct PostRequest {
     pub token: SlackBotToken,
     pub channel: SlackChannelId,
-    pub thread_ts: SlackThreadTs,
+    pub thread_ts: Option<SlackThreadTs>,
     pub text: String,
     /// Per-message `username` override — the agent's name. Phase 1
     /// identity surface; later supplemented with `icon_url` (issue #43).
@@ -76,7 +83,8 @@ impl fmt::Debug for HttpSlackPoster {
 #[derive(Serialize)]
 struct WirePostBody<'a> {
     channel: &'a str,
-    thread_ts: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thread_ts: Option<&'a str>,
     text: &'a str,
     username: &'a str,
     unfurl_links: bool,
@@ -97,7 +105,10 @@ impl SlackPoster for HttpSlackPoster {
     async fn post(&self, req: PostRequest) -> Result<SlackTs, SlackError> {
         let body = WirePostBody {
             channel: req.channel.as_str(),
-            thread_ts: req.thread_ts.as_str(),
+            thread_ts: req
+                .thread_ts
+                .as_ref()
+                .map(super::types::SlackThreadTs::as_str),
             text: &req.text,
             username: &req.username,
             // Bot replies should never expand link previews; the agent's
@@ -316,7 +327,7 @@ mod tests {
             .post(PostRequest {
                 token: token(),
                 channel: channel(),
-                thread_ts: thread_ts(),
+                thread_ts: Some(thread_ts()),
                 text: "hello".to_owned(),
                 username: "researcher".to_owned(),
             })
@@ -326,7 +337,7 @@ mod tests {
             .post(PostRequest {
                 token: token(),
                 channel: channel(),
-                thread_ts: thread_ts(),
+                thread_ts: Some(thread_ts()),
                 text: "world".to_owned(),
                 username: "critic".to_owned(),
             })

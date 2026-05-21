@@ -143,6 +143,16 @@ pub trait AgentStore: fmt::Debug + Send + Sync {
         viewer: AgentId,
     ) -> Result<Vec<(AgentId, AgentName)>, AgentStoreError>;
 
+    /// Same shape as [`Self::list_names_for_viewer`] but scoped directly
+    /// to `org_id`. Used by callers that have an [`OrgId`] in hand
+    /// without an in-DAG viewer — notably the Slack bridge's `/relay`
+    /// slash command, which needs the tenant's agent roster to populate
+    /// a Block Kit select menu before any session exists.
+    async fn list_for_org(
+        &self,
+        org_id: OrgId,
+    ) -> Result<Vec<(AgentId, AgentName)>, AgentStoreError>;
+
     /// Top-K cosine-similarity search over agents' description
     /// embeddings, restricted to rows in the viewer's org. Returns slim
     /// cards sorted by descending similarity, capped at `k`, with
