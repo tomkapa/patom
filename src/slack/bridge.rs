@@ -33,6 +33,8 @@
 //! 7. On `Inserted`, bind `(team, channel, thread_ts) → root_request_id`
 //!    and attach a stream pump for the root.
 
+use reqwest::Client;
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info, info_span, warn};
@@ -45,11 +47,14 @@ use crate::types::{Participant, ParticipantKind, Prompt};
 
 use super::error::SlackError;
 use super::identity::SharedSlackIdentityStore;
+use super::limits::{SLACK_POST_BODY_TIMEOUT, SLACK_POST_TIMEOUT};
 use super::mention;
 use super::poster::SharedSlackPoster;
 use super::stream_pump::{AttachRequest, SharedStreamPumpHandle};
 use super::thread_map::{SharedSlackThreadStore, ThreadMapping};
-use super::types::{SlackChannelId, SlackTeamId, SlackThreadTs, SlackTs, SlackUserId};
+use super::types::{
+    SlackBotToken, SlackChannelId, SlackTeamId, SlackThreadTs, SlackTs, SlackUserId,
+};
 use super::workspace::SharedSlackWorkspaceStore;
 
 /// Where this event came from.
@@ -96,6 +101,10 @@ pub struct BridgeDeps {
     pub threads: SharedSlackThreadStore,
     pub poster: SharedSlackPoster,
     pub stream_pump: SharedStreamPumpHandle,
+    /// Shared HTTP client used to call `users.info` so the slash-command
+    /// prompt mirror reads as the sender (correct workspace display name
+    /// and avatar) instead of the bot/app default.
+    pub http: Client,
 }
 
 impl std::fmt::Debug for BridgeDeps {
@@ -466,23 +475,16 @@ pub async fn enqueue_from_slash(
         return Ok(());
     };
 
-    // Fresh invocation — post the user's prompt as a top-level
-    // channel message so the agent reply has a thread root to land
-    // in. Username override attributes it to the human who invoked
-    // `/relay`.
-    let prompt_post = deps
-        .poster
-        .post(super::poster::PostRequest {
-            token: workspace.bot_token.clone(),
-            channel: submit.channel_id.clone(),
-            thread_ts: None,
-            body: super::poster::PostBody::Text(prompt_text),
-            // The `APP` badge next to the username is unavoidable on
-            // bot-token posts. Using the user's @handle keeps the
-            // mirror visually attributable to them at a glance.
-            username: submit.slack_user_name.clone(),
-        })
-        .await?;
+    let prompt_post = post_prompt_mirror(
+        deps,
+        &workspace,
+        &submit.channel_id,
+        &submit.slack_user_id,
+        &submit.slack_user_name,
+        &prompt_text,
+        agent.name.as_str(),
+    )
+    .await?;
     let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
 
     deps.threads
@@ -513,4 +515,214 @@ pub async fn enqueue_from_slash(
         event = "slack.bridge.enqueued",
     );
     Ok(())
+}
+
+/// Post the synthetic prompt-mirror message as a channel-top-level
+/// post and return the Slack `ts` it lands under.
+///
+/// Body is a Block Kit envelope so the parent message renders the
+/// prompt *and* a small "→ @agent" attribution line — without it the
+/// reader can't tell which agent owns the thread without expanding it.
+///
+/// `users.info` is best-effort: a failure falls back to the slash
+/// command's `user_name` form value and the app-default avatar. The
+/// post still lands; only the attribution looks worse, which beats
+/// failing the prompt over a profile lookup hiccup.
+async fn post_prompt_mirror(
+    deps: &BridgeDeps,
+    workspace: &crate::slack::workspace::WorkspaceWithToken,
+    channel_id: &SlackChannelId,
+    slack_user_id: &SlackUserId,
+    slack_user_name: &str,
+    prompt_text: &str,
+    agent_name: &str,
+) -> Result<SlackTs, SlackError> {
+    let profile =
+        fetch_user_profile(&deps.http, &workspace.bot_token, slack_user_id.as_str()).await;
+    let display_name = profile
+        .as_ref()
+        .and_then(|p| p.display_name.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| slack_user_name.to_owned());
+    let icon_url = profile.as_ref().and_then(|p| p.image_url.clone());
+    let blocks = build_prompt_mirror_blocks(prompt_text, agent_name);
+    deps.poster
+        .post(super::poster::PostRequest {
+            token: workspace.bot_token.clone(),
+            channel: channel_id.clone(),
+            thread_ts: None,
+            body: super::poster::PostBody::Blocks {
+                fallback_text: prompt_text.to_owned(),
+                blocks,
+            },
+            // The `APP` badge next to the username is unavoidable on
+            // bot-token posts. Using the sender's workspace display
+            // name + avatar makes the mirror read as them at a glance.
+            username: display_name,
+            icon_url,
+        })
+        .await
+}
+
+/// Subset of a Slack `users.info` response we route on.
+///
+/// `display_name` is the user's customised workspace handle (`tomkapa`);
+/// falls back through `real_name` to `name` when unset. `image_url` is
+/// one of the avatar URLs sized for inline rendering.
+#[derive(Debug, Clone)]
+pub struct SlackUserProfile {
+    pub display_name: Option<String>,
+    pub image_url: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct UsersInfoEnvelope {
+    ok: bool,
+    #[serde(default)]
+    user: Option<UsersInfoUser>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct UsersInfoUser {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    real_name: Option<String>,
+    #[serde(default)]
+    profile: Option<UsersInfoProfile>,
+}
+
+#[derive(serde::Deserialize)]
+struct UsersInfoProfile {
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    display_name_normalized: Option<String>,
+    #[serde(default)]
+    real_name: Option<String>,
+    #[serde(default)]
+    image_192: Option<String>,
+    #[serde(default)]
+    image_72: Option<String>,
+    #[serde(default)]
+    image_512: Option<String>,
+}
+
+/// Resolve the Slack user's workspace display name + avatar via
+/// `users.info`. Best-effort: a timeout, transport error, or
+/// `{ok: false}` body returns `None` and the caller falls back to the
+/// slash-command form fields. Caller has already opened the slash ack
+/// window, so we keep this bounded by the standard post timeout.
+async fn fetch_user_profile(
+    http: &Client,
+    token: &SlackBotToken,
+    user_id: &str,
+) -> Option<SlackUserProfile> {
+    let send = http
+        .get("https://slack.com/api/users.info")
+        .bearer_auth(token.expose())
+        .query(&[("user", user_id)])
+        .send();
+    let resp = match tokio::time::timeout(SLACK_POST_TIMEOUT, send).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            warn!(error = %e, event = "slack.users_info.transport_failed");
+            return None;
+        }
+        Err(_) => {
+            warn!(event = "slack.users_info.timeout");
+            return None;
+        }
+    };
+    if !resp.status().is_success() {
+        warn!(
+            status = resp.status().as_u16(),
+            event = "slack.users_info.http_error"
+        );
+        return None;
+    }
+    let parsed: UsersInfoEnvelope =
+        match tokio::time::timeout(SLACK_POST_BODY_TIMEOUT, resp.json()).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                warn!(error = %e, event = "slack.users_info.decode_failed");
+                return None;
+            }
+            Err(_) => {
+                warn!(event = "slack.users_info.body_timeout");
+                return None;
+            }
+        };
+    if !parsed.ok {
+        warn!(
+            error = parsed.error.as_deref().unwrap_or("unknown"),
+            event = "slack.users_info.api_error",
+        );
+        return None;
+    }
+    let user = parsed.user?;
+    let profile = user.profile.unwrap_or(UsersInfoProfile {
+        display_name: None,
+        display_name_normalized: None,
+        real_name: None,
+        image_192: None,
+        image_72: None,
+        image_512: None,
+    });
+    let display_name = profile
+        .display_name
+        .filter(|s| !s.is_empty())
+        .or_else(|| profile.display_name_normalized.filter(|s| !s.is_empty()))
+        .or_else(|| profile.real_name.filter(|s| !s.is_empty()))
+        .or_else(|| user.real_name.filter(|s| !s.is_empty()))
+        .or_else(|| user.name.filter(|s| !s.is_empty()));
+    let image_url = profile.image_192.or(profile.image_512).or(profile.image_72);
+    Some(SlackUserProfile {
+        display_name,
+        image_url,
+    })
+}
+
+/// Build the Block Kit body for the slash-command prompt mirror.
+///
+/// Two blocks: a section with the user's prompt, then a small context
+/// line attributing the routed agent. The context block is the
+/// at-a-glance signal of which agent owns the thread — without it the
+/// reader has to expand the thread to find out.
+fn build_prompt_mirror_blocks(prompt: &str, agent_name: &str) -> Value {
+    json!([
+        {
+            "type": "section",
+            "text": { "type": "mrkdwn", "text": prompt },
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": format!("→ *@{agent_name}*"),
+                },
+            ],
+        },
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_mirror_renders_prompt_and_agent_context() {
+        let blocks = build_prompt_mirror_blocks("help me recruit", "recruiter");
+        let arr = blocks.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], "section");
+        assert_eq!(arr[0]["text"]["text"], "help me recruit");
+        assert_eq!(arr[1]["type"], "context");
+        let ctx_text = arr[1]["elements"][0]["text"].as_str().expect("str");
+        assert!(ctx_text.contains("recruiter"), "got: {ctx_text}");
+        assert!(ctx_text.contains('@'), "should @-prefix agent name");
+    }
 }

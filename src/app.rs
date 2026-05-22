@@ -714,6 +714,7 @@ pub async fn build_server(
                     threads: threads_store.clone(),
                     poster: poster.clone(),
                     stream_pump: pump_handle.clone(),
+                    http: slack_http.clone(),
                 },
                 cancel.clone(),
             );

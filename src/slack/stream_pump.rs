@@ -332,6 +332,9 @@ async fn post_one(
             thread_ts: Some(req.thread_ts.clone()),
             body,
             username: username.to_owned(),
+            // Agents have no avatar yet (issue #43); leave Slack to
+            // render the app default for outbound agent posts.
+            icon_url: None,
         })
         .await
     {
