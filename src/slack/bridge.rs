@@ -48,7 +48,7 @@ use super::identity::SharedSlackIdentityStore;
 use super::mention;
 use super::poster::SharedSlackPoster;
 use super::stream_pump::{AttachRequest, SharedStreamPumpHandle};
-use super::thread_map::SharedSlackThreadStore;
+use super::thread_map::{SharedSlackThreadStore, ThreadMapping};
 use super::types::{SlackChannelId, SlackTeamId, SlackThreadTs, SlackTs, SlackUserId};
 use super::workspace::SharedSlackWorkspaceStore;
 
@@ -207,7 +207,7 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
         &event,
         &workspace,
         &anchor,
-        existing.as_ref().map(|m| m.session_id),
+        existing.as_ref(),
         receiver_agent_id,
         user_id,
     )
@@ -239,12 +239,19 @@ async fn resolve_user_id(
 /// record the `(team, channel, thread_ts) → root_request_id` mapping.
 /// Idempotency: a retried event with the same `event_ts` re-derives
 /// the same `idempotency_key` and short-circuits at the queue.
+///
+/// `existing` carries the stored `ThreadMapping` for a continuing
+/// thread. When `Some`, the pump attaches to its `root_request_id`
+/// (the slot the PgThreadStream notifies on) rather than to this
+/// turn's fresh `request_id`. Without this, threads resumed after a
+/// backend restart silently drop outbound messages because the pump
+/// is subscribed to the wrong broadcast slot.
 async fn enqueue_and_bind(
     deps: &BridgeDeps,
     event: &InboundEvent,
     workspace: &crate::slack::workspace::WorkspaceWithToken,
     anchor: &SlackThreadTs,
-    session_id: Option<crate::session::SessionId>,
+    existing: Option<&ThreadMapping>,
     receiver_agent_id: AgentId,
     user_id: crate::auth::UserId,
 ) -> Result<(), SlackError> {
@@ -256,7 +263,7 @@ async fn enqueue_and_bind(
         ts = event.event_ts.as_str(),
     ))?;
     let req = NewPromptRequest::normal(
-        session_id,
+        existing.map(|m| m.session_id),
         Participant::human(),
         receiver_agent_id,
         None,
@@ -272,6 +279,11 @@ async fn enqueue_and_bind(
         ..
     } = outcome
     {
+        // For a continuing thread, the stored root_request_id is the
+        // original first request (bind_root is ON CONFLICT DO NOTHING).
+        // The PgThreadStream notifies on that original root, so the
+        // pump must subscribe to it — not to this turn's request_id.
+        let pump_root = existing.map_or(request_id, |m| m.root_request_id);
         deps.threads
             .bind_root(
                 workspace.org_id,
@@ -279,16 +291,18 @@ async fn enqueue_and_bind(
                 &event.channel_id,
                 anchor,
                 session,
-                request_id,
+                pump_root,
             )
             .await?;
         deps.stream_pump
             .attach(AttachRequest {
-                root: request_id,
+                root: pump_root,
                 org_id: workspace.org_id,
                 team_id: event.team_id.clone(),
                 channel_id: event.channel_id.clone(),
                 thread_ts: anchor.clone(),
+                slack_user_id: event.user_id.clone(),
+                session_id: session,
             })
             .await;
         info!(
@@ -462,7 +476,7 @@ pub async fn enqueue_from_slash(
             token: workspace.bot_token.clone(),
             channel: submit.channel_id.clone(),
             thread_ts: None,
-            text: prompt_text,
+            body: super::poster::PostBody::Text(prompt_text),
             // The `APP` badge next to the username is unavoidable on
             // bot-token posts. Using the user's @handle keeps the
             // mirror visually attributable to them at a glance.
@@ -488,6 +502,8 @@ pub async fn enqueue_from_slash(
             team_id: submit.team_id.clone(),
             channel_id: submit.channel_id.clone(),
             thread_ts: anchor,
+            slack_user_id: submit.slack_user_id.clone(),
+            session_id: session,
         })
         .await;
     info!(

@@ -80,6 +80,14 @@ pub(super) fn oauth_callback_router() -> Router<AppState> {
     Router::new().route("/mcp-oauth/callback", get(handle_oauth_callback))
 }
 
+/// Public Slack-connect router: `GET /slack/mcp/connect?token=...`.
+/// Lives next to the OAuth callback because the handler reuses the
+/// `install_from_catalog` + `start_oauth` plumbing in this module.
+/// Auth is the signed token, not a cookie.
+pub(super) fn slack_connect_router() -> Router<AppState> {
+    Router::new().route("/slack/mcp/connect", get(handle_slack_connect))
+}
+
 /// Wire shape for the catalog listing. Mirrors [`crate::mcp::McpCatalogEntry`]
 /// minus `default_transport` (operators don't need to see the URL on the
 /// listing — they just click "Connect") and minus the per-row timestamps.
@@ -335,6 +343,51 @@ async fn create_mcp_server(
         StatusCode::CREATED,
         Json(McpServerResponse::from_record(record, credentials_kind)),
     ))
+}
+
+/// Idempotent "wire this catalog entry for this org" helper.
+///
+/// Used by:
+///   * the `POST /mcp-servers` short-form path implicitly via
+///     [`create_mcp_server`] when the operator has a session cookie;
+///   * the public `GET /slack/mcp/connect` handler, which has only a
+///     signed token and must mint or reuse the existing server row.
+///
+/// Returns the existing `mcp_servers` row when one already exists for
+/// `(org_id, catalog_id)` instead of erroring — the Slack flow is
+/// expected to be retried (vendor consent page reload, Slack double-
+/// click), and we never want two server rows for the same wiring.
+pub(super) async fn install_from_catalog(
+    state: &AppState,
+    org_id: crate::auth::OrgId,
+    user_id: crate::auth::UserId,
+    catalog_id: &McpCatalogId,
+) -> Result<McpServerRecord, HttpError> {
+    // Reuse: scan the existing org rows for the same catalog id.
+    let existing = state.mcp_store.list_for_org(org_id).await?;
+    if let Some(row) = existing.into_iter().find(|r| r.catalog_id == *catalog_id) {
+        return Ok(row);
+    }
+    let entry = state
+        .mcp_catalog
+        .get_for_org(org_id, catalog_id)
+        .await?
+        .ok_or_else(|| {
+            HttpError::Mcp(crate::mcp::McpError::CatalogIdUnknown(catalog_id.clone()))
+        })?;
+    let record = state
+        .mcp_store
+        .create(McpServerCreate {
+            org_id,
+            created_by_user_id: user_id,
+            catalog_id: catalog_id.clone(),
+            config: entry.default_transport,
+            description: None,
+            enabled: true,
+            connection_status: ConnectionStatus::AuthPending,
+        })
+        .await?;
+    Ok(record)
 }
 
 async fn list_mcp_servers(
@@ -920,6 +973,18 @@ struct OAuthStartRequest {
     /// the frontend (e.g. Notion needs `read_content read_user`).
     #[serde(default)]
     scope: Option<String>,
+    /// Resume context — populated by callers driving the start flow on
+    /// behalf of a live conversation. When both `session_id` and
+    /// `agent_id` are present, the OAuth callback enqueues a synthetic
+    /// continuation prompt into the session so the agent loop resumes
+    /// without the user typing anything. Universal across channels
+    /// (web UI, Slack adapter, future Lark / Teams).
+    ///
+    /// Both-or-neither: the handler returns 400 if exactly one is set.
+    #[serde(default)]
+    session_id: Option<crate::session::SessionId>,
+    #[serde(default)]
+    agent_id: Option<AgentId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -984,6 +1049,21 @@ async fn start_oauth(
     let expires_at = now
         + chrono::Duration::from_std(OAUTH_PENDING_TTL)
             .expect("invariant: OAUTH_PENDING_TTL fits in chrono::Duration");
+    // Both-or-neither for resume_ctx. A half-populated payload would
+    // bypass the universal auto-continue silently — surface the misuse
+    // as a 400 instead.
+    let resume_ctx = match (body.session_id, body.agent_id) {
+        (Some(session_id), Some(agent_id)) => Some(crate::mcp::oauth::ResumeCtx {
+            session_id,
+            agent_id,
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(HttpError::BadRequest(
+                "session_id and agent_id must both be present or both absent".into(),
+            ));
+        }
+    };
     state
         .mcp_oauth_pending
         .insert(crate::mcp::oauth::PendingAuthorizationWrite {
@@ -995,6 +1075,8 @@ async fn start_oauth(
             pkce_verifier: start.pkce_verifier.clone(),
             redirect_to: body.redirect_to.clone(),
             expires_at,
+            resume_ctx,
+            slack_ctx: None,
         })
         .await
         .map_err(map_oauth_err)?;
@@ -1083,7 +1165,161 @@ async fn callback_flow(
             redirect_to: pending.redirect_to.clone(),
             reason,
         })?;
+    // Best-effort post-success behaviours, gated on the optional ctx
+    // groups carried by the consumed pending row. Each is independent
+    // and never fails the callback — the credential write is the
+    // load-bearing artifact. Auto-continue (a `POST /prompts`-equivalent
+    // DB write) and the Slack ping (an outbound Slack HTTP call) touch
+    // disjoint resources, so they run concurrently.
+    let display_name = resolve_display_name(state, &pending).await;
+    tokio::join!(
+        do_auto_continue(state, &pending, state_val, &display_name),
+        do_slack_ping(state, &pending, &display_name),
+    );
     Ok(pending.redirect_to)
+}
+
+/// Single source of truth for the universal auto-continue prompt. The
+/// frontend's previous `thread.wireRequest.resumePrompt` i18n string is
+/// retired in favour of this constant so the BE callback owns the
+/// canonical text across every channel.
+const MCP_RESUME_PROMPT_TEMPLATE: &str = "I've connected {name}. Please continue.";
+
+fn render_resume_prompt(display_name: &str) -> String {
+    MCP_RESUME_PROMPT_TEMPLATE.replace("{name}", display_name)
+}
+
+/// Resolve the provider's display name for the post-success surfaces
+/// (Slack ping + synthetic resume prompt). Returns `"the connector"` on
+/// any lookup failure — better to fall back than block the callback,
+/// since the credential write has already succeeded.
+async fn resolve_display_name(state: &AppState, pending: &PendingAuthorization) -> String {
+    let Ok(server) = state
+        .mcp_store
+        .read(pending.server_id, pending.org_id)
+        .await
+    else {
+        return "the connector".to_owned();
+    };
+    match state
+        .mcp_catalog
+        .get_for_org(pending.org_id, &server.catalog_id)
+        .await
+    {
+        Ok(Some(entry)) => entry.display_name.as_str().to_owned(),
+        _ => "the connector".to_owned(),
+    }
+}
+
+/// Universal server-side auto-continue. Replaces the previous
+/// FE-driven `POST /prompts` injection that lived on the web side; now
+/// any channel that supplied `resume_ctx` (web UI, Slack adapter,
+/// future Lark / Teams) gets the resume for free.
+///
+/// Idempotency: the key is derived from the OAuth `state` token (a
+/// one-shot PKCE row) so vendor-side callback replays produce at most
+/// one synthetic prompt.
+async fn do_auto_continue(
+    state: &AppState,
+    pending: &PendingAuthorization,
+    state_token: &str,
+    display_name: &str,
+) {
+    let Some(resume) = pending.resume_ctx else {
+        return;
+    };
+    let content = match crate::types::Prompt::try_from(render_resume_prompt(display_name)) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, event = "mcp.oauth.callback.resume_prompt_invalid");
+            return;
+        }
+    };
+    let idem_raw = format!("mcp-resume:{state_token}");
+    let idempotency_key = match crate::runtime::IdempotencyKey::try_from(idem_raw) {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::warn!(error = %e, event = "mcp.oauth.callback.resume_idem_invalid");
+            return;
+        }
+    };
+    match super::prompts::submit_internal(
+        state,
+        super::prompts::SubmitPromptParams {
+            user_id: pending.user_id,
+            org_id: pending.org_id,
+            session_id: Some(resume.session_id),
+            agent_id: Some(resume.agent_id),
+            content,
+            idempotency_key,
+        },
+    )
+    .await
+    {
+        Ok(_) => tracing::info!(
+            relay.session.id = %resume.session_id.as_uuid(),
+            relay.agent.id = %resume.agent_id.as_uuid(),
+            event = "mcp.oauth.callback.auto_continue_submitted",
+        ),
+        Err(e) => tracing::warn!(
+            error = ?e,
+            event = "mcp.oauth.callback.auto_continue_failed",
+        ),
+    }
+}
+
+/// Post the `✓ Connected — <Provider>` follow-up into the originating
+/// Slack thread. Best effort — Slack returning an error never blocks
+/// the credential write or the universal auto-continue.
+async fn do_slack_ping(state: &AppState, pending: &PendingAuthorization, display_name: &str) {
+    let Some(ctx) = pending.slack_ctx.as_ref() else {
+        return;
+    };
+    let Some(slack) = state.slack.as_ref() else {
+        tracing::warn!(event = "mcp.oauth.callback.slack_ping_without_state");
+        return;
+    };
+    let team_id = match crate::slack::SlackTeamId::try_from(ctx.team_id.as_str()) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, event = "mcp.oauth.callback.bad_team_id");
+            return;
+        }
+    };
+    let channel_id = match crate::slack::SlackChannelId::try_from(ctx.channel_id.as_str()) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, event = "mcp.oauth.callback.bad_channel_id");
+            return;
+        }
+    };
+    let thread_ts = match crate::slack::SlackThreadTs::try_from(ctx.thread_ts.as_str()) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, event = "mcp.oauth.callback.bad_thread_ts");
+            return;
+        }
+    };
+    let workspace = match slack.workspaces.read_by_team(&team_id).await {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(error = ?e, event = "mcp.oauth.callback.slack_workspace_missing");
+            return;
+        }
+    };
+    if let Err(e) = slack
+        .poster
+        .post(crate::slack::poster::PostRequest {
+            token: workspace.bot_token.clone(),
+            channel: channel_id,
+            thread_ts: Some(thread_ts),
+            body: crate::slack::poster::PostBody::Text(format!("✓ Connected — {display_name}")),
+            username: "Relay".to_owned(),
+        })
+        .await
+    {
+        tracing::warn!(error = ?e, event = "mcp.oauth.callback.slack_ping_post_failed");
+    }
 }
 
 fn redirect_ok(web_base: Option<&str>, redirect_to: Option<&str>) -> axum::response::Response {
@@ -1545,6 +1781,246 @@ async fn resolve_as_metadata_for_server(
     discover_authorization_server(&state.mcp_oauth_flow.http, url.as_str())
         .await
         .map_err(map_oauth_err)
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Slack-connect: GET /slack/mcp/connect?token=...
+// ────────────────────────────────────────────────────────────────────────
+//
+// Public no-cookie route. The Block Kit connection-request card's
+// `Connect <Provider>` button points here with a `connect_link`-signed
+// token. We verify the token, resolve the Slack user → relay user via
+// the workspace installer fallback (same identity model as
+// `app_mention`), idempotently install the catalog entry as an
+// `mcp_servers` row, mint PKCE + state, persist the pending row
+// (with both `resume_ctx` and `slack_ctx` populated), and 302 the
+// browser to the vendor's consent screen.
+
+#[derive(Debug, Deserialize)]
+struct SlackConnectQuery {
+    #[serde(default)]
+    token: Option<String>,
+}
+
+/// Render a minimal HTML error page. The Connect button lives in a
+/// Slack thread; the browser tab is the only feedback channel back to
+/// the user — never JSON.
+fn slack_connect_error_html(reason: &str) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Couldn't start connection</title></head>\
+         <body style=\"font-family: -apple-system, system-ui, sans-serif; \
+                       max-width: 32rem; margin: 4rem auto; line-height: 1.5; padding: 0 1rem;\">\
+         <h1>Couldn't start connection</h1>\
+         <p>{reason}</p>\
+         <p>Return to Slack and try the Connect button again from a fresh agent reply.</p>\
+         </body></html>",
+        reason = ammonia_escape(reason),
+    );
+    let mut resp = axum::response::Html(body).into_response();
+    *resp.status_mut() = StatusCode::BAD_REQUEST;
+    resp
+}
+
+/// Minimal HTML escape — the reason strings are all internal short
+/// labels, so escaping the five mandatory characters is enough.
+fn ammonia_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+#[tracing::instrument(name = "slack.connect.start", skip_all)]
+async fn handle_slack_connect(
+    State(state): State<AppState>,
+    Query(q): Query<SlackConnectQuery>,
+) -> axum::response::Response {
+    match handle_slack_connect_inner(&state, q.token.as_deref()).await {
+        Ok(authorize_url) => {
+            use axum::response::IntoResponse as _;
+            Redirect::to(&authorize_url).into_response()
+        }
+        Err(reason) => slack_connect_error_html(reason),
+    }
+}
+
+/// Composition of the Slack-connect handler split out of the axum
+/// wrapper so its body stays under the 100-line ceiling. Errors are
+/// short human-readable strings rendered into the error HTML.
+async fn handle_slack_connect_inner(
+    state: &AppState,
+    token: Option<&str>,
+) -> Result<String, &'static str> {
+    let slack = state
+        .slack
+        .as_ref()
+        .ok_or("Slack integration is not enabled on this Relay deployment.")?;
+    let token = token.ok_or("Missing token.")?;
+
+    let now = slack.clock.now_unix_secs();
+    let claims = crate::slack::connect_link::verify_connect(
+        slack.signing_secret.expose().as_bytes(),
+        token,
+        now,
+    )
+    .ok_or_else(|| {
+        tracing::warn!(event = "slack.connect.bad_token");
+        "This Connect link is expired or invalid. Ask the agent to send the request again."
+    })?;
+
+    let (user_id, org_id) = resolve_slack_connect_identity(slack, &claims).await?;
+    let server = install_from_catalog(state, org_id, user_id, &claims.catalog_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = ?e, event = "slack.connect.install_failed");
+            "Couldn't install this connector. The catalog entry may be missing."
+        })?;
+
+    let (start, issuer) = slack_connect_build_oauth_start(state, org_id, server.id).await?;
+
+    persist_slack_connect_pending(state, &claims, &start, server.id, user_id, org_id, issuer)
+        .await?;
+
+    tracing::info!(
+        relay.mcp.catalog_id = %claims.catalog_id,
+        relay.org.id = %org_id.as_uuid(),
+        relay.user.id = %user_id.as_uuid(),
+        event = "slack.connect.redirect",
+    );
+    Ok(start.authorize_url.to_string())
+}
+
+async fn resolve_slack_connect_identity(
+    slack: &crate::slack::SlackAppState,
+    claims: &crate::slack::connect_link::SlackConnectClaims,
+) -> Result<(crate::auth::UserId, crate::auth::OrgId), &'static str> {
+    let workspace = slack
+        .workspaces
+        .read_by_team(&claims.team_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = ?e, event = "slack.connect.workspace_missing");
+            "Couldn't find the Slack workspace for this connection request."
+        })?;
+    match slack
+        .identities
+        .lookup(&claims.team_id, &claims.slack_user_id)
+        .await
+    {
+        Ok(Some(linked)) => Ok((linked.user_id, linked.org_id)),
+        Ok(None) => Ok((workspace.installed_by_user_id, workspace.org_id)),
+        Err(e) => {
+            tracing::error!(error = ?e, event = "slack.connect.identity_lookup_failed");
+            Err("Internal error resolving Slack identity.")
+        }
+    }
+}
+
+async fn slack_connect_build_oauth_start(
+    state: &AppState,
+    org_id: crate::auth::OrgId,
+    server_id: McpServerId,
+) -> Result<(crate::mcp::oauth::AuthorizeStart, String), &'static str> {
+    let as_metadata = resolve_as_metadata_for_server(state, org_id, server_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = ?e, event = "slack.connect.discovery_failed");
+            "Couldn't reach the connector's authorisation server."
+        })?;
+    let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
+    let dcr = load_or_register_dcr(state, org_id, &as_metadata, &redirect_uri).await?;
+    let start = build_authorize_url(&dcr, &redirect_uri, None).map_err(|e| {
+        tracing::warn!(error = ?e, event = "slack.connect.build_url_failed");
+        "Couldn't build the authorisation URL."
+    })?;
+    Ok((start, dcr.issuer))
+}
+
+async fn load_or_register_dcr(
+    state: &AppState,
+    org_id: crate::auth::OrgId,
+    as_metadata: &crate::mcp::oauth::AsMetadata,
+    redirect_uri: &str,
+) -> Result<crate::mcp::oauth::DcrClientRecord, &'static str> {
+    let existing = state
+        .mcp_oauth_clients
+        .read(org_id, &as_metadata.issuer)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = ?e, event = "slack.connect.dcr_lookup_failed");
+            "Internal error looking up the OAuth client."
+        })?;
+    if let Some(dcr) = existing {
+        return Ok(dcr);
+    }
+    let new = register_dynamic_client(
+        &state.mcp_oauth_flow,
+        as_metadata,
+        org_id,
+        redirect_uri,
+        None,
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(error = ?e, event = "slack.connect.dcr_failed");
+        "Couldn't register Relay with the connector's authorisation server."
+    })?;
+    state.mcp_oauth_clients.upsert(new).await.map_err(|e| {
+        tracing::error!(error = ?e, event = "slack.connect.dcr_upsert_failed");
+        "Internal error registering the OAuth client."
+    })
+}
+
+async fn persist_slack_connect_pending(
+    state: &AppState,
+    claims: &crate::slack::connect_link::SlackConnectClaims,
+    start: &crate::mcp::oauth::AuthorizeStart,
+    server_id: McpServerId,
+    user_id: crate::auth::UserId,
+    org_id: crate::auth::OrgId,
+    issuer: String,
+) -> Result<(), &'static str> {
+    let now_chrono = state.clock.now_utc();
+    let expires_at = now_chrono
+        + chrono::Duration::from_std(OAUTH_PENDING_TTL)
+            .expect("invariant: OAUTH_PENDING_TTL fits in chrono::Duration");
+    let resume_ctx = Some(crate::mcp::oauth::ResumeCtx {
+        session_id: claims.session_id,
+        agent_id: claims.agent_id,
+    });
+    let slack_ctx = Some(crate::mcp::oauth::SlackPingCtx {
+        team_id: claims.team_id.as_str().to_owned(),
+        channel_id: claims.channel_id.as_str().to_owned(),
+        thread_ts: claims.thread_ts.as_str().to_owned(),
+    });
+    state
+        .mcp_oauth_pending
+        .insert(crate::mcp::oauth::PendingAuthorizationWrite {
+            state: start.state.clone(),
+            server_id,
+            user_id,
+            org_id,
+            issuer,
+            pkce_verifier: start.pkce_verifier.clone(),
+            redirect_to: None,
+            expires_at,
+            resume_ctx,
+            slack_ctx,
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!(error = ?e, event = "slack.connect.pending_insert_failed");
+            "Internal error persisting authorisation state."
+        })
 }
 
 fn map_oauth_err(err: OAuthError) -> HttpError {

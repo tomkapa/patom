@@ -15,8 +15,7 @@
 //! user identity linking (Slack user ↔ Relay user) lives behind a
 //! separate DM-confirmation flow tracked in GitHub issue #41.
 
-use std::fmt::Write as _;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
@@ -32,7 +31,6 @@ use tracing::{error, info, warn};
 use url::Url;
 
 use crate::auth::{OrgId, Principal, UserId};
-use crate::clock::SharedClock;
 use crate::http::AppState;
 use crate::http::HttpError;
 
@@ -86,7 +84,7 @@ async fn install(
         slack.signing_secret.expose().as_bytes(),
         principal.active_org_id,
         principal.user_id,
-        now_secs(&slack.clock) + i64::try_from(STATE_TTL.as_secs()).unwrap_or(600),
+        slack.clock.now_unix_secs() + i64::try_from(STATE_TTL.as_secs()).unwrap_or(600),
     );
     let mut url =
         Url::parse("https://slack.com/oauth/v2/authorize").map_err(|_| HttpError::Internal)?;
@@ -133,7 +131,7 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
     let Some(parsed) = verify_state(
         slack.signing_secret.expose().as_bytes(),
         &state_token,
-        now_secs(&slack.clock),
+        slack.clock.now_unix_secs(),
     ) else {
         warn!(event = "slack.oauth.callback_bad_state");
         return StatusCode::BAD_REQUEST.into_response();
@@ -250,11 +248,7 @@ fn sign_state(key: &[u8], org_id: OrgId, user_id: UserId, exp_secs: i64) -> Stri
     let payload = format!("{}.{}.{exp_secs}", org_id.as_uuid(), user_id.as_uuid());
     let mut mac = HmacSha256::new_from_slice(key).expect("invariant: signing secret non-empty");
     mac.update(payload.as_bytes());
-    let sig = mac.finalize().into_bytes();
-    let mut hex_sig = String::with_capacity(64);
-    for byte in sig {
-        write!(hex_sig, "{byte:02x}").expect("invariant: write to in-memory String is infallible");
-    }
+    let hex_sig = super::hex::encode_32(&mac.finalize().into_bytes());
     format!("{payload}.{hex_sig}")
 }
 
@@ -292,15 +286,6 @@ fn verify_state(key: &[u8], token: &str, now_secs: i64) -> Option<StateClaims> {
         return None;
     }
     Some(StateClaims { org_id, user_id })
-}
-
-fn now_secs(clock: &SharedClock) -> i64 {
-    let secs = clock
-        .now_wall()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    i64::try_from(secs).unwrap_or(0)
 }
 
 // ────────────────────────────────────────────────────────────────────

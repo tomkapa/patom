@@ -14,7 +14,7 @@ mod healthz;
 mod mcp;
 mod me;
 mod memory;
-mod prompts;
+pub(super) mod prompts;
 mod threads;
 mod uploads;
 
@@ -37,6 +37,9 @@ pub fn router(state: AppState) -> Router {
         // browser is returning from the vendor. CSRF is provided by the
         // PKCE state column, not the double-submit cookie.
         .merge(mcp::oauth_callback_router())
+        // Slack-initiated MCP wiring lands here — also no cookie session,
+        // auth is the `connect_link`-signed token in the query string.
+        .merge(mcp::slack_connect_router())
         // Slack webhook + OAuth callback also sit outside the cookie
         // gate. Slack signs each webhook (HMAC-SHA256) and the OAuth
         // callback validates an HMAC-signed state token.
