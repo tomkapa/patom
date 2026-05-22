@@ -324,22 +324,7 @@ async fn handle_stream_event(
             };
             let username = resolve_agent_name(deps, item.from_agent).await;
             let body = clip_body(body, SLACK_MAX_POST_CHARS);
-            // Routing session is normally the chunk's session, but
-            // `AgentMessage` carries its own `to_session` — the
-            // `(from, human)` session the message belongs to, which
-            // differs from the publishing request's session whenever
-            // an agent calls `send_message(human, …)` from inside an
-            // agent↔agent turn.
-            //
-            // Only `AgentMessage` is an explicit agent→human address
-            // that justifies opening a new Slack thread. Done / Error /
-            // WireMcpRequest are contextual emissions that only land if
-            // the chunk's session is already bound — otherwise we'd mint
-            // a thread for every internal agent↔agent Done.
-            let (route_session, allow_mint) = match &item.chunk {
-                ResponseChunk::AgentMessage { to_session, .. } => (*to_session, true),
-                _ => (item.session_id, false),
-            };
+            let (route_session, allow_mint) = routing_for(&item.chunk, item.session_id);
             if matches!(&item.chunk, ResponseChunk::WireMcpRequest { .. }) {
                 if deferred.len() >= MAX_DEFERRED_WIRE_CARDS {
                     deferred.remove(0);
@@ -510,6 +495,30 @@ async fn dispatch_post(
     }
 
     *minted_threads = minted_threads.saturating_add(1);
+}
+
+/// Decide which session a chunk routes to in Slack, and whether the
+/// pump may mint a fresh thread for it.
+///
+/// `AgentMessage` carries its own `to_session` — the `(from, human)`
+/// session the message belongs to. That differs from the publishing
+/// request's session whenever an agent calls `send_message(human, …)`
+/// from inside an agent↔agent turn (e.g. writer running in a
+/// `writer↔recruiter` session calls `send_message(human, …)`; the
+/// chunk's `to_session` is `writer↔human`, the request's session is
+/// `writer↔recruiter`). The pump must route by `to_session` so the
+/// message lands in the existing `writer↔human` thread instead of
+/// minting a sibling thread.
+///
+/// `AgentMessage` is also the only chunk type that may mint — it's
+/// the explicit agent→human address. Done / Error / WireMcpRequest
+/// only post if the chunk's session is already bound; otherwise
+/// they'd leak internal agent↔agent traffic into new Slack threads.
+fn routing_for(chunk: &ResponseChunk, request_session: SessionId) -> (SessionId, bool) {
+    match chunk {
+        ResponseChunk::AgentMessage { to_session, .. } => (*to_session, true),
+        _ => (request_session, false),
+    }
 }
 
 /// Map a [`ResponseChunk`] to the body we post into Slack, or `None`
@@ -960,5 +969,197 @@ mod tests {
         );
         assert_eq!(threads.len(), 0, "no thread minted");
         assert_eq!(minted, 0);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // routing_for: AgentMessage → (to_session, allow_mint=true);
+    // everything else → (request_session, allow_mint=false).
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn routing_for_agent_message_uses_to_session_and_allows_mint() {
+        // Reproduces the writer→human bug: writer is running in a
+        // sibling agent↔agent session, but its send_message(human)
+        // chunk must route by `to_session` (writer↔human) — not by
+        // the publishing request's session (writer↔recruiter).
+        let writer_human = SessionId::new();
+        let writer_recruiter = SessionId::new();
+        let chunk = ResponseChunk::AgentMessage {
+            from: crate::agents::AgentId::new(),
+            to_session: writer_human,
+            content: "follow-up question".to_owned(),
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, writer_recruiter);
+        assert_eq!(route_session, writer_human, "route by to_session");
+        assert!(allow_mint, "AgentMessage may mint");
+    }
+
+    #[test]
+    fn routing_for_done_uses_request_session_and_disallows_mint() {
+        // The exact bug shape: writer's Done in (writer ↔ recruiter)
+        // must route by the publishing request's session and must NOT
+        // be allowed to mint — otherwise it leaks into a fresh thread.
+        let writer_recruiter = SessionId::new();
+        let chunk = ResponseChunk::Done {
+            final_text: "internal reply to recruiter".to_owned(),
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, writer_recruiter);
+        assert_eq!(route_session, writer_recruiter);
+        assert!(!allow_mint, "Done never mints");
+    }
+
+    #[test]
+    fn routing_for_error_uses_request_session_and_disallows_mint() {
+        let request_session = SessionId::new();
+        let chunk = ResponseChunk::Error {
+            reason: "timeout".to_owned(),
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, request_session);
+        assert_eq!(route_session, request_session);
+        assert!(!allow_mint);
+    }
+
+    #[test]
+    fn routing_for_wire_mcp_request_uses_request_session_and_disallows_mint() {
+        let request_session = SessionId::new();
+        let chunk = ResponseChunk::WireMcpRequest {
+            from: crate::agents::AgentId::new(),
+            catalog_id: McpCatalogId::try_from("notion").expect("valid catalog id"),
+            display_name: "Notion".to_owned(),
+            reason: "draft a brief".to_owned(),
+            auth_kind: McpAuthKind::OAuth2,
+            homepage_url: None,
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, request_session);
+        assert_eq!(route_session, request_session);
+        assert!(!allow_mint, "WireMcpRequest piggybacks, never mints");
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // End-to-end: the (writer↔human, writer↔recruiter) bug scenario.
+    // ──────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn agent_message_from_sibling_pair_lands_in_writer_human_thread() {
+        // Setup:
+        //   T1   = bound to writer↔human (from the inbound mention)
+        //   T2   = bound to recruiter↔human (recruiter's earlier mint)
+        //
+        // Writer runs in writer↔recruiter (sibling pair). It calls
+        // send_message(human, …). The chunk is published with
+        //   to_session = writer↔human
+        //   request session = writer↔recruiter
+        // The pump must route by to_session → T1, NOT mint a new
+        // thread and NOT post under T2.
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let writer_human = SessionId::new();
+        let recruiter_human = SessionId::new();
+        let writer_recruiter = SessionId::new();
+        let t1 = SlackThreadTs::try_from("1700000000.111111").expect("ts");
+        let t2 = SlackThreadTs::try_from("1700000000.222222").expect("ts");
+        threads
+            .bind_root(
+                req.org_id,
+                &req.team_id,
+                &req.channel_id,
+                &t1,
+                writer_human,
+                req.root,
+            )
+            .await
+            .expect("seed t1");
+        threads
+            .bind_root(
+                req.org_id,
+                &req.team_id,
+                &req.channel_id,
+                &t2,
+                recruiter_human,
+                req.root,
+            )
+            .await
+            .expect("seed t2");
+
+        let chunk = ResponseChunk::AgentMessage {
+            from: crate::agents::AgentId::new(),
+            to_session: writer_human,
+            content: "here's the code example you asked for".to_owned(),
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, writer_recruiter);
+
+        let mut minted = 0;
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            route_session,
+            text_body("here's the code example you asked for"),
+            "writer".to_owned(),
+            allow_mint,
+            &mut minted,
+        )
+        .await;
+
+        let captured = poster.captured();
+        assert_eq!(captured.len(), 1, "exactly one post");
+        let posted_thread = captured[0].thread_ts.as_ref().expect("threaded reply");
+        assert_eq!(
+            posted_thread.as_str(),
+            t1.as_str(),
+            "writer's send_message(human) must land in writer↔human's thread (T1), \
+             not recruiter's thread (T2), and not a fresh mint",
+        );
+        assert_eq!(minted, 0, "no new thread minted — used existing binding");
+        assert_eq!(threads.len(), 2, "no extra binding written");
+    }
+
+    #[tokio::test]
+    async fn done_in_sibling_pair_does_not_leak_to_slack() {
+        // The mirror case: writer's Done in (writer↔recruiter) must
+        // not surface anywhere in Slack — it's internal turn output
+        // addressed to recruiter, not the human.
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let writer_human = SessionId::new();
+        let writer_recruiter = SessionId::new();
+        let t1 = SlackThreadTs::try_from("1700000000.111111").expect("ts");
+        threads
+            .bind_root(
+                req.org_id,
+                &req.team_id,
+                &req.channel_id,
+                &t1,
+                writer_human,
+                req.root,
+            )
+            .await
+            .expect("seed t1");
+
+        let chunk = ResponseChunk::Done {
+            final_text: "internal answer back to recruiter".to_owned(),
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, writer_recruiter);
+
+        let mut minted = 0;
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            route_session,
+            text_body("internal answer back to recruiter"),
+            "writer".to_owned(),
+            allow_mint,
+            &mut minted,
+        )
+        .await;
+
+        assert_eq!(
+            poster.count(),
+            0,
+            "sibling-pair Done must not leak into any Slack thread",
+        );
+        assert_eq!(minted, 0);
+        assert_eq!(threads.len(), 1, "no new binding");
     }
 }
