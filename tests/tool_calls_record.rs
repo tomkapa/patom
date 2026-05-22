@@ -58,10 +58,10 @@ async fn seed_mcp_server(db: &TestDb) -> McpServerId {
     let now = Utc::now();
     sqlx::query(
         "INSERT INTO mcp_servers
-             (id, org_id, alias, enabled, config, description,
+             (id, org_id, catalog_id, enabled, config, description,
               last_seen_at, last_error, discovered_tools,
               created_at, updated_at, created_by_user_id)
-         VALUES ($1, $2, 'probe', TRUE,
+         VALUES ($1, $2, 'notion', TRUE,
                  '{\"transport\":\"http\",\"url\":\"http://example/mcp\"}'::jsonb,
                  NULL, NULL, NULL, NULL, $3, $3, $4)",
     )
