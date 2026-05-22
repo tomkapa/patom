@@ -1315,6 +1315,7 @@ async fn do_slack_ping(state: &AppState, pending: &PendingAuthorization, display
             thread_ts: Some(thread_ts),
             body: crate::slack::poster::PostBody::Text(format!("✓ Connected — {display_name}")),
             username: "Relay".to_owned(),
+            icon_url: None,
         })
         .await
     {

@@ -299,6 +299,7 @@ async fn handle_view_submission(state: State<AppState>, view: ViewSubmission) ->
         threads: slack.threads.clone(),
         poster: slack.poster.clone(),
         stream_pump: slack.stream_pump.clone(),
+        http: slack.http.clone(),
     };
     if let Err(e) = enqueue_from_slash(&deps, submit).await {
         warn!(error = ?e, event = "slack.interactions.enqueue_failed");

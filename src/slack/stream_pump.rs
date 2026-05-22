@@ -413,6 +413,9 @@ async fn dispatch_post(
                 thread_ts: Some(binding.thread_ts),
                 body,
                 username,
+                // Agents have no avatar yet (issue #43); leave Slack to
+                // render the app default for outbound agent posts.
+                icon_url: None,
             })
             .await
         {
@@ -449,6 +452,9 @@ async fn dispatch_post(
             thread_ts: None,
             body,
             username,
+            // Agents have no avatar yet (issue #43); leave Slack to
+            // render the app default for outbound agent posts.
+            icon_url: None,
         })
         .await
     {

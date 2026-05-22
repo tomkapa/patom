@@ -85,9 +85,15 @@ pub struct PostRequest {
     pub channel: SlackChannelId,
     pub thread_ts: Option<SlackThreadTs>,
     pub body: PostBody,
-    /// Per-message `username` override — the agent's name. Phase 1
-    /// identity surface; later supplemented with `icon_url` (issue #43).
+    /// Per-message `username` override — the agent's name on outbound
+    /// agent posts, or the human's workspace display name on the
+    /// slash-command synthetic prompt mirror.
     pub username: String,
+    /// Per-message `icon_url` override. `Some` for the slash-command
+    /// prompt mirror (carries the sender's `users.info` avatar URL so
+    /// Slack does not fall back to the app default); `None` elsewhere
+    /// (agent posts have no avatar yet — issue #43).
+    pub icon_url: Option<String>,
 }
 
 #[async_trait]
@@ -130,6 +136,8 @@ struct WirePostBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     blocks: Option<&'a Value>,
     username: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon_url: Option<&'a str>,
     unfurl_links: bool,
     unfurl_media: bool,
 }
@@ -162,6 +170,7 @@ impl SlackPoster for HttpSlackPoster {
             text,
             blocks,
             username: &req.username,
+            icon_url: req.icon_url.as_deref(),
             // Bot replies should never expand link previews; the agent's
             // text is the message, attachments would be visual noise.
             unfurl_links: false,
@@ -382,6 +391,7 @@ mod tests {
                 thread_ts: Some(thread_ts()),
                 body: PostBody::Text("hello".to_owned()),
                 username: "researcher".to_owned(),
+                icon_url: None,
             })
             .await
             .expect("post");
@@ -392,6 +402,7 @@ mod tests {
                 thread_ts: Some(thread_ts()),
                 body: PostBody::Text("world".to_owned()),
                 username: "critic".to_owned(),
+                icon_url: None,
             })
             .await
             .expect("post");
@@ -417,6 +428,7 @@ mod tests {
                 blocks: blocks.clone(),
             },
             username: "recruiter".to_owned(),
+            icon_url: None,
         })
         .await
         .expect("post");
@@ -450,6 +462,7 @@ mod tests {
             text: "hello",
             blocks: None,
             username: "agent",
+            icon_url: None,
             unfurl_links: false,
             unfurl_media: false,
         };
@@ -466,12 +479,14 @@ mod tests {
             text: "fallback",
             blocks: Some(&blocks_val),
             username: "agent",
+            icon_url: Some("https://example.com/avatar.png"),
             unfurl_links: false,
             unfurl_media: false,
         };
         let json = serde_json::to_value(&blocks_body).expect("ser");
         assert_eq!(json["blocks"], blocks_val);
         assert_eq!(json["text"], "fallback");
+        assert_eq!(json["icon_url"], "https://example.com/avatar.png");
         // Slack rejects `blocks` if it's nested under another object —
         // regression guard for the prior `{ "blocks": [...] }` wrap.
         assert!(

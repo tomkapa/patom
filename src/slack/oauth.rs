@@ -51,8 +51,11 @@ type HmacSha256 = Hmac<Sha256>;
 ///   on messages whose `thread_ts` is in `slack_threads`; everything
 ///   else is dropped at the boundary.
 /// - `commands` — register the `/relay` slash command.
+/// - `users:read` — call `users.info` to resolve the slash command
+///   sender's workspace `display_name` and avatar so the synthetic
+///   prompt-mirror post reads as the human, not the app default.
 const SLACK_SCOPES: &str =
-    "app_mentions:read,channels:history,chat:write,chat:write.customize,commands";
+    "app_mentions:read,channels:history,chat:write,chat:write.customize,commands,users:read";
 
 /// State token lifetime — long enough for a user to complete the
 /// Slack consent screen, short enough that a leaked state is useless.
