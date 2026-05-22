@@ -15,6 +15,7 @@ use crate::agents::AgentId;
 use crate::auth::UserId;
 use crate::mcp::{McpAuthKind, McpCatalogId};
 use crate::provider::{ToolCall, ToolResult};
+use crate::session::SessionId;
 
 use super::error::ResponseError;
 use super::types::{ChunkSeq, FailureReason, PromptRequestId};
@@ -48,7 +49,16 @@ pub enum ResponseChunk {
     /// in one DAG appear as multiple `AgentMessage` chunks on the same SSE
     /// stream. Non-terminal — the `Done` chunk fires only on DAG quiescence.
     /// `from` lets clients render which agent authored each message.
-    AgentMessage { from: AgentId, content: String },
+    /// `to_session` is the `(from, human)` session the message belongs to —
+    /// distinct from the request's session whenever the agent published from
+    /// inside a sibling agent↔agent turn. Per-session delivery surfaces
+    /// (e.g. the Slack stream pump) route by this field; legacy consumers
+    /// (web UI) ignore it.
+    AgentMessage {
+        from: AgentId,
+        to_session: SessionId,
+        content: String,
+    },
     /// Interactive prompt: the agent is asking the user to wire an MCP
     /// integration from inside the chat thread.
     ///

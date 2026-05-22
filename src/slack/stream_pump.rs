@@ -324,12 +324,22 @@ async fn handle_stream_event(
             };
             let username = resolve_agent_name(deps, item.from_agent).await;
             let body = clip_body(body, SLACK_MAX_POST_CHARS);
-            // Only `AgentMessage` is an explicit agent→human address that
-            // justifies opening a new Slack thread. Done / Error /
+            // Routing session is normally the chunk's session, but
+            // `AgentMessage` carries its own `to_session` — the
+            // `(from, human)` session the message belongs to, which
+            // differs from the publishing request's session whenever
+            // an agent calls `send_message(human, …)` from inside an
+            // agent↔agent turn.
+            //
+            // Only `AgentMessage` is an explicit agent→human address
+            // that justifies opening a new Slack thread. Done / Error /
             // WireMcpRequest are contextual emissions that only land if
             // the chunk's session is already bound — otherwise we'd mint
             // a thread for every internal agent↔agent Done.
-            let allow_mint = matches!(&item.chunk, ResponseChunk::AgentMessage { .. });
+            let (route_session, allow_mint) = match &item.chunk {
+                ResponseChunk::AgentMessage { to_session, .. } => (*to_session, true),
+                _ => (item.session_id, false),
+            };
             if matches!(&item.chunk, ResponseChunk::WireMcpRequest { .. }) {
                 if deferred.len() >= MAX_DEFERRED_WIRE_CARDS {
                     deferred.remove(0);
@@ -337,7 +347,7 @@ async fn handle_stream_event(
                 deferred.push(DeferredPost {
                     body,
                     username,
-                    session_id: item.session_id,
+                    session_id: route_session,
                 });
                 return;
             }
@@ -346,7 +356,7 @@ async fn handle_stream_event(
                 deps.threads.as_ref(),
                 req,
                 bot_token,
-                item.session_id,
+                route_session,
                 body,
                 username,
                 allow_mint,
@@ -627,6 +637,7 @@ mod tests {
     fn payload_for_post_returns_agent_message_content() {
         let c = ResponseChunk::AgentMessage {
             from: crate::agents::AgentId::new(),
+            to_session: SessionId::new(),
             content: "hello".to_owned(),
         };
         match payload_for_post(&c, None) {

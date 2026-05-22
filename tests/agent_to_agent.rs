@@ -350,7 +350,7 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
         "expected one AgentMessage on root; got {} (chunks={chunks:?})",
         agent_messages.len(),
     );
-    if let ResponseChunk::AgentMessage { from, content } = agent_messages[0] {
+    if let ResponseChunk::AgentMessage { from, content, .. } = agent_messages[0] {
         assert_eq!(*from, coordinator_id, "Coordinator authored the reply");
         assert_eq!(content, "The translation is 'bonjour'.");
     }
