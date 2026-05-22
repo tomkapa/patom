@@ -467,17 +467,27 @@ pub async fn enqueue_from_slash(
         user_id,
     );
     let outcome = deps.queue.enqueue_for_user(user_id, req).await?;
-    let EnqueueOutcome::Inserted {
-        request_id,
-        session,
-        ..
-    } = outcome
-    else {
-        // Idempotent retry: the original invocation already posted +
-        // bound the thread. Nothing to do.
-        info!(event = "slack.bridge.slash_retry_skipped");
+    let request_id = outcome.request_id();
+    let session = outcome.session();
+
+    // Idempotency gate: use the *thread binding* (not the queue
+    // outcome) as the signal that a previous attempt finished. An
+    // `EnqueueOutcome::Existing` whose binding is missing means the
+    // earlier attempt died between enqueue and bind — Slack retried
+    // the `view_submission`, we hit the idempotency short-circuit at
+    // the queue, but the agent's reply has no Slack thread to land
+    // in. Re-posting the mirror and binding here closes that hole.
+    //
+    // Concurrent Slack retries can both pass this check before either
+    // calls `bind_root`. The double-post race is bounded: Slack
+    // retries are >=1 s apart and the mirror post + bind typically
+    // complete in well under that. `bind_root` is ON CONFLICT DO
+    // NOTHING, so the second `attach` will still land on the
+    // correct (first-write-wins) root.
+    if deps.threads.lookup_by_session(session).await?.is_some() {
+        info!(event = "slack.bridge.slash_already_bound");
         return Ok(());
-    };
+    }
 
     let prompt_post = post_prompt_mirror(
         deps,
