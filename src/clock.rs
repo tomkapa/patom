@@ -16,6 +16,19 @@ pub trait Clock: fmt::Debug + Send + Sync + 'static {
     fn now_utc(&self) -> chrono::DateTime<chrono::Utc> {
         chrono::DateTime::<chrono::Utc>::from(self.now_wall())
     }
+
+    /// Unix-epoch seconds. Used by every HMAC token signer (Slack
+    /// install state, MCP-connect link) so all `exp` fields read the
+    /// same monotonic surface. Returns `0` on the pre-epoch / overflow
+    /// edges — matches the previous local helpers' behaviour.
+    fn now_unix_secs(&self) -> i64 {
+        let secs = self
+            .now_wall()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        i64::try_from(secs).unwrap_or(0)
+    }
 }
 
 /// Reference-counted clock handle. Subsystems hold one without taking a generic

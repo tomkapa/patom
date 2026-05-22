@@ -355,6 +355,12 @@ export type TestConnectResponse =
 export type OAuthStartRequest = {
   redirect_to?: string;
   scope?: string;
+  /** Universal auto-continue resume context. Both must be present or
+   *  both absent — the BE returns 400 otherwise. When present, the
+   *  OAuth callback enqueues a synthetic continuation prompt back into
+   *  the session so the agent loop resumes without the user typing. */
+  session_id?: string;
+  agent_id?: string;
 };
 
 export type OAuthStartResponse = { authorize_url: string };

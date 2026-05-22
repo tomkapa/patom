@@ -1,8 +1,9 @@
 //! Lower-case hex decode/encode primitives shared by `verify.rs`
-//! (inbound webhook signature) and `oauth.rs` (outbound state token).
-//! Both have HMAC tails of exactly 64 hex chars / 32 bytes — wide
-//! enough that a tiny shared module is cleaner than a duplicated
-//! `hex_nibble` in each consumer.
+//! (inbound webhook signature), `oauth.rs` (Slack install state token)
+//! and `connect_link.rs` (MCP connect button signed link). All three
+//! have HMAC tails of exactly 64 hex chars / 32 bytes — wide enough
+//! that a tiny shared module is cleaner than a duplicated `hex_nibble`
+//! / `write!("{byte:02x}")` loop in each consumer.
 
 /// Decode a single ASCII hex digit. `None` on a non-hex byte.
 #[must_use]
@@ -28,6 +29,17 @@ pub(super) fn decode_32(s: &str, out: &mut [u8; 32]) -> Result<(), ()> {
         *slot = (hi << 4) | lo;
     }
     Ok(())
+}
+
+/// Encode a 32-byte buffer as 64 lowercase hex chars. Used by every
+/// HMAC-SHA256 signer in this module.
+pub(super) fn encode_32(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        write!(out, "{byte:02x}").expect("write to in-memory String is infallible");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -58,5 +70,25 @@ mod tests {
         let mut out = [0u8; 32];
         assert!(decode_32("short", &mut out).is_err());
         assert!(decode_32(&"zz".repeat(32), &mut out).is_err());
+    }
+
+    #[test]
+    fn encode_32_lowercase_64_chars() {
+        let s = encode_32(&[0xAB; 32]);
+        assert_eq!(s.len(), 64);
+        assert_eq!(s, "ab".repeat(32));
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let original = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0]
+            .into_iter()
+            .cycle()
+            .take(32)
+            .collect::<Vec<_>>();
+        let encoded = encode_32(&original);
+        let mut decoded = [0u8; 32];
+        decode_32(&encoded, &mut decoded).expect("decode");
+        assert_eq!(decoded.as_slice(), original.as_slice());
     }
 }

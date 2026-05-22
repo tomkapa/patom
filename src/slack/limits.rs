@@ -87,6 +87,14 @@ pub const MAX_AGENTS_IN_PICKER: usize = 100;
 /// allowance the surface permits.
 pub const SLACK_SLASH_PROMPT_MAX_CHARS: u32 = 3_000;
 
+/// Maximum characters for the recruiter's `reason` paragraph.
+///
+/// Rendered inside an MCP connection-request card's section block.
+/// Slack's `section.text.mrkdwn` accepts up to 3 000; the tool-side
+/// schema caps reason at 512 bytes, so we have head-room — but we cap
+/// here too so a future tool-side bump can't surprise the renderer.
+pub const SLACK_CONNECTION_REASON_MAX_CHARS: usize = 2_000;
+
 /// Maximum bytes for a Slack modal's `private_metadata` field.
 ///
 /// Slack's hard limit is 3 000 bytes; we keep ~1 KB of head-room for

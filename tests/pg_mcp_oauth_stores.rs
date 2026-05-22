@@ -155,6 +155,8 @@ async fn oauth_pending_insert_then_consume_returns_row() {
             pkce_verifier: "v".repeat(43),
             redirect_to: Some("/settings".into()),
             expires_at: now + chrono::Duration::seconds(120),
+            resume_ctx: None,
+            slack_ctx: None,
         })
         .await
         .expect("insert");
@@ -265,6 +267,8 @@ async fn oauth_pending_expired_rows_yield_none() {
             pkce_verifier: "v".repeat(43),
             redirect_to: None,
             expires_at: now - chrono::Duration::seconds(1),
+            resume_ctx: None,
+            slack_ctx: None,
         })
         .await
         .expect("insert");

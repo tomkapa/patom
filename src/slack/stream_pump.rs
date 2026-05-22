@@ -1,6 +1,6 @@
 //! Outbound stream pumps: subscribe to one `PgThreadStream` slot per
-//! Slack-rooted DAG and forward `Done` / `AgentMessage` / `Error`
-//! chunks to Slack via `chat.postMessage`.
+//! Slack-rooted DAG and forward `Done` / `AgentMessage` / `Error` /
+//! `WireMcpRequest` chunks to Slack via `chat.postMessage`.
 //!
 //! Why this lives here, not on the SSE/HTTP path:
 //! `PgThreadStream::subscribe(root)` is an in-process
@@ -12,12 +12,16 @@
 //! cap evict the oldest idle pump. Each task self-exits after
 //! `SLACK_PUMP_IDLE_TTL` of inactivity.
 //!
-//! Post rules (Phase 1):
+//! Post rules:
 //! - `ResponseChunk::Done { final_text }` → post `final_text` attributed
 //!   to the chunk's `from_agent` (the agent whose turn produced it).
 //! - `ResponseChunk::AgentMessage { from, content }` → post `content`
 //!   attributed to `from` (cross-agent handoff visible to the human).
 //! - `ResponseChunk::Error { reason }` → post a short error note.
+//! - `ResponseChunk::WireMcpRequest { .. }` → post a Block Kit
+//!   connection-request card. For oauth2 catalogs the card carries a
+//!   Connect button URL signed by `connect_link`; for static_headers /
+//!   none the card degrades to a "finish in the web UI" hint.
 //! - All other variants (`Text`, `Reasoning`, `ToolCall`, `ToolResult`,
 //!   `Stalled`) are dropped without a post.
 
@@ -34,13 +38,24 @@ use tracing::{Instrument, info_span, warn};
 
 use crate::agents::SharedAgentStore;
 use crate::auth::OrgId;
+use crate::clock::SharedClock;
+use crate::mcp::{McpAuthKind, McpCatalogId};
 use crate::runtime::{PromptRequestId, ResponseChunk, SharedThreadStream, ThreadStreamEvent};
+use crate::session::SessionId;
+use crate::types::SecretString;
 
+use super::connect_link::{SlackConnectClaims, sign_connect};
+use super::connection_card::build_connection_request_card;
 use super::error::SlackError;
 use super::limits::{MAX_SLACK_STREAM_PUMPS, SLACK_MAX_POST_CHARS, SLACK_PUMP_IDLE_TTL};
-use super::poster::{PostRequest, SharedSlackPoster};
-use super::types::{SlackChannelId, SlackTeamId, SlackThreadTs};
+use super::poster::{PostBody, PostRequest, SharedSlackPoster};
+use super::types::{SlackChannelId, SlackTeamId, SlackThreadTs, SlackUserId};
 use super::workspace::SharedSlackWorkspaceStore;
+
+/// Connect-link TTL — same 10 min as the Slack install state token.
+/// Long enough to click within a few minutes of seeing the card; short
+/// enough that a leaked URL becomes useless quickly.
+const CONNECT_LINK_TTL_SECS: i64 = 60 * 10;
 
 /// Request to attach a pump for `root`.
 #[derive(Debug, Clone)]
@@ -50,22 +65,25 @@ pub struct AttachRequest {
     pub team_id: SlackTeamId,
     pub channel_id: SlackChannelId,
     pub thread_ts: SlackThreadTs,
+    /// The Slack user who originated this thread. Threaded into any
+    /// Connect-button URL minted for `WireMcpRequest` chunks so the
+    /// `GET /slack/mcp/connect` handler can resolve the relay user
+    /// the credential should write under.
+    pub slack_user_id: SlackUserId,
+    /// The session this pump is bound to. Threaded into the Connect
+    /// button signed token so the OAuth callback's auto-continue can
+    /// inject the resume prompt into the right session.
+    pub session_id: SessionId,
 }
 
 /// Handle returned to the composition root.
-///
-/// `attach` schedules a new pump (no-op if one is already running for
-/// `root`); `shutdown` cancels every pump and awaits the supervisor
-/// task so the runtime has no detached pump tasks left at process
-/// exit.
 #[derive(Debug)]
 pub struct StreamPumpHandle {
     tx: mpsc::Sender<AttachRequest>,
     cancel: CancellationToken,
     /// Supervisor's `JoinHandle`, parked in an async-aware mutex so
     /// `shutdown` (which takes `&self` because callers hold an `Arc`)
-    /// can `take()` it and `.await` for clean exit. Outside of
-    /// `shutdown` the mutex is uncontended.
+    /// can `take()` it and `.await` for clean exit.
     supervisor: AsyncMutex<Option<JoinHandle<()>>>,
 }
 
@@ -100,17 +118,28 @@ pub struct PumpDeps {
     pub workspaces: SharedSlackWorkspaceStore,
     pub agents: SharedAgentStore,
     pub poster: SharedSlackPoster,
+    /// HMAC signing key for [`SlackConnectClaims`] tokens minted into
+    /// Connect button URLs. Shared with `oauth.rs`'s state-token
+    /// signing — same secret, same TTL.
+    pub signing_secret: SecretString,
+    /// Public-facing relay base URL (no trailing slash) the Connect
+    /// button URL is built against. Same value as `oauth_redirect_base`
+    /// on `AppState`.
+    pub connect_url_base: Arc<str>,
+    /// Injected clock — read for the `exp` field on the signed Connect
+    /// link claims so tests can drive token freshness deterministically.
+    pub clock: SharedClock,
 }
 
 impl std::fmt::Debug for PumpDeps {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PumpDeps").finish_non_exhaustive()
+        f.debug_struct("PumpDeps")
+            .field("connect_url_base", &self.connect_url_base)
+            .finish_non_exhaustive()
     }
 }
 
-/// Spawn the supervisor. Holds the `JoinSet` of per-thread pump tasks
-/// and routes attach requests onto fresh tasks (or no-ops when one is
-/// already running for the requested root).
+/// Spawn the supervisor.
 pub fn spawn(deps: PumpDeps, cancel: CancellationToken) -> SharedStreamPumpHandle {
     let (tx, rx) = mpsc::channel::<AttachRequest>(MAX_SLACK_STREAM_PUMPS);
     let supervisor_cancel = cancel.clone();
@@ -128,10 +157,6 @@ async fn supervisor(
     mut rx: mpsc::Receiver<AttachRequest>,
     cancel: CancellationToken,
 ) {
-    // We hold join handles keyed by root so a duplicate attach is a
-    // no-op. A real `JoinSet` would require us to track which task
-    // belongs to which root; the `HashMap` is simpler and the cap is
-    // still enforced (eviction below).
     let live: Arc<Mutex<HashMap<PromptRequestId, JoinHandle<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -158,9 +183,6 @@ async fn supervisor(
                     slack.team = %req.team_id,
                     slack.channel = %req.channel_id,
                 );
-                // Single critical section: dedup, enforce cap, insert.
-                // The supervisor lock is held only across synchronous
-                // map ops + a `tokio::spawn` (which doesn't await).
                 let mut guard = live
                     .lock()
                     .expect("invariant: slack stream-pump live map poisoned");
@@ -206,9 +228,6 @@ async fn run_pump(
     cancel: CancellationToken,
 ) -> Result<(), SlackError> {
     let mut stream = deps.thread_stream.subscribe(req.root);
-    // Resolve the workspace once — bot tokens are stable for the
-    // pump's lifetime; if the workspace is uninstalled mid-thread,
-    // the next post fails and we exit.
     let workspace = deps.workspaces.read_by_team(&req.team_id).await?;
     let mut idle_deadline = Instant::now() + SLACK_PUMP_IDLE_TTL;
 
@@ -227,21 +246,26 @@ async fn run_pump(
                     }
                     Ok(ThreadStreamEvent::Stalled) => {
                         warn!(event = "slack.stream_pump.stalled");
-                        // Phase 1 accepts the loss; Phase 2 (issue #45)
-                        // replays the latest terminal chunk from
-                        // `prompt_response_chunks`.
                     }
                     Ok(ThreadStreamEvent::Item(item)) => {
-                        if let Some(payload) = payload_for_post(&item.chunk) {
+                        let connect_url = match &item.chunk {
+                            ResponseChunk::WireMcpRequest {
+                                catalog_id,
+                                auth_kind: McpAuthKind::OAuth2,
+                                ..
+                            } => Some(build_connect_url(deps, req, catalog_id, item.from_agent)),
+                            _ => None,
+                        };
+                        if let Some(body) = payload_for_post(&item.chunk, connect_url.as_deref()) {
                             let username = resolve_agent_name(deps, item.from_agent).await;
-                            let text = clip(payload, SLACK_MAX_POST_CHARS);
+                            let body = clip_body(body, SLACK_MAX_POST_CHARS);
                             if let Err(e) = deps
                                 .poster
                                 .post(PostRequest {
                                     token: workspace.bot_token.clone(),
                                     channel: req.channel_id.clone(),
                                     thread_ts: Some(req.thread_ts.clone()),
-                                    text,
+                                    body,
                                     username,
                                 })
                                 .await
@@ -251,37 +275,72 @@ async fn run_pump(
                         }
                     }
                 }
-                // If the chunk we just observed was terminal, the DAG
-                // has produced its final answer — let the pump idle
-                // out naturally (it will exit on the next idle
-                // deadline). We don't return immediately because an
-                // agent might Ask another agent right after Done in
-                // some flows; the idle TTL is the unambiguous gate.
                 let _ = Duration::from_millis(0);
             }
         }
     }
 }
 
-/// Map a [`ResponseChunk`] to the text we post into Slack, or `None`
-/// if this variant is not user-visible.
-fn payload_for_post(chunk: &ResponseChunk) -> Option<String> {
+/// Map a [`ResponseChunk`] to the body we post into Slack, or `None`
+/// if this variant is not user-visible. Pure: caller is responsible for
+/// minting the `connect_url` (signed token) when applicable.
+fn payload_for_post(chunk: &ResponseChunk, connect_url: Option<&str>) -> Option<PostBody> {
     match chunk {
-        ResponseChunk::Done { final_text } => Some(final_text.clone()),
-        ResponseChunk::AgentMessage { content, .. } => Some(content.clone()),
-        ResponseChunk::Error { reason } => Some(format!(":warning: Error: {reason}")),
+        ResponseChunk::Done { final_text } => Some(PostBody::Text(final_text.clone())),
+        ResponseChunk::AgentMessage { content, .. } => Some(PostBody::Text(content.clone())),
+        ResponseChunk::Error { reason } => {
+            Some(PostBody::Text(format!(":warning: Error: {reason}")))
+        }
+        ResponseChunk::WireMcpRequest {
+            display_name,
+            reason,
+            auth_kind,
+            ..
+        } => {
+            let blocks =
+                build_connection_request_card(reason, display_name, *auth_kind, connect_url);
+            Some(PostBody::Blocks {
+                fallback_text: format!("Relay agent requested {display_name} connection"),
+                blocks,
+            })
+        }
         // Streaming-only chunks — dropped under the "post once on Final"
-        // user choice. WireMcpRequest is an interactive artifact for the
-        // web UI's connect card; it has no useful Slack rendering today
-        // (no inline OAuth callback path), so we drop it here rather
-        // than spamming the channel with an unactionable summary.
+        // user choice.
         ResponseChunk::Text { .. }
         | ResponseChunk::Reasoning { .. }
         | ResponseChunk::ToolCall(_)
         | ResponseChunk::ToolResult(_)
-        | ResponseChunk::WireMcpRequest { .. }
         | ResponseChunk::Stalled => None,
     }
+}
+
+/// Mint a signed `GET /slack/mcp/connect?token=...` URL for the
+/// Connect button. The token binds the catalog being wired, the Slack
+/// thread context (so the OAuth callback can post the "✓ Connected"
+/// ping back), and the relay session + originating agent (so the
+/// universal auto-continue can resume the right agent loop).
+fn build_connect_url(
+    deps: &PumpDeps,
+    req: &AttachRequest,
+    catalog_id: &McpCatalogId,
+    agent_id: crate::agents::AgentId,
+) -> String {
+    let exp = deps
+        .clock
+        .now_unix_secs()
+        .saturating_add(CONNECT_LINK_TTL_SECS);
+    let claims = SlackConnectClaims {
+        catalog_id: catalog_id.clone(),
+        team_id: req.team_id.clone(),
+        channel_id: req.channel_id.clone(),
+        thread_ts: req.thread_ts.clone(),
+        slack_user_id: req.slack_user_id.clone(),
+        session_id: req.session_id,
+        agent_id,
+    };
+    let token = sign_connect(deps.signing_secret.expose().as_bytes(), &claims, exp);
+    let base = deps.connect_url_base.trim_end_matches('/');
+    format!("{base}/slack/mcp/connect?token={token}")
 }
 
 /// Best-effort `from_agent` → username. On lookup failure (deleted
@@ -294,6 +353,23 @@ async fn resolve_agent_name(deps: &PumpDeps, from: crate::agents::AgentId) -> St
             warn!(error = ?e, agent.id = %from, event = "slack.stream_pump.agent_read_failed");
             "agent".to_owned()
         }
+    }
+}
+
+/// Clip the body's textual surface to fit Slack's per-message length cap.
+/// For `PostBody::Text` the whole string is clipped; for `PostBody::Blocks`
+/// only the fallback text is — individual block builders own block-level
+/// truncation (e.g. `connection_card` truncates the reason paragraph).
+fn clip_body(body: PostBody, max_chars: usize) -> PostBody {
+    match body {
+        PostBody::Text(s) => PostBody::Text(clip(s, max_chars)),
+        PostBody::Blocks {
+            fallback_text,
+            blocks,
+        } => PostBody::Blocks {
+            fallback_text: clip(fallback_text, max_chars),
+            blocks,
+        },
     }
 }
 
@@ -320,7 +396,10 @@ mod tests {
         let c = ResponseChunk::Done {
             final_text: "answer".to_owned(),
         };
-        assert_eq!(payload_for_post(&c).as_deref(), Some("answer"));
+        match payload_for_post(&c, None) {
+            Some(PostBody::Text(s)) => assert_eq!(s, "answer"),
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[test]
@@ -329,7 +408,10 @@ mod tests {
             from: crate::agents::AgentId::new(),
             content: "hello".to_owned(),
         };
-        assert_eq!(payload_for_post(&c).as_deref(), Some("hello"));
+        match payload_for_post(&c, None) {
+            Some(PostBody::Text(s)) => assert_eq!(s, "hello"),
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[test]
@@ -337,26 +419,85 @@ mod tests {
         let c = ResponseChunk::Error {
             reason: "timeout".to_owned(),
         };
-        let out = payload_for_post(&c).expect("some");
-        assert!(out.contains("timeout"));
-        assert!(out.contains("Error"));
+        match payload_for_post(&c, None) {
+            Some(PostBody::Text(s)) => {
+                assert!(s.contains("timeout"));
+                assert!(s.contains("Error"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[test]
     fn payload_for_post_drops_streaming_variants() {
         assert!(
-            payload_for_post(&ResponseChunk::Text {
-                value: "x".to_owned()
-            })
+            payload_for_post(
+                &ResponseChunk::Text {
+                    value: "x".to_owned()
+                },
+                None
+            )
             .is_none()
         );
         assert!(
-            payload_for_post(&ResponseChunk::Reasoning {
-                value: "x".to_owned()
-            })
+            payload_for_post(
+                &ResponseChunk::Reasoning {
+                    value: "x".to_owned()
+                },
+                None
+            )
             .is_none()
         );
-        assert!(payload_for_post(&ResponseChunk::Stalled).is_none());
+        assert!(payload_for_post(&ResponseChunk::Stalled, None).is_none());
+    }
+
+    #[test]
+    fn payload_for_post_renders_wire_mcp_request_with_connect_button() {
+        let chunk = ResponseChunk::WireMcpRequest {
+            from: crate::agents::AgentId::new(),
+            catalog_id: McpCatalogId::try_from("notion").expect("valid catalog id"),
+            display_name: "Notion".to_owned(),
+            reason: "I want to draft a brief.".to_owned(),
+            auth_kind: McpAuthKind::OAuth2,
+            homepage_url: None,
+        };
+        let body = payload_for_post(
+            &chunk,
+            Some("https://relay.example/slack/mcp/connect?token=abc"),
+        )
+        .expect("some");
+        match body {
+            PostBody::Blocks {
+                fallback_text,
+                blocks,
+            } => {
+                assert!(fallback_text.contains("Notion"));
+                let url = blocks["blocks"][1]["elements"][0]["url"]
+                    .as_str()
+                    .expect("url");
+                assert!(url.ends_with("?token=abc"));
+            }
+            PostBody::Text(_) => panic!("expected Blocks for WireMcpRequest"),
+        }
+    }
+
+    #[test]
+    fn payload_for_post_wire_mcp_request_static_headers_drops_button() {
+        let chunk = ResponseChunk::WireMcpRequest {
+            from: crate::agents::AgentId::new(),
+            catalog_id: McpCatalogId::try_from("linear").expect("valid catalog id"),
+            display_name: "Linear".to_owned(),
+            reason: "Need Linear access.".to_owned(),
+            auth_kind: McpAuthKind::StaticHeaders,
+            homepage_url: None,
+        };
+        // Even with a connect_url passed, static_headers renders the hint, not the button.
+        let body = payload_for_post(&chunk, Some("https://relay.example/x")).expect("some");
+        if let PostBody::Blocks { blocks, .. } = body {
+            assert_eq!(blocks["blocks"][1]["type"], "context");
+        } else {
+            panic!("expected Blocks");
+        }
     }
 
     #[test]

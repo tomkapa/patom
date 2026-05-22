@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Check, ExternalLink, Plug } from "lucide-react";
 import { Monogram } from "../atoms/Monogram";
 import { useT } from "../../i18n";
@@ -23,61 +23,33 @@ function safeHttpUrl(raw: string | undefined): string | null {
   }
 }
 
-// Set before the OAuth nav, consumed on bounce-back so the auto-resume
-// fires exactly once across the page reload. TTL bounds stale leftovers
-// from abandoned auths.
-const RESUME_MARKER_PREFIX = "relay:wire-resume:";
-const RESUME_TTL_MS = 15 * 60 * 1000;
-
-function markResumeTarget(catalogId: string): void {
-  try {
-    sessionStorage.setItem(
-      RESUME_MARKER_PREFIX + catalogId,
-      String(Date.now()),
-    );
-  } catch {
-    // Private-mode / sandboxed contexts can throw — degrade to no auto-resume.
-  }
-}
-
-function consumeResumeMarker(catalogId: string): boolean {
-  try {
-    const key = RESUME_MARKER_PREFIX + catalogId;
-    const v = sessionStorage.getItem(key);
-    if (!v) return false;
-    sessionStorage.removeItem(key);
-    const ts = Number(v);
-    if (!Number.isFinite(ts)) return false;
-    return Date.now() - ts <= RESUME_TTL_MS;
-  } catch {
-    return false;
-  }
-}
-
 /** Inline click-to-wire card rendered inside an agent's reply bubble in
  *  response to a `request_user_wire_mcp` tool call. `oauth2` runs the
  *  full create + `oauth/start` + redirect path; `static_headers` /
  *  `none` stop at create and finish from the connections page.
  *
- *  `onConnected` fires once when the catalog_id transitions to wired
- *  AND we initiated the wire in this card (gated by an in-session ref
- *  for the non-OAuth path plus a sessionStorage marker that survives
- *  the OAuth bounce) — so already-wired cards loaded from history
- *  never trigger spurious follow-ups. */
+ *  Auto-resume after a successful OAuth is server-driven (the
+ *  `mcp-oauth/callback` handler enqueues a synthetic continuation
+ *  prompt directly), so this card no longer carries an `onConnected`
+ *  callback — the agent's next response arrives on the existing
+ *  thread stream. The card just polls `useMcpServers` and flips its
+ *  visual state when the row is wired. */
 export function WireMcpRequestCard({
   entry,
   callbackUrl,
-  onConnected,
+  sessionId,
+  agentId,
 }: {
   entry: McpWireRequest;
   /** Where the OAuth flow should return the user after vendor consent.
    *  Defaults to the current location. */
   callbackUrl?: (serverId: string) => string;
-  /** Fires once after the catalog_id transitions to wired AND this card
-   *  initiated the wire (mid-session for static_headers / none, or
-   *  before the OAuth bounce for oauth2). Parents typically respond by
-   *  submitting an auto-resume prompt back to the same thread. */
-  onConnected?: (entry: McpWireRequest) => void;
+  /** Resume context passed to `POST /mcp-servers/{id}/oauth/start` so
+   *  the callback's universal auto-continue knows which session +
+   *  agent to inject the synthetic prompt into. Both must be present
+   *  or both absent; the BE returns 400 otherwise. */
+  sessionId?: string | null;
+  agentId?: string | null;
 }) {
   const { t } = useT();
   const create = useCreateMcpServer();
@@ -88,12 +60,6 @@ export function WireMcpRequestCard({
   const submitting = create.isPending || startOAuth.isPending;
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
-
-  // initiatedRef covers the non-OAuth path (ref survives in-tab);
-  // OAuth additionally writes the sessionStorage marker since the ref
-  // dies in the page reload.
-  const initiatedRef = useRef(false);
-  const firedRef = useRef(false);
 
   const wired = useMemo(
     () =>
@@ -106,34 +72,29 @@ export function WireMcpRequestCard({
     [servers.data, entry.catalog_id],
   );
 
-  useEffect(() => {
-    if (firedRef.current) return;
-    if (!wired) return;
-    const fromMarker = consumeResumeMarker(entry.catalog_id);
-    if (!initiatedRef.current && !fromMarker) return;
-    firedRef.current = true;
-    onConnected?.(entry);
-  }, [wired, entry, onConnected]);
-
   const onConnect = async () => {
     setError(null);
     try {
-      initiatedRef.current = true;
       const server = await create.mutateAsync({
         catalog_id: entry.catalog_id,
       });
       if (entry.auth_kind === "oauth2") {
+        // Both-or-neither for resume context. Forwarding only when both
+        // are present matches the BE's both-or-neither validation; in
+        // the rare path where one is missing (e.g. catalog-page manual
+        // wiring) the callback simply skips auto-continue.
+        const hasResumeCtx = !!sessionId && !!agentId;
         const res = await startOAuth.mutateAsync({
           id: server.id,
           input: {
             redirect_to: callbackUrl
               ? callbackUrl(server.id)
               : window.location.pathname,
+            ...(hasResumeCtx
+              ? { session_id: sessionId, agent_id: agentId }
+              : {}),
           },
         });
-        // Set the marker before the redirect so the freshly-mounted
-        // card on bounce-back fires onConnected exactly once.
-        markResumeTarget(entry.catalog_id);
         window.location.href = res.authorize_url;
         return;
       }
@@ -141,7 +102,6 @@ export function WireMcpRequestCard({
       // setup in Connections" hint until the user wires credentials.
       setDone(true);
     } catch (e) {
-      initiatedRef.current = false;
       setError(
         e instanceof Error
           ? e.message

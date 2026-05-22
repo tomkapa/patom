@@ -289,6 +289,8 @@ async fn enqueue_and_bind(
                 team_id: event.team_id.clone(),
                 channel_id: event.channel_id.clone(),
                 thread_ts: anchor.clone(),
+                slack_user_id: event.user_id.clone(),
+                session_id: session,
             })
             .await;
         info!(
@@ -462,7 +464,7 @@ pub async fn enqueue_from_slash(
             token: workspace.bot_token.clone(),
             channel: submit.channel_id.clone(),
             thread_ts: None,
-            text: prompt_text,
+            body: super::poster::PostBody::Text(prompt_text),
             // The `APP` badge next to the username is unavoidable on
             // bot-token posts. Using the user's @handle keeps the
             // mirror visually attributable to them at a glance.
@@ -488,6 +490,8 @@ pub async fn enqueue_from_slash(
             team_id: submit.team_id.clone(),
             channel_id: submit.channel_id.clone(),
             thread_ts: anchor,
+            slack_user_id: submit.slack_user_id.clone(),
+            session_id: session,
         })
         .await;
     info!(

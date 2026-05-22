@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agents::AgentId;
-use crate::auth::Principal;
+use crate::auth::{OrgId, Principal, UserId};
 use crate::runtime::{
     EnqueueOutcome, IdempotencyKey, NewPromptRequest, PromptRequestId, RequestStatus,
 };
@@ -30,6 +30,74 @@ use crate::types::{Participant, ParticipantKind, Prompt};
 
 use super::super::error::HttpError;
 use super::super::state::AppState;
+
+/// Inputs to [`submit_internal`] — the Principal-free service helper
+/// that drives prompt submission for callers without a cookie session.
+///
+/// Two such callers today:
+///   * the public OAuth callback (`GET /mcp-oauth/callback`), which
+///     enqueues the synthetic `"I've connected {name}. Please continue."`
+///     resume prompt;
+///   * future channel adapters (Lark, CLI, …) that need to drive a
+///     resume without a Principal extractor.
+///
+/// `(user_id, org_id)` substitute for what `Principal` would have
+/// supplied; callers source them from the consumed `mcp_oauth_pending`
+/// row, which was authenticated when minted.
+#[derive(Debug, Clone)]
+pub(super) struct SubmitPromptParams {
+    pub user_id: UserId,
+    pub org_id: OrgId,
+    /// Continue an existing conversation. Both `session_id` and
+    /// `agent_id` must be supplied for a resume (the existing session
+    /// already pins the agent — see `submit_internal` for the
+    /// preservation rule).
+    pub session_id: Option<SessionId>,
+    pub agent_id: Option<AgentId>,
+    pub content: Prompt,
+    pub idempotency_key: IdempotencyKey,
+}
+
+/// Principal-free prompt submission. The public `POST /prompts` handler
+/// extracts a `Principal` and delegates here; the OAuth callback (which
+/// has no cookie session) constructs `SubmitPromptParams` directly.
+///
+/// Mirrors `submit_prompt`'s rules:
+///   * Continuing an existing session preserves the session's agent
+///     participant — any caller-supplied `agent_id` is ignored for a
+///     non-`None` session.
+///   * Fresh sessions consult the request payload, falling back to the
+///     org's seeded default agent.
+pub(super) async fn submit_internal(
+    state: &AppState,
+    params: SubmitPromptParams,
+) -> Result<EnqueueOutcome, HttpError> {
+    let receiver_agent_id = match params.session_id {
+        Some(session_id) => session_agent_participant(state, session_id).await?,
+        None => match params.agent_id {
+            Some(id) => id,
+            None => state.agents.default_id_for(params.org_id).await?,
+        },
+    };
+
+    let outcome = state
+        .queue
+        .enqueue_for_user(
+            params.user_id,
+            NewPromptRequest::normal(
+                params.session_id,
+                Participant::Human,
+                receiver_agent_id,
+                None,
+                params.content,
+                params.idempotency_key,
+                params.org_id,
+                params.user_id,
+            ),
+        )
+        .await?;
+    Ok(outcome)
+}
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
@@ -68,42 +136,22 @@ async fn submit_prompt(
     let idempotency_key = IdempotencyKey::try_from(payload.idempotency_key)
         .map_err(|e| HttpError::BadRequest(e.to_string()))?;
 
-    // Resolve the receiver agent. Continuing an existing session must always
-    // route to that session's agent participant — the worker rejects a
-    // prompt whose receiver isn't a participant of the named session
-    // ("agent X is not a participant of session Y"). This keeps the comment
-    // on `SubmitPromptRequest::agent_id` honest: when `session_id` is set,
-    // any caller-supplied `agent_id` is ignored. Only fresh sessions consult
-    // the request payload (or fall back to the seeded default).
-    let receiver_agent_id = match payload.session_id {
-        Some(session_id) => session_agent_participant(&state, session_id).await?,
-        None => match payload.agent_id {
-            Some(id) => id,
-            None => state.agents.default_id_for(principal.active_org_id).await?,
-        },
-    };
-
     // Tenancy plumbing for the queue's implicit session-create path
     // (`NewPromptRequest::session = None`). For a continuing session the
     // queue won't mint a row, so the (org_id, user_id) we pass here is
-    // only consulted on first prompt — the runtime subsystem's retrofit
-    // will pick them up onto `prompt_requests` itself.
-    let outcome = state
-        .queue
-        .enqueue_for_user(
-            principal.user_id,
-            NewPromptRequest::normal(
-                payload.session_id,
-                Participant::Human,
-                receiver_agent_id,
-                None,
-                content,
-                idempotency_key,
-                principal.active_org_id,
-                principal.user_id,
-            ),
-        )
-        .await?;
+    // only consulted on first prompt.
+    let outcome = submit_internal(
+        &state,
+        SubmitPromptParams {
+            user_id: principal.user_id,
+            org_id: principal.active_org_id,
+            session_id: payload.session_id,
+            agent_id: payload.agent_id,
+            content,
+            idempotency_key,
+        },
+    )
+    .await?;
 
     let status_code = match outcome {
         EnqueueOutcome::Inserted { .. } => StatusCode::ACCEPTED,
