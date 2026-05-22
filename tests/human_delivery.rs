@@ -87,7 +87,7 @@ async fn send_message_human_publishes_agent_message_on_root_stream() {
     let agent_msg = chunks
         .iter()
         .find_map(|c| match c {
-            ResponseChunk::AgentMessage { from, content } => Some((from, content.clone())),
+            ResponseChunk::AgentMessage { from, content, .. } => Some((from, content.clone())),
             _ => None,
         })
         .expect("expected an AgentMessage on the root stream");
@@ -232,7 +232,7 @@ async fn followup_prompt_publishes_agent_message_on_open_sink() {
     let chunks = drain_chunks(&h, second.request_id(), Duration::from_secs(8)).await;
 
     let agent_msg = chunks.iter().find_map(|c| match c {
-        ResponseChunk::AgentMessage { from, content } => Some((from, content.clone())),
+        ResponseChunk::AgentMessage { from, content, .. } => Some((from, content.clone())),
         _ => None,
     });
     let (from, content) = agent_msg.unwrap_or_else(|| {

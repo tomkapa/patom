@@ -1,15 +1,19 @@
-//! Slack-thread ↔ Relay-DAG bridge — `slack_threads` table.
+//! Slack-thread ↔ Relay-session bridge — `slack_threads` table.
 //!
 //! Two lookups, both privileged (no Principal — events arrive
 //! workspace-keyed):
 //! - `lookup_by_thread` for the inbound path: given a Slack
 //!   `(team, channel, thread_ts)` triple, find an existing session or
 //!   return `None` (caller starts a fresh session).
-//! - `lookup_by_root` for the outbound stream pump: given a Relay
-//!   `root_request_id`, find where to post.
+//! - `lookup_by_session` for the outbound stream pump: given a Relay
+//!   `session_id`, find which Slack thread (if any) this session is
+//!   bound to. One row per session — the DAG may carry multiple
+//!   `(agent, human)` sessions, each pinned to its own Slack thread.
 //!
-//! Writes happen via `bind_root` after `queue.enqueue_for_user` returns
-//! the freshly minted `(session_id, root_request_id)` for a new thread.
+//! Writes happen via `bind_root`: the inbound bridge writes after the
+//! first prompt enqueue mints a fresh DAG; the outbound stream pump
+//! writes after it posts a fresh top-level message for a descendant
+//! agent reaching the human.
 
 use std::fmt;
 use std::sync::Arc;
@@ -51,9 +55,13 @@ pub trait SlackThreadStore: fmt::Debug + Send + Sync {
         thread_ts: &SlackThreadTs,
     ) -> Result<Option<ThreadMapping>, SlackError>;
 
-    async fn lookup_by_root(
+    /// Reverse projection used by the outbound stream pump: given a
+    /// `session_id`, return the Slack `(team, channel, thread_ts)`
+    /// where the session's messages should land — or `None` if this
+    /// session has no Slack binding yet (caller mints a fresh one).
+    async fn lookup_by_session(
         &self,
-        root: PromptRequestId,
+        session_id: SessionId,
     ) -> Result<Option<ThreadByRoot>, SlackError>;
 
     /// Insert a `(team, channel, thread_ts) → (session, root)` row.
@@ -122,17 +130,17 @@ impl SlackThreadStore for PgSlackThreadStore {
         )
     }
 
-    async fn lookup_by_root(
+    async fn lookup_by_session(
         &self,
-        root: PromptRequestId,
+        session_id: SessionId,
     ) -> Result<Option<ThreadByRoot>, SlackError> {
         type Row = (OrgId, String, String, String);
         let row: Option<Row> = run_privileged::<Option<Row>, SlackError>(&self.pool, async |tx| {
             Ok(sqlx::query_as(
                 "SELECT org_id, team_id, channel_id, thread_ts \
-                 FROM slack_threads WHERE root_request_id = $1",
+                 FROM slack_threads WHERE session_id = $1",
             )
-            .bind(root)
+            .bind(session_id)
             .fetch_optional(&mut **tx)
             .await?)
         })
@@ -177,5 +185,126 @@ impl SlackThreadStore for PgSlackThreadStore {
             Ok(())
         })
         .await
+    }
+}
+
+/// In-memory `SlackThreadStore` for tests. Records writes and answers
+/// reads without touching Postgres. Not `#[cfg(test)]` so integration
+/// tests in `tests/` can reach it.
+#[derive(Debug, Default)]
+pub struct FakeSlackThreadStore {
+    inner: std::sync::Mutex<FakeInner>,
+}
+
+#[derive(Debug, Default)]
+struct FakeInner {
+    by_thread: std::collections::HashMap<ThreadKey, ThreadMapping>,
+    by_session: std::collections::HashMap<SessionId, ThreadByRoot>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct ThreadKey {
+    team_id: SlackTeamId,
+    channel_id: SlackChannelId,
+    thread_ts: SlackThreadTs,
+}
+
+impl FakeSlackThreadStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of bindings currently recorded.
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("invariant: fake-thread-store mutex poisoned")
+            .by_thread
+            .len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[async_trait]
+impl SlackThreadStore for FakeSlackThreadStore {
+    async fn lookup_by_thread(
+        &self,
+        team_id: &SlackTeamId,
+        channel_id: &SlackChannelId,
+        thread_ts: &SlackThreadTs,
+    ) -> Result<Option<ThreadMapping>, SlackError> {
+        let key = ThreadKey {
+            team_id: team_id.clone(),
+            channel_id: channel_id.clone(),
+            thread_ts: thread_ts.clone(),
+        };
+        let guard = self
+            .inner
+            .lock()
+            .expect("invariant: fake-thread-store mutex poisoned");
+        Ok(guard.by_thread.get(&key).copied())
+    }
+
+    async fn lookup_by_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Option<ThreadByRoot>, SlackError> {
+        let guard = self
+            .inner
+            .lock()
+            .expect("invariant: fake-thread-store mutex poisoned");
+        Ok(guard.by_session.get(&session_id).cloned())
+    }
+
+    async fn bind_root(
+        &self,
+        org_id: OrgId,
+        team_id: &SlackTeamId,
+        channel_id: &SlackChannelId,
+        thread_ts: &SlackThreadTs,
+        session_id: SessionId,
+        root_request_id: PromptRequestId,
+    ) -> Result<(), SlackError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("invariant: fake-thread-store mutex poisoned");
+        let key = ThreadKey {
+            team_id: team_id.clone(),
+            channel_id: channel_id.clone(),
+            thread_ts: thread_ts.clone(),
+        };
+        // PK conflict on (team, channel, thread_ts) — leave first writer.
+        if guard.by_thread.contains_key(&key) {
+            return Ok(());
+        }
+        // UNIQUE(session_id) — mirrors the post-migration schema.
+        if guard.by_session.contains_key(&session_id) {
+            return Err(SlackError::Internal(format!(
+                "fake: duplicate binding for session {session_id}"
+            )));
+        }
+        guard.by_thread.insert(
+            key.clone(),
+            ThreadMapping {
+                org_id,
+                session_id,
+                root_request_id,
+            },
+        );
+        guard.by_session.insert(
+            session_id,
+            ThreadByRoot {
+                org_id,
+                team_id: key.team_id,
+                channel_id: key.channel_id,
+                thread_ts: key.thread_ts,
+            },
+        );
+        Ok(())
     }
 }

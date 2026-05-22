@@ -514,6 +514,7 @@ impl SendMessageTool {
             .expect("invariant: validate() rejects non-agent callers");
         let chunk = ResponseChunk::AgentMessage {
             from,
+            to_session: receiver_session,
             content: content.to_string(),
         };
         if let Err(e) = self
