@@ -24,6 +24,8 @@
 //! full design and `CLAUDE.md` for the binding engineering rules.
 
 pub mod bridge;
+pub mod connect_link;
+pub mod connection_card;
 pub mod error;
 pub mod events;
 mod hex;

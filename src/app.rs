@@ -698,6 +698,9 @@ pub async fn build_server(
                     agents: pieces.agents.clone(),
                     poster: poster.clone(),
                     threads: threads_store.clone(),
+                    signing_secret: cfg.signing_secret.clone(),
+                    connect_url_base: Arc::from(settings.auth.oauth_redirect_base.as_str()),
+                    clock: pieces.clock.clone(),
                 },
                 cancel.clone(),
             );

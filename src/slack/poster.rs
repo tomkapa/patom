@@ -14,6 +14,13 @@
 //!   without touching the network. Lives next to the production impl
 //!   instead of inside `#[cfg(test)]` because the e2e integration test
 //!   in `tests/` is a separate crate.
+//!
+//! ## Body shape
+//!
+//! `PostRequest.body: PostBody` is a sum type so the same wire path
+//! serves both plain text (the common `Done` / `AgentMessage` case) and
+//! Block Kit cards (the `WireMcpRequest` connection card). Retry +
+//! rate-limit paths stay shared.
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -22,6 +29,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::time::sleep;
 
 use super::error::SlackError;
@@ -29,6 +37,39 @@ use super::limits::{
     SLACK_POST_BODY_TIMEOUT, SLACK_POST_MAX_RETRIES, SLACK_POST_TIMEOUT, SLACK_RETRY_AFTER_CAP_SECS,
 };
 use super::types::{SlackBotToken, SlackChannelId, SlackThreadTs, SlackTs};
+
+/// What the caller posts.
+///
+/// `Blocks` carries a `fallback_text` that Slack uses for notification
+/// body + accessibility — mandatory per the Block Kit API so
+/// non-Block-Kit clients (mobile lock-screen previews, screen readers)
+/// still see a meaningful summary.
+#[derive(Debug, Clone)]
+pub enum PostBody {
+    /// Plain text post — single `text` field on the wire.
+    Text(String),
+    /// Block Kit payload — `text` falls through to `fallback_text` so
+    /// notification body + accessibility have something to render.
+    Blocks {
+        fallback_text: String,
+        blocks: Value,
+    },
+}
+
+impl PostBody {
+    /// The fallback / notification text the receiver sees. Used by the
+    /// stream pump to apply the `SLACK_MAX_POST_CHARS` cap on a single
+    /// known-textual surface before constructing the body. For
+    /// `PostBody::Blocks` the blocks themselves are not clipped here —
+    /// individual builders (`connection_card.rs`) own that responsibility.
+    #[must_use]
+    pub fn fallback_text(&self) -> &str {
+        match self {
+            Self::Text(s) => s.as_str(),
+            Self::Blocks { fallback_text, .. } => fallback_text.as_str(),
+        }
+    }
+}
 
 /// What the bridge / stream pump hands to the poster.
 ///
@@ -43,7 +84,7 @@ pub struct PostRequest {
     pub token: SlackBotToken,
     pub channel: SlackChannelId,
     pub thread_ts: Option<SlackThreadTs>,
-    pub text: String,
+    pub body: PostBody,
     /// Per-message `username` override — the agent's name. Phase 1
     /// identity surface; later supplemented with `icon_url` (issue #43).
     pub username: String,
@@ -86,6 +127,8 @@ struct WirePostBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     thread_ts: Option<&'a str>,
     text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocks: Option<&'a Value>,
     username: &'a str,
     unfurl_links: bool,
     unfurl_media: bool,
@@ -103,13 +146,21 @@ struct WirePostResponse {
 #[async_trait]
 impl SlackPoster for HttpSlackPoster {
     async fn post(&self, req: PostRequest) -> Result<SlackTs, SlackError> {
+        let (text, blocks) = match &req.body {
+            PostBody::Text(s) => (s.as_str(), None),
+            PostBody::Blocks {
+                fallback_text,
+                blocks,
+            } => (fallback_text.as_str(), Some(blocks)),
+        };
         let body = WirePostBody {
             channel: req.channel.as_str(),
             thread_ts: req
                 .thread_ts
                 .as_ref()
                 .map(super::types::SlackThreadTs::as_str),
-            text: &req.text,
+            text,
+            blocks,
             username: &req.username,
             // Bot replies should never expand link previews; the agent's
             // text is the message, attachments would be visual noise.
@@ -307,6 +358,7 @@ impl SlackPoster for FakeSlackPoster {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn token() -> SlackBotToken {
         SlackBotToken::try_from("xoxb-test-12345".to_string()).expect("valid")
@@ -328,7 +380,7 @@ mod tests {
                 token: token(),
                 channel: channel(),
                 thread_ts: Some(thread_ts()),
-                text: "hello".to_owned(),
+                body: PostBody::Text("hello".to_owned()),
                 username: "researcher".to_owned(),
             })
             .await
@@ -338,7 +390,7 @@ mod tests {
                 token: token(),
                 channel: channel(),
                 thread_ts: Some(thread_ts()),
-                text: "world".to_owned(),
+                body: PostBody::Text("world".to_owned()),
                 username: "critic".to_owned(),
             })
             .await
@@ -346,10 +398,40 @@ mod tests {
         assert_ne!(ts1.as_str(), ts2.as_str());
         let captured = p.captured();
         assert_eq!(captured.len(), 2);
-        assert_eq!(captured[0].text, "hello");
+        assert_eq!(captured[0].body.fallback_text(), "hello");
         assert_eq!(captured[0].username, "researcher");
-        assert_eq!(captured[1].text, "world");
+        assert_eq!(captured[1].body.fallback_text(), "world");
         assert_eq!(captured[1].username, "critic");
+    }
+
+    #[tokio::test]
+    async fn fake_poster_records_blocks_body() {
+        let p = FakeSlackPoster::new();
+        let blocks = json!([{"type": "section", "text": {"type": "mrkdwn", "text": "hi"}}]);
+        p.post(PostRequest {
+            token: token(),
+            channel: channel(),
+            thread_ts: Some(thread_ts()),
+            body: PostBody::Blocks {
+                fallback_text: "connection requested".to_owned(),
+                blocks: blocks.clone(),
+            },
+            username: "recruiter".to_owned(),
+        })
+        .await
+        .expect("post");
+        let captured = p.captured();
+        assert_eq!(captured.len(), 1);
+        match &captured[0].body {
+            PostBody::Blocks {
+                fallback_text,
+                blocks: b,
+            } => {
+                assert_eq!(fallback_text, "connection requested");
+                assert_eq!(b, &blocks);
+            }
+            PostBody::Text(_) => panic!("expected Blocks variant"),
+        }
     }
 
     #[test]
@@ -358,5 +440,43 @@ mod tests {
         // sleep — the cap is 2 s.
         assert!(backoff(0) < Duration::from_secs(2));
         assert!(backoff(255) <= Duration::from_secs(2));
+    }
+
+    #[test]
+    fn wire_body_serialises_blocks_only_when_present() {
+        let text_body = WirePostBody {
+            channel: "C1",
+            thread_ts: None,
+            text: "hello",
+            blocks: None,
+            username: "agent",
+            unfurl_links: false,
+            unfurl_media: false,
+        };
+        let json = serde_json::to_value(&text_body).expect("ser");
+        assert!(
+            json.get("blocks").is_none(),
+            "text-only wire should omit blocks"
+        );
+
+        let blocks_val = json!([{"type": "section"}]);
+        let blocks_body = WirePostBody {
+            channel: "C1",
+            thread_ts: None,
+            text: "fallback",
+            blocks: Some(&blocks_val),
+            username: "agent",
+            unfurl_links: false,
+            unfurl_media: false,
+        };
+        let json = serde_json::to_value(&blocks_body).expect("ser");
+        assert_eq!(json["blocks"], blocks_val);
+        assert_eq!(json["text"], "fallback");
+        // Slack rejects `blocks` if it's nested under another object —
+        // regression guard for the prior `{ "blocks": [...] }` wrap.
+        assert!(
+            json["blocks"].is_array(),
+            "wire-body blocks must be a JSON array, not an object"
+        );
     }
 }

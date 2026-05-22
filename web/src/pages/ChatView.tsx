@@ -28,7 +28,6 @@ import type { Bubble, Poster, RootMessage } from "../lib/foldHistory";
 import { uuidv7 } from "../lib/utils";
 import { prefixMention } from "../lib/mentions";
 import { useT } from "../i18n";
-import type { McpWireRequest } from "../types/api";
 
 const CHANNEL = "general";
 
@@ -149,15 +148,12 @@ export function ChatView() {
     }
   };
 
-  // Auto-resume after the inline wire-MCP card flips to wired. The
-  // card guards against double-firing (initiated-in-session +
-  // sessionStorage marker), so we just dispatch a reply on the same
-  // thread and let the agent's next turn pick up the new capability.
-  const onWireConnected = (req: McpWireRequest) => {
-    void onThreadReply({
-      content: t("thread.wireRequest.resumePrompt", { name: req.display_name }),
-    });
-  };
+  // Auto-resume is now server-driven: the OAuth callback enqueues the
+  // synthetic continuation prompt itself, so every channel adapter
+  // (web, Slack, future Lark) gets the resume for free. The card
+  // flipping to its "connected" state is still driven by the
+  // useMcpServers poll; the agent's next response arrives via the
+  // existing thread stream.
 
   return (
     <ChatLayout
@@ -218,7 +214,6 @@ export function ChatView() {
             showThinking={showThinking}
             pending={submit.isPending}
             onReply={onThreadReply}
-            onWireConnected={onWireConnected}
             onClose={() => setShowPanel(false)}
           />
         ) : null

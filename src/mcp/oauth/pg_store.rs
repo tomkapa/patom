@@ -5,16 +5,19 @@ use std::fmt;
 use async_trait::async_trait;
 use sqlx::PgPool;
 
+use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId};
 use crate::clock::SharedClock;
 use crate::crypto::{EncryptedBlob, SharedOrgEncryptor};
 use crate::mcp::McpServerId;
+use crate::session::SessionId;
 use crate::types::SecretString;
 
 use super::errors::OAuthError;
 use super::store::{
     ClientProvenance, DcrClientRecord, McpOAuthClientStore, McpOAuthPendingStore, NewOAuthClient,
-    OAuthClientId, PendingAuthorization, PendingAuthorizationWrite, TokenAuthMethod,
+    OAuthClientId, PendingAuthorization, PendingAuthorizationWrite, ResumeCtx, SlackPingCtx,
+    TokenAuthMethod,
 };
 
 pub struct PgMcpOAuthClientStore {
@@ -257,8 +260,9 @@ impl McpOAuthPendingStore for PgMcpOAuthPendingStore {
             sqlx::query(
                 "INSERT INTO mcp_oauth_pending \
                  (state, server_id, user_id, org_id, issuer, pkce_verifier, redirect_to, \
-                  created_at, expires_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                  created_at, expires_at, session_id, agent_id, \
+                  slack_team_id, slack_channel_id, slack_thread_ts) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
             )
             .bind(&row.state)
             .bind(row.server_id)
@@ -269,6 +273,11 @@ impl McpOAuthPendingStore for PgMcpOAuthPendingStore {
             .bind(row.redirect_to.as_deref())
             .bind(now)
             .bind(row.expires_at)
+            .bind(row.resume_ctx.map(|r| r.session_id))
+            .bind(row.resume_ctx.map(|r| r.agent_id))
+            .bind(row.slack_ctx.as_ref().map(|s| s.team_id.as_str()))
+            .bind(row.slack_ctx.as_ref().map(|s| s.channel_id.as_str()))
+            .bind(row.slack_ctx.as_ref().map(|s| s.thread_ts.as_str()))
             .execute(&mut **tx)
             .await?;
             Ok(())
@@ -288,7 +297,8 @@ impl McpOAuthPendingStore for PgMcpOAuthPendingStore {
                     "DELETE FROM mcp_oauth_pending \
                      WHERE state = $1 AND expires_at > $2 \
                      RETURNING state, server_id, user_id, org_id, issuer, pkce_verifier, \
-                               redirect_to",
+                               redirect_to, session_id, agent_id, \
+                               slack_team_id, slack_channel_id, slack_thread_ts",
                 )
                 .bind(state)
                 .bind(now)
@@ -310,10 +320,45 @@ struct PendingRow {
     issuer: String,
     pkce_verifier: String,
     redirect_to: Option<String>,
+    session_id: Option<SessionId>,
+    agent_id: Option<AgentId>,
+    slack_team_id: Option<String>,
+    slack_channel_id: Option<String>,
+    slack_thread_ts: Option<String>,
 }
 
 impl PendingRow {
     fn into_record(self) -> PendingAuthorization {
+        // The all-or-none CHECK constraints guarantee each pair / triple
+        // is populated together — if the DB ever serves a half-populated
+        // shape it's a schema-vs-code divergence (§6 assertion).
+        let resume_ctx = match (self.session_id, self.agent_id) {
+            (Some(session_id), Some(agent_id)) => Some(ResumeCtx {
+                session_id,
+                agent_id,
+            }),
+            (None, None) => None,
+            _ => panic!(
+                "invariant: mcp_oauth_pending.resume_ctx half-populated; \
+                 CHECK constraint violated"
+            ),
+        };
+        let slack_ctx = match (
+            self.slack_team_id,
+            self.slack_channel_id,
+            self.slack_thread_ts,
+        ) {
+            (Some(team_id), Some(channel_id), Some(thread_ts)) => Some(SlackPingCtx {
+                team_id,
+                channel_id,
+                thread_ts,
+            }),
+            (None, None, None) => None,
+            _ => panic!(
+                "invariant: mcp_oauth_pending.slack_ctx partially-populated; \
+                 CHECK constraint violated"
+            ),
+        };
         PendingAuthorization {
             state: self.state,
             server_id: self.server_id,
@@ -322,6 +367,8 @@ impl PendingRow {
             issuer: self.issuer,
             pkce_verifier: self.pkce_verifier,
             redirect_to: self.redirect_to,
+            resume_ctx,
+            slack_ctx,
         }
     }
 }
