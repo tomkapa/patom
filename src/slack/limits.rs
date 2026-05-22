@@ -40,6 +40,15 @@ pub const SLACK_TIMESTAMP_MAX_SKEW: Duration = Duration::from_secs(60 * 5);
 /// `reqwest` timeout so a hung Slack edge does not stall the pump.
 pub const SLACK_POST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Per-attempt timeout for `users.info` lookups.
+///
+/// Runs inside the Slack 3 s `view_submission` ack window (slash
+/// command path). Tighter than `SLACK_POST_TIMEOUT` because the
+/// lookup is best-effort enrichment — the caller falls back to the
+/// slash form `user_name` + default avatar on any failure, and
+/// missing the 3 s window costs the user a generic Slack error UI.
+pub const SLACK_USERS_INFO_TIMEOUT: Duration = Duration::from_millis(1_500);
+
 /// Maximum number of concurrent per-thread stream pumps. New attaches
 /// beyond this cap evict the oldest idle pump (FIFO by last activity).
 pub const MAX_SLACK_STREAM_PUMPS: usize = 256;

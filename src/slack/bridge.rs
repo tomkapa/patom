@@ -47,7 +47,7 @@ use crate::types::{Participant, ParticipantKind, Prompt};
 
 use super::error::SlackError;
 use super::identity::SharedSlackIdentityStore;
-use super::limits::{SLACK_POST_BODY_TIMEOUT, SLACK_POST_TIMEOUT};
+use super::limits::SLACK_USERS_INFO_TIMEOUT;
 use super::mention;
 use super::poster::SharedSlackPoster;
 use super::stream_pump::{AttachRequest, SharedStreamPumpHandle};
@@ -421,11 +421,15 @@ pub async fn enqueue_from_slash(
     submit: SlashCommandSubmit,
 ) -> Result<(), SlackError> {
     let workspace = deps.workspaces.read_by_team(&submit.team_id).await?;
-    let user_id = match deps
-        .identities
-        .lookup(&submit.team_id, &submit.slack_user_id)
-        .await?
-    {
+    // Identity lookup and agent re-read are independent — both only
+    // need `workspace` to validate org alignment. Joining shaves one
+    // serial round-trip off the slash command's 3 s ack window.
+    let (identity, agent) = tokio::join!(
+        deps.identities
+            .lookup(&submit.team_id, &submit.slack_user_id),
+        deps.agents.read(submit.agent_id),
+    );
+    let user_id = match identity? {
         Some(linked) => {
             assert_eq!(linked.org_id, workspace.org_id);
             linked.user_id
@@ -435,7 +439,7 @@ pub async fn enqueue_from_slash(
     // Defence-in-depth: re-validate that the chosen agent belongs to
     // the workspace's org. The modal options carry agent ids the
     // client could in principle forge.
-    let agent = deps.agents.read(submit.agent_id).await?;
+    let agent = agent?;
     if agent.org_id != workspace.org_id {
         return Err(SlackError::AgentNotFound(agent.name.as_str().to_owned()));
     }
@@ -482,7 +486,7 @@ pub async fn enqueue_from_slash(
         &submit.slack_user_id,
         &submit.slack_user_name,
         &prompt_text,
-        agent.name.as_str(),
+        &agent.name,
     )
     .await?;
     let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
@@ -528,6 +532,8 @@ pub async fn enqueue_from_slash(
 /// command's `user_name` form value and the app-default avatar. The
 /// post still lands; only the attribution looks worse, which beats
 /// failing the prompt over a profile lookup hiccup.
+const SLACK_USERS_INFO_URL: &str = "https://slack.com/api/users.info";
+
 async fn post_prompt_mirror(
     deps: &BridgeDeps,
     workspace: &crate::slack::workspace::WorkspaceWithToken,
@@ -535,7 +541,7 @@ async fn post_prompt_mirror(
     slack_user_id: &SlackUserId,
     slack_user_name: &str,
     prompt_text: &str,
-    agent_name: &str,
+    agent_name: &AgentName,
 ) -> Result<SlackTs, SlackError> {
     let profile =
         fetch_user_profile(&deps.http, &workspace.bot_token, slack_user_id.as_str()).await;
@@ -568,11 +574,13 @@ async fn post_prompt_mirror(
 ///
 /// `display_name` is the user's customised workspace handle (`tomkapa`);
 /// falls back through `real_name` to `name` when unset. `image_url` is
-/// one of the avatar URLs sized for inline rendering.
-#[derive(Debug, Clone)]
-pub struct SlackUserProfile {
-    pub display_name: Option<String>,
-    pub image_url: Option<String>,
+/// the `image_192` avatar URL, which Slack populates whenever the user
+/// has any avatar at all (the smaller / larger variants would be
+/// allocated unused).
+#[derive(Debug)]
+struct SlackUserProfile {
+    display_name: Option<String>,
+    image_url: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -594,7 +602,7 @@ struct UsersInfoUser {
     profile: Option<UsersInfoProfile>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Default, serde::Deserialize)]
 struct UsersInfoProfile {
     #[serde(default)]
     display_name: Option<String>,
@@ -604,28 +612,25 @@ struct UsersInfoProfile {
     real_name: Option<String>,
     #[serde(default)]
     image_192: Option<String>,
-    #[serde(default)]
-    image_72: Option<String>,
-    #[serde(default)]
-    image_512: Option<String>,
 }
 
 /// Resolve the Slack user's workspace display name + avatar via
 /// `users.info`. Best-effort: a timeout, transport error, or
 /// `{ok: false}` body returns `None` and the caller falls back to the
-/// slash-command form fields. Caller has already opened the slash ack
-/// window, so we keep this bounded by the standard post timeout.
+/// slash-command form fields. One tight timeout covers send + body
+/// together because the call runs inside Slack's 3 s `view_submission`
+/// ack window — a generous Slack-side budget would burn the ack.
 async fn fetch_user_profile(
     http: &Client,
     token: &SlackBotToken,
     user_id: &str,
 ) -> Option<SlackUserProfile> {
     let send = http
-        .get("https://slack.com/api/users.info")
+        .get(SLACK_USERS_INFO_URL)
         .bearer_auth(token.expose())
         .query(&[("user", user_id)])
         .send();
-    let resp = match tokio::time::timeout(SLACK_POST_TIMEOUT, send).await {
+    let resp = match tokio::time::timeout(SLACK_USERS_INFO_TIMEOUT, send).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
             warn!(error = %e, event = "slack.users_info.transport_failed");
@@ -644,7 +649,7 @@ async fn fetch_user_profile(
         return None;
     }
     let parsed: UsersInfoEnvelope =
-        match tokio::time::timeout(SLACK_POST_BODY_TIMEOUT, resp.json()).await {
+        match tokio::time::timeout(SLACK_USERS_INFO_TIMEOUT, resp.json()).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
                 warn!(error = %e, event = "slack.users_info.decode_failed");
@@ -663,14 +668,7 @@ async fn fetch_user_profile(
         return None;
     }
     let user = parsed.user?;
-    let profile = user.profile.unwrap_or(UsersInfoProfile {
-        display_name: None,
-        display_name_normalized: None,
-        real_name: None,
-        image_192: None,
-        image_72: None,
-        image_512: None,
-    });
+    let profile = user.profile.unwrap_or_default();
     let display_name = profile
         .display_name
         .filter(|s| !s.is_empty())
@@ -678,10 +676,9 @@ async fn fetch_user_profile(
         .or_else(|| profile.real_name.filter(|s| !s.is_empty()))
         .or_else(|| user.real_name.filter(|s| !s.is_empty()))
         .or_else(|| user.name.filter(|s| !s.is_empty()));
-    let image_url = profile.image_192.or(profile.image_512).or(profile.image_72);
     Some(SlackUserProfile {
         display_name,
-        image_url,
+        image_url: profile.image_192,
     })
 }
 
@@ -691,7 +688,7 @@ async fn fetch_user_profile(
 /// line attributing the routed agent. The context block is the
 /// at-a-glance signal of which agent owns the thread — without it the
 /// reader has to expand the thread to find out.
-fn build_prompt_mirror_blocks(prompt: &str, agent_name: &str) -> Value {
+fn build_prompt_mirror_blocks(prompt: &str, agent_name: &AgentName) -> Value {
     json!([
         {
             "type": "section",
@@ -702,7 +699,7 @@ fn build_prompt_mirror_blocks(prompt: &str, agent_name: &str) -> Value {
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": format!("→ *@{agent_name}*"),
+                    "text": format!("→ *@{}*", agent_name.as_str()),
                 },
             ],
         },
@@ -715,7 +712,8 @@ mod tests {
 
     #[test]
     fn prompt_mirror_renders_prompt_and_agent_context() {
-        let blocks = build_prompt_mirror_blocks("help me recruit", "recruiter");
+        let agent = AgentName::try_from("recruiter").expect("valid name");
+        let blocks = build_prompt_mirror_blocks("help me recruit", &agent);
         let arr = blocks.as_array().expect("array");
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["type"], "section");
