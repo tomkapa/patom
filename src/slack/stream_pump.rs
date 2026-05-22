@@ -472,9 +472,7 @@ mod tests {
                 blocks,
             } => {
                 assert!(fallback_text.contains("Notion"));
-                let url = blocks["blocks"][1]["elements"][0]["url"]
-                    .as_str()
-                    .expect("url");
+                let url = blocks[1]["elements"][0]["url"].as_str().expect("url");
                 assert!(url.ends_with("?token=abc"));
             }
             PostBody::Text(_) => panic!("expected Blocks for WireMcpRequest"),
@@ -494,7 +492,7 @@ mod tests {
         // Even with a connect_url passed, static_headers renders the hint, not the button.
         let body = payload_for_post(&chunk, Some("https://relay.example/x")).expect("some");
         if let PostBody::Blocks { blocks, .. } = body {
-            assert_eq!(blocks["blocks"][1]["type"], "context");
+            assert_eq!(blocks[1]["type"], "context");
         } else {
             panic!("expected Blocks");
         }

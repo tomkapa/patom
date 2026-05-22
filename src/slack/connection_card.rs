@@ -10,6 +10,13 @@
 //!
 //! ## Shape
 //!
+//! Returns a bare `serde_json::Value::Array` — the value Slack expects
+//! in `chat.postMessage`'s `blocks` field. The caller wraps it into a
+//! `PostBody::Blocks { fallback_text, blocks: <this> }`; the poster
+//! places it directly under the wire `blocks` field. **Do not wrap in
+//! `{ "blocks": [...] }`** — that nests under `body.blocks` and Slack
+//! silently rejects the post.
+//!
 //! - One **section** block with the recruiter's `reason` paragraph
 //!   (truncated to [`SLACK_CONNECTION_REASON_MAX_CHARS`]).
 //! - For `auth_kind = oauth2`: one **actions** block with a primary
@@ -97,7 +104,7 @@ pub fn build_connection_request_card(
         }
     }
 
-    json!({ "blocks": blocks })
+    Value::Array(blocks)
 }
 
 /// Truncate `s` to at most `max_chars` characters, appending an ellipsis
@@ -127,7 +134,7 @@ mod tests {
             McpAuthKind::OAuth2,
             Some("https://relay.example/slack/mcp/connect?token=abc"),
         );
-        let blocks = v["blocks"].as_array().expect("blocks array");
+        let blocks = v.as_array().expect("blocks array");
         assert_eq!(blocks.len(), 2, "oauth2 card has section + actions");
 
         // Section: type + mrkdwn reason.
@@ -167,7 +174,7 @@ mod tests {
             McpAuthKind::StaticHeaders,
             None,
         );
-        let blocks = v["blocks"].as_array().expect("blocks");
+        let blocks = v.as_array().expect("blocks");
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["type"], "section");
         assert_eq!(blocks[1]["type"], "context");
@@ -188,7 +195,7 @@ mod tests {
             // there is no consent flow to drive the user into.
             Some("https://relay.example/slack/mcp/connect?token=xyz"),
         );
-        let blocks = v["blocks"].as_array().expect("blocks");
+        let blocks = v.as_array().expect("blocks");
         assert_eq!(blocks[1]["type"], "context");
     }
 
@@ -202,7 +209,7 @@ mod tests {
             McpAuthKind::OAuth2,
             None,
         );
-        let blocks = v["blocks"].as_array().expect("blocks");
+        let blocks = v.as_array().expect("blocks");
         assert_eq!(blocks[1]["type"], "context");
     }
 
@@ -215,9 +222,7 @@ mod tests {
             McpAuthKind::OAuth2,
             Some("https://relay.example/x"),
         );
-        let rendered = v["blocks"][0]["text"]["text"]
-            .as_str()
-            .expect("text string");
+        let rendered = v[0]["text"]["text"].as_str().expect("text string");
         assert_eq!(rendered.chars().count(), SLACK_CONNECTION_REASON_MAX_CHARS);
         assert!(rendered.ends_with('…'));
     }
@@ -230,7 +235,7 @@ mod tests {
             McpAuthKind::OAuth2,
             Some("https://relay.example/x"),
         );
-        assert_eq!(v["blocks"][0]["text"]["text"], "short");
+        assert_eq!(v[0]["text"]["text"], "short");
     }
 
     #[test]
@@ -243,9 +248,7 @@ mod tests {
             McpAuthKind::OAuth2,
             Some("https://relay.example/x"),
         );
-        let rendered = v["blocks"][0]["text"]["text"]
-            .as_str()
-            .expect("text string");
+        let rendered = v[0]["text"]["text"].as_str().expect("text string");
         // Must still be valid UTF-8 and char-counted to the cap.
         assert_eq!(rendered.chars().count(), SLACK_CONNECTION_REASON_MAX_CHARS);
     }
@@ -262,6 +265,6 @@ mod tests {
         // The whole structure must round-trip through serde.
         let s = serde_json::to_string(&v).expect("serialise");
         let back: Value = serde_json::from_str(&s).expect("parse back");
-        assert_eq!(back["blocks"][0]["text"]["text"], reason);
+        assert_eq!(back[0]["text"]["text"], reason);
     }
 }

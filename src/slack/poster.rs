@@ -472,5 +472,11 @@ mod tests {
         let json = serde_json::to_value(&blocks_body).expect("ser");
         assert_eq!(json["blocks"], blocks_val);
         assert_eq!(json["text"], "fallback");
+        // Slack rejects `blocks` if it's nested under another object —
+        // regression guard for the prior `{ "blocks": [...] }` wrap.
+        assert!(
+            json["blocks"].is_array(),
+            "wire-body blocks must be a JSON array, not an object"
+        );
     }
 }
