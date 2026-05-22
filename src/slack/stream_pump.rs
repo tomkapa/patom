@@ -27,7 +27,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use futures::StreamExt;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
@@ -56,6 +55,17 @@ use super::workspace::SharedSlackWorkspaceStore;
 /// Long enough to click within a few minutes of seeing the card; short
 /// enough that a leaked URL becomes useless quickly.
 const CONNECT_LINK_TTL_SECS: i64 = 60 * 10;
+
+/// Cap on deferred `WireMcpRequest` cards held per pump.
+///
+/// Cards are deferred until the next text-bearing chunk (Done /
+/// AgentMessage / Error) so the agent's narrative posts above the
+/// Connect button — matches the web UI's stacked-bubble layout. The
+/// cap is a defensive bound (CLAUDE.md §5): a runaway agent that
+/// emits dozens of `WireMcpRequest` chunks before any text would
+/// otherwise grow this buffer unboundedly; we drop the oldest at the
+/// cap.
+const MAX_DEFERRED_WIRE_CARDS: usize = 8;
 
 /// Request to attach a pump for `root`.
 #[derive(Debug, Clone)]
@@ -222,6 +232,12 @@ async fn supervisor(
 /// Per-thread pump body. Reads broadcast items until the stream
 /// quiesces, the cancel token fires, or `SLACK_PUMP_IDLE_TTL` elapses
 /// with no chunks.
+///
+/// Ordering: `WireMcpRequest` cards are *deferred* into a small buffer
+/// and posted after the next text-bearing chunk (Done / AgentMessage /
+/// Error). Without this, the card would land in the thread *before*
+/// the agent's narrative — out of order with the web UI's stacked
+/// bubble layout (text above, card below).
 async fn run_pump(
     deps: &PumpDeps,
     req: &AttachRequest,
@@ -230,6 +246,7 @@ async fn run_pump(
     let mut stream = deps.thread_stream.subscribe(req.root);
     let workspace = deps.workspaces.read_by_team(&req.team_id).await?;
     let mut idle_deadline = Instant::now() + SLACK_PUMP_IDLE_TTL;
+    let mut deferred: Vec<DeferredPost> = Vec::new();
 
     loop {
         tokio::select! {
@@ -240,44 +257,85 @@ async fn run_pump(
                     return Ok(());
                 };
                 idle_deadline = Instant::now() + SLACK_PUMP_IDLE_TTL;
-                match result {
-                    Err(e) => {
-                        warn!(error = ?e, event = "slack.stream_pump.backend_error");
-                    }
-                    Ok(ThreadStreamEvent::Stalled) => {
-                        warn!(event = "slack.stream_pump.stalled");
-                    }
-                    Ok(ThreadStreamEvent::Item(item)) => {
-                        let connect_url = match &item.chunk {
-                            ResponseChunk::WireMcpRequest {
-                                catalog_id,
-                                auth_kind: McpAuthKind::OAuth2,
-                                ..
-                            } => Some(build_connect_url(deps, req, catalog_id, item.from_agent)),
-                            _ => None,
-                        };
-                        if let Some(body) = payload_for_post(&item.chunk, connect_url.as_deref()) {
-                            let username = resolve_agent_name(deps, item.from_agent).await;
-                            let body = clip_body(body, SLACK_MAX_POST_CHARS);
-                            if let Err(e) = deps
-                                .poster
-                                .post(PostRequest {
-                                    token: workspace.bot_token.clone(),
-                                    channel: req.channel_id.clone(),
-                                    thread_ts: Some(req.thread_ts.clone()),
-                                    body,
-                                    username,
-                                })
-                                .await
-                            {
-                                warn!(error = ?e, event = "slack.stream_pump.post_failed");
-                            }
-                        }
-                    }
-                }
-                let _ = Duration::from_millis(0);
+                handle_stream_event(deps, req, &workspace.bot_token, &mut deferred, result).await;
             }
         }
+    }
+}
+
+/// One pending Slack post: the body + the username to attribute it to.
+/// Used by the deferred-card buffer in [`run_pump`].
+struct DeferredPost {
+    body: PostBody,
+    username: String,
+}
+
+async fn handle_stream_event(
+    deps: &PumpDeps,
+    req: &AttachRequest,
+    bot_token: &super::types::SlackBotToken,
+    deferred: &mut Vec<DeferredPost>,
+    event: Result<ThreadStreamEvent, crate::runtime::ThreadStreamError>,
+) {
+    match event {
+        Err(e) => {
+            warn!(error = ?e, event = "slack.stream_pump.backend_error");
+        }
+        Ok(ThreadStreamEvent::Stalled) => {
+            warn!(event = "slack.stream_pump.stalled");
+        }
+        Ok(ThreadStreamEvent::Item(item)) => {
+            let connect_url = match &item.chunk {
+                ResponseChunk::WireMcpRequest {
+                    catalog_id,
+                    auth_kind: McpAuthKind::OAuth2,
+                    ..
+                } => Some(build_connect_url(deps, req, catalog_id, item.from_agent)),
+                _ => None,
+            };
+            let Some(body) = payload_for_post(&item.chunk, connect_url.as_deref()) else {
+                return;
+            };
+            let username = resolve_agent_name(deps, item.from_agent).await;
+            let body = clip_body(body, SLACK_MAX_POST_CHARS);
+            if matches!(&item.chunk, ResponseChunk::WireMcpRequest { .. }) {
+                // Defer the card until a text-bearing chunk has posted.
+                if deferred.len() >= MAX_DEFERRED_WIRE_CARDS {
+                    // CLAUDE.md §5: bounded buffer. Drop the oldest so
+                    // the latest request is the one the user sees.
+                    deferred.remove(0);
+                }
+                deferred.push(DeferredPost { body, username });
+                return;
+            }
+            // Text-bearing chunk: post it, then flush any pending cards.
+            post_one(deps, req, bot_token, body, &username).await;
+            for pending in deferred.drain(..) {
+                post_one(deps, req, bot_token, pending.body, &pending.username).await;
+            }
+        }
+    }
+}
+
+async fn post_one(
+    deps: &PumpDeps,
+    req: &AttachRequest,
+    bot_token: &super::types::SlackBotToken,
+    body: PostBody,
+    username: &str,
+) {
+    if let Err(e) = deps
+        .poster
+        .post(PostRequest {
+            token: bot_token.clone(),
+            channel: req.channel_id.clone(),
+            thread_ts: Some(req.thread_ts.clone()),
+            body,
+            username: username.to_owned(),
+        })
+        .await
+    {
+        warn!(error = ?e, event = "slack.stream_pump.post_failed");
     }
 }
 
