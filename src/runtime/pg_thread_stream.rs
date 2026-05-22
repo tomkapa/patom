@@ -105,7 +105,14 @@ pub enum ThreadStreamEvent {
 struct NotifyPayload {
     request_id: PromptRequestId,
     root_request_id: PromptRequestId,
-    session_id: SessionId,
+    /// Optional so a publisher that has not yet been redeployed with
+    /// the post-migration-35 CTE (which adds `session_id` to the
+    /// `pg_notify` JSON) keeps working: the listener falls back to the
+    /// canonical `session_id` from the `prompt_requests` row it
+    /// already fetches in `fetch_item`. The wire field is mandatory in
+    /// steady state — this is rolling-deploy safety.
+    #[serde(default)]
+    session_id: Option<SessionId>,
     chunk_seq: u64,
 }
 
@@ -377,8 +384,8 @@ async fn fetch_item(
     // `GET /threads/{root}/stream` gate which runs `begin_as`
     // before subscribing.
     let mut tx = crate::auth::begin_privileged(pool).await?;
-    let row: Option<(serde_json::Value, AgentId)> = sqlx::query_as(
-        "SELECT prc.payload, pr.receiver_agent_id
+    let row: Option<(serde_json::Value, AgentId, SessionId)> = sqlx::query_as(
+        "SELECT prc.payload, pr.receiver_agent_id, pr.session_id
          FROM prompt_response_chunks prc
          JOIN prompt_requests pr ON pr.id = prc.request_id
          WHERE prc.request_id = $1 AND prc.seq = $2",
@@ -389,7 +396,7 @@ async fn fetch_item(
     .await?;
     tx.commit().await?;
 
-    let (raw, receiver_agent_id) = row.ok_or_else(|| {
+    let (raw, receiver_agent_id, db_session_id) = row.ok_or_else(|| {
         ThreadStreamError::Backend(format!(
             "chunk row missing for request {} seq {chunk_seq}",
             payload.request_id
@@ -408,7 +415,7 @@ async fn fetch_item(
 
     Ok(ThreadStreamItem {
         request_id: payload.request_id,
-        session_id: payload.session_id,
+        session_id: payload.session_id.unwrap_or(db_session_id),
         from_agent,
         chunk_seq,
         chunk,
