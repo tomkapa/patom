@@ -7,10 +7,18 @@
 //! `broadcast::Receiver` — the Slack adapter takes the same primitive
 //! the web UI does, no HTTP loop required.
 //!
-//! One task per active Slack-rooted thread. Tasks are owned by a
+//! One task per active Slack-rooted DAG. Tasks are owned by a
 //! `JoinSet` capped at `MAX_SLACK_STREAM_PUMPS`; new attaches over the
 //! cap evict the oldest idle pump. Each task self-exits after
 //! `SLACK_PUMP_IDLE_TTL` of inactivity.
+//!
+//! Per-session routing: each chunk carries the `session_id` of the
+//! `prompt_requests` row that produced it. A DAG may carry multiple
+//! `(agent, human)` sessions; this pump routes each chunk to the Slack
+//! thread bound to its session — or, when no binding exists yet (a
+//! descendant agent first reaching the human), mints a fresh
+//! top-level channel post and records the binding so future chunks
+//! and inbound user replies in that thread stick.
 //!
 //! Post rules:
 //! - `ResponseChunk::Done { final_text }` → post `final_text` attributed
@@ -46,8 +54,12 @@ use crate::types::SecretString;
 use super::connect_link::{SlackConnectClaims, sign_connect};
 use super::connection_card::build_connection_request_card;
 use super::error::SlackError;
-use super::limits::{MAX_SLACK_STREAM_PUMPS, SLACK_MAX_POST_CHARS, SLACK_PUMP_IDLE_TTL};
+use super::limits::{
+    MAX_SLACK_STREAM_PUMPS, MAX_SLACK_THREADS_PER_DAG_ROOT, SLACK_MAX_POST_CHARS,
+    SLACK_PUMP_IDLE_TTL,
+};
 use super::poster::{PostBody, PostRequest, SharedSlackPoster};
+use super::thread_map::SharedSlackThreadStore;
 use super::types::{SlackChannelId, SlackTeamId, SlackThreadTs, SlackUserId};
 use super::workspace::SharedSlackWorkspaceStore;
 
@@ -128,6 +140,7 @@ pub struct PumpDeps {
     pub workspaces: SharedSlackWorkspaceStore,
     pub agents: SharedAgentStore,
     pub poster: SharedSlackPoster,
+    pub threads: SharedSlackThreadStore,
     /// HMAC signing key for [`SlackConnectClaims`] tokens minted into
     /// Connect button URLs. Shared with `oauth.rs`'s state-token
     /// signing — same secret, same TTL.
@@ -229,7 +242,7 @@ async fn supervisor(
     }
 }
 
-/// Per-thread pump body. Reads broadcast items until the stream
+/// Per-DAG pump body. Reads broadcast items until the stream
 /// quiesces, the cancel token fires, or `SLACK_PUMP_IDLE_TTL` elapses
 /// with no chunks.
 ///
@@ -247,6 +260,7 @@ async fn run_pump(
     let workspace = deps.workspaces.read_by_team(&req.team_id).await?;
     let mut idle_deadline = Instant::now() + SLACK_PUMP_IDLE_TTL;
     let mut deferred: Vec<DeferredPost> = Vec::new();
+    let mut minted_threads: usize = 0;
 
     loop {
         tokio::select! {
@@ -257,17 +271,28 @@ async fn run_pump(
                     return Ok(());
                 };
                 idle_deadline = Instant::now() + SLACK_PUMP_IDLE_TTL;
-                handle_stream_event(deps, req, &workspace.bot_token, &mut deferred, result).await;
+                handle_stream_event(
+                    deps,
+                    req,
+                    &workspace.bot_token,
+                    &mut deferred,
+                    &mut minted_threads,
+                    result,
+                )
+                .await;
             }
         }
     }
 }
 
-/// One pending Slack post: the body + the username to attribute it to.
-/// Used by the deferred-card buffer in [`run_pump`].
+/// One pending Slack post: the body, the username to attribute it to,
+/// and the session it belongs to. Used by the deferred-card buffer in
+/// [`run_pump`]; session is preserved so the deferred card lands in
+/// the same per-session Slack thread the text-bearing chunk did.
 struct DeferredPost {
     body: PostBody,
     username: String,
+    session_id: SessionId,
 }
 
 async fn handle_stream_event(
@@ -275,6 +300,7 @@ async fn handle_stream_event(
     req: &AttachRequest,
     bot_token: &super::types::SlackBotToken,
     deferred: &mut Vec<DeferredPost>,
+    minted_threads: &mut usize,
     event: Result<ThreadStreamEvent, crate::runtime::ThreadStreamError>,
 ) {
     match event {
@@ -298,44 +324,200 @@ async fn handle_stream_event(
             };
             let username = resolve_agent_name(deps, item.from_agent).await;
             let body = clip_body(body, SLACK_MAX_POST_CHARS);
+            let (route_session, allow_mint) = routing_for(&item.chunk, item.session_id);
             if matches!(&item.chunk, ResponseChunk::WireMcpRequest { .. }) {
-                // Defer the card until a text-bearing chunk has posted.
                 if deferred.len() >= MAX_DEFERRED_WIRE_CARDS {
-                    // CLAUDE.md §5: bounded buffer. Drop the oldest so
-                    // the latest request is the one the user sees.
                     deferred.remove(0);
                 }
-                deferred.push(DeferredPost { body, username });
+                deferred.push(DeferredPost {
+                    body,
+                    username,
+                    session_id: route_session,
+                });
                 return;
             }
-            // Text-bearing chunk: post it, then flush any pending cards.
-            post_one(deps, req, bot_token, body, &username).await;
+            dispatch_post(
+                deps.poster.as_ref(),
+                deps.threads.as_ref(),
+                req,
+                bot_token,
+                route_session,
+                body,
+                username,
+                allow_mint,
+                minted_threads,
+            )
+            .await;
+            // Flush pending cards into the binding the text-bearing
+            // chunk just established (or pre-existing). Deferred cards
+            // never mint — a card without surrounding narrative would
+            // be a confusing standalone thread.
             for pending in deferred.drain(..) {
-                post_one(deps, req, bot_token, pending.body, &pending.username).await;
+                dispatch_post(
+                    deps.poster.as_ref(),
+                    deps.threads.as_ref(),
+                    req,
+                    bot_token,
+                    pending.session_id,
+                    pending.body,
+                    pending.username,
+                    false,
+                    minted_threads,
+                )
+                .await;
             }
         }
     }
 }
 
-async fn post_one(
-    deps: &PumpDeps,
+/// Route a single user-visible post to Slack.
+///
+/// Looks up the session's existing Slack thread; on hit, posts under
+/// that `thread_ts`. On miss, behaviour depends on `allow_mint`:
+/// - `true` (an explicit agent→human `AgentMessage`) — mint a fresh
+///   top-level channel post and record the binding so the next chunk
+///   for the same session sticks.
+/// - `false` (`Done` / `Error` / deferred `WireMcpRequest`) — drop the
+///   post. Without a binding, these chunks belong to an agent↔agent
+///   session and surfacing them would create a side thread the human
+///   has no addressable agent for.
+#[allow(clippy::too_many_arguments)] // straight-line dispatch with no useful grouping
+async fn dispatch_post(
+    poster: &dyn super::poster::SlackPoster,
+    threads: &dyn super::thread_map::SlackThreadStore,
     req: &AttachRequest,
-    bot_token: &super::types::SlackBotToken,
+    token: &super::types::SlackBotToken,
+    session_id: SessionId,
     body: PostBody,
-    username: &str,
+    username: String,
+    allow_mint: bool,
+    minted_threads: &mut usize,
 ) {
-    if let Err(e) = deps
-        .poster
+    let existing = match threads.lookup_by_session(session_id).await {
+        Ok(opt) => opt,
+        Err(e) => {
+            warn!(
+                error = ?e,
+                relay.session.id = %session_id,
+                event = "slack.stream_pump.lookup_failed",
+            );
+            return;
+        }
+    };
+
+    if let Some(binding) = existing {
+        if let Err(e) = poster
+            .post(PostRequest {
+                token: token.clone(),
+                channel: binding.channel_id,
+                thread_ts: Some(binding.thread_ts),
+                body,
+                username,
+            })
+            .await
+        {
+            warn!(error = ?e, event = "slack.stream_pump.post_failed");
+        }
+        return;
+    }
+
+    if !allow_mint {
+        // Internal agent↔agent emission (typically a `Done` in a
+        // descendant-pair session). The human is not the receiver of
+        // this turn, so surfacing it would leak agent-private content
+        // into Slack — drop silently.
+        return;
+    }
+
+    // Miss — descendant agent reaching the human for the first time in
+    // this session via an explicit `send_message(human, …)`. Mint a
+    // fresh top-level post in the channel the DAG is rooted in, then
+    // bind the session to the returned `ts`.
+    if *minted_threads >= MAX_SLACK_THREADS_PER_DAG_ROOT {
+        warn!(
+            relay.session.id = %session_id,
+            slack.minted = *minted_threads,
+            event = "slack.stream_pump.mint_capped",
+        );
+        return;
+    }
+
+    let new_ts = match poster
         .post(PostRequest {
-            token: bot_token.clone(),
+            token: token.clone(),
             channel: req.channel_id.clone(),
-            thread_ts: Some(req.thread_ts.clone()),
+            thread_ts: None,
             body,
-            username: username.to_owned(),
+            username,
         })
         .await
     {
-        warn!(error = ?e, event = "slack.stream_pump.post_failed");
+        Ok(ts) => ts,
+        Err(e) => {
+            warn!(
+                error = ?e,
+                relay.session.id = %session_id,
+                event = "slack.stream_pump.mint_post_failed",
+            );
+            return;
+        }
+    };
+
+    let anchor = match SlackThreadTs::try_from(new_ts.as_str()) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(
+                error = ?e,
+                relay.session.id = %session_id,
+                event = "slack.stream_pump.mint_anchor_invalid",
+            );
+            return;
+        }
+    };
+
+    if let Err(e) = threads
+        .bind_root(
+            req.org_id,
+            &req.team_id,
+            &req.channel_id,
+            &anchor,
+            session_id,
+            req.root,
+        )
+        .await
+    {
+        warn!(
+            error = ?e,
+            relay.session.id = %session_id,
+            event = "slack.stream_pump.bind_failed",
+        );
+        return;
+    }
+
+    *minted_threads = minted_threads.saturating_add(1);
+}
+
+/// Decide which session a chunk routes to in Slack, and whether the
+/// pump may mint a fresh thread for it.
+///
+/// `AgentMessage` carries its own `to_session` — the `(from, human)`
+/// session the message belongs to. That differs from the publishing
+/// request's session whenever an agent calls `send_message(human, …)`
+/// from inside an agent↔agent turn (e.g. writer running in a
+/// `writer↔recruiter` session calls `send_message(human, …)`; the
+/// chunk's `to_session` is `writer↔human`, the request's session is
+/// `writer↔recruiter`). The pump must route by `to_session` so the
+/// message lands in the existing `writer↔human` thread instead of
+/// minting a sibling thread.
+///
+/// `AgentMessage` is also the only chunk type that may mint — it's
+/// the explicit agent→human address. Done / Error / WireMcpRequest
+/// only post if the chunk's session is already bound; otherwise
+/// they'd leak internal agent↔agent traffic into new Slack threads.
+fn routing_for(chunk: &ResponseChunk, request_session: SessionId) -> (SessionId, bool) {
+    match chunk {
+        ResponseChunk::AgentMessage { to_session, .. } => (*to_session, true),
+        _ => (request_session, false),
     }
 }
 
@@ -464,6 +646,7 @@ mod tests {
     fn payload_for_post_returns_agent_message_content() {
         let c = ResponseChunk::AgentMessage {
             from: crate::agents::AgentId::new(),
+            to_session: SessionId::new(),
             content: "hello".to_owned(),
         };
         match payload_for_post(&c, None) {
@@ -547,7 +730,6 @@ mod tests {
             auth_kind: McpAuthKind::StaticHeaders,
             homepage_url: None,
         };
-        // Even with a connect_url passed, static_headers renders the hint, not the button.
         let body = payload_for_post(&chunk, Some("https://relay.example/x")).expect("some");
         if let PostBody::Blocks { blocks, .. } = body {
             assert_eq!(blocks[1]["type"], "context");
@@ -573,5 +755,411 @@ mod tests {
     #[test]
     fn clip_zero_max_returns_empty() {
         assert_eq!(clip("anything".to_owned(), 0), "");
+    }
+
+    use crate::slack::poster::FakeSlackPoster;
+    use crate::slack::thread_map::{FakeSlackThreadStore, SlackThreadStore as _};
+    use crate::slack::types::{SlackBotToken, SlackChannelId, SlackTeamId, SlackThreadTs};
+
+    fn dispatch_fixtures() -> (
+        AttachRequest,
+        SlackBotToken,
+        FakeSlackPoster,
+        FakeSlackThreadStore,
+    ) {
+        let req = AttachRequest {
+            root: PromptRequestId::new(),
+            org_id: OrgId::new(),
+            team_id: SlackTeamId::try_from("T01ROOT").expect("team id"),
+            channel_id: SlackChannelId::try_from("C01CHAN").expect("channel id"),
+            thread_ts: SlackThreadTs::try_from("1700000000.111111").expect("thread ts"),
+            slack_user_id: SlackUserId::try_from("U01USR").expect("user id"),
+            session_id: SessionId::new(),
+        };
+        let token = SlackBotToken::try_from("xoxb-fake-token".to_owned()).expect("bot token");
+        (
+            req,
+            token,
+            FakeSlackPoster::new(),
+            FakeSlackThreadStore::new(),
+        )
+    }
+
+    fn text_body(s: &str) -> PostBody {
+        PostBody::Text(s.to_owned())
+    }
+
+    #[tokio::test]
+    async fn dispatch_first_chunk_for_new_session_mints_top_level_post() {
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let mut minted = 0;
+        let session = SessionId::new();
+
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            session,
+            text_body("hello from recruiter"),
+            "recruiter".to_owned(),
+            true,
+            &mut minted,
+        )
+        .await;
+
+        let captured = poster.captured();
+        assert_eq!(captured.len(), 1, "exactly one post emitted");
+        assert!(
+            captured[0].thread_ts.is_none(),
+            "fresh session posts as top-level"
+        );
+        assert_eq!(captured[0].channel.as_str(), req.channel_id.as_str());
+        assert_eq!(captured[0].username, "recruiter");
+        match &captured[0].body {
+            PostBody::Text(s) => assert_eq!(s, "hello from recruiter"),
+            PostBody::Blocks { .. } => panic!("text body expected"),
+        }
+        assert_eq!(minted, 1, "mint counter bumped");
+        assert_eq!(threads.len(), 1, "binding recorded");
+    }
+
+    #[tokio::test]
+    async fn dispatch_second_chunk_same_session_threads_under_minted_anchor() {
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let mut minted = 0;
+        let session = SessionId::new();
+
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            session,
+            text_body("first"),
+            "recruiter".to_owned(),
+            true,
+            &mut minted,
+        )
+        .await;
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            session,
+            text_body("second"),
+            "recruiter".to_owned(),
+            true,
+            &mut minted,
+        )
+        .await;
+
+        let captured = poster.captured();
+        assert_eq!(captured.len(), 2);
+        assert!(captured[0].thread_ts.is_none(), "mint = top-level");
+        let lookup = threads
+            .lookup_by_session(session)
+            .await
+            .expect("lookup ok")
+            .expect("binding exists");
+        let anchor = captured[1].thread_ts.as_ref().expect("second threaded");
+        assert_eq!(anchor.as_str(), lookup.thread_ts.as_str());
+        assert_eq!(minted, 1, "only one mint across the two chunks");
+    }
+
+    #[tokio::test]
+    async fn dispatch_uses_existing_binding_without_minting() {
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let mut minted = 0;
+        let session = SessionId::new();
+        let existing_ts = SlackThreadTs::try_from("1700000000.222222").expect("ts");
+        threads
+            .bind_root(
+                req.org_id,
+                &req.team_id,
+                &req.channel_id,
+                &existing_ts,
+                session,
+                req.root,
+            )
+            .await
+            .expect("seed binding");
+
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            session,
+            text_body("follow-up"),
+            "writer".to_owned(),
+            false,
+            &mut minted,
+        )
+        .await;
+
+        let captured = poster.captured();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(
+            captured[0].thread_ts.as_ref().expect("threaded").as_str(),
+            existing_ts.as_str(),
+        );
+        assert_eq!(minted, 0, "hit branch does not bump mint counter");
+    }
+
+    #[tokio::test]
+    async fn dispatch_caps_minting_at_per_dag_root_limit() {
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let mut minted = MAX_SLACK_THREADS_PER_DAG_ROOT;
+        let session = SessionId::new();
+
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            session,
+            text_body("should-be-dropped"),
+            "agent".to_owned(),
+            true,
+            &mut minted,
+        )
+        .await;
+
+        assert_eq!(
+            poster.count(),
+            0,
+            "cap exhaustion drops the chunk without posting"
+        );
+        assert_eq!(
+            threads.len(),
+            0,
+            "cap exhaustion does not bind a new thread"
+        );
+        assert_eq!(minted, MAX_SLACK_THREADS_PER_DAG_ROOT);
+    }
+
+    #[tokio::test]
+    async fn dispatch_drops_unbound_session_when_minting_disallowed() {
+        // Done / Error / WireMcpRequest chunks from an agent↔agent
+        // session must not mint a new Slack thread — that's where the
+        // "writer posts in a new thread" bug came from.
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let mut minted = 0;
+        let session = SessionId::new();
+
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            session,
+            text_body("internal turn final answer"),
+            "writer".to_owned(),
+            false,
+            &mut minted,
+        )
+        .await;
+
+        assert_eq!(
+            poster.count(),
+            0,
+            "no binding + allow_mint=false drops the post"
+        );
+        assert_eq!(threads.len(), 0, "no thread minted");
+        assert_eq!(minted, 0);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // routing_for: AgentMessage → (to_session, allow_mint=true);
+    // everything else → (request_session, allow_mint=false).
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn routing_for_agent_message_uses_to_session_and_allows_mint() {
+        // Reproduces the writer→human bug: writer is running in a
+        // sibling agent↔agent session, but its send_message(human)
+        // chunk must route by `to_session` (writer↔human) — not by
+        // the publishing request's session (writer↔recruiter).
+        let writer_human = SessionId::new();
+        let writer_recruiter = SessionId::new();
+        let chunk = ResponseChunk::AgentMessage {
+            from: crate::agents::AgentId::new(),
+            to_session: writer_human,
+            content: "follow-up question".to_owned(),
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, writer_recruiter);
+        assert_eq!(route_session, writer_human, "route by to_session");
+        assert!(allow_mint, "AgentMessage may mint");
+    }
+
+    #[test]
+    fn routing_for_done_uses_request_session_and_disallows_mint() {
+        // The exact bug shape: writer's Done in (writer ↔ recruiter)
+        // must route by the publishing request's session and must NOT
+        // be allowed to mint — otherwise it leaks into a fresh thread.
+        let writer_recruiter = SessionId::new();
+        let chunk = ResponseChunk::Done {
+            final_text: "internal reply to recruiter".to_owned(),
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, writer_recruiter);
+        assert_eq!(route_session, writer_recruiter);
+        assert!(!allow_mint, "Done never mints");
+    }
+
+    #[test]
+    fn routing_for_error_uses_request_session_and_disallows_mint() {
+        let request_session = SessionId::new();
+        let chunk = ResponseChunk::Error {
+            reason: "timeout".to_owned(),
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, request_session);
+        assert_eq!(route_session, request_session);
+        assert!(!allow_mint);
+    }
+
+    #[test]
+    fn routing_for_wire_mcp_request_uses_request_session_and_disallows_mint() {
+        let request_session = SessionId::new();
+        let chunk = ResponseChunk::WireMcpRequest {
+            from: crate::agents::AgentId::new(),
+            catalog_id: McpCatalogId::try_from("notion").expect("valid catalog id"),
+            display_name: "Notion".to_owned(),
+            reason: "draft a brief".to_owned(),
+            auth_kind: McpAuthKind::OAuth2,
+            homepage_url: None,
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, request_session);
+        assert_eq!(route_session, request_session);
+        assert!(!allow_mint, "WireMcpRequest piggybacks, never mints");
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // End-to-end: the (writer↔human, writer↔recruiter) bug scenario.
+    // ──────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn agent_message_from_sibling_pair_lands_in_writer_human_thread() {
+        // Setup:
+        //   T1   = bound to writer↔human (from the inbound mention)
+        //   T2   = bound to recruiter↔human (recruiter's earlier mint)
+        //
+        // Writer runs in writer↔recruiter (sibling pair). It calls
+        // send_message(human, …). The chunk is published with
+        //   to_session = writer↔human
+        //   request session = writer↔recruiter
+        // The pump must route by to_session → T1, NOT mint a new
+        // thread and NOT post under T2.
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let writer_human = SessionId::new();
+        let recruiter_human = SessionId::new();
+        let writer_recruiter = SessionId::new();
+        let t1 = SlackThreadTs::try_from("1700000000.111111").expect("ts");
+        let t2 = SlackThreadTs::try_from("1700000000.222222").expect("ts");
+        threads
+            .bind_root(
+                req.org_id,
+                &req.team_id,
+                &req.channel_id,
+                &t1,
+                writer_human,
+                req.root,
+            )
+            .await
+            .expect("seed t1");
+        threads
+            .bind_root(
+                req.org_id,
+                &req.team_id,
+                &req.channel_id,
+                &t2,
+                recruiter_human,
+                req.root,
+            )
+            .await
+            .expect("seed t2");
+
+        let chunk = ResponseChunk::AgentMessage {
+            from: crate::agents::AgentId::new(),
+            to_session: writer_human,
+            content: "here's the code example you asked for".to_owned(),
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, writer_recruiter);
+
+        let mut minted = 0;
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            route_session,
+            text_body("here's the code example you asked for"),
+            "writer".to_owned(),
+            allow_mint,
+            &mut minted,
+        )
+        .await;
+
+        let captured = poster.captured();
+        assert_eq!(captured.len(), 1, "exactly one post");
+        let posted_thread = captured[0].thread_ts.as_ref().expect("threaded reply");
+        assert_eq!(
+            posted_thread.as_str(),
+            t1.as_str(),
+            "writer's send_message(human) must land in writer↔human's thread (T1), \
+             not recruiter's thread (T2), and not a fresh mint",
+        );
+        assert_eq!(minted, 0, "no new thread minted — used existing binding");
+        assert_eq!(threads.len(), 2, "no extra binding written");
+    }
+
+    #[tokio::test]
+    async fn done_in_sibling_pair_does_not_leak_to_slack() {
+        // The mirror case: writer's Done in (writer↔recruiter) must
+        // not surface anywhere in Slack — it's internal turn output
+        // addressed to recruiter, not the human.
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let writer_human = SessionId::new();
+        let writer_recruiter = SessionId::new();
+        let t1 = SlackThreadTs::try_from("1700000000.111111").expect("ts");
+        threads
+            .bind_root(
+                req.org_id,
+                &req.team_id,
+                &req.channel_id,
+                &t1,
+                writer_human,
+                req.root,
+            )
+            .await
+            .expect("seed t1");
+
+        let chunk = ResponseChunk::Done {
+            final_text: "internal answer back to recruiter".to_owned(),
+        };
+        let (route_session, allow_mint) = routing_for(&chunk, writer_recruiter);
+
+        let mut minted = 0;
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            route_session,
+            text_body("internal answer back to recruiter"),
+            "writer".to_owned(),
+            allow_mint,
+            &mut minted,
+        )
+        .await;
+
+        assert_eq!(
+            poster.count(),
+            0,
+            "sibling-pair Done must not leak into any Slack thread",
+        );
+        assert_eq!(minted, 0);
+        assert_eq!(threads.len(), 1, "no new binding");
     }
 }

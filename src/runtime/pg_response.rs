@@ -278,7 +278,7 @@ impl PgResponseHub {
 /// `req` resolves to zero rows (synthetic test id), the chain yields
 /// zero rows and the caller surfaces the original error.
 const PUBLISH_CTE_SQL: &str = "WITH req AS (
-     SELECT id AS request_id, org_id, root_request_id
+     SELECT id AS request_id, org_id, root_request_id, session_id
      FROM prompt_requests WHERE id = $1
  ), bumped AS (
      INSERT INTO prompt_response_streams (request_id, org_id, next_seq, closed)
@@ -297,6 +297,7 @@ const PUBLISH_CTE_SQL: &str = "WITH req AS (
      SELECT pg_notify($6, json_build_object(
          'request_id', req.request_id,
          'root_request_id', req.root_request_id,
+         'session_id', req.session_id,
          'chunk_seq', chunk_ins.seq
      )::text) AS _n
      FROM req, chunk_ins

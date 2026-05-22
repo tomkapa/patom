@@ -52,6 +52,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{debug, info, warn};
 
 use crate::agents::AgentId;
+use crate::session::SessionId;
 
 use super::limits::{MAX_THREAD_CHUNK_BUFFER, MAX_THREAD_SLOTS, THREAD_NOTIFY_CHANNEL};
 use super::response::ResponseChunk;
@@ -71,6 +72,11 @@ pub enum ThreadStreamError {
 #[derive(Debug, Clone)]
 pub struct ThreadStreamItem {
     pub request_id: PromptRequestId,
+    /// Session the chunk belongs to. Identical to `prompt_requests.session_id`
+    /// — surfaced here so delivery surfaces (e.g. the Slack stream pump) can
+    /// route a chunk to the right `(agent, human)` surface without an extra
+    /// round-trip.
+    pub session_id: SessionId,
     /// Authoring agent. For [`ResponseChunk::AgentMessage`] this is the
     /// chunk's own `from` (a deeper-DAG agent addressing the human); for
     /// every other chunk it is the request's `receiver_agent_id` — i.e. the
@@ -99,6 +105,7 @@ pub enum ThreadStreamEvent {
 struct NotifyPayload {
     request_id: PromptRequestId,
     root_request_id: PromptRequestId,
+    session_id: SessionId,
     chunk_seq: u64,
 }
 
@@ -401,6 +408,7 @@ async fn fetch_item(
 
     Ok(ThreadStreamItem {
         request_id: payload.request_id,
+        session_id: payload.session_id,
         from_agent,
         chunk_seq,
         chunk,
