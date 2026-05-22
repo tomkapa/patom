@@ -697,6 +697,7 @@ pub async fn build_server(
                     workspaces: workspaces.clone(),
                     agents: pieces.agents.clone(),
                     poster: poster.clone(),
+                    threads: threads_store.clone(),
                 },
                 cancel.clone(),
             );
