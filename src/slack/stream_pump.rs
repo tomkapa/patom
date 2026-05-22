@@ -324,6 +324,12 @@ async fn handle_stream_event(
             };
             let username = resolve_agent_name(deps, item.from_agent).await;
             let body = clip_body(body, SLACK_MAX_POST_CHARS);
+            // Only `AgentMessage` is an explicit agent→human address that
+            // justifies opening a new Slack thread. Done / Error /
+            // WireMcpRequest are contextual emissions that only land if
+            // the chunk's session is already bound — otherwise we'd mint
+            // a thread for every internal agent↔agent Done.
+            let allow_mint = matches!(&item.chunk, ResponseChunk::AgentMessage { .. });
             if matches!(&item.chunk, ResponseChunk::WireMcpRequest { .. }) {
                 if deferred.len() >= MAX_DEFERRED_WIRE_CARDS {
                     deferred.remove(0);
@@ -335,7 +341,6 @@ async fn handle_stream_event(
                 });
                 return;
             }
-            // Text-bearing chunk: post it, then flush any pending cards.
             dispatch_post(
                 deps.poster.as_ref(),
                 deps.threads.as_ref(),
@@ -344,9 +349,14 @@ async fn handle_stream_event(
                 item.session_id,
                 body,
                 username,
+                allow_mint,
                 minted_threads,
             )
             .await;
+            // Flush pending cards into the binding the text-bearing
+            // chunk just established (or pre-existing). Deferred cards
+            // never mint — a card without surrounding narrative would
+            // be a confusing standalone thread.
             for pending in deferred.drain(..) {
                 dispatch_post(
                     deps.poster.as_ref(),
@@ -356,6 +366,7 @@ async fn handle_stream_event(
                     pending.session_id,
                     pending.body,
                     pending.username,
+                    false,
                     minted_threads,
                 )
                 .await;
@@ -367,11 +378,14 @@ async fn handle_stream_event(
 /// Route a single user-visible post to Slack.
 ///
 /// Looks up the session's existing Slack thread; on hit, posts under
-/// that `thread_ts`. On miss, mints a fresh top-level channel post and
-/// records the binding so the next chunk for the same session sticks.
-/// Mint failures (poster error, bind conflict, cap exhaustion) drop
-/// the post and emit a warn — the human can re-engage by mentioning
-/// the agent in a fresh thread.
+/// that `thread_ts`. On miss, behaviour depends on `allow_mint`:
+/// - `true` (an explicit agent→human `AgentMessage`) — mint a fresh
+///   top-level channel post and record the binding so the next chunk
+///   for the same session sticks.
+/// - `false` (`Done` / `Error` / deferred `WireMcpRequest`) — drop the
+///   post. Without a binding, these chunks belong to an agent↔agent
+///   session and surfacing them would create a side thread the human
+///   has no addressable agent for.
 #[allow(clippy::too_many_arguments)] // straight-line dispatch with no useful grouping
 async fn dispatch_post(
     poster: &dyn super::poster::SlackPoster,
@@ -381,6 +395,7 @@ async fn dispatch_post(
     session_id: SessionId,
     body: PostBody,
     username: String,
+    allow_mint: bool,
     minted_threads: &mut usize,
 ) {
     let existing = match threads.lookup_by_session(session_id).await {
@@ -411,9 +426,18 @@ async fn dispatch_post(
         return;
     }
 
+    if !allow_mint {
+        // Internal agent↔agent emission (typically a `Done` in a
+        // descendant-pair session). The human is not the receiver of
+        // this turn, so surfacing it would leak agent-private content
+        // into Slack — drop silently.
+        return;
+    }
+
     // Miss — descendant agent reaching the human for the first time in
-    // this session. Mint a fresh top-level post in the channel the DAG
-    // is rooted in, then bind the session to the returned `ts`.
+    // this session via an explicit `send_message(human, …)`. Mint a
+    // fresh top-level post in the channel the DAG is rooted in, then
+    // bind the session to the returned `ts`.
     if *minted_threads >= MAX_SLACK_THREADS_PER_DAG_ROOT {
         warn!(
             relay.session.id = %session_id,
@@ -759,6 +783,7 @@ mod tests {
             session,
             text_body("hello from recruiter"),
             "recruiter".to_owned(),
+            true,
             &mut minted,
         )
         .await;
@@ -793,6 +818,7 @@ mod tests {
             session,
             text_body("first"),
             "recruiter".to_owned(),
+            true,
             &mut minted,
         )
         .await;
@@ -804,6 +830,7 @@ mod tests {
             session,
             text_body("second"),
             "recruiter".to_owned(),
+            true,
             &mut minted,
         )
         .await;
@@ -847,6 +874,7 @@ mod tests {
             session,
             text_body("follow-up"),
             "writer".to_owned(),
+            false,
             &mut minted,
         )
         .await;
@@ -874,6 +902,7 @@ mod tests {
             session,
             text_body("should-be-dropped"),
             "agent".to_owned(),
+            true,
             &mut minted,
         )
         .await;
@@ -889,5 +918,36 @@ mod tests {
             "cap exhaustion does not bind a new thread"
         );
         assert_eq!(minted, MAX_SLACK_THREADS_PER_DAG_ROOT);
+    }
+
+    #[tokio::test]
+    async fn dispatch_drops_unbound_session_when_minting_disallowed() {
+        // Done / Error / WireMcpRequest chunks from an agent↔agent
+        // session must not mint a new Slack thread — that's where the
+        // "writer posts in a new thread" bug came from.
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let mut minted = 0;
+        let session = SessionId::new();
+
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            session,
+            text_body("internal turn final answer"),
+            "writer".to_owned(),
+            false,
+            &mut minted,
+        )
+        .await;
+
+        assert_eq!(
+            poster.count(),
+            0,
+            "no binding + allow_mint=false drops the post"
+        );
+        assert_eq!(threads.len(), 0, "no thread minted");
+        assert_eq!(minted, 0);
     }
 }
