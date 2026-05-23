@@ -2032,6 +2032,10 @@ fn map_oauth_err(err: OAuthError) -> HttpError {
             HttpError::BadRequest(err.to_string())
         }
         OAuthError::RefreshRevoked => HttpError::Conflict(err.to_string()),
+        OAuthError::DcrUnsupported { .. } => {
+            tracing::info!(error = %err, "mcp.oauth.dcr_unsupported");
+            HttpError::Conflict(err.to_string())
+        }
         OAuthError::Crypto(_) | OAuthError::Db(_) | OAuthError::Misconfigured(_) => {
             tracing::error!(error = %err, "mcp.oauth.internal_error");
             HttpError::Internal

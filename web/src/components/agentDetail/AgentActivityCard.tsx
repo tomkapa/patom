@@ -4,10 +4,11 @@ import { Link } from "react-router-dom";
 import { SectionCard } from "../molecules/SectionCard";
 import { SectionHeader } from "../atoms/SectionHeader";
 import { Spinner } from "../atoms/Spinner";
-import { Monogram } from "../atoms/Monogram";
+import { CatalogIcon } from "../atoms/CatalogIcon";
 import { useT } from "../../i18n";
 import { useAgentToolCalls } from "../../hooks/useAgents";
-import { entryById } from "../../data/mcpCatalog";
+import { useCatalogLookup } from "../../hooks/useMcpServers";
+import type { CatalogLookup } from "../../data/mcpCatalog";
 import { formatMs, useTimeAgo } from "../../lib/time";
 import type { AgentToolCall, McpServer } from "../../types/api";
 
@@ -25,6 +26,7 @@ export function AgentActivityCard({
 }) {
   const { t } = useT();
   const query = useAgentToolCalls(agentId);
+  const catalogLookup = useCatalogLookup();
   const items = query.data?.pages.flatMap((p) => p.items) ?? [];
   const serversById = useMemo(
     () => new Map(servers.map((s) => [s.id, s] as const)),
@@ -55,7 +57,12 @@ export function AgentActivityCard({
         />
       }
     >
-      <ActivityBody query={query} items={items} serversById={serversById} />
+      <ActivityBody
+        query={query}
+        items={items}
+        serversById={serversById}
+        catalogLookup={catalogLookup}
+      />
     </SectionCard>
   );
 }
@@ -66,10 +73,12 @@ function ActivityBody({
   query,
   items,
   serversById,
+  catalogLookup,
 }: {
   query: Query;
   items: AgentToolCall[];
   serversById: Map<string, McpServer>;
+  catalogLookup: CatalogLookup;
 }) {
   const { t } = useT();
 
@@ -109,7 +118,12 @@ function ActivityBody({
         </span>
       </div>
       {items.map((row) => (
-        <ActivityRow key={row.id} row={row} serversById={serversById} />
+        <ActivityRow
+          key={row.id}
+          row={row}
+          serversById={serversById}
+          catalogLookup={catalogLookup}
+        />
       ))}
     </>
   );
@@ -118,18 +132,20 @@ function ActivityBody({
 function ActivityRow({
   row,
   serversById,
+  catalogLookup,
 }: {
   row: AgentToolCall;
   serversById: Map<string, McpServer>;
+  catalogLookup: CatalogLookup;
 }) {
   const { t } = useT();
   const timeAgo = useTimeAgo();
   const server = row.mcp_server_id ? serversById.get(row.mcp_server_id) : null;
   const catalog = row.mcp_server_catalog_id
-    ? entryById(row.mcp_server_catalog_id)
+    ? catalogLookup(row.mcp_server_catalog_id)
     : undefined;
   const connLabel =
-    catalog?.name ??
+    catalog?.display_name ??
     server?.catalog_id ??
     row.mcp_server_catalog_id ??
     t("agent.detail.activity.unknownConnection");
@@ -148,15 +164,7 @@ function ActivityRow({
         {timeAgo(row.started_at)}
       </span>
       <span className="flex items-center gap-2 min-w-0">
-        <Monogram
-          name={connLabel}
-          id={row.mcp_server_id ?? row.id}
-          size={16}
-          bg={catalog?.tileBg}
-          fg={catalog?.tileFg}
-          glyph={catalog?.monogram}
-          iconSlug={catalog?.iconSlug}
-        />
+        <CatalogIcon name={connLabel} iconUrl={catalog?.icon_url} size={16} />
         <span className="truncate text-[12px] font-medium text-[var(--color-ink)]">
           {connLabel}
         </span>

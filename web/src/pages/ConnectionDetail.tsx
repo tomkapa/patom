@@ -14,13 +14,13 @@ import { RecentActivityCard } from "../components/connectionDetail/RecentActivit
 import { UsedByCard } from "../components/connectionDetail/UsedByCard";
 import { DangerZone } from "../components/connectionDetail/DangerZone";
 import {
+  useCatalogLookup,
   useDeleteMcpCredentials,
   useDisconnectOAuth,
   useMcpServer,
   useUpdateMcpServer,
 } from "../hooks/useMcpServers";
 import { useT } from "../i18n";
-import { entryForServer } from "../data/mcpCatalog";
 import { CREDENTIALS_KIND } from "../types/api";
 
 export function ConnectionDetail() {
@@ -28,6 +28,7 @@ export function ConnectionDetail() {
   const nav = useNavigate();
   const { id } = useParams<{ id: string }>();
   const serverQuery = useMcpServer(id ?? null, { refetchInterval: 15_000 });
+  const catalogLookup = useCatalogLookup();
   const updateServer = useUpdateMcpServer();
   const disconnectOAuth = useDisconnectOAuth();
   const deleteCredentials = useDeleteMcpCredentials();
@@ -51,7 +52,7 @@ export function ConnectionDetail() {
   }, [server, disconnectOAuth, deleteCredentials]);
 
   const breadcrumbLabel = server
-    ? (entryForServer(server)?.name ?? server.catalog_id)
+    ? (catalogLookup(server.catalog_id)?.display_name ?? server.catalog_id)
     : t("connections.breadcrumb.connections");
 
   return (

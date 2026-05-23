@@ -72,16 +72,6 @@ const en = {
   "connections.catalog.subtitle":
     "Connect Notion, Linear, GitHub, and more so your agents can act on real data.",
   "connections.catalog.search": "Search providers",
-  "connections.catalog.tabs.all": "All",
-  "connections.catalog.tabs.productivity": "Productivity",
-  "connections.catalog.tabs.dev": "Developer tools",
-  "connections.catalog.tabs.comms": "Communications",
-  "connections.catalog.tabs.data": "Data",
-  "connections.catalog.tabs.custom": "Custom",
-  "connections.catalog.sort": "Sort:",
-  "connections.catalog.sort.mostUsed": "Most used",
-  "connections.catalog.tool": "tool",
-  "connections.catalog.tools": "tools",
   "connections.catalog.added": "Already added",
   "connections.catalog.custom.title": "+ Custom",
   "connections.catalog.custom.blurb": "Paste an MCP server URL.",
@@ -97,7 +87,6 @@ const en = {
     "{name} will ask you to choose which pages and databases to share.",
   "connections.modal.oauth.continue": "Continue to {name}",
   "connections.modal.token.tokenLabel": "{name} API token",
-  "connections.modal.token.help": "Where do I find this?",
   "connections.modal.token.placeholder": "Paste your {name} API token",
   "connections.modal.token.note":
     "Stored encrypted. Never displayed after save.",
@@ -120,7 +109,7 @@ const en = {
   "connections.modal.custom.namePlaceholder": "internal-search",
   "connections.modal.custom.urlLabel": "MCP server URL",
   "connections.modal.custom.urlHint":
-    "http:// is rejected. URL must be reachable from Relay workers.",
+    "URL must be reachable from Relay workers.",
   "connections.modal.custom.authLabel": "Authentication",
   "connections.modal.custom.authNone": "None",
   "connections.modal.custom.authToken": "API token",
@@ -130,7 +119,7 @@ const en = {
   "connections.modal.custom.error.alias":
     "Use lowercase letters, digits, _ or -, up to 16 characters.",
   "connections.modal.custom.error.url":
-    "Enter a valid https:// URL.",
+    "Enter a valid http:// or https:// URL.",
   "connections.callback.eyebrow.connecting": "OAuth · Step 2 of 3",
   "connections.callback.eyebrow.authorized": "OAuth · Step 3 of 3",
   "connections.callback.eyebrow.failed": "OAuth · Failed",

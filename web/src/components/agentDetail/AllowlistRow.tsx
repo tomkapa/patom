@@ -1,9 +1,9 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Monogram } from "../atoms/Monogram";
+import { CatalogIcon } from "../atoms/CatalogIcon";
 import { Checkbox } from "../molecules/Checkbox";
 import { useT } from "../../i18n";
-import { entryForServer } from "../../data/mcpCatalog";
+import { useCatalogLookup } from "../../hooks/useMcpServers";
 import { cn } from "../../lib/utils";
 import type { TranslationKey } from "../../i18n/en";
 import type { McpServer } from "../../types/api";
@@ -38,7 +38,12 @@ export function AllowlistRow({
     () => tools.map((tool) => tool.remote_name),
     [tools],
   );
-  const catalog = useMemo(() => entryForServer(server), [server]);
+  const catalogLookup = useCatalogLookup();
+  const catalog = useMemo(
+    () => catalogLookup(server.catalog_id),
+    [catalogLookup, server.catalog_id],
+  );
+  const displayName = catalog?.display_name ?? server.catalog_id;
   const shape = shapeOf(list, server.catalog_id, toolNames);
   const isOn = shape !== "unchecked";
   const [open, setOpen] = useState<boolean>(false);
@@ -74,19 +79,15 @@ export function AllowlistRow({
             name: server.catalog_id,
           })}
         />
-        <Monogram
-          name={catalog?.name ?? server.catalog_id}
-          id={server.id}
+        <CatalogIcon
+          name={displayName}
+          iconUrl={catalog?.icon_url}
           size={32}
-          bg={catalog?.tileBg}
-          fg={catalog?.tileFg}
-          glyph={catalog?.monogram}
-          iconSlug={catalog?.iconSlug}
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate font-[var(--font-display)] text-[14px] font-semibold text-[var(--color-ink)]">
-              {catalog?.name ?? server.catalog_id}
+              {displayName}
             </span>
             {server.connection_status !== "ok" ? (
               <span className="font-[var(--font-mono)] text-[10px] tracking-[0.1em] text-[var(--color-amber)] uppercase">

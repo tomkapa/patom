@@ -4,9 +4,14 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/atoms/Button";
 import { Spinner } from "../components/atoms/Spinner";
 import { Monogram } from "../components/atoms/Monogram";
-import { useMcpServer, useStartOAuth } from "../hooks/useMcpServers";
+import { CatalogIcon } from "../components/atoms/CatalogIcon";
+import {
+  useCatalogLookup,
+  useMcpServer,
+  useStartOAuth,
+} from "../hooks/useMcpServers";
 import { useT } from "../i18n";
-import { entryForServer, type CatalogEntry } from "../data/mcpCatalog";
+import type { McpCatalogEntry } from "../types/api";
 import { cn } from "../lib/utils";
 
 type View = "connecting" | "authorized" | "failed";
@@ -46,6 +51,7 @@ export function OAuthCallback() {
     refetchInterval: view === "connecting" ? 800 : false,
     enabled: Boolean(serverId),
   });
+  const catalogLookup = useCatalogLookup();
 
   useEffect(() => {
     if (view !== "connecting") return;
@@ -61,8 +67,10 @@ export function OAuthCallback() {
     return () => window.clearTimeout(id);
   }, [view]);
 
-  const entry = polling.data ? entryForServer(polling.data) : undefined;
-  const name = entry?.name ?? polling.data?.catalog_id ?? "the provider";
+  const entry = polling.data
+    ? catalogLookup(polling.data.catalog_id)
+    : undefined;
+  const name = entry?.display_name ?? polling.data?.catalog_id ?? "the provider";
 
   if (view === "failed") {
     return (
@@ -72,7 +80,7 @@ export function OAuthCallback() {
           entry={entry}
           reason={reason}
           referenceId={serverId ?? "—"}
-          url={polling.data?.config.url ?? entry?.defaultUrl ?? "—"}
+          url={polling.data?.config.url ?? "—"}
           onBack={() => nav("/connections/catalog")}
           serverId={serverId}
         />
@@ -111,7 +119,7 @@ function ConnectingView({
   entry,
 }: {
   name: string;
-  entry: CatalogEntry | undefined;
+  entry: McpCatalogEntry | undefined;
 }) {
   const { t } = useT();
   return (
@@ -139,7 +147,7 @@ function AuthorizedView({
   onDone,
 }: {
   name: string;
-  entry: CatalogEntry | undefined;
+  entry: McpCatalogEntry | undefined;
   toolsCount: number;
   onDone: () => void;
 }) {
@@ -202,7 +210,7 @@ function FailedView({
   serverId,
 }: {
   name: string;
-  entry: CatalogEntry | undefined;
+  entry: McpCatalogEntry | undefined;
   reason: string | null;
   referenceId: string;
   url: string;
@@ -270,11 +278,19 @@ function FailedView({
   );
 }
 
-type Tile = { bg: string; fg: string; glyph: string; label: string };
+type RelayTile = { bg: string; fg: string; glyph: string; label: string };
 
-function vendorTile(entry: CatalogEntry | undefined, name: string): Tile {
-  if (entry) return { bg: entry.tileBg, fg: entry.tileFg, glyph: entry.monogram, label: "Vendor" };
-  return { bg: "#1A1A1A", fg: "#FFFFFF", glyph: (name[0] ?? "?").toUpperCase(), label: "Vendor" };
+type VendorTile = {
+  label: "Vendor";
+  name: string;
+  iconUrl: string | null;
+};
+
+function vendorTile(
+  entry: McpCatalogEntry | undefined,
+  name: string,
+): VendorTile {
+  return { label: "Vendor", name, iconUrl: entry?.icon_url ?? null };
 }
 
 function Eyebrow({
@@ -319,21 +335,27 @@ function DiagItem({
   );
 }
 
-function Diagram({ vendor, state }: { vendor: Tile; state: DiagramState }) {
+function Diagram({
+  vendor,
+  state,
+}: {
+  vendor: VendorTile;
+  state: DiagramState;
+}) {
   return (
     <div className="flex items-center gap-5">
-      <TileView tile={RELAY_TILE} />
+      <RelayTileView tile={RELAY_TILE} />
       <div className="flex w-[120px] items-center">
         <div className="h-px flex-1 bg-[var(--color-line)]" />
         <Hub state={state} />
         <div className="h-px flex-1 bg-[var(--color-line)]" />
       </div>
-      <TileView tile={vendor} />
+      <VendorTileView tile={vendor} />
     </div>
   );
 }
 
-function TileView({ tile }: { tile: Tile }) {
+function RelayTileView({ tile }: { tile: RelayTile }) {
   return (
     <div className="flex flex-col items-center gap-2">
       <Monogram
@@ -344,6 +366,17 @@ function TileView({ tile }: { tile: Tile }) {
         glyph={tile.glyph}
         className="border border-[var(--color-line)]"
       />
+      <span className="font-[var(--font-mono)] text-[10px] tracking-[0.16em] text-[var(--color-muted)] uppercase">
+        {tile.label}
+      </span>
+    </div>
+  );
+}
+
+function VendorTileView({ tile }: { tile: VendorTile }) {
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <CatalogIcon name={tile.name} iconUrl={tile.iconUrl} size={68} />
       <span className="font-[var(--font-mono)] text-[10px] tracking-[0.16em] text-[var(--color-muted)] uppercase">
         {tile.label}
       </span>

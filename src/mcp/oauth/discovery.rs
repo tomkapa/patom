@@ -2,13 +2,16 @@
 //!
 //! Given an MCP server URL, produce the authorization-server metadata we
 //! need to drive PKCE + DCR. Two hops, both bounded:
-//!   1. `<server>/.well-known/oauth-protected-resource` (RFC 9728) →
-//!      `authorization_servers[0]`. If the well-known is unavailable,
+//!   1. RFC 9728 §3.1 protected-resource metadata, fetched by **inserting**
+//!      `/.well-known/oauth-protected-resource` between the origin and
+//!      the resource's path (e.g. `https://gmailmcp.googleapis.com/mcp/v1`
+//!      → `https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1`)
+//!      → `authorization_servers[0]`. If the well-known is unavailable,
 //!      fall back to probing the server with no auth and parsing the
 //!      `WWW-Authenticate: Bearer resource_metadata=…` header.
-//!   2. `<issuer>/.well-known/oauth-authorization-server` (RFC 8414) →
-//!      `authorization_endpoint` / `token_endpoint` /
-//!      `registration_endpoint` / supported scopes.
+//!   2. RFC 8414 §3.1 authorization-server metadata, fetched the same way
+//!      against the issuer URL → `authorization_endpoint` /
+//!      `token_endpoint` / `registration_endpoint` / supported scopes.
 //!
 //! Bounded so a vendor that hands back a 10MB JSON blob cannot bloat
 //! memory or stall the handler.
@@ -86,7 +89,7 @@ pub async fn discover_authorization_server(
     // Hop 1: resource metadata.
     let server =
         Url::parse(server_url).map_err(|e| OAuthError::Discovery(format!("server url: {e}")))?;
-    let resource_metadata_url = join_well_known(&server, ".well-known/oauth-protected-resource")?;
+    let resource_metadata_url = join_well_known(&server, ".well-known/oauth-protected-resource");
     let issuer = match fetch_protected_resource_issuer(http, &resource_metadata_url).await {
         Ok(iss) => iss,
         Err(first_err) => {
@@ -113,7 +116,7 @@ pub async fn discover_authorization_server(
     // Hop 2: AS metadata.
     let issuer_url =
         Url::parse(&issuer).map_err(|e| OAuthError::Discovery(format!("issuer url: {e}")))?;
-    let as_metadata_url = join_well_known(&issuer_url, ".well-known/oauth-authorization-server")?;
+    let as_metadata_url = join_well_known(&issuer_url, ".well-known/oauth-authorization-server");
     let raw = fetch_json::<AsMetadataJson>(http, &as_metadata_url).await?;
 
     // RFC 8414 §2.4 says the AS metadata MUST echo back the URL it
@@ -157,7 +160,7 @@ async fn chase_delegated_issuer(
     );
     let claimed_url = Url::parse(&claimed)
         .map_err(|e| OAuthError::Discovery(format!("delegated issuer url: {e}")))?;
-    let next_url = join_well_known(&claimed_url, ".well-known/oauth-authorization-server")?;
+    let next_url = join_well_known(&claimed_url, ".well-known/oauth-authorization-server");
     let raw2 = fetch_json::<AsMetadataJson>(http, &next_url).await?;
     if raw2.issuer != claimed {
         return Err(OAuthError::Discovery(format!(
@@ -208,18 +211,37 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(
     serde_json::from_slice::<T>(&bytes).map_err(|e| OAuthError::Discovery(format!("parse: {e}")))
 }
 
-/// Compose `<base>/<path>` cleanly: strip any trailing slash off the
-/// base, prepend the path. Using `Url::join` is the canonical way but it
-/// surprises on origins without a trailing slash; build the string
-/// explicitly to avoid a class of subtle bugs.
-fn join_well_known(base: &Url, path: &str) -> Result<Url, OAuthError> {
-    let mut s = base.to_string();
-    while s.ends_with('/') {
-        s.pop();
-    }
-    s.push('/');
-    s.push_str(path);
-    Url::parse(&s).map_err(|e| OAuthError::Discovery(format!("join {path}: {e}")))
+/// Build a well-known URL for `base` per RFC 9728 §3.1 and RFC 8414
+/// §3.1: the well-known segment is **inserted between the origin and the
+/// path** of the resource/issuer identifier, not appended to its path.
+///
+/// For `base = https://host[:port]/p1/p2` and `well_known =
+/// .well-known/oauth-protected-resource`, the result is
+/// `https://host[:port]/.well-known/oauth-protected-resource/p1/p2`.
+/// When `base.path()` is `/` or empty, no path is appended and the
+/// result is `https://host[:port]/.well-known/oauth-protected-resource`.
+/// Query and fragment on `base` are dropped — well-known fetches are
+/// path-addressed only.
+///
+/// Append-style construction (`<base>/<path>`) is wrong on any
+/// non-root-path resource and was the cause of Gmail discovery 404s
+/// (Google's MCP server returns 405 on a `GET` of `/mcp/v1`, so the
+/// RFC 9728 §5.1 401-probe fallback couldn't recover either).
+///
+/// Infallible: `Url::set_path` cannot fail on a hierarchical URL and the
+/// caller has already parsed `base`, so the operation is total.
+fn join_well_known(base: &Url, well_known: &str) -> Url {
+    let suffix = base.path().trim_end_matches('/');
+    let new_path = if suffix.is_empty() {
+        format!("/{well_known}")
+    } else {
+        format!("/{well_known}{suffix}")
+    };
+    let mut out = base.clone();
+    out.set_path(&new_path);
+    out.set_query(None);
+    out.set_fragment(None);
+    out
 }
 
 /// Probe the MCP server with an unauthenticated GET and pull the
@@ -374,7 +396,72 @@ const fn is_token68_char(b: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_resource_metadata_param;
+    use super::{join_well_known, parse_resource_metadata_param};
+    use url::Url;
+
+    fn parse(url: &str) -> Url {
+        Url::parse(url).expect("test setup: literal url is valid")
+    }
+
+    #[test]
+    fn join_well_known_inserts_for_pathful_resource() {
+        let got = join_well_known(
+            &parse("https://gmailmcp.googleapis.com/mcp/v1"),
+            ".well-known/oauth-protected-resource",
+        );
+        assert_eq!(
+            got.as_str(),
+            "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+        );
+    }
+
+    #[test]
+    fn join_well_known_handles_root_path() {
+        let got = join_well_known(
+            &parse("https://accounts.google.com/"),
+            ".well-known/oauth-authorization-server",
+        );
+        assert_eq!(
+            got.as_str(),
+            "https://accounts.google.com/.well-known/oauth-authorization-server"
+        );
+    }
+
+    #[test]
+    fn join_well_known_strips_trailing_slash_from_path() {
+        let got = join_well_known(
+            &parse("https://mcp.notion.com/mcp/"),
+            ".well-known/oauth-protected-resource",
+        );
+        assert_eq!(
+            got.as_str(),
+            "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp"
+        );
+    }
+
+    #[test]
+    fn join_well_known_drops_query_and_fragment() {
+        let got = join_well_known(
+            &parse("https://example.test/mcp?x=1#frag"),
+            ".well-known/oauth-protected-resource",
+        );
+        assert_eq!(
+            got.as_str(),
+            "https://example.test/.well-known/oauth-protected-resource/mcp"
+        );
+    }
+
+    #[test]
+    fn join_well_known_preserves_non_default_port() {
+        let got = join_well_known(
+            &parse("https://example.test:8443/mcp/v1"),
+            ".well-known/oauth-protected-resource",
+        );
+        assert_eq!(
+            got.as_str(),
+            "https://example.test:8443/.well-known/oauth-protected-resource/mcp/v1"
+        );
+    }
 
     #[test]
     fn parses_bare_resource_metadata_quoted() {

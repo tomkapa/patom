@@ -1,8 +1,8 @@
 import { ShieldOff, Unplug } from "lucide-react";
 import { Button } from "../atoms/Button";
-import { Monogram } from "../atoms/Monogram";
+import { CatalogIcon } from "../atoms/CatalogIcon";
 import { StatusPill } from "../atoms/StatusPill";
-import { entryForServer } from "../../data/mcpCatalog";
+import { useCatalogLookup } from "../../hooks/useMcpServers";
 import { STATUS_KEY, statusToneOf } from "../../data/connectionStatus";
 import { useT } from "../../i18n";
 import type { TranslationKey } from "../../i18n/en";
@@ -28,7 +28,9 @@ export function DetailHeader({
   disconnectBusy?: boolean;
 }) {
   const { t } = useT();
-  const entry = entryForServer(server);
+  const catalogLookup = useCatalogLookup();
+  const entry = catalogLookup(server.catalog_id);
+  const displayName = entry?.display_name ?? server.catalog_id;
   const tone = statusToneOf(server);
   const toolsCount = server.discovered_tools?.length ?? 0;
   const authLabel = t(AUTH_LABEL_KEY[server.credentials_kind ?? "none"]);
@@ -36,18 +38,11 @@ export function DetailHeader({
   return (
     <header className="flex items-center justify-between gap-4 border-b border-[var(--color-line)] px-8 pb-6 pt-2">
       <div className="flex min-w-0 items-center gap-4">
-        <Monogram
-          name={entry?.name ?? server.catalog_id}
-          size={56}
-          bg={entry?.tileBg ?? "var(--color-rail)"}
-          fg={entry?.tileFg ?? "#ffffff"}
-          glyph={entry?.monogram ?? (server.catalog_id[0] ?? "?").toUpperCase()}
-          iconSlug={entry?.iconSlug}
-        />
+        <CatalogIcon name={displayName} iconUrl={entry?.icon_url} size={56} />
         <div className="flex min-w-0 flex-col gap-1.5">
           <div className="flex items-center gap-2.5">
             <h1 className="truncate font-[var(--font-display)] text-[28px] font-bold leading-none text-[var(--color-ink)]">
-              {entry?.name ?? server.catalog_id}
+              {displayName}
             </h1>
             <StatusPill tone={tone} label={t(STATUS_KEY[tone])} />
           </div>

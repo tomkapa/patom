@@ -1,5 +1,4 @@
 import { cn, initials, toneById } from "../../lib/utils";
-import { BrandIcon } from "./BrandIcon";
 
 type Tone = "moss" | "amber" | "rose" | "ink" | "neutral" | "user";
 
@@ -22,7 +21,6 @@ export function Monogram({
   bg,
   fg,
   glyph,
-  iconSlug,
   avatarUrl,
   className,
 }: {
@@ -36,17 +34,13 @@ export function Monogram({
   fg?: string;
   /** Override the rendered text; defaults to `initials(name)`. */
   glyph?: string;
-  /** simple-icons slug. When present the brand SVG icon is shown instead
-   *  of a monogram character. Pairs with `bg` for the tile background. */
-  iconSlug?: string;
   /** When set, render the image instead of the monogram glyph. Takes
-   *  precedence over `iconSlug` / `glyph` / initials. */
+   *  precedence over `glyph` / initials. */
   avatarUrl?: string | null;
   className?: string;
 }) {
   const useExplicit = bg !== undefined;
   const t = tone ?? toneById(id);
-  const iconSize = Math.round(size * 0.55);
   if (avatarUrl) {
     return (
       <img
@@ -61,10 +55,8 @@ export function Monogram({
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center justify-center border select-none",
+        "inline-flex shrink-0 items-center justify-center border select-none font-[var(--font-mono)] font-semibold uppercase tracking-tight",
         !useExplicit && toneStyles[t],
-        !iconSlug &&
-          "font-[var(--font-mono)] font-semibold uppercase tracking-tight",
         className,
       )}
       style={{
@@ -75,11 +67,7 @@ export function Monogram({
       }}
       aria-label={name}
     >
-      {iconSlug ? (
-        <BrandIcon slug={iconSlug} size={iconSize} />
-      ) : (
-        (glyph ?? initials(name))
-      )}
+      {glyph ?? initials(name)}
     </span>
   );
 }

@@ -9,15 +9,17 @@ import { Button } from "../components/atoms/Button";
 import { Spinner } from "../components/atoms/Spinner";
 import { StatusSquare } from "../components/atoms/StatusSquare";
 import { Monogram } from "../components/atoms/Monogram";
+import { CatalogIcon } from "../components/atoms/CatalogIcon";
 import { EmptyState } from "../components/molecules/EmptyState";
 import { ConnectModal } from "../components/organisms/ConnectModal";
 import { useT } from "../i18n";
 import {
+  useCatalogLookup,
   useDeleteMcpServer,
   useMcpServers,
   useUpdateMcpServer,
 } from "../hooks/useMcpServers";
-import { entryForServer } from "../data/mcpCatalog";
+import type { CatalogLookup } from "../data/mcpCatalog";
 import {
   STATUS_COLOR,
   STATUS_KEY,
@@ -34,6 +36,7 @@ export function ConnectionsList() {
   const { t } = useT();
   const nav = useNavigate();
   const servers = useMcpServers();
+  const catalogLookup = useCatalogLookup();
   const updateServer = useUpdateMcpServer();
   const deleteServer = useDeleteMcpServer();
   const [reconnectTarget, setReconnectTarget] = useState<McpServer | null>(null);
@@ -165,6 +168,7 @@ export function ConnectionsList() {
               <ConnectionRow
                 key={server.id}
                 server={server}
+                catalogLookup={catalogLookup}
                 isLast={i === rows.length - 1}
                 onToggle={(enabled) =>
                   updateServer.mutate({ id: server.id, patch: { enabled } })
@@ -205,12 +209,14 @@ export function ConnectionsList() {
 
 function ConnectionRow({
   server,
+  catalogLookup,
   isLast,
   onToggle,
   onReconnect,
   onRemove,
 }: {
   server: McpServer;
+  catalogLookup: CatalogLookup;
   isLast: boolean;
   onToggle: (enabled: boolean) => void;
   onReconnect: () => void;
@@ -219,7 +225,8 @@ function ConnectionRow({
   const { t } = useT();
   const timeAgo = useTimeAgo();
   const tone = statusToneOf(server);
-  const entry = entryForServer(server);
+  const entry = catalogLookup(server.catalog_id);
+  const displayName = entry?.display_name ?? server.catalog_id;
   const toolsCount = server.discovered_tools?.length ?? 0;
   const hostFromConfig = useMemo(() => {
     try {
@@ -245,17 +252,10 @@ function ConnectionRow({
         to={`/connections/${server.id}`}
         className="flex min-w-0 items-center gap-3.5 outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-moss)]"
       >
-        <Monogram
-          name={entry?.name ?? server.catalog_id}
-          size={36}
-          bg={entry?.tileBg ?? "var(--color-rail)"}
-          fg={entry?.tileFg ?? "#ffffff"}
-          glyph={entry?.monogram ?? (server.catalog_id[0] ?? "?").toUpperCase()}
-          iconSlug={entry?.iconSlug}
-        />
+        <CatalogIcon name={displayName} iconUrl={entry?.icon_url} size={36} />
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="truncate font-semibold text-[var(--color-ink)] hover:text-[var(--color-moss-deep)] hover:underline">
-            {entry?.name ?? server.catalog_id}
+            {displayName}
           </div>
           <div className="truncate font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
             {hostFromConfig}

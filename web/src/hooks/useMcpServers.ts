@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   useInfiniteQuery,
   useMutation,
@@ -6,6 +7,7 @@ import {
 } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { ApiError } from "../lib/errors";
+import { buildCatalogLookup, type CatalogLookup } from "../data/mcpCatalog";
 import type {
   CreateMcpServerRequest,
   CredentialInput,
@@ -29,15 +31,24 @@ export function useMcpServers() {
 }
 
 /** Server-managed list of MCP catalog entries the workspace can wire
- *  (global built-ins + tenant-custom). Backend source of truth — the
- *  hard-coded `MCP_CATALOG` in `data/mcpCatalog.ts` is kept only for
- *  visual metadata (icons, brand colors) keyed by `catalog_id`. */
+ *  (global built-ins + tenant-custom). Backend is the single source of
+ *  truth for catalog metadata (display name, description, `icon_url`,
+ *  `auth_kind`, `homepage_url`); the FE no longer hard-codes anything. */
 export function useMcpCatalog() {
   return useQuery({
     queryKey: CATALOG_KEY,
     queryFn: api.mcpCatalog,
     staleTime: 60_000,
   });
+}
+
+/** `(catalog_id) → McpCatalogEntry | undefined`, memoised against the
+ *  cached `useMcpCatalog` array. Every consumer that needs catalog
+ *  metadata (icon, display name, homepage, auth kind) keyed by a
+ *  server's `catalog_id` goes through this. */
+export function useCatalogLookup(): CatalogLookup {
+  const catalog = useMcpCatalog();
+  return useMemo(() => buildCatalogLookup(catalog.data), [catalog.data]);
 }
 
 export function useMcpServer(

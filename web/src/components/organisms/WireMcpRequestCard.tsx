@@ -1,13 +1,13 @@
 import { useMemo, useState } from "react";
 import { Check, ExternalLink, Plug } from "lucide-react";
-import { Monogram } from "../atoms/Monogram";
+import { CatalogIcon } from "../atoms/CatalogIcon";
 import { useT } from "../../i18n";
 import {
+  useCatalogLookup,
   useCreateMcpServer,
   useMcpServers,
   useStartOAuth,
 } from "../../hooks/useMcpServers";
-import { entryById } from "../../data/mcpCatalog";
 import type { McpWireRequest } from "../../types/api";
 
 /** Parse a URL and only return it if the scheme is http(s). Anything
@@ -55,7 +55,7 @@ export function WireMcpRequestCard({
   const create = useCreateMcpServer();
   const startOAuth = useStartOAuth();
   const servers = useMcpServers();
-  const visual = entryById(entry.catalog_id);
+  const visual = useCatalogLookup()(entry.catalog_id);
   const homepageUrl = safeHttpUrl(entry.homepage_url);
   const submitting = create.isPending || startOAuth.isPending;
   const [error, setError] = useState<string | null>(null);
@@ -116,14 +116,10 @@ export function WireMcpRequestCard({
       data-testid="wire-mcp-request"
     >
       <header className="flex items-center gap-2.5">
-        <Monogram
+        <CatalogIcon
           name={entry.display_name}
-          id={entry.catalog_id}
+          iconUrl={visual?.icon_url}
           size={28}
-          bg={visual?.tileBg}
-          fg={visual?.tileFg}
-          glyph={visual?.monogram ?? entry.display_name[0]?.toUpperCase() ?? "?"}
-          iconSlug={visual?.iconSlug}
         />
         <div className="flex-1">
           <div className="flex items-center gap-2">

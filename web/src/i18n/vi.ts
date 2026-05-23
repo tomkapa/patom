@@ -70,16 +70,6 @@ const vi: TranslationTable = {
   "connections.catalog.subtitle":
     "Kết nối Notion, Linear, GitHub và các dịch vụ khác để agent có thể thao tác trên dữ liệu thật.",
   "connections.catalog.search": "Tìm nhà cung cấp",
-  "connections.catalog.tabs.all": "Tất cả",
-  "connections.catalog.tabs.productivity": "Năng suất",
-  "connections.catalog.tabs.dev": "Công cụ lập trình",
-  "connections.catalog.tabs.comms": "Liên lạc",
-  "connections.catalog.tabs.data": "Dữ liệu",
-  "connections.catalog.tabs.custom": "Tùy chỉnh",
-  "connections.catalog.sort": "Sắp xếp:",
-  "connections.catalog.sort.mostUsed": "Dùng nhiều nhất",
-  "connections.catalog.tool": "công cụ",
-  "connections.catalog.tools": "công cụ",
   "connections.catalog.added": "Đã thêm",
   "connections.catalog.custom.title": "+ Tùy chỉnh",
   "connections.catalog.custom.blurb": "Dán URL của máy chủ MCP.",
@@ -95,7 +85,6 @@ const vi: TranslationTable = {
     "{name} sẽ hỏi bạn chọn trang và cơ sở dữ liệu nào để chia sẻ.",
   "connections.modal.oauth.continue": "Tiếp tục đến {name}",
   "connections.modal.token.tokenLabel": "API token cho {name}",
-  "connections.modal.token.help": "Tìm token này ở đâu?",
   "connections.modal.token.placeholder": "Dán API token của {name}",
   "connections.modal.token.note":
     "Lưu mã hóa. Sau khi lưu sẽ không hiển thị lại.",
@@ -118,7 +107,7 @@ const vi: TranslationTable = {
   "connections.modal.custom.namePlaceholder": "internal-search",
   "connections.modal.custom.urlLabel": "URL máy chủ MCP",
   "connections.modal.custom.urlHint":
-    "http:// sẽ bị từ chối. URL phải truy cập được từ Relay worker.",
+    "URL phải truy cập được từ Relay worker.",
   "connections.modal.custom.authLabel": "Xác thực",
   "connections.modal.custom.authNone": "Không",
   "connections.modal.custom.authToken": "API token",
@@ -127,7 +116,7 @@ const vi: TranslationTable = {
   "connections.modal.custom.cta": "Thêm máy chủ",
   "connections.modal.custom.error.alias":
     "Dùng chữ thường, chữ số, _ hoặc -, tối đa 16 ký tự.",
-  "connections.modal.custom.error.url": "Nhập URL https:// hợp lệ.",
+  "connections.modal.custom.error.url": "Nhập URL http:// hoặc https:// hợp lệ.",
   "connections.callback.eyebrow.connecting": "OAuth · Bước 2 / 3",
   "connections.callback.eyebrow.authorized": "OAuth · Bước 3 / 3",
   "connections.callback.eyebrow.failed": "OAuth · Thất bại",

@@ -2,15 +2,15 @@ import { ExternalLink, ShieldCheck } from "lucide-react";
 import { KeyValue } from "../atoms/KeyValue";
 import { SectionHeader } from "../atoms/SectionHeader";
 import { SectionCard } from "../molecules/SectionCard";
-import { entryForServer } from "../../data/mcpCatalog";
+import { useCatalogLookup } from "../../hooks/useMcpServers";
 import { useT } from "../../i18n";
 import { useTimeAgo } from "../../lib/time";
 import type { McpServer } from "../../types/api";
 
 export function StatusCard({ server }: { server: McpServer }) {
   const { t } = useT();
-  const entry = entryForServer(server);
-  const manageUrl = entry?.apiTokenHelpUrl ?? null;
+  const entry = useCatalogLookup()(server.catalog_id);
+  const manageUrl = entry?.homepage_url ?? null;
   const timeAgo = useTimeAgo();
 
   const lastUpdated = timeAgo(server.updated_at);
@@ -60,7 +60,7 @@ export function StatusCard({ server }: { server: McpServer }) {
               className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-moss-deep)] hover:underline"
             >
               {t("connections.detail.status.manageOn", {
-                name: entry?.name ?? server.catalog_id,
+                name: entry?.display_name ?? server.catalog_id,
               })}
               <ExternalLink className="h-3 w-3" strokeWidth={1.75} />
             </a>

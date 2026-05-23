@@ -2,20 +2,17 @@ import { useCallback, useMemo, useState } from "react";
 import { ArrowRight, Check, RefreshCw, TriangleAlert } from "lucide-react";
 import { Button } from "../atoms/Button";
 import { Monogram } from "../atoms/Monogram";
+import { CatalogIcon } from "../atoms/CatalogIcon";
 import { Modal, ModalFooter, ModalHeader } from "../molecules/Modal";
 import { Banner } from "../molecules/Banner";
 import {
-  entryForServer,
-  type CatalogEntry,
-} from "../../data/mcpCatalog";
-import {
+  useCatalogLookup,
   useCreateMcpServer,
   useStartOAuth,
-  useTestConnect,
 } from "../../hooks/useMcpServers";
 import { formatError } from "../../lib/errors";
 import { useT } from "../../i18n";
-import type { McpServer } from "../../types/api";
+import type { McpCatalogEntry, McpServer } from "../../types/api";
 
 const callbackUrl = (serverId: string) =>
   `/connections/oauth-callback?server_id=${serverId}`;
@@ -37,13 +34,11 @@ function useAsyncSubmit() {
   return { errorText, setErrorText, run };
 }
 
-type Mode = "oauth" | "apiToken" | "reconnect" | "customUrl";
-
 type Props =
-  | { mode: "oauth"; entry: CatalogEntry; onClose: () => void; server?: never }
+  | { mode: "oauth"; entry: McpCatalogEntry; onClose: () => void; server?: never }
   | {
       mode: "apiToken";
-      entry: CatalogEntry;
+      entry: McpCatalogEntry;
       onClose: () => void;
       server?: never;
     }
@@ -82,24 +77,12 @@ function renderBody(props: Props) {
   }
 }
 
-function EntryTile({ entry }: { entry: CatalogEntry }) {
-  if (entry.iconUrl) {
-    return (
-      <img
-        src={entry.iconUrl}
-        alt=""
-        className="h-9 w-9 shrink-0 border border-[var(--color-line)] bg-white object-contain p-1"
-      />
-    );
-  }
+function EntryTile({ entry }: { entry: McpCatalogEntry }) {
   return (
-    <Monogram
-      name={entry.name}
+    <CatalogIcon
+      name={entry.display_name}
+      iconUrl={entry.icon_url}
       size={36}
-      bg={entry.tileBg}
-      fg={entry.tileFg}
-      glyph={entry.monogram}
-      iconSlug={entry.iconSlug}
     />
   );
 }
@@ -127,7 +110,7 @@ function OAuthBody({
   entry,
   onClose,
 }: {
-  entry: CatalogEntry;
+  entry: McpCatalogEntry;
   onClose: () => void;
 }) {
   const { t } = useT();
@@ -138,15 +121,12 @@ function OAuthBody({
 
   const onContinue = () =>
     run(async () => {
-      // Short-form when the FE doesn't know the URL (tenant-custom catalog
-      // entry surfaced from the backend); full-form when it does, so the
-      // operator's tile-level expectation matches the persisted row.
+      // Short-form create: backend fills `config` from
+      // `mcp_catalog.default_transport`. The catalog wire shape doesn't
+      // expose that URL today, so the FE always takes this path.
       const server = await create.mutateAsync({
-        catalog_id: entry.id,
-        config: entry.defaultUrl
-          ? { type: "http", url: entry.defaultUrl }
-          : undefined,
-        description: entry.blurb,
+        catalog_id: entry.catalog_id,
+        description: entry.description,
         enabled: true,
       });
       const res = await startOAuth.mutateAsync({
@@ -159,8 +139,8 @@ function OAuthBody({
   return (
     <>
       <ModalHeader
-        eyebrow={`${t("connections.modal.oauth.eyebrow")} · ${entry.name}`}
-        title={t("connections.modal.oauth.title", { name: entry.name })}
+        eyebrow={`${t("connections.modal.oauth.eyebrow")} · ${entry.display_name}`}
+        title={t("connections.modal.oauth.title", { name: entry.display_name })}
         icon={<EntryTile entry={entry} />}
         onClose={onClose}
       />
@@ -169,7 +149,7 @@ function OAuthBody({
           items={[
             t("connections.modal.oauth.bullet1"),
             t("connections.modal.oauth.bullet2"),
-            t("connections.modal.oauth.bullet3", { name: entry.name }),
+            t("connections.modal.oauth.bullet3", { name: entry.display_name }),
           ]}
         />
         {errorText ? <Banner variant="rose">{errorText}</Banner> : null}
@@ -184,7 +164,7 @@ function OAuthBody({
           loading={submitting}
           data-testid="oauth-continue"
         >
-          {t("connections.modal.oauth.continue", { name: entry.name })}
+          {t("connections.modal.oauth.continue", { name: entry.display_name })}
           <ArrowRight className="h-3.5 w-3.5" strokeWidth={2} />
         </Button>
       </ModalFooter>
@@ -196,41 +176,36 @@ function ApiTokenBody({
   entry,
   onClose,
 }: {
-  entry: CatalogEntry;
+  entry: McpCatalogEntry;
   onClose: () => void;
 }) {
   const { t } = useT();
   const create = useCreateMcpServer();
-  const test = useTestConnect();
   const [token, setToken] = useState("");
   const { errorText, setErrorText, run } = useAsyncSubmit();
-  const submitting = create.isPending || test.isPending;
+  const submitting = create.isPending;
 
   const onConnect = () =>
     run(async () => {
       if (!token.trim()) {
-        setErrorText(t("connections.modal.token.error", { name: entry.name }));
+        setErrorText(
+          t("connections.modal.token.error", { name: entry.display_name }),
+        );
         return;
       }
-      const headerName = entry.apiTokenHeader ?? "Authorization";
-      const credentials = {
-        kind: "static_headers" as const,
-        headers: { [headerName]: `${entry.apiTokenPrefix ?? ""}${token}` },
-      };
-      const result = await test.mutateAsync({
-        config: { type: "http", url: entry.defaultUrl },
-        credentials,
-      });
-      if (result.outcome === "failed") {
-        setErrorText(result.error);
-        return;
-      }
+      // Short-form create — backend fills `config` from
+      // `mcp_catalog.default_transport`. The catalog wire shape doesn't
+      // expose the URL today, so the FE can't optimistically test-connect
+      // before persisting; the row's `connection_status` reflects the
+      // first dispatch result instead.
       await create.mutateAsync({
-        catalog_id: entry.id,
-        config: { type: "http", url: entry.defaultUrl },
-        description: entry.blurb,
+        catalog_id: entry.catalog_id,
+        description: entry.description,
         enabled: true,
-        credentials,
+        credentials: {
+          kind: "static_headers",
+          headers: { Authorization: `Bearer ${token}` },
+        },
       });
       onClose();
     });
@@ -238,8 +213,8 @@ function ApiTokenBody({
   return (
     <>
       <ModalHeader
-        eyebrow={`${t("connections.modal.oauth.eyebrow")} · ${entry.name}`}
-        title={t("connections.modal.oauth.title", { name: entry.name })}
+        eyebrow={`${t("connections.modal.oauth.eyebrow")} · ${entry.display_name}`}
+        title={t("connections.modal.oauth.title", { name: entry.display_name })}
         icon={<EntryTile entry={entry} />}
         onClose={onClose}
       />
@@ -251,31 +226,21 @@ function ApiTokenBody({
           ]}
         />
         <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <label
-              htmlFor="mcp-token"
-              className="text-[12px] font-semibold text-[var(--color-ink)]"
-            >
-              {t("connections.modal.token.tokenLabel", { name: entry.name })}
-            </label>
-            {entry.apiTokenHelpUrl ? (
-              <a
-                href={entry.apiTokenHelpUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-[11.5px] text-[var(--color-moss-deep)] hover:underline"
-              >
-                {t("connections.modal.token.help")} ↗
-              </a>
-            ) : null}
-          </div>
+          <label
+            htmlFor="mcp-token"
+            className="text-[12px] font-semibold text-[var(--color-ink)]"
+          >
+            {t("connections.modal.token.tokenLabel", {
+              name: entry.display_name,
+            })}
+          </label>
           <input
             id="mcp-token"
             type="password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
             placeholder={t("connections.modal.token.placeholder", {
-              name: entry.name,
+              name: entry.display_name,
             })}
             className="w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-2 font-[var(--font-mono)] text-[12.5px] text-[var(--color-ink)] outline-none focus:border-[var(--color-moss)]"
             autoComplete="off"
@@ -313,8 +278,8 @@ function ReconnectBody({
   onClose: () => void;
 }) {
   const { t } = useT();
-  const entry = entryForServer(server);
-  const name = entry?.name ?? server.catalog_id;
+  const entry = useCatalogLookup()(server.catalog_id);
+  const name = entry?.display_name ?? server.catalog_id;
   const startOAuth = useStartOAuth();
   const { errorText, run } = useAsyncSubmit();
 
@@ -345,17 +310,11 @@ function ReconnectBody({
         }
         title={t("connections.modal.reconnect.title", { name })}
         icon={
-          entry ? (
-            <EntryTile entry={entry} />
-          ) : (
-            <Monogram
-              name={server.catalog_id}
-              size={36}
-              bg="var(--color-rail)"
-              fg="#fff"
-              glyph={(server.catalog_id[0] ?? "?").toUpperCase()}
-            />
-          )
+          <CatalogIcon
+            name={entry?.display_name ?? name}
+            iconUrl={entry?.icon_url}
+            size={36}
+          />
         }
         onClose={onClose}
       />
@@ -435,7 +394,15 @@ function DiagRow({
 // existing tenant-custom `mcp_catalog` row — the backend FK trigger
 // rejects an unknown id with HTTP 400 (`CatalogIdUnknown`).
 const CATALOG_ID_RE = /^[a-z][a-z0-9_-]{0,39}$/;
-const URL_RE = /^https:\/\/[^\s]+$/i;
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 function CustomUrlBody({ onClose }: { onClose: () => void }) {
   const { t } = useT();
@@ -447,7 +414,7 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
   const { errorText, setErrorText, run } = useAsyncSubmit();
 
   const catalogIdValid = useMemo(() => CATALOG_ID_RE.test(catalogId), [catalogId]);
-  const urlValid = useMemo(() => URL_RE.test(url), [url]);
+  const urlValid = useMemo(() => isValidHttpUrl(url), [url]);
 
   const onAdd = () =>
     run(async () => {
@@ -609,4 +576,3 @@ function AuthTab({
     </button>
   );
 }
-

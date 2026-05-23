@@ -96,15 +96,13 @@ pub async fn register_dynamic_client(
     redirect_uri: &str,
     scope: Option<&str>,
 ) -> Result<NewOAuthClient, OAuthError> {
-    let registration_endpoint = as_metadata
-        .registration_endpoint
-        .as_deref()
-        .ok_or_else(|| {
-            OAuthError::Misconfigured(format!(
-                "AS {} does not support dynamic client registration",
-                as_metadata.issuer
-            ))
-        })?;
+    let registration_endpoint =
+        as_metadata
+            .registration_endpoint
+            .as_deref()
+            .ok_or_else(|| OAuthError::DcrUnsupported {
+                issuer: as_metadata.issuer.clone(),
+            })?;
 
     // Pick the auth method: prefer `none` (PKCE-only public client) when
     // the AS advertises it, else `client_secret_basic`. RFC 7591 lets us

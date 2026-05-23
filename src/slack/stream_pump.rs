@@ -532,8 +532,17 @@ fn routing_for(chunk: &ResponseChunk, request_session: SessionId) -> (SessionId,
 /// minting the `connect_url` (signed token) when applicable.
 fn payload_for_post(chunk: &ResponseChunk, connect_url: Option<&str>) -> Option<PostBody> {
     match chunk {
-        ResponseChunk::Done { final_text } => Some(PostBody::Text(final_text.clone())),
-        ResponseChunk::AgentMessage { content, .. } => Some(PostBody::Text(content.clone())),
+        // Empty text drops the post: Slack's `chat.postMessage` rejects
+        // an empty `text` with `error: "no_text"` on a 200 response. An
+        // agent that closes a turn with no user-visible final text — or
+        // a cross-agent handoff with an empty content — has nothing to
+        // surface, so we skip rather than emit an empty bubble.
+        ResponseChunk::Done { final_text } if !final_text.is_empty() => {
+            Some(PostBody::Text(final_text.clone()))
+        }
+        ResponseChunk::AgentMessage { content, .. } if !content.is_empty() => {
+            Some(PostBody::Text(content.clone()))
+        }
         ResponseChunk::Error { reason } => {
             Some(PostBody::Text(format!(":warning: Error: {reason}")))
         }
@@ -550,9 +559,11 @@ fn payload_for_post(chunk: &ResponseChunk, connect_url: Option<&str>) -> Option<
                 blocks,
             })
         }
-        // Streaming-only chunks — dropped under the "post once on Final"
-        // user choice.
-        ResponseChunk::Text { .. }
+        // Dropped: empty-text Done/AgentMessage (would be `no_text`) and
+        // streaming-only chunks under the "post once on Final" rule.
+        ResponseChunk::Done { .. }
+        | ResponseChunk::AgentMessage { .. }
+        | ResponseChunk::Text { .. }
         | ResponseChunk::Reasoning { .. }
         | ResponseChunk::ToolCall(_)
         | ResponseChunk::ToolResult(_)
@@ -673,6 +684,26 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn payload_for_post_drops_done_with_empty_final_text() {
+        // Slack would reject an empty `text` body with `no_text`; the
+        // pump must drop the post rather than send it.
+        let c = ResponseChunk::Done {
+            final_text: String::new(),
+        };
+        assert!(payload_for_post(&c, None).is_none());
+    }
+
+    #[test]
+    fn payload_for_post_drops_agent_message_with_empty_content() {
+        let c = ResponseChunk::AgentMessage {
+            from: crate::agents::AgentId::new(),
+            to_session: SessionId::new(),
+            content: String::new(),
+        };
+        assert!(payload_for_post(&c, None).is_none());
     }
 
     #[test]
