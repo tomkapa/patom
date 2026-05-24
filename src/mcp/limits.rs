@@ -86,6 +86,22 @@ pub const MCP_CREDENTIAL_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// which is the agent-side cap.
 pub const MCP_RESULT_RENDER_CAP: usize = 128 * 1024;
 
+/// Cap on the number of catalog-driven authorize-URL extra params per
+/// integration. Google needs two (`access_type`, `prompt`); the worst
+/// realistic case we've sketched (Microsoft tenant-specific +
+/// `prompt=consent`+`prompt=login`+`domain_hint` + Atlassian
+/// `audience`+`prompt`) tops out at 6. Eight gives 2× headroom while
+/// keeping the row payload short enough to inline in every catalog
+/// list response. CLAUDE.md §5: every collection is bounded on entry.
+pub(super) const MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_MAX: usize = 8;
+
+/// Cap on one entry's `key` or `value` in `authorize_extra_params`.
+/// `key` realistically maxes out around 32 chars (`access_type`,
+/// `prompt`, `audience`, `domain_hint`); `value` carries short URLs
+/// for `audience`-style params. 256 is a comfortable bound that still
+/// fits the 2048-byte JSONB total enforced at the DB CHECK.
+pub(super) const MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX: usize = 256;
+
 /// Per-user cap on `POST /mcp-servers/test-connect` calls per rolling minute.
 ///
 /// Sized for legitimate "click test, fix the URL, click test" UX without

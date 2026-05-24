@@ -48,6 +48,7 @@ type Props =
       onClose: () => void;
       entry?: never;
     }
+  | { mode: "noAuth"; entry: McpCatalogEntry; onClose: () => void; server?: never }
   | { mode: "customUrl"; onClose: () => void; entry?: never; server?: never };
 
 export function ConnectModal(props: Props) {
@@ -72,6 +73,8 @@ function renderBody(props: Props) {
       return <ApiTokenBody entry={props.entry} onClose={props.onClose} />;
     case "reconnect":
       return <ReconnectBody server={props.server} onClose={props.onClose} />;
+    case "noAuth":
+      return <NoAuthBody entry={props.entry} onClose={props.onClose} />;
     case "customUrl":
       return <CustomUrlBody onClose={props.onClose} />;
   }
@@ -165,6 +168,66 @@ function OAuthBody({
           data-testid="oauth-continue"
         >
           {t("connections.modal.oauth.continue", { name: entry.display_name })}
+          <ArrowRight className="h-3.5 w-3.5" strokeWidth={2} />
+        </Button>
+      </ModalFooter>
+    </>
+  );
+}
+
+function NoAuthBody({
+  entry,
+  onClose,
+}: {
+  entry: McpCatalogEntry;
+  onClose: () => void;
+}) {
+  const { t } = useT();
+  const create = useCreateMcpServer();
+  const submitting = create.isPending;
+  const { errorText, run } = useAsyncSubmit();
+
+  const onConnect = () =>
+    run(async () => {
+      // Short-form: backend fills `config` from the catalog's
+      // `default_transport`. No credentials, no follow-up flow — the
+      // row lands healthy and the refresher picks it up immediately.
+      await create.mutateAsync({
+        catalog_id: entry.catalog_id,
+        description: entry.description,
+        enabled: true,
+      });
+      onClose();
+    });
+
+  return (
+    <>
+      <ModalHeader
+        eyebrow={`${t("connections.modal.oauth.eyebrow")} · ${entry.display_name}`}
+        title={t("connections.modal.oauth.title", { name: entry.display_name })}
+        icon={<EntryTile entry={entry} />}
+        onClose={onClose}
+      />
+      <div className="flex flex-col gap-3 px-5 py-5">
+        <BulletList
+          items={[
+            t("connections.modal.oauth.bullet1"),
+            t("connections.modal.oauth.bullet2"),
+          ]}
+        />
+        {errorText ? <Banner variant="rose">{errorText}</Banner> : null}
+      </div>
+      <ModalFooter>
+        <Button variant="ghost" onClick={onClose}>
+          {t("connections.modal.cancel")}
+        </Button>
+        <Button
+          variant="primary"
+          onClick={onConnect}
+          loading={submitting}
+          data-testid="noauth-connect"
+        >
+          {t("connections.modal.token.connect")}
           <ArrowRight className="h-3.5 w-3.5" strokeWidth={2} />
         </Button>
       </ModalFooter>

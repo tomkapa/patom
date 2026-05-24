@@ -42,6 +42,8 @@ impl fmt::Debug for PgMcpOAuthClientStore {
 
 /// Insert-or-return: DCR is idempotent per `(org, issuer)`. The no-op
 /// `SET issuer = issuer` forces RETURNING to fire for the existing row.
+/// Conflict target is the partial unique index, qualified by the
+/// org-scoped predicate so it cannot collide with shared rows.
 const SQL_UPSERT_DCR: &str = "INSERT INTO mcp_oauth_clients \
      (org_id, issuer, client_id, authorization_endpoint, token_endpoint, \
       registration_client_uri, registration_access_token_ciphertext, \
@@ -49,7 +51,8 @@ const SQL_UPSERT_DCR: &str = "INSERT INTO mcp_oauth_clients \
       client_secret_nonce, key_version, token_endpoint_auth_method, scope, \
       created_at) \
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
-     ON CONFLICT (org_id, issuer) DO UPDATE SET issuer = mcp_oauth_clients.issuer \
+     ON CONFLICT (org_id, issuer) WHERE org_id IS NOT NULL \
+        DO UPDATE SET issuer = mcp_oauth_clients.issuer \
      RETURNING org_id, issuer, client_id, authorization_endpoint, \
                token_endpoint, client_secret_ciphertext, client_secret_nonce, \
                key_version, token_endpoint_auth_method, scope";
@@ -65,7 +68,7 @@ const SQL_UPSERT_OPERATOR: &str = "INSERT INTO mcp_oauth_clients \
       client_secret_nonce, key_version, token_endpoint_auth_method, scope, \
       created_at) \
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
-     ON CONFLICT (org_id, issuer) DO UPDATE SET \
+     ON CONFLICT (org_id, issuer) WHERE org_id IS NOT NULL DO UPDATE SET \
         client_id = EXCLUDED.client_id, \
         authorization_endpoint = EXCLUDED.authorization_endpoint, \
         token_endpoint = EXCLUDED.token_endpoint, \
@@ -81,33 +84,130 @@ const SQL_UPSERT_OPERATOR: &str = "INSERT INTO mcp_oauth_clients \
                token_endpoint, client_secret_ciphertext, client_secret_nonce, \
                key_version, token_endpoint_auth_method, scope";
 
+/// Shared (platform-owned): full overwrite, keyed against the
+/// `org_id IS NULL` row per the `mcp_oauth_clients_shared_issuer_key`
+/// partial unique index. The seeder is the only writer; rotating the
+/// platform-side `client_secret` (e.g. credential rotation) overwrites
+/// in place rather than churning rows.
+const SQL_UPSERT_SHARED: &str = "INSERT INTO mcp_oauth_clients \
+     (org_id, issuer, client_id, authorization_endpoint, token_endpoint, \
+      registration_client_uri, registration_access_token_ciphertext, \
+      registration_access_token_nonce, client_secret_ciphertext, \
+      client_secret_nonce, key_version, token_endpoint_auth_method, scope, \
+      created_at) \
+     VALUES (NULL, $1, $2, $3, $4, NULL, NULL, NULL, $5, $6, $7, $8, $9, $10) \
+     ON CONFLICT (issuer) WHERE org_id IS NULL DO UPDATE SET \
+        client_id = EXCLUDED.client_id, \
+        authorization_endpoint = EXCLUDED.authorization_endpoint, \
+        token_endpoint = EXCLUDED.token_endpoint, \
+        client_secret_ciphertext = EXCLUDED.client_secret_ciphertext, \
+        client_secret_nonce = EXCLUDED.client_secret_nonce, \
+        key_version = EXCLUDED.key_version, \
+        token_endpoint_auth_method = EXCLUDED.token_endpoint_auth_method, \
+        scope = EXCLUDED.scope \
+     RETURNING org_id, issuer, client_id, authorization_endpoint, \
+               token_endpoint, client_secret_ciphertext, client_secret_nonce, \
+               key_version, token_endpoint_auth_method, scope";
+
+/// Sentinel `OrgId` for the per-org KEK derivation of shared
+/// (platform-owned) rows. The nil UUID cannot collide with any real
+/// org (orgs are created via `gen_random_uuid()` / `Uuid::new_v4`),
+/// so the derived HKDF KEK is unique to shared-row encryption.
+#[inline]
+fn platform_sentinel_org() -> OrgId {
+    OrgId::from(uuid::Uuid::nil())
+}
+
+use super::canonical_issuer;
+
 #[async_trait]
 impl McpOAuthClientStore for PgMcpOAuthClientStore {
     async fn upsert(&self, new: NewOAuthClient) -> Result<DcrClientRecord, OAuthError> {
-        // Both branches share parameter shape so the bind block is
-        // identical. The DB ignores positional binds the SQL doesn't
-        // reference (operator branch hard-codes NULLs in $6..$8 slots).
-        let (rcu, rat, sql) = match &new.provenance {
+        match &new.provenance {
+            ClientProvenance::Shared => self.upsert_shared(new).await,
+            ClientProvenance::Dcr { .. } | ClientProvenance::Operator { .. } => {
+                self.upsert_org_scoped(new).await
+            }
+        }
+    }
+
+    async fn read(
+        &self,
+        org_id: OrgId,
+        issuer: &str,
+    ) -> Result<Option<DcrClientRecord>, OAuthError> {
+        let row = crate::auth::run_privileged::<Option<OAuthClientRow>, OAuthError>(
+            &self.pool,
+            async |tx| {
+                Ok(sqlx::query_as::<_, OAuthClientRow>(
+                    "SELECT org_id, issuer, client_id, authorization_endpoint, token_endpoint, \
+                            client_secret_ciphertext, client_secret_nonce, key_version, \
+                            token_endpoint_auth_method, scope \
+                     FROM mcp_oauth_clients WHERE org_id = $1 AND issuer = $2",
+                )
+                .bind(org_id)
+                .bind(canonical_issuer(issuer))
+                .fetch_optional(&mut **tx)
+                .await?)
+            },
+        )
+        .await?;
+        row.map(|r| r.into_record(&self.enc)).transpose()
+    }
+
+    async fn read_shared(&self, issuer: &str) -> Result<Option<DcrClientRecord>, OAuthError> {
+        let row = crate::auth::run_privileged::<Option<OAuthClientRow>, OAuthError>(
+            &self.pool,
+            async |tx| {
+                Ok(sqlx::query_as::<_, OAuthClientRow>(
+                    "SELECT org_id, issuer, client_id, authorization_endpoint, token_endpoint, \
+                            client_secret_ciphertext, client_secret_nonce, key_version, \
+                            token_endpoint_auth_method, scope \
+                     FROM mcp_oauth_clients WHERE org_id IS NULL AND issuer = $1",
+                )
+                .bind(canonical_issuer(issuer))
+                .fetch_optional(&mut **tx)
+                .await?)
+            },
+        )
+        .await?;
+        row.map(|r| r.into_record(&self.enc)).transpose()
+    }
+}
+
+impl PgMcpOAuthClientStore {
+    /// DCR / Operator path. Keyed by `(org_id, issuer)`. `org_id` and
+    /// the per-shape `(rcu, rat)` columns are read off the variant —
+    /// `Shared` is routed away by `upsert` so the type system
+    /// guarantees only the two org-scoped shapes reach this fn.
+    async fn upsert_org_scoped(&self, new: NewOAuthClient) -> Result<DcrClientRecord, OAuthError> {
+        let (org_id, rcu, rat, sql) = match &new.provenance {
             ClientProvenance::Dcr {
+                org_id,
                 registration_client_uri,
                 registration_access_token,
             } => (
+                *org_id,
                 registration_client_uri.as_deref(),
                 registration_access_token.as_ref(),
                 SQL_UPSERT_DCR,
             ),
-            ClientProvenance::Operator => (None, None, SQL_UPSERT_OPERATOR),
+            ClientProvenance::Operator { org_id } => (*org_id, None, None, SQL_UPSERT_OPERATOR),
+            // The outer match in `upsert` already routed Shared away.
+            ClientProvenance::Shared => {
+                unreachable!("invariant: upsert_org_scoped called with Shared provenance")
+            }
         };
         let (secret_cipher, secret_nonce) =
-            seal_optional(&self.enc, new.org_id, new.client_secret.as_ref())?;
-        let (rat_cipher, rat_nonce) = seal_optional(&self.enc, new.org_id, rat)?;
+            seal_optional(&self.enc, org_id, new.client_secret.as_ref())?;
+        let (rat_cipher, rat_nonce) = seal_optional(&self.enc, org_id, rat)?;
         let now = self.clock.now_utc();
         let key_version = crate::crypto::CURRENT_KEY_VERSION;
         let row =
             crate::auth::run_privileged::<OAuthClientRow, OAuthError>(&self.pool, async |tx| {
                 Ok(sqlx::query_as::<_, OAuthClientRow>(sql)
-                    .bind(new.org_id)
-                    .bind(&new.issuer)
+                    .bind(org_id)
+                    .bind(canonical_issuer(&new.issuer))
                     .bind(new.client_id.as_str())
                     .bind(&new.authorization_endpoint)
                     .bind(&new.token_endpoint)
@@ -127,28 +227,35 @@ impl McpOAuthClientStore for PgMcpOAuthClientStore {
         row.into_record(&self.enc)
     }
 
-    async fn read(
-        &self,
-        org_id: OrgId,
-        issuer: &str,
-    ) -> Result<Option<DcrClientRecord>, OAuthError> {
-        let row = crate::auth::run_privileged::<Option<OAuthClientRow>, OAuthError>(
-            &self.pool,
-            async |tx| {
-                Ok(sqlx::query_as::<_, OAuthClientRow>(
-                    "SELECT org_id, issuer, client_id, authorization_endpoint, token_endpoint, \
-                            client_secret_ciphertext, client_secret_nonce, key_version, \
-                            token_endpoint_auth_method, scope \
-                     FROM mcp_oauth_clients WHERE org_id = $1 AND issuer = $2",
-                )
-                .bind(org_id)
-                .bind(issuer)
-                .fetch_optional(&mut **tx)
-                .await?)
-            },
-        )
-        .await?;
-        row.map(|r| r.into_record(&self.enc)).transpose()
+    /// Shared path. Keyed by `(issuer)` against the `org_id IS NULL`
+    /// partial unique index. The client_secret is sealed under the
+    /// platform sentinel KEK so subsequent reads (which carry no org)
+    /// can decrypt without a per-tenant context. Provenance carries no
+    /// org_id by type so there is nothing to assert on the input.
+    async fn upsert_shared(&self, new: NewOAuthClient) -> Result<DcrClientRecord, OAuthError> {
+        let sentinel = platform_sentinel_org();
+        let (secret_cipher, secret_nonce) =
+            seal_optional(&self.enc, sentinel, new.client_secret.as_ref())?;
+        let now = self.clock.now_utc();
+        let key_version = crate::crypto::CURRENT_KEY_VERSION;
+        let row =
+            crate::auth::run_privileged::<OAuthClientRow, OAuthError>(&self.pool, async |tx| {
+                Ok(sqlx::query_as::<_, OAuthClientRow>(SQL_UPSERT_SHARED)
+                    .bind(canonical_issuer(&new.issuer))
+                    .bind(new.client_id.as_str())
+                    .bind(&new.authorization_endpoint)
+                    .bind(&new.token_endpoint)
+                    .bind(secret_cipher.as_deref())
+                    .bind(secret_nonce.as_deref())
+                    .bind(key_version)
+                    .bind(new.token_endpoint_auth_method)
+                    .bind(new.scope.as_deref())
+                    .bind(now)
+                    .fetch_one(&mut **tx)
+                    .await?)
+            })
+            .await?;
+        row.into_record(&self.enc)
     }
 }
 
@@ -172,7 +279,7 @@ fn seal_optional(
 
 #[derive(sqlx::FromRow)]
 struct OAuthClientRow {
-    org_id: OrgId,
+    org_id: Option<OrgId>,
     issuer: String,
     client_id: String,
     authorization_endpoint: String,
@@ -224,7 +331,10 @@ impl OAuthClientRow {
             nonce,
             ciphertext: c.clone(),
         };
-        let plaintext = enc.open(self.org_id, &blob)?;
+        // Shared rows are sealed under the platform sentinel KEK
+        // because there is no per-tenant context at write time.
+        let kek_org = self.org_id.unwrap_or_else(platform_sentinel_org);
+        let plaintext = enc.open(kek_org, &blob)?;
         let s = std::str::from_utf8(plaintext.as_slice())
             .map_err(|_| OAuthError::Misconfigured("oauth client_secret not utf-8".into()))?;
         Ok(Some(SecretString::try_from(s.to_owned()).map_err(|e| {

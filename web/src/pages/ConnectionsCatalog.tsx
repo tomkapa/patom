@@ -112,7 +112,13 @@ export function ConnectionsCatalog() {
 
       {pending?.kind === "entry" ? (
         <ConnectModal
-          mode={pending.entry.auth_kind === "oauth2" ? "oauth" : "apiToken"}
+          mode={
+            pending.entry.auth_kind === "oauth2"
+              ? "oauth"
+              : pending.entry.auth_kind === "none"
+                ? "noAuth"
+                : "apiToken"
+          }
           entry={pending.entry}
           onClose={() => setPending(null)}
         />
