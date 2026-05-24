@@ -183,7 +183,10 @@ needs to flip when the sidecar comes online.
    in two Docker containers (`MODULES=gmail`, `MODULES=calendar`).
    Expose via Cloudflare tunnel (named tunnel so the hostname is
    stable across restarts).
-2. **Migration 39 (`mcp_catalog_gmail_calendar_self_hosted`)** —
+2. **Follow-up migration (`mcp_catalog_gmail_calendar_self_hosted`)** —
+   the next available number after the OAuth-vendor-seam PR
+   (which has already taken migrations 37–39 for shared clients,
+   default scopes, and authorize-extra params).
    `UPDATE mcp_catalog SET default_transport = …` on the `gmail`
    and `gcal` rows to point at the tunnel hostnames.
 3. **Sanity-check OAuth discovery** against the tunnel hostname:

@@ -132,9 +132,14 @@ pub async fn seed_shared_clients(store: &SharedMcpOAuthClientStore, auth: &AuthS
                 );
             }
             Err(e) => {
+                // WARN (not ERROR) is intentional: the seeder is
+                // best-effort by design (see module-level §6 note) and
+                // `PUT /oauth/client` remains the per-org fallback. The
+                // structured-Debug error field still matches the
+                // CLAUDE.md §2 telemetry contract.
                 tracing::warn!(
                     relay.oauth.shared.issuer = %issuer,
-                    error = %e,
+                    error = ?e,
                     event = "mcp.oauth.shared.seed_failed",
                 );
             }

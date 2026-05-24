@@ -84,10 +84,21 @@ impl Tool for McpTool {
                 // — otherwise `is_error=true` collapses into the Ok
                 // branch and the audit row says success.
                 if matches!(result.is_error, Some(true)) {
-                    return Err(ToolError::Upstream {
+                    let err = ToolError::Upstream {
                         status: 0,
                         body: rendered,
-                    });
+                    };
+                    // CLAUDE.md §2: emit `error!` inside the span so
+                    // the OTel bridge sets span status to ERROR. The
+                    // rendered body is already on the error variant —
+                    // logging only the typed error avoids duplicating
+                    // the truncated tool output in two places.
+                    tracing::error!(
+                        event = "mcp.tool.upstream_error",
+                        relay.tool = %self.name,
+                        error = ?err,
+                    );
+                    return Err(err);
                 }
                 Ok(rendered)
             }

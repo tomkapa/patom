@@ -564,3 +564,36 @@ impl McpCatalogStore for PgMcpCatalogStore {
         row.map(McpCatalogEntry::try_from).transpose()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::limits::MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_DB_BYTES_MAX;
+
+    /// Worst-case in-memory value of [`OAuthAuthorizeExtras`] must
+    /// serialize to under migration 39's 2048-byte JSONB CHECK. Guards
+    /// the constants in `limits.rs` against drifting past the DB cap —
+    /// a runtime CHECK violation would be a much worse failure mode
+    /// than a parse-side rejection at the type boundary.
+    #[test]
+    fn authorize_extras_worst_case_serializes_under_db_cap() {
+        let key = "k".repeat(MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX);
+        let value = "v".repeat(MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX);
+        let items: Vec<OAuthAuthorizeExtra> = (0..MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_MAX)
+            .map(|_| OAuthAuthorizeExtra {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .collect();
+        let extras = OAuthAuthorizeExtras::try_from(items)
+            .expect("invariant: worst-case bounds are accepted by the validator");
+        let json = serde_json::to_string(&extras)
+            .expect("invariant: OAuthAuthorizeExtras serializes to JSON");
+        assert!(
+            json.len() <= MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_DB_BYTES_MAX,
+            "worst-case JSON is {} bytes; DB CHECK allows {}",
+            json.len(),
+            MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_DB_BYTES_MAX,
+        );
+    }
+}
