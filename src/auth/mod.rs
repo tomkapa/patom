@@ -15,6 +15,7 @@ pub mod limits;
 mod locale_hint;
 mod oauth_google;
 mod org_language;
+mod org_rule;
 mod pg_store;
 mod store;
 mod types;
@@ -26,6 +27,9 @@ pub use locale_hint::LocaleHint;
 pub use oauth_google::{AuthStart, GoogleOAuth, TokenExchanger};
 pub use org_language::{
     LanguageResolverError, OrgLanguageResolver, PgOrgLanguageResolver, SharedOrgLanguageResolver,
+};
+pub use org_rule::{
+    OrgRuleResolver, OrganizationRule, PgOrgRuleResolver, RuleResolverError, SharedOrgRuleResolver,
 };
 pub use pg_store::PgUserStore;
 pub use store::{

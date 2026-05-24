@@ -3,11 +3,19 @@
 //!
 //! Each call resolves the viewer's role prompt (cached, TTL-bounded by
 //! [`crate::agents::AGENT_PROMPT_CACHE_TTL`]) and composes the final
-//! `system` field as `<core>...</core>\n<role>{prompt}</role>` followed
-//! by `<date>`, the per-org `<language>` directive, and the rendered
-//! `<memory>...</memory>` section. The role prompt and memory section
-//! are cached per session; the language is cached per agent via the
-//! [`SharedOrgLanguageResolver`].
+//! `system` field as
+//! `<core>...</core>\n[<organization-rule>...</organization-rule>\n][<agents>...</agents>\n]<role>{prompt}</role>`
+//! followed by `<date>`, the per-org `<language>` directive, and the
+//! rendered `<memory>...</memory>` section. The role prompt and memory
+//! section are cached per session; the language and the per-org rule
+//! are cached per agent via [`SharedOrgLanguageResolver`] and
+//! [`SharedOrgRuleResolver`] respectively.
+//!
+//! `<organization-rule>` sits immediately after `<core>` so the most
+//! cache-shared prefix (the per-kind core, identical across every org)
+//! is followed by the next-most-stable block (the per-org rule, shared
+//! across every agent that org runs). When the org has no rule, the tag
+//! is omitted entirely — same pattern as `<memory>` when empty.
 //!
 //! See [`SessionMemoryCache`]'s module doc for the deliberate divergence
 //! from doc/memory.md's "frozen for the session's lifetime" wording: we
@@ -20,7 +28,7 @@ use async_trait::async_trait;
 use crate::agents::{
     AgentId, AgentNamesCache, AgentPromptCache, SharedAgentStore, render_agents_block,
 };
-use crate::auth::SharedOrgLanguageResolver;
+use crate::auth::{SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use crate::clock::SharedClock;
 use crate::prompts::Prompts;
 use crate::runtime::RequestKindPayload;
@@ -37,6 +45,14 @@ use super::types::{MemoryHandle, MemoryId};
 /// need to.
 pub const CORE_TAG_OPEN: &str = "<core>\n";
 pub const CORE_TAG_CLOSE: &str = "\n</core>\n";
+/// `<organization-rule>` wraps the per-org rule the admin set via `PATCH /me/org/rule`.
+///
+/// Placed immediately after `<core>` so the cross-org-shared core stays at
+/// the head of the prefix and the per-org rule sits next, giving Anthropic
+/// prompt caching a long stable run before any per-agent content. Omitted
+/// entirely when the org has no rule configured.
+pub const ORG_RULE_TAG_OPEN: &str = "<organization-rule>\n";
+pub const ORG_RULE_TAG_CLOSE: &str = "\n</organization-rule>";
 pub const ROLE_TAG_OPEN: &str = "<role>\n";
 pub const ROLE_TAG_CLOSE: &str = "\n</role>";
 pub const DATE_TAG_OPEN: &str = "<date>\n";
@@ -75,11 +91,17 @@ pub struct AgentMemory {
     loader: MemorySectionLoader,
     prompts: Arc<Prompts>,
     language_resolver: SharedOrgLanguageResolver,
+    rule_resolver: SharedOrgRuleResolver,
     clock: SharedClock,
 }
 
 impl AgentMemory {
+    // §4 ceiling on parameter count vs. the alternative — an opaque
+    // `AgentMemoryDeps` struct here — would just add ceremony at every
+    // call site without making the wiring clearer. Composition root +
+    // tests are the only callers; both pass each collaborator by name.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         agents: SharedAgentStore,
         prompt_cache: AgentPromptCache,
@@ -87,6 +109,7 @@ impl AgentMemory {
         loader: MemorySectionLoader,
         prompts: Arc<Prompts>,
         language_resolver: SharedOrgLanguageResolver,
+        rule_resolver: SharedOrgRuleResolver,
         clock: SharedClock,
     ) -> Self {
         Self {
@@ -96,6 +119,7 @@ impl AgentMemory {
             loader,
             prompts,
             language_resolver,
+            rule_resolver,
             clock,
         }
     }
@@ -179,6 +203,19 @@ impl Memory for AgentMemory {
         let language = self.language_resolver.language_for_agent(agent_id).await?;
         let directive = self.prompts.set(language).language_directive.clone();
 
+        // Per-org `<organization-rule>`. Cached behind its own resolver
+        // for the same hot-path reason as the language. `None` is the
+        // "no rule configured" sentinel — the tag is omitted entirely
+        // so empty configs don't waste prompt budget. The resolver
+        // error type intentionally mirrors `LanguageResolverError` and
+        // surfaces here as `MemoryError::Backend` via the same
+        // conversion path the language uses.
+        let org_rule = self.rule_resolver.rule_for_agent(agent_id).await?;
+        let (rule_open, rule_body, rule_close) = org_rule.as_ref().map_or(("", "", ""), |r| {
+            (ORG_RULE_TAG_OPEN, r.as_str(), ORG_RULE_TAG_CLOSE)
+        });
+        let rule_sep = if rule_open.is_empty() { "" } else { "\n" };
+
         let core_arc = self.prompts.cores.for_kind(kind_payload.kind());
         let core = core_arc.as_ref();
         let role_str = role.as_str();
@@ -200,6 +237,10 @@ impl Memory for AgentMemory {
             CORE_TAG_OPEN.len()
                 + core.len()
                 + CORE_TAG_CLOSE.len()
+                + rule_open.len()
+                + rule_body.len()
+                + rule_close.len()
+                + rule_sep.len()
                 + agents_block.len()
                 + agents_sep.len()
                 + ROLE_TAG_OPEN.len()
@@ -219,6 +260,13 @@ impl Memory for AgentMemory {
         out.push_str(CORE_TAG_OPEN);
         out.push_str(core);
         out.push_str(CORE_TAG_CLOSE);
+        // `<organization-rule>` between `</core>` and `<agents>` — see
+        // module doc for the cache-prefix rationale. Empty strings when
+        // the org has no rule, so no separator slips through.
+        out.push_str(rule_open);
+        out.push_str(rule_body);
+        out.push_str(rule_close);
+        out.push_str(rule_sep);
         out.push_str(&agents_block);
         out.push_str(agents_sep);
         out.push_str(ROLE_TAG_OPEN);

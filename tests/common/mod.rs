@@ -10,3 +10,4 @@ pub mod embedding;
 pub mod harness;
 pub mod lang;
 pub mod pg;
+pub mod rule;

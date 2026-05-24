@@ -13,13 +13,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use relay_rs::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
-use relay_rs::auth::{Language, SharedOrgLanguageResolver};
+use relay_rs::auth::OrganizationRule;
+use relay_rs::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use relay_rs::clock::{SharedClock, SystemClock, TestClock};
 use relay_rs::memory::{
     AgentMemory, CORE_TAG_CLOSE, CORE_TAG_OPEN, DATE_TAG_CLOSE, DATE_TAG_OPEN, MEMORY_TAG_CLOSE,
     MEMORY_TAG_OPEN, Memory, MemoryContent, MemoryHandle, MemoryKind, MemoryMutation,
-    MemorySectionLoader, MemoryState, MutationSource, PgMemoryStore, ROLE_TAG_CLOSE, ROLE_TAG_OPEN,
-    SessionMemoryCache, SharedMemoryStore,
+    MemorySectionLoader, MemoryState, MutationSource, ORG_RULE_TAG_CLOSE, ORG_RULE_TAG_OPEN,
+    PgMemoryStore, ROLE_TAG_CLOSE, ROLE_TAG_OPEN, SessionMemoryCache, SharedMemoryStore,
 };
 use relay_rs::prompts::Prompts;
 use relay_rs::session::{PgSessionStore, SharedSessionStore};
@@ -28,6 +29,7 @@ use relay_rs::types::Participant;
 mod common;
 use common::lang::StaticOrgLanguageResolver;
 use common::pg::{TestDb, human_to_agent_session};
+use common::rule::StaticOrgRuleResolver;
 
 /// Marker substring used by the original ordering tests to confirm the
 /// `<core>` body is present. Matches a stable phrase in the real English
@@ -41,6 +43,14 @@ struct Fixture {
 }
 
 fn build_memory(db: &TestDb, clock: SharedClock) -> Fixture {
+    build_memory_with_rule(db, clock, None)
+}
+
+fn build_memory_with_rule(
+    db: &TestDb,
+    clock: SharedClock,
+    rule: Option<OrganizationRule>,
+) -> Fixture {
     let embeddings = common::embedding::FakeEmbeddingProvider::shared();
     let agents: SharedAgentStore = common::pg::shared_agent_store(db.pool.clone(), clock.clone());
     let sessions: SharedSessionStore =
@@ -58,6 +68,7 @@ fn build_memory(db: &TestDb, clock: SharedClock) -> Fixture {
     let prompts = Arc::new(Prompts::load());
     let language_resolver: SharedOrgLanguageResolver =
         Arc::new(StaticOrgLanguageResolver::new(Language::En));
+    let rule_resolver: SharedOrgRuleResolver = Arc::new(StaticOrgRuleResolver::new(rule));
     let memory = AgentMemory::new(
         agents.clone(),
         prompt_cache,
@@ -65,6 +76,7 @@ fn build_memory(db: &TestDb, clock: SharedClock) -> Fixture {
         loader,
         prompts,
         language_resolver,
+        rule_resolver,
         clock,
     );
     Fixture {
@@ -419,6 +431,82 @@ async fn cache_serves_within_ttl_then_refreshes_after_expiry() {
         .await
         .expect("refreshed");
     assert_eq!(refreshed.as_str(), "rolled-out v2");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn org_rule_block_sits_between_core_and_role() {
+    // When the org has a rule, `<organization-rule>` slots in between
+    // `</core>` and `<role>` — the cache-friendly position the renderer
+    // commits to (see `src/memory/agent.rs`'s module doc).
+    let db = TestDb::fresh().await;
+    let clock: SharedClock = Arc::new(TestClock::new());
+    let rule = OrganizationRule::try_from("Cite file:line on every claim.").expect("valid");
+    let f = build_memory_with_rule(&db, clock, Some(rule.clone()));
+
+    let session = human_to_agent_session(
+        f.sessions.as_ref(),
+        db.default_agent_id,
+        db.default_org_id,
+        db.default_user_id,
+    )
+    .await;
+    let viewer = Participant::agent(db.default_agent_id);
+    let prompt = f
+        .memory
+        .system_prompt(
+            session,
+            viewer,
+            &relay_rs::runtime::RequestKindPayload::Normal {},
+        )
+        .await
+        .expect("system prompt");
+
+    let s = prompt.as_ref();
+    let core_close = s.find(CORE_TAG_CLOSE).expect("has </core>");
+    let org_open = s.find(ORG_RULE_TAG_OPEN).expect("has <organization-rule>");
+    let org_close = s
+        .find(ORG_RULE_TAG_CLOSE)
+        .expect("has </organization-rule>");
+    let role_open = s.find(ROLE_TAG_OPEN).expect("has <role>");
+
+    assert!(core_close < org_open, "rule opens after </core>");
+    assert!(org_open < org_close, "rule tags ordered");
+    assert!(org_close < role_open, "rule closes before <role>");
+    assert!(s.contains(rule.as_str()), "rule body present");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn org_rule_block_omitted_when_unset() {
+    // When the org has no rule, the tag never appears — empty configs
+    // don't waste prompt budget or hand the model an empty envelope.
+    let db = TestDb::fresh().await;
+    let clock: SharedClock = Arc::new(TestClock::new());
+    let f = build_memory_with_rule(&db, clock, None);
+
+    let session = human_to_agent_session(
+        f.sessions.as_ref(),
+        db.default_agent_id,
+        db.default_org_id,
+        db.default_user_id,
+    )
+    .await;
+    let viewer = Participant::agent(db.default_agent_id);
+    let prompt = f
+        .memory
+        .system_prompt(
+            session,
+            viewer,
+            &relay_rs::runtime::RequestKindPayload::Normal {},
+        )
+        .await
+        .expect("system prompt");
+
+    let s = prompt.as_ref();
+    assert!(
+        !s.contains(ORG_RULE_TAG_OPEN),
+        "organization-rule tag must be absent when unset"
+    );
+    assert!(!s.contains(ORG_RULE_TAG_CLOSE), "no dangling close tag");
 }
 
 #[tokio::test(flavor = "multi_thread")]

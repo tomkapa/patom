@@ -23,8 +23,8 @@ use crate::agents::{
 };
 use crate::assets::{R2AssetStore, SharedAssetStore};
 use crate::auth::{
-    GoogleOAuth, JwtSigner, Language, OrgId, PgOrgLanguageResolver, PgUserStore,
-    SharedOrgLanguageResolver, SharedUserStore,
+    GoogleOAuth, JwtSigner, Language, OrgId, PgOrgLanguageResolver, PgOrgRuleResolver, PgUserStore,
+    SharedOrgLanguageResolver, SharedOrgRuleResolver, SharedUserStore,
 };
 use crate::clock::{SharedClock, SystemClock};
 use crate::config::{EmbeddingSettings, ProviderSettings, Settings};
@@ -145,6 +145,9 @@ struct Collaborators {
     /// Per-agent language lookup used by `AgentMemory` to render the
     /// `<language>` tag on every turn.
     language_resolver: SharedOrgLanguageResolver,
+    /// Per-agent organization-rule lookup used by `AgentMemory` to
+    /// render the `<organization-rule>` tag on every turn.
+    rule_resolver: SharedOrgRuleResolver,
 }
 
 impl Collaborators {
@@ -220,6 +223,15 @@ impl Collaborators {
             users.clone(),
             clock.clone(),
         ));
+        // Per-org rule resolver — same lifecycle as `language_resolver`;
+        // cloned into `AgentMemory` (read on every turn) and threaded
+        // onto `AppState` so the PATCH /me/org/rule handler can call
+        // `invalidate_all` after a write.
+        let rule_resolver: SharedOrgRuleResolver = Arc::new(PgOrgRuleResolver::new(
+            agents.clone(),
+            users.clone(),
+            clock.clone(),
+        ));
 
         let memory: SharedMemory = Arc::new(AgentMemory::new(
             agents.clone(),
@@ -228,6 +240,7 @@ impl Collaborators {
             memory_loader.clone(),
             prompts.clone(),
             language_resolver.clone(),
+            rule_resolver.clone(),
             clock.clone(),
         ));
 
@@ -338,6 +351,7 @@ impl Collaborators {
             users,
             prompts,
             language_resolver,
+            rule_resolver,
         })
     }
 }
@@ -783,6 +797,7 @@ pub async fn build_server(
         memberships,
         prompts: pieces.prompts,
         language_resolver: pieces.language_resolver,
+        rule_resolver: pieces.rule_resolver,
         web_dist: settings.web_dist.clone(),
         slack: slack_app_state,
         assets,

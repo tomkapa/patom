@@ -5,7 +5,9 @@ use sqlx::PgPool;
 
 use crate::agents::SharedAgentStore;
 use crate::assets::SharedAssetStore;
-use crate::auth::{GoogleOAuth, JwtSigner, SharedOrgLanguageResolver, SharedUserStore};
+use crate::auth::{
+    GoogleOAuth, JwtSigner, SharedOrgLanguageResolver, SharedOrgRuleResolver, SharedUserStore,
+};
 use crate::clock::SharedClock;
 use crate::http::MembershipCache;
 use crate::mcp::oauth::{OAuthFlowClient, SharedMcpOAuthClientStore, SharedMcpOAuthPendingStore};
@@ -109,6 +111,11 @@ pub struct AppState {
     /// invalidates the cache here so a switch propagates to the next
     /// agent turn without waiting for TTL.
     pub language_resolver: SharedOrgLanguageResolver,
+    /// Per-agent organization-rule lookup. The `PATCH /me/org/rule`
+    /// handler invalidates this cache so a rule edit propagates to the
+    /// next agent turn without waiting for TTL — same lifecycle as
+    /// [`Self::language_resolver`].
+    pub rule_resolver: SharedOrgRuleResolver,
     /// SPA dist path the `ServeDir` fallback reads from.
     pub web_dist: PathBuf,
     /// Slack adapter wiring — `Some` when `RELAY_SLACK_*` env vars are

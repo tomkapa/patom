@@ -57,6 +57,17 @@ pub const CSRF_HEADER_NAME: &str = "X-CSRF-Token";
 /// and gets rejected before constant-time comparison.
 pub const CSRF_TOKEN_MAX_LEN: usize = 64;
 
+/// Maximum byte length of a per-org rule string (`organizations.default_rule`).
+///
+/// Bounds the `<organization-rule>` body that the agent worker injects
+/// into every system prompt. The cap is mirrored as a SQL `CHECK`
+/// constraint in migration 40 — both the smart constructor here and a
+/// direct SQL write are rejected over the limit. 16 KiB is generous for
+/// a hand-curated CLAUDE.md-style directive while keeping the cached
+/// prefix small enough that an admin typo can't bloat every prompt past
+/// reason.
+pub const MAX_ORG_RULE_BYTES: usize = 16 * 1024;
+
 /// Maximum byte length of a detected-locale primary tag stashed on the
 /// `oauth_login_states` row.
 ///
