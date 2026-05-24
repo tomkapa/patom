@@ -33,14 +33,12 @@ fn encryptor() -> Arc<OrgEncryptor> {
 /// fields by mutating the returned value — extending this fixture is the
 /// path for any future vendor quirk test (one issuer, one mutation).
 fn client_fixture(
-    org_id: relay_rs::auth::OrgId,
     issuer: &str,
     client_id: &str,
     secret: Option<&str>,
     provenance: ClientProvenance,
 ) -> NewOAuthClient {
     NewOAuthClient {
-        org_id,
         issuer: issuer.to_owned(),
         client_id: OAuthClientId::try_from(client_id.to_owned()).expect("valid client_id"),
         client_secret: secret.map(|s| SecretString::try_from(s.to_owned()).expect("valid secret")),
@@ -52,8 +50,9 @@ fn client_fixture(
     }
 }
 
-fn dcr_provenance() -> ClientProvenance {
+fn dcr_provenance(org_id: relay_rs::auth::OrgId) -> ClientProvenance {
     ClientProvenance::Dcr {
+        org_id,
         registration_client_uri: None,
         registration_access_token: None,
     }
@@ -65,11 +64,10 @@ async fn oauth_client_upsert_then_read_returns_decrypted_secret() {
     let store = PgMcpOAuthClientStore::new(db.pool.clone(), SystemClock::shared(), encryptor());
 
     let mut new = client_fixture(
-        db.default_org_id,
         "https://issuer.example",
         "client-xyz",
         Some("sekret-1"),
-        dcr_provenance(),
+        dcr_provenance(db.default_org_id),
     );
     new.scope = Some("read write".into());
     let row = store.upsert(new).await.expect("upsert");
@@ -93,21 +91,19 @@ async fn oauth_client_dcr_upsert_is_idempotent_per_issuer() {
 
     let first = store
         .upsert(client_fixture(
-            db.default_org_id,
             "https://issuer.example",
             "first-id",
             Some("first-secret"),
-            dcr_provenance(),
+            dcr_provenance(db.default_org_id),
         ))
         .await
         .expect("first upsert");
     let second = store
         .upsert(client_fixture(
-            db.default_org_id,
             "https://issuer.example",
             "second-id",
             Some("second-secret"),
-            dcr_provenance(),
+            dcr_provenance(db.default_org_id),
         ))
         .await
         .expect("second upsert");
@@ -182,11 +178,11 @@ async fn oauth_client_operator_provenance_overwrites_existing_row() {
 
     // Seed via DCR with populated registration_* fields.
     let mut seed = client_fixture(
-        db.default_org_id,
         "https://issuer.example",
         "dcr-id",
         Some("dcr-secret"),
         ClientProvenance::Dcr {
+            org_id: db.default_org_id,
             registration_client_uri: Some("https://issuer.example/clients/123".into()),
             registration_access_token: Some(
                 SecretString::try_from("reg-tok".to_owned()).expect("valid"),
@@ -200,11 +196,12 @@ async fn oauth_client_operator_provenance_overwrites_existing_row() {
     // store forces registration_* back to NULL by construction
     // (no field on `ClientProvenance::Operator`).
     let mut new = client_fixture(
-        db.default_org_id,
         "https://issuer.example",
         "operator-id",
         Some("operator-secret"),
-        ClientProvenance::Operator,
+        ClientProvenance::Operator {
+            org_id: db.default_org_id,
+        },
     );
     new.token_endpoint_auth_method = TokenAuthMethod::ClientSecretPost;
     new.scope = Some("channels:read".into());
@@ -274,4 +271,286 @@ async fn oauth_pending_expired_rows_yield_none() {
         .expect("insert");
     let row = store.consume(&"b".repeat(40), now).await.expect("consume");
     assert!(row.is_none(), "expired rows must not be returned");
+}
+
+fn shared_fixture(issuer: &str, client_id: &str, secret: &str) -> NewOAuthClient {
+    NewOAuthClient {
+        issuer: issuer.to_owned(),
+        client_id: OAuthClientId::try_from(client_id.to_owned()).expect("valid client_id"),
+        client_secret: Some(SecretString::try_from(secret.to_owned()).expect("valid secret")),
+        authorization_endpoint: format!("{issuer}/auth"),
+        token_endpoint: format!("{issuer}/token"),
+        token_endpoint_auth_method: TokenAuthMethod::ClientSecretPost,
+        scope: None,
+        provenance: ClientProvenance::Shared,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_client_upsert_then_read_shared_decrypts_secret() {
+    let db = TestDb::fresh().await;
+    let store = PgMcpOAuthClientStore::new(db.pool.clone(), SystemClock::shared(), encryptor());
+
+    let written = store
+        .upsert(shared_fixture(
+            "https://accounts.google.com/",
+            "google-client-id",
+            "google-secret",
+        ))
+        .await
+        .expect("shared upsert");
+    assert!(
+        written.org_id.is_none(),
+        "shared rows must persist with org_id IS NULL"
+    );
+
+    let fetched = store
+        .read_shared("https://accounts.google.com/")
+        .await
+        .expect("read_shared")
+        .expect("row present");
+    assert!(fetched.org_id.is_none());
+    assert_eq!(fetched.client_id.as_str(), "google-client-id");
+    assert_eq!(
+        fetched.client_secret.expect("secret").expose(),
+        "google-secret"
+    );
+    assert_eq!(
+        fetched.token_endpoint_auth_method,
+        TokenAuthMethod::ClientSecretPost
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_client_upsert_is_idempotent_and_overwrites_secret() {
+    let db = TestDb::fresh().await;
+    let store = PgMcpOAuthClientStore::new(db.pool.clone(), SystemClock::shared(), encryptor());
+
+    store
+        .upsert(shared_fixture(
+            "https://accounts.google.com/",
+            "id-v1",
+            "v1",
+        ))
+        .await
+        .expect("first");
+    let second = store
+        .upsert(shared_fixture(
+            "https://accounts.google.com/",
+            "id-v2",
+            "v2",
+        ))
+        .await
+        .expect("second");
+    // Shared upsert overwrites — credential rotation must actually
+    // replace the persisted ciphertext.
+    assert_eq!(second.client_id.as_str(), "id-v2");
+    assert_eq!(second.client_secret.expect("secret").expose(), "v2");
+
+    let count: (i64,) =
+        sqlx::query_as("SELECT count(*) FROM mcp_oauth_clients WHERE org_id IS NULL")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count shared rows");
+    assert_eq!(count.0, 1, "shared upsert must not insert duplicate rows");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_and_org_scoped_rows_coexist_under_same_issuer() {
+    let db = TestDb::fresh().await;
+    let store = PgMcpOAuthClientStore::new(db.pool.clone(), SystemClock::shared(), encryptor());
+
+    let issuer = "https://accounts.google.com/";
+    // Shared row (platform-owned).
+    store
+        .upsert(shared_fixture(issuer, "shared-id", "shared-secret"))
+        .await
+        .expect("shared upsert");
+    // Org-scoped operator override for the same issuer.
+    let mut org_scoped = client_fixture(
+        issuer,
+        "org-operator-id",
+        Some("org-operator-secret"),
+        ClientProvenance::Operator {
+            org_id: db.default_org_id,
+        },
+    );
+    org_scoped.token_endpoint_auth_method = TokenAuthMethod::ClientSecretPost;
+    store
+        .upsert(org_scoped)
+        .await
+        .expect("org-scoped operator upsert");
+
+    // Both lookups must resolve independently — the org-scoped row does
+    // NOT shadow the shared one in the table, only in the route-level
+    // lookup precedence.
+    let shared = store
+        .read_shared(issuer)
+        .await
+        .expect("read_shared")
+        .expect("shared row still present");
+    assert_eq!(shared.client_id.as_str(), "shared-id");
+
+    let scoped = store
+        .read(db.default_org_id, issuer)
+        .await
+        .expect("read org-scoped")
+        .expect("org-scoped row still present");
+    assert_eq!(scoped.client_id.as_str(), "org-operator-id");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_row_select_visible_to_org_member_under_rls() {
+    let db = TestDb::fresh().await;
+    let store = PgMcpOAuthClientStore::new(db.pool.clone(), SystemClock::shared(), encryptor());
+    // Canonical (no trailing slash) form — the store canonicalizes on
+    // write so the raw SQL queries below need to match what's stored.
+    let issuer = "https://accounts.google.com";
+    store
+        .upsert(shared_fixture(issuer, "id", "secret"))
+        .await
+        .expect("seed shared");
+
+    // Run a SELECT under the org member's role (relay_app + app.user_id GUC).
+    // The mcp_oauth_clients_select policy must admit `org_id IS NULL`
+    // for any authenticated principal.
+    let visible: i64 =
+        relay_rs::auth::run_as_user::<i64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
+            let row: (i64,) = sqlx::query_as(
+                "SELECT count(*) FROM mcp_oauth_clients \
+                 WHERE org_id IS NULL AND issuer = $1",
+            )
+            .bind(issuer)
+            .fetch_one(&mut **tx)
+            .await?;
+            Ok(row.0)
+        })
+        .await
+        .expect("run as user");
+    assert_eq!(
+        visible, 1,
+        "shared row must be visible to authenticated user"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_row_writes_blocked_by_rls_for_org_member() {
+    let db = TestDb::fresh().await;
+    let store = PgMcpOAuthClientStore::new(db.pool.clone(), SystemClock::shared(), encryptor());
+    let issuer = "https://accounts.google.com";
+    store
+        .upsert(shared_fixture(issuer, "id", "secret"))
+        .await
+        .expect("seed shared");
+
+    // UPDATE through a tenant principal must affect zero rows: the
+    // mcp_oauth_clients_update policy's WITH CHECK requires
+    // `org_id IS NOT NULL` so the shared row cannot be mutated by an
+    // org member, only by the migration / seeder path (run_privileged).
+    let updated: u64 =
+        relay_rs::auth::run_as_user::<u64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
+            let res = sqlx::query(
+                "UPDATE mcp_oauth_clients SET client_id = 'tamper' \
+                 WHERE org_id IS NULL AND issuer = $1",
+            )
+            .bind(issuer)
+            .execute(&mut **tx)
+            .await?;
+            Ok(res.rows_affected())
+        })
+        .await
+        .expect("run as user");
+    assert_eq!(updated, 0, "org member must not UPDATE shared rows");
+
+    // DELETE likewise must affect zero rows.
+    let deleted: u64 =
+        relay_rs::auth::run_as_user::<u64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
+            let res =
+                sqlx::query("DELETE FROM mcp_oauth_clients WHERE org_id IS NULL AND issuer = $1")
+                    .bind(issuer)
+                    .execute(&mut **tx)
+                    .await?;
+            Ok(res.rows_affected())
+        })
+        .await
+        .expect("run as user");
+    assert_eq!(deleted, 0, "org member must not DELETE shared rows");
+
+    // The row is still there.
+    let still: i64 = relay_rs::auth::run_privileged::<i64, sqlx::Error>(&db.pool, async |tx| {
+        let row: (i64,) =
+            sqlx::query_as("SELECT count(*) FROM mcp_oauth_clients WHERE org_id IS NULL")
+                .fetch_one(&mut **tx)
+                .await?;
+        Ok(row.0)
+    })
+    .await
+    .expect("privileged count");
+    assert_eq!(still, 1);
+}
+
+/// Regression: issuer comparison is trailing-slash-insensitive on both
+/// sides. Google's protected-resource doc says
+/// `https://accounts.google.com/` but the AS metadata self-declares as
+/// `https://accounts.google.com` (no slash). Pre-fix, a single
+/// character of drift made the shared-client lookup miss and fall
+/// through to DCR with `DcrUnsupported`. Now the store canonicalizes
+/// both writes and reads so the two forms are equivalent.
+#[tokio::test(flavor = "multi_thread")]
+async fn issuer_lookup_is_trailing_slash_insensitive() {
+    let db = TestDb::fresh().await;
+    let store = PgMcpOAuthClientStore::new(db.pool.clone(), SystemClock::shared(), encryptor());
+
+    // Seed with NO trailing slash (matches the AS-declared form).
+    store
+        .upsert(shared_fixture(
+            "https://accounts.google.com",
+            "google-id",
+            "google-secret",
+        ))
+        .await
+        .expect("seed shared");
+
+    // Lookup with the WITH-slash variant must resolve to the same row.
+    let with_slash = store
+        .read_shared("https://accounts.google.com/")
+        .await
+        .expect("read_shared with slash")
+        .expect("row found via slash variant");
+    assert_eq!(with_slash.client_id.as_str(), "google-id");
+
+    // And the round-trip without the slash also works.
+    let without_slash = store
+        .read_shared("https://accounts.google.com")
+        .await
+        .expect("read_shared no slash")
+        .expect("row found via no-slash variant");
+    assert_eq!(without_slash.client_id.as_str(), "google-id");
+
+    // Re-seeding under the WITH-slash form must hit the SAME row, not
+    // insert a duplicate — otherwise the unique-index would silently
+    // accept two near-identical issuers.
+    store
+        .upsert(shared_fixture(
+            "https://accounts.google.com/",
+            "google-id-rotated",
+            "rotated-secret",
+        ))
+        .await
+        .expect("re-seed shared with slash");
+    let count: (i64,) =
+        sqlx::query_as("SELECT count(*) FROM mcp_oauth_clients WHERE org_id IS NULL")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count shared rows");
+    assert_eq!(
+        count.0, 1,
+        "trailing-slash variant must NOT duplicate the row",
+    );
+    let after_rotate = store
+        .read_shared("https://accounts.google.com")
+        .await
+        .expect("read after rotate")
+        .expect("row present");
+    assert_eq!(after_rotate.client_id.as_str(), "google-id-rotated");
 }

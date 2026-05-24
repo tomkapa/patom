@@ -270,13 +270,11 @@ async fn refresh_one(
         return mark_reconnect_required(deps, server_id, org_id, "no refresh_token").await;
     };
 
-    let dcr = deps
-        .oauth_clients
-        .read(org_id, &payload.issuer)
+    let dcr = super::resolve_oauth_client(&deps.oauth_clients, org_id, &payload.issuer)
         .await?
         .ok_or_else(|| {
             OAuthError::Misconfigured(format!(
-                "no DCR client for org {org_id:?} / issuer {}",
+                "no OAuth client for org {org_id:?} / issuer {}",
                 payload.issuer
             ))
         })?;

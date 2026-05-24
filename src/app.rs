@@ -640,6 +640,14 @@ pub async fn build_server(
     )
     .map_err(AppError::Auth)?;
 
+    // Seed shared (platform-owned) MCP OAuth clients. Reuses the
+    // Login-with-Google credentials above so any user clicking
+    // "Connect Gmail" hits Google's consent screen with the same
+    // "Relay" brand, no per-tenant Google Cloud project required.
+    // Per-spec failures are logged WARN and the loop continues — boot
+    // is not blocked on a misconfigured shared client.
+    crate::mcp::oauth::seed_shared_clients(&pieces.mcp_oauth_clients, &settings.auth).await;
+
     let memberships = Arc::new(crate::http::MembershipCache::new(pieces.clock.clone()));
     let mcp_test_rate = crate::mcp::TestConnectRateLimiter::new(pieces.clock.clone());
 

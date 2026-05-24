@@ -10,14 +10,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::auth::OrgId;
 use crate::types::ParseError;
 
 use super::error::McpError;
-use super::limits::{MCP_CATALOG_DESCRIPTION_MAX_LEN, MCP_CATALOG_DISPLAY_NAME_MAX_LEN};
+use super::limits::{
+    MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX, MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_MAX,
+    MCP_CATALOG_DESCRIPTION_MAX_LEN, MCP_CATALOG_DISPLAY_NAME_MAX_LEN,
+};
 use super::types::{McpCatalogId, McpTransport};
 
 crate::str_enum! {
@@ -142,6 +145,80 @@ impl Serialize for McpCatalogDescription {
     }
 }
 
+/// One `{key, value}` pair in [`OAuthAuthorizeExtras`]. Wire shape
+/// mirrors the JSONB stored in `mcp_catalog.authorize_extra_params`.
+///
+/// `Deserialize` is the inbound seam from the DB row decode only —
+/// the validated `OAuthAuthorizeExtras::try_from` wraps the parsed
+/// `Vec<Self>` and is the only constructor exposed to the rest of the
+/// codebase. No HTTP route deserialises this type today.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthAuthorizeExtra {
+    pub key: String,
+    pub value: String,
+}
+
+/// Validated catalog-row `authorize_extra_params`.
+///
+/// Bounded on every axis (item count + per-item key/value bytes) so a
+/// poisoned DB row can't make the authorize URL unboundedly large.
+/// Order-preserving: some ASes care about param order in the redirect
+/// (Microsoft's `prompt` list is one).
+///
+/// Empty list and absent column are distinguished at the storage layer
+/// (`Option<OAuthAuthorizeExtras>` field on the entry); this type only
+/// represents a non-empty, validated list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct OAuthAuthorizeExtras(Vec<OAuthAuthorizeExtra>);
+
+impl OAuthAuthorizeExtras {
+    #[must_use]
+    pub fn as_slice(&self) -> &[OAuthAuthorizeExtra] {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl TryFrom<Vec<OAuthAuthorizeExtra>> for OAuthAuthorizeExtras {
+    type Error = ParseError;
+    fn try_from(raw: Vec<OAuthAuthorizeExtra>) -> Result<Self, Self::Error> {
+        if raw.len() > MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_MAX {
+            return Err(ParseError::TooLong {
+                field: "mcp_catalog.authorize_extra_params",
+                max: MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_MAX,
+                got: raw.len(),
+            });
+        }
+        for item in &raw {
+            if item.key.is_empty() {
+                return Err(ParseError::Empty {
+                    field: "mcp_catalog.authorize_extra_params.key",
+                });
+            }
+            if item.key.len() > MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX {
+                return Err(ParseError::TooLong {
+                    field: "mcp_catalog.authorize_extra_params.key",
+                    max: MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX,
+                    got: item.key.len(),
+                });
+            }
+            if item.value.len() > MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX {
+                return Err(ParseError::TooLong {
+                    field: "mcp_catalog.authorize_extra_params.value",
+                    max: MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX,
+                    got: item.value.len(),
+                });
+            }
+        }
+        Ok(Self(raw))
+    }
+}
+
 /// A row in `mcp_catalog`. Wire-shape via `Serialize` is what the
 /// `GET /mcp-catalog` endpoint and the `search_tools` system tool both
 /// emit.
@@ -163,6 +240,23 @@ pub struct McpCatalogEntry {
     pub icon_url: Option<String>,
     pub default_transport: McpTransport,
     pub auth_kind: McpAuthKind,
+    /// Space-separated OAuth scope list applied when the user clicks
+    /// "Connect" without an explicit override. `None` for DCR vendors
+    /// whose AS supplies its own default scope set at registration time
+    /// (Notion, Linear, Slack, Jira); `Some` for vendors that require
+    /// the client to declare scopes on every authorize request (Google
+    /// — `Missing required parameter: scope` otherwise). RFC 6749 §3.3
+    /// wire shape, forwarded verbatim into the authorize URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_scope: Option<String>,
+    /// Non-standard query params appended verbatim to the OAuth
+    /// authorize URL when the user clicks "Connect". `None` (and the
+    /// empty list) suppress the param entirely; both serialize-skip so
+    /// the API surface stays clean for the common case. See the column
+    /// comment in migration 39 for the vendor rationale (Google's
+    /// `access_type=offline` + `prompt=consent`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorize_extra_params: Option<OAuthAuthorizeExtras>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -204,6 +298,43 @@ pub trait McpCatalogStore: fmt::Debug + Send + Sync {
         icon_url: &str,
         now: DateTime<Utc>,
     ) -> Result<(), McpError>;
+
+    /// Ensure a tenant-custom catalog row exists for `(org_id, id)`.
+    /// Drives the "Custom URL" connection flow: an operator supplies
+    /// the integration's transport + auth shape directly, without an
+    /// admin pre-seeding a row by migration.
+    ///
+    /// Insert-or-fetch semantics: when the row is absent, inserts it
+    /// with the provided metadata; when present, leaves the row
+    /// unchanged. Returns the `auth_kind` actually in the DB (the
+    /// caller uses it to derive `connection_status`). Re-posts cannot
+    /// mutate the catalog row — that would silently leak state when
+    /// the parallel server-row insert returns 409, since the catalog
+    /// upsert lives in its own transaction.
+    ///
+    /// Rejects with [`McpError::CatalogIdShadowsGlobal`] if a built-in
+    /// row already owns `id` — we refuse to silently let a tenant
+    /// shadow a global. (The DB schema permits it, but the product
+    /// rule does not.)
+    ///
+    /// `homepage_url` and `icon_url` are deliberately not part of this
+    /// surface: the former has no operator-facing place to set it
+    /// today; the latter goes through the dedicated icon upload route.
+    async fn ensure_org_scoped(&self, payload: CatalogUpsert<'_>) -> Result<McpAuthKind, McpError>;
+}
+
+/// Borrowed input for [`McpCatalogStore::ensure_org_scoped`]. Bundles
+/// the request so the trait stays under clippy's argument-count cap
+/// and so call sites read top-down at the seams.
+#[derive(Debug)]
+pub struct CatalogUpsert<'a> {
+    pub org_id: OrgId,
+    pub id: &'a McpCatalogId,
+    pub display_name: &'a McpCatalogDisplayName,
+    pub description: &'a McpCatalogDescription,
+    pub default_transport: &'a McpTransport,
+    pub auth_kind: McpAuthKind,
+    pub now: DateTime<Utc>,
 }
 
 pub type SharedMcpCatalogStore = Arc<dyn McpCatalogStore>;
@@ -240,6 +371,8 @@ struct CatalogRow {
     icon_url: Option<String>,
     default_transport: serde_json::Value,
     auth_kind: String,
+    default_scope: Option<String>,
+    authorize_extra_params: Option<serde_json::Value>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -256,6 +389,7 @@ impl TryFrom<CatalogRow> for McpCatalogEntry {
             McpError::Backend(format!("unknown auth_kind: {raw}", raw = row.auth_kind))
         })?;
         let org_id = row.org_id.map(OrgId::from);
+        let authorize_extra_params = decode_authorize_extra_params(row.authorize_extra_params)?;
         Ok(Self {
             id,
             org_id,
@@ -265,10 +399,29 @@ impl TryFrom<CatalogRow> for McpCatalogEntry {
             icon_url: row.icon_url,
             default_transport,
             auth_kind,
+            default_scope: row.default_scope,
+            authorize_extra_params,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
     }
+}
+
+/// Decode the JSONB column and validate via [`OAuthAuthorizeExtras`].
+/// An absent or empty list maps to `None` so callers can branch with
+/// `Option::as_ref()` without a separate emptiness check.
+fn decode_authorize_extra_params(
+    raw: Option<serde_json::Value>,
+) -> Result<Option<OAuthAuthorizeExtras>, McpError> {
+    let Some(value) = raw else { return Ok(None) };
+    let parsed: Vec<OAuthAuthorizeExtra> = serde_json::from_value(value)
+        .map_err(|e| McpError::Backend(format!("decode authorize_extra_params: {e}")))?;
+    if parsed.is_empty() {
+        return Ok(None);
+    }
+    let extras = OAuthAuthorizeExtras::try_from(parsed)
+        .map_err(|e| McpError::Backend(format!("authorize_extra_params: {e}")))?;
+    Ok(Some(extras))
 }
 
 #[async_trait]
@@ -279,7 +432,8 @@ impl McpCatalogStore for PgMcpCatalogStore {
         // forgets to wrap in `begin_as`. Order by id for stable iteration.
         let rows: Vec<CatalogRow> = sqlx::query_as::<_, CatalogRow>(
             "SELECT id, org_id, display_name, description, homepage_url, icon_url, \
-                    default_transport, auth_kind, created_at, updated_at \
+                    default_transport, auth_kind, default_scope, authorize_extra_params, \
+                    created_at, updated_at \
                FROM mcp_catalog \
               WHERE org_id IS NULL OR org_id = $1 \
               ORDER BY id ASC",
@@ -319,6 +473,72 @@ impl McpCatalogStore for PgMcpCatalogStore {
         Ok(())
     }
 
+    async fn ensure_org_scoped(&self, payload: CatalogUpsert<'_>) -> Result<McpAuthKind, McpError> {
+        // Run privileged so the shadow check sees global rows and so
+        // the INSERT can target an org other than the caller's tx
+        // session role (the HTTP layer already authorised `org_id`
+        // via `Principal::active_org_id`). The shadow check + insert
+        // must share a tx — otherwise a concurrent migration could
+        // insert a global between the two statements.
+        //
+        // Semantics: insert-if-absent, then fetch. `DO NOTHING` is
+        // critical — a `DO UPDATE` would silently mutate the existing
+        // row when the caller's parallel `mcp_servers` insert is about
+        // to fail with `CatalogIdTaken`, leaking display_name /
+        // description / default_transport / auth_kind changes on a
+        // request that returns 409.
+        let CatalogUpsert {
+            org_id,
+            id,
+            display_name,
+            description,
+            default_transport,
+            auth_kind,
+            now,
+        } = payload;
+        let transport_json = serde_json::to_value(default_transport)
+            .map_err(|e| McpError::Backend(format!("serialize transport: {e}")))?;
+        let id_for_err = id.clone();
+        crate::auth::run_privileged::<McpAuthKind, McpError>(&self.pool, async |tx| {
+            let global_exists: Option<(String,)> =
+                sqlx::query_as("SELECT id FROM mcp_catalog WHERE id = $1 AND org_id IS NULL")
+                    .bind(id_for_err.as_str())
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            if global_exists.is_some() {
+                return Err(McpError::CatalogIdShadowsGlobal(id_for_err.clone()));
+            }
+            sqlx::query(
+                "INSERT INTO mcp_catalog \
+                    (id, org_id, display_name, description, default_transport, \
+                     auth_kind, created_at, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7) \
+                 ON CONFLICT (org_id, id) WHERE org_id IS NOT NULL DO NOTHING",
+            )
+            .bind(id_for_err.as_str())
+            .bind(org_id.as_uuid())
+            .bind(display_name.as_str())
+            .bind(description.as_str())
+            .bind(&transport_json)
+            .bind(auth_kind.as_str())
+            .bind(now)
+            .execute(&mut **tx)
+            .await?;
+            // Read back the row's stored auth_kind. On insert this
+            // matches the request; on conflict it reflects whatever the
+            // original creator set, which is what `connection_status`
+            // should be derived from.
+            let row: (McpAuthKind,) =
+                sqlx::query_as("SELECT auth_kind FROM mcp_catalog WHERE org_id = $1 AND id = $2")
+                    .bind(org_id.as_uuid())
+                    .bind(id_for_err.as_str())
+                    .fetch_one(&mut **tx)
+                    .await?;
+            Ok(row.0)
+        })
+        .await
+    }
+
     async fn get_for_org(
         &self,
         org_id: OrgId,
@@ -329,7 +549,8 @@ impl McpCatalogStore for PgMcpCatalogStore {
         // LIMIT 1 picks the preferred row.
         let row: Option<CatalogRow> = sqlx::query_as::<_, CatalogRow>(
             "SELECT id, org_id, display_name, description, homepage_url, icon_url, \
-                    default_transport, auth_kind, created_at, updated_at \
+                    default_transport, auth_kind, default_scope, authorize_extra_params, \
+                    created_at, updated_at \
                FROM mcp_catalog \
               WHERE id = $1 \
                 AND (org_id IS NULL OR org_id = $2) \
@@ -341,5 +562,38 @@ impl McpCatalogStore for PgMcpCatalogStore {
         .fetch_optional(&self.pool)
         .await?;
         row.map(McpCatalogEntry::try_from).transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::limits::MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_DB_BYTES_MAX;
+
+    /// Worst-case in-memory value of [`OAuthAuthorizeExtras`] must
+    /// serialize to under migration 39's 2048-byte JSONB CHECK. Guards
+    /// the constants in `limits.rs` against drifting past the DB cap —
+    /// a runtime CHECK violation would be a much worse failure mode
+    /// than a parse-side rejection at the type boundary.
+    #[test]
+    fn authorize_extras_worst_case_serializes_under_db_cap() {
+        let key = "k".repeat(MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX);
+        let value = "v".repeat(MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX);
+        let items: Vec<OAuthAuthorizeExtra> = (0..MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_MAX)
+            .map(|_| OAuthAuthorizeExtra {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .collect();
+        let extras = OAuthAuthorizeExtras::try_from(items)
+            .expect("invariant: worst-case bounds are accepted by the validator");
+        let json = serde_json::to_string(&extras)
+            .expect("invariant: OAuthAuthorizeExtras serializes to JSON");
+        assert!(
+            json.len() <= MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_DB_BYTES_MAX,
+            "worst-case JSON is {} bytes; DB CHECK allows {}",
+            json.len(),
+            MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_DB_BYTES_MAX,
+        );
     }
 }

@@ -415,8 +415,11 @@ async fn create_with_credentials_seals_to_encrypted_table() {
     let h = AuthMcpHarness::new().await;
     let app = router(h.state.clone());
     // Create a server *with* a secret-bearing header in one request.
+    // Use a custom catalog id (not a built-in) so the full-form path
+    // registers a fresh tenant-custom catalog row instead of being
+    // rejected as shadow-global.
     let body = r#"{
-        "catalog_id": "notion",
+        "catalog_id": "internal-secret-svc",
         "config": {"type": "http", "url": "http://127.0.0.1:1/"},
         "credentials": {
             "kind": "static_headers",
@@ -649,4 +652,216 @@ async fn oauth_callback_unknown_state_redirects_to_root_failed() {
         .to_str()
         .expect("ascii location");
     assert_eq!(loc, "/?status=failed&reason=unknown_or_expired_state");
+}
+
+/// Full-form `POST /mcp-servers` for a brand-new tenant-custom MCP:
+/// the handler must auto-upsert the matching `mcp_catalog` row so the
+/// FK trigger sees a valid parent. Also pins `connection_status` to
+/// `"ok"` for a no-auth custom server — parking it in `auth_pending`
+/// would cause the refresher to skip it forever, since there's no
+/// OAuth callback to flip the bit.
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_create_auto_upserts_catalog_entry() {
+    let h = AuthMcpHarness::new().await;
+    let app = router(h.state.clone());
+    let body = serde_json::json!({
+        "catalog_id": "pencil",
+        "display_name": "Pencil",
+        "config": { "type": "http", "url": "http://localhost:8000/sse" },
+    });
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/mcp-servers")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::CREATED);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let created: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(created["connection_status"], serde_json::json!("ok"));
+
+    let app = router(h.state.clone());
+    let listed = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/mcp-catalog")
+                .header("cookie", h.primary.cookie_header())
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("catalog response");
+    assert_eq!(listed.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(listed.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let ids: Vec<&str> = json
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|row| row["catalog_id"].as_str())
+        .collect();
+    assert!(
+        ids.contains(&"pencil"),
+        "pencil missing from catalog: {ids:?}"
+    );
+}
+
+/// Re-posting the same `(org, catalog_id)` for a custom server hits
+/// the *server-row* uniqueness. Surfaces as `CatalogIdTaken` → 409.
+/// The catalog row must NOT be mutated by the second call — that
+/// would leak state on a request whose top-line response is a refusal.
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_create_second_call_is_conflict_and_does_not_mutate_catalog() {
+    let h = AuthMcpHarness::new().await;
+    let first_body = serde_json::json!({
+        "catalog_id": "pencil",
+        "display_name": "Pencil",
+        "config": { "type": "http", "url": "http://localhost:8000/sse" },
+    });
+
+    let first = router(h.state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/mcp-servers")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(first_body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("first");
+    assert_eq!(first.status(), axum::http::StatusCode::CREATED);
+
+    // Second POST: different display_name, different URL, *and* inline
+    // static_headers credentials. None of these may bleed into the
+    // existing catalog row.
+    let second_body = serde_json::json!({
+        "catalog_id": "pencil",
+        "display_name": "Should Not Stick",
+        "config": { "type": "http", "url": "http://attacker.example/" },
+        "credentials": {
+            "kind": "static_headers",
+            "headers": { "X-Bad": "x" },
+        },
+    });
+    let second = router(h.state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/mcp-servers")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(second_body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("second");
+    assert_eq!(second.status(), axum::http::StatusCode::CONFLICT);
+
+    // List the catalog and find the `pencil` row — its display_name
+    // and auth_kind must still reflect the first POST, not the second.
+    let listed = router(h.state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/mcp-catalog")
+                .header("cookie", h.primary.cookie_header())
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("catalog response");
+    assert_eq!(listed.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(listed.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let pencil = json
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|row| row["catalog_id"] == "pencil")
+        .expect("pencil row present");
+    assert_eq!(
+        pencil["display_name"], "Pencil",
+        "second POST must not overwrite display_name",
+    );
+    assert_eq!(
+        pencil["auth_kind"], "none",
+        "second POST must not flip auth_kind to static_headers",
+    );
+}
+
+/// A custom create that picks a catalog_id matching a built-in (e.g.
+/// `notion`) is refused with 409, not silently shadowed. Prevents an
+/// operator from breaking their built-in Notion wiring by accident.
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_create_rejects_shadowing_global_id() {
+    let h = AuthMcpHarness::new().await;
+    let body = serde_json::json!({
+        "catalog_id": "notion",
+        "display_name": "Self-hosted Notion",
+        "config": { "type": "http", "url": "http://localhost:9000/" },
+    });
+    let res = router(h.state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/mcp-servers")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::CONFLICT);
+}
+
+/// Short-form create for an OAuth catalog entry (e.g. `gmail`) plus
+/// inline `static_headers` credentials must be refused with 400. A
+/// server whose catalog auth_kind is OAuth2 cannot serve traffic from
+/// static headers — the refresher would publish it as `Ok` forever
+/// while every tool call 401s. The fix surfaces the mismatch up-front
+/// instead of letting it land silently.
+#[tokio::test(flavor = "multi_thread")]
+async fn oauth_catalog_with_inline_credentials_is_rejected() {
+    let h = AuthMcpHarness::new().await;
+    let body = serde_json::json!({
+        "catalog_id": "gmail",
+        "credentials": {
+            "kind": "static_headers",
+            "headers": { "Authorization": "Bearer not-an-oauth-token" },
+        },
+    });
+    let res = router(h.state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/mcp-servers")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
 }

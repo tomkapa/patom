@@ -73,7 +73,35 @@ impl Tool for McpTool {
     #[instrument(name = "tool.mcp", skip_all, fields(relay.tool = %self.name))]
     async fn execute(&self, input: Value, _ctx: &ToolCallContext) -> Result<String, ToolError> {
         match self.client.call_tool(&self.remote_name, input).await {
-            Ok(result) => Ok(render_result(&result)),
+            Ok(result) => {
+                let rendered = render_result(&result);
+                // The MCP protocol's `is_error: true` bit means the
+                // upstream server ran the tool and chose to mark the
+                // result as a failure (e.g. Google's MCP gateway sets
+                // this on permission / quota errors). Propagate it
+                // through the `Result<String, ToolError>` seam so the
+                // agent_core layer records it in `tool_calls.is_error`
+                // — otherwise `is_error=true` collapses into the Ok
+                // branch and the audit row says success.
+                if matches!(result.is_error, Some(true)) {
+                    let err = ToolError::Upstream {
+                        status: 0,
+                        body: rendered,
+                    };
+                    // CLAUDE.md §2: emit `error!` inside the span so
+                    // the OTel bridge sets span status to ERROR. The
+                    // rendered body is already on the error variant —
+                    // logging only the typed error avoids duplicating
+                    // the truncated tool output in two places.
+                    tracing::error!(
+                        event = "mcp.tool.upstream_error",
+                        relay.tool = %self.name,
+                        error = ?err,
+                    );
+                    return Err(err);
+                }
+                Ok(rendered)
+            }
             Err(McpError::CallTimeout) => Err(ToolError::Upstream {
                 status: 0,
                 body: format!("mcp tool `{}` timed out", self.remote_name),

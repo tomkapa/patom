@@ -18,6 +18,9 @@ pub enum McpError {
     #[error("mcp catalog id `{0}` does not resolve to a known catalog entry")]
     CatalogIdUnknown(McpCatalogId),
 
+    #[error("mcp catalog id `{0}` collides with a built-in; pick a different id")]
+    CatalogIdShadowsGlobal(McpCatalogId),
+
     #[error("server cap reached (max {max})")]
     ServerCapExceeded { max: usize },
 

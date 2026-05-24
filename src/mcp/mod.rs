@@ -22,8 +22,9 @@ mod tool;
 mod types;
 
 pub use catalog::{
-    McpAuthKind, McpCatalogDescription, McpCatalogDisplayName, McpCatalogEntry, McpCatalogStore,
-    PgMcpCatalogStore, SharedMcpCatalogStore,
+    CatalogUpsert, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName, McpCatalogEntry,
+    McpCatalogStore, OAuthAuthorizeExtra, OAuthAuthorizeExtras, PgMcpCatalogStore,
+    SharedMcpCatalogStore,
 };
 pub use client::McpClient;
 pub use credentials::{

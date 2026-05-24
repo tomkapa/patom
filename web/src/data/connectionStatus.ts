@@ -1,20 +1,21 @@
 import type { TranslationKey } from "../i18n/en";
 import type { ConnectionStatus, McpServer } from "../types/api";
 
-/** Frontend-side tone derived from the backend `connection_status` plus
- *  the `has_credentials` flag. `pending` is synthetic — a server row
- *  with no credentials yet (e.g., custom URL added with `None` auth or
- *  a row mid-OAuth). */
+/** Frontend-side tone derived from the backend `connection_status`.
+ *  The backend owns the rule: `auth_pending` is set only when a row
+ *  legitimately needs credentials and has none (OAuth catalog mid-flow);
+ *  no-auth custom servers and credentialed rows both report `ok` from
+ *  the create response onwards. The FE just maps the wire string 1:1. */
 export type StatusTone = "ok" | "reconnect" | "error" | "pending";
 
 const FROM_BACKEND: Record<ConnectionStatus, StatusTone> = {
   ok: "ok",
+  auth_pending: "pending",
   reconnect_required: "reconnect",
   error: "error",
 };
 
 export function statusToneOf(server: McpServer): StatusTone {
-  if (!server.has_credentials) return "pending";
   return FROM_BACKEND[server.connection_status];
 }
 

@@ -96,13 +96,12 @@ pub async fn register_dynamic_client(
     redirect_uri: &str,
     scope: Option<&str>,
 ) -> Result<NewOAuthClient, OAuthError> {
-    let registration_endpoint =
-        as_metadata
-            .registration_endpoint
-            .as_deref()
-            .ok_or_else(|| OAuthError::DcrUnsupported {
-                issuer: as_metadata.issuer.clone(),
-            })?;
+    let registration_endpoint = as_metadata
+        .registration_endpoint
+        .as_deref()
+        .ok_or_else(|| OAuthError::DcrUnsupported {
+            issuer: as_metadata.issuer.clone(),
+        })?;
 
     // Pick the auth method: prefer `none` (PKCE-only public client) when
     // the AS advertises it, else `client_secret_basic`. RFC 7591 lets us
@@ -182,7 +181,6 @@ pub async fn register_dynamic_client(
     let client_id = super::store::OAuthClientId::try_from(raw.client_id)
         .map_err(|e| OAuthError::Dcr(format!("invalid client_id: {e}")))?;
     Ok(NewOAuthClient {
-        org_id,
         issuer: as_metadata.issuer.clone(),
         client_id,
         client_secret,
@@ -191,6 +189,7 @@ pub async fn register_dynamic_client(
         token_endpoint_auth_method: auth_method,
         scope: scope.map(str::to_owned),
         provenance: super::store::ClientProvenance::Dcr {
+            org_id,
             registration_client_uri: raw.registration_client_uri,
             registration_access_token,
         },
@@ -222,10 +221,17 @@ struct DcrResponse {
 /// Build the authorize URL the browser will be redirected to. PKCE +
 /// state are minted here; the caller persists them in
 /// `mcp_oauth_pending` for the callback to consume.
+///
+/// `extras` are non-standard query params the catalog row pins for
+/// vendors whose AS rejects (or silently misbehaves on) a strict
+/// RFC 6749 §4.1 redirect — promoted to catalog data in migration 39 so
+/// new vendors are a row, not a code change. Order is preserved into
+/// the URL: some ASes (Microsoft) care about repeat-key order.
 pub fn build_authorize_url(
     client: &super::store::DcrClientRecord,
     redirect_uri: &str,
     requested_scope: Option<&str>,
+    extras: &[(&str, &str)],
 ) -> Result<AuthorizeStart, OAuthError> {
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
     let oauth_client = build_basic_client(client, redirect_uri)?;
@@ -236,6 +242,9 @@ pub fn build_authorize_url(
         for scope in s.split_whitespace() {
             authorize = authorize.add_scope(Scope::new(scope.to_owned()));
         }
+    }
+    for (k, v) in extras {
+        authorize = authorize.add_extra_param(*k, *v);
     }
     let (url, csrf) = authorize.url();
     Ok(AuthorizeStart {
@@ -392,4 +401,58 @@ pub async fn refresh_oauth_token(
         issuer: client.issuer.clone(),
         token_endpoint: client.token_endpoint.clone(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::store::{DcrClientRecord, OAuthClientId, TokenAuthMethod};
+    use super::build_authorize_url;
+
+    fn client(issuer: &str) -> DcrClientRecord {
+        DcrClientRecord {
+            org_id: None,
+            issuer: issuer.to_owned(),
+            client_id: OAuthClientId::try_from("test-client-id".to_owned())
+                .expect("invariant: literal client id is valid"),
+            client_secret: None,
+            authorization_endpoint: "https://example.test/authorize".to_owned(),
+            token_endpoint: "https://example.test/token".to_owned(),
+            token_endpoint_auth_method: TokenAuthMethod::None,
+            scope: None,
+        }
+    }
+
+    #[test]
+    fn extras_are_appended_to_authorize_url_in_order() {
+        let extras: &[(&str, &str)] = &[("access_type", "offline"), ("prompt", "consent")];
+        let start = build_authorize_url(
+            &client("https://accounts.google.com"),
+            "https://relay.test/cb",
+            Some("openid"),
+            extras,
+        )
+        .expect("invariant: build_authorize_url with valid client + extras succeeds");
+        let s = start.authorize_url.as_str();
+        assert!(s.contains("access_type=offline"), "url={s}");
+        assert!(s.contains("prompt=consent"), "url={s}");
+        let access_pos = s
+            .find("access_type=")
+            .expect("invariant: access_type present");
+        let prompt_pos = s.find("prompt=").expect("invariant: prompt present");
+        assert!(access_pos < prompt_pos, "order preserved: url={s}");
+    }
+
+    #[test]
+    fn empty_extras_produce_no_extra_params() {
+        let start = build_authorize_url(
+            &client("https://mcp.notion.com"),
+            "https://relay.test/cb",
+            None,
+            &[],
+        )
+        .expect("invariant: build_authorize_url with empty extras succeeds");
+        let s = start.authorize_url.as_str();
+        assert!(!s.contains("access_type="), "url={s}");
+        assert!(!s.contains("prompt="), "url={s}");
+    }
 }

@@ -186,7 +186,11 @@ export type SubmitPromptResponse = {
 export type McpTransport = { type: "http"; url: string };
 
 /** Mirrors `src/mcp/types.rs::ConnectionStatus`. */
-export type ConnectionStatus = "ok" | "reconnect_required" | "error";
+export type ConnectionStatus =
+  | "ok"
+  | "auth_pending"
+  | "reconnect_required"
+  | "error";
 
 /** Per-tool discovery summary surfaced in McpServer.discovered_tools. */
 export type DiscoveredTool = {

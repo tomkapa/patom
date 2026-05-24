@@ -107,7 +107,9 @@ impl IntoResponse for HttpError {
                 | AgentStoreError::InUse(_)
                 | AgentStoreError::NameTaken(_),
             )
-            | Self::Mcp(McpError::CatalogIdTaken(_)) => (StatusCode::CONFLICT, self.to_string()),
+            | Self::Mcp(McpError::CatalogIdTaken(_) | McpError::CatalogIdShadowsGlobal(_)) => {
+                (StatusCode::CONFLICT, self.to_string())
+            }
             Self::Agent(AgentStoreError::Parse(_))
             | Self::Mcp(
                 McpError::Parse(_) | McpError::InvalidConfig(_) | McpError::CatalogIdUnknown(_),
