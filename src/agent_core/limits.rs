@@ -24,6 +24,14 @@ pub const PROVIDER_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// (e.g. fetch is 20 s); this is the outer fence.
 pub const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Per-turn ceiling on the pre-turn `session_todos` read.
+///
+/// CLAUDE.md §5: every I/O await is wrapped. This read is a PK lookup
+/// against a single row — under healthy conditions it returns in
+/// milliseconds. 2 s is generous for a transient connection-pool
+/// stall while still keeping the turn's critical path bounded.
+pub(super) const TODOS_LOAD_TIMEOUT: Duration = Duration::from_secs(2);
+
 // §5: defaults must always parse cleanly through their newtype constructors. Pinned at
 // compile time so a future bump cannot silently invert the relationship.
 const _: () = assert!(DEFAULT_MAX_OUTPUT_TOKENS > 0);

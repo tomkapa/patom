@@ -62,8 +62,9 @@ use crate::session::{PgSessionStore, SharedSessionStore};
 use crate::tools::system::{
     CancelScheduledTaskTool, CreateAgentTool, GetSessionTool, ListScheduledTasksTool,
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
-    RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchAgentsTool, SearchToolsTool,
-    SendMessageTool, WebFetchTool, WebSearchTool,
+    PgSessionTodoStore, RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchAgentsTool,
+    SearchToolsTool, SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool,
+    WebFetchTool, WebSearchTool,
 };
 use crate::tools::{ToolBox, ToolRegistry};
 
@@ -135,6 +136,11 @@ struct Collaborators {
     mcp_encryptor: crate::crypto::SharedOrgEncryptor,
     mcp_registry: McpRegistry,
     scheduled_tasks: SharedScheduledTaskStore,
+    /// Per-session todo store. Held here so `AgentFactoryPieces` can
+    /// thread it into every spawned `Agent` (the per-turn context
+    /// builder reads it to fold the current list into the system
+    /// prompt).
+    todos_store: SharedSessionTodoStore,
     /// Identity-table store. Built here so the per-org language resolver
     /// (which reads `organizations.default_language`) can share one
     /// `Arc<dyn UserStore>` with the OAuth callback and the `/me` routes.
@@ -302,6 +308,14 @@ impl Collaborators {
         // `ToolCallContext::resolution_target`); the no-action close runs
         // post-turn in the worker.
         let memory_tools = MemoryToolDeps::new(memory_loader);
+        // `todos_store` is held on `Collaborators` so the per-turn
+        // context builder can fold the current list into the system
+        // prompt (the load-bearing piece for "persists across re-runs"
+        // — the row exists in PG regardless, but the model only sees
+        // it through this injection).
+        let todos_store: SharedSessionTodoStore =
+            Arc::new(PgSessionTodoStore::new(pool.clone(), clock.clone()));
+        let todo_tools = TodoToolDeps::new(todos_store.clone());
         let builtin_tools = build_builtin_tools(BuiltinToolDeps {
             http,
             settings,
@@ -311,6 +325,7 @@ impl Collaborators {
             agents: agents.clone(),
             sink: sink.clone(),
             memory_tools,
+            todo_tools,
             embedding_provider,
             scheduled_tasks: scheduled_tasks.clone(),
             default_tz,
@@ -348,6 +363,7 @@ impl Collaborators {
             mcp_encryptor: encryptor,
             mcp_registry,
             scheduled_tasks,
+            todos_store,
             users,
             prompts,
             language_resolver,
@@ -369,6 +385,7 @@ struct AgentFactoryPieces {
     mcp_registry: McpRegistry,
     model: crate::types::ModelId,
     tool_call_store: crate::tools::SharedToolCallStore,
+    todos_store: SharedSessionTodoStore,
 }
 
 impl AgentFactoryPieces {
@@ -394,6 +411,7 @@ impl AgentFactoryPieces {
         .with_hooks(HookChain::new())
         .with_clock(self.clock.clone())
         .with_tool_call_store(self.tool_call_store.clone())
+        .with_todos_store(self.todos_store.clone())
         .build()
     }
 }
@@ -410,6 +428,7 @@ struct BuiltinToolDeps<'a> {
     agents: SharedAgentStore,
     sink: SharedResponseSink,
     memory_tools: MemoryToolDeps,
+    todo_tools: TodoToolDeps,
     embedding_provider: SharedEmbeddingProvider,
     scheduled_tasks: SharedScheduledTaskStore,
     default_tz: DefaultTimezone,
@@ -450,6 +469,7 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.memory_tools,
             deps.embedding_provider.clone(),
         )))
+        .with(Arc::new(TodoWriteTool::new(deps.todo_tools)))
         .with(Arc::new(SearchAgentsTool::new(
             deps.agents.clone(),
             deps.embedding_provider,
@@ -547,6 +567,7 @@ fn build_agent_from(pieces: &Collaborators, settings: &Settings) -> Agent {
     .with_hooks(HookChain::new())
     .with_clock(pieces.clock.clone())
     .with_tool_call_store(tool_call_store)
+    .with_todos_store(pieces.todos_store.clone())
     .build()
 }
 
@@ -574,6 +595,7 @@ pub async fn build_server(
         mcp_registry: pieces.mcp_registry.clone(),
         model: settings.model.clone(),
         tool_call_store,
+        todos_store: pieces.todos_store.clone(),
     };
     let factory: AgentFactory = Arc::new(move |record| factory_pieces.build(record));
     let agents_registry: SharedAgents = Arc::new(CachedAgents::new(
