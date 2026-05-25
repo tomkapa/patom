@@ -47,7 +47,7 @@ const AGENT_DEFAULT_SEED_LOCK_KEY: i64 = 0x6167_656E_745F_6473;
 /// hydrates an [`AgentRow`] must use this — adding a column then becomes a
 /// one-line edit here plus the matching `AgentRow` field.
 const AGENT_COLS: &str = "id, org_id, name, system_prompt, description, is_default, \
-    allowed_mcp_tools, created_at, updated_at";
+    allowed_mcp_tools, model, created_at, updated_at";
 
 /// Postgres-backed [`AgentStore`]. Holds a cheap clone of a [`PgPool`], a
 /// [`SharedClock`], and a [`SharedEmbeddingProvider`] for `description`
@@ -244,6 +244,9 @@ impl AgentStore for PgAgentStore {
             if let Some(allowed) = payload.allowed_mcp_tools {
                 current.allowed_mcp_tools = allowed;
             }
+            if let Some(model) = payload.model {
+                current.model = model;
+            }
 
             // Promote: clear the old default in the *same org* in the same
             // transaction, then set the flag on this row. No-op if this row
@@ -270,7 +273,7 @@ impl AgentStore for PgAgentStore {
                 "UPDATE agents \
                  SET name = $2, system_prompt = $3, description = $4, \
                      description_embedding = COALESCE($5::vector, description_embedding), \
-                     is_default = $6, allowed_mcp_tools = $7, updated_at = $8 \
+                     is_default = $6, allowed_mcp_tools = $7, model = $8, updated_at = $9 \
                  WHERE id = $1",
             )
             .bind(id)
@@ -280,6 +283,7 @@ impl AgentStore for PgAgentStore {
             .bind(embedding_arg)
             .bind(current.is_default)
             .bind(Json(&current.allowed_mcp_tools))
+            .bind(current.model)
             .bind(now)
             .execute(&mut **tx)
             .await?;
@@ -512,8 +516,8 @@ async fn create_in_tx(
     let insert = sqlx::query(
         "INSERT INTO agents \
                  (id, org_id, name, system_prompt, description, description_embedding, \
-                  is_default, allowed_mcp_tools, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6::vector, $7, $8, $9, $9)",
+                  is_default, allowed_mcp_tools, model, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6::vector, $7, $8, $9, $10, $10)",
     )
     .bind(id)
     .bind(payload.org_id)
@@ -523,6 +527,7 @@ async fn create_in_tx(
     .bind(embedding_literal)
     .bind(payload.is_default)
     .bind(Json(&payload.allowed_mcp_tools))
+    .bind(payload.model)
     .bind(now)
     .execute(&mut **tx)
     .await;
@@ -542,6 +547,7 @@ async fn create_in_tx(
         description: payload.description,
         is_default: payload.is_default,
         allowed_mcp_tools: payload.allowed_mcp_tools,
+        model: payload.model,
         created_at: now,
         updated_at: now,
     })
@@ -556,6 +562,11 @@ struct AgentRow {
     description: String,
     is_default: bool,
     allowed_mcp_tools: Json<AllowedMcpTools>,
+    // Stored as TEXT NULL; the sqlx `Decode` impl on `Model` funnels the
+    // string through the catalog smart constructor, so a row with an
+    // out-of-catalog value here surfaces as `AgentStoreError::Backend` at
+    // hydrate — loud (CLAUDE.md §6), not silent.
+    model: Option<crate::provider::Model>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -572,6 +583,7 @@ impl TryFrom<AgentRow> for AgentRecord {
             description: AgentDescription::try_from(row.description)?,
             is_default: row.is_default,
             allowed_mcp_tools: row.allowed_mcp_tools.0,
+            model: row.model,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

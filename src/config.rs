@@ -7,7 +7,8 @@ use config::{Config, ConfigError, Environment};
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::types::{ModelId, SecretString};
+use crate::provider::{Model, ProviderId};
+use crate::types::SecretString;
 
 /// Default SPA dist path when `RELAY_WEB_DIST` is unset. Matches
 /// `web/build.ts`'s `outdir`; operators running the binary from outside
@@ -19,13 +20,17 @@ pub enum SettingsError {
     #[error("config source: {0}")]
     Source(#[from] ConfigError),
 
-    #[error("no provider api key set; set exactly one of: OPENAI_API_KEY, ANTHROPIC_API_KEY")]
+    #[error(
+        "no provider api key set; set at least one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, \
+         DEEPSEEK_API_KEY"
+    )]
     NoProviderKey,
 
-    #[error(
-        "multiple provider api keys set ({set:?}); set only one of: OPENAI_API_KEY, ANTHROPIC_API_KEY"
-    )]
-    MultipleProviderKeys { set: Vec<&'static str> },
+    #[error("default model `{model}` resolves to provider `{provider}` which is not configured")]
+    DefaultModelProviderNotConfigured {
+        model: &'static str,
+        provider: ProviderId,
+    },
 
     #[error("embedding configuration missing; set EMBEDDING_API_KEY and EMBEDDING_MODEL")]
     MissingEmbedding,
@@ -63,11 +68,16 @@ pub enum SettingsError {
 /// [`SecretString`] so a stray `tracing::debug!(?settings)` cannot leak them.
 #[derive(Debug, Clone)]
 pub struct Settings {
-    /// Selected LLM backend plus the credentials it needs. Parsed once at startup so
-    /// `build_provider` is an infallible exhaustive match.
-    pub provider: ProviderSettings,
+    /// Every LLM backend the operator has wired credentials for. At least one
+    /// must be present (validated at construction). The chat router picks one
+    /// per agent via [`crate::provider::ProviderRegistry`].
+    pub providers: ProviderSettings,
     pub brave_search_api_key: SecretString,
-    pub model: ModelId,
+    /// Workspace default model — used when an agent row has no `model` of its
+    /// own. Catalog-resolved at parse time, so the provider it routes to is
+    /// known and required to be configured (see
+    /// [`SettingsError::DefaultModelProviderNotConfigured`]).
+    pub model: Model,
     pub http_addr: SocketAddr,
     /// Postgres connection string. Required at startup — there is no in-memory
     /// fallback. Wrapped in [`SecretString`] because the URL embeds a password.
@@ -191,35 +201,50 @@ pub struct EmbeddingSettings {
     pub dimensions: usize,
 }
 
-/// Provider selection + the credentials that go with it. Exhaustive — adding a backend
-/// means a new variant here and a new arm in `app::build_provider`.
-#[derive(Debug, Clone)]
-pub enum ProviderSettings {
-    Openai {
-        api_key: SecretString,
-        base_url: Option<String>,
-    },
-    Anthropic {
-        api_key: SecretString,
-        base_url: Option<String>,
-    },
+/// Credentials for every LLM backend the operator wired up.
+///
+/// Each field is independently optional; the `TryFrom<RawSettings>` impl
+/// requires at least one to be present and additionally requires that the
+/// default model's provider is configured — so the workspace default is
+/// always routable at startup. Per-agent models that point at a provider
+/// the operator has since dropped from config degrade to the default at
+/// resolve time (see [`crate::agents::StaticAgentModelResolver`]).
+#[derive(Debug, Clone, Default)]
+pub struct ProviderSettings {
+    pub anthropic: Option<ProviderCredentials>,
+    pub openai: Option<ProviderCredentials>,
+    pub deepseek: Option<ProviderCredentials>,
 }
 
 impl ProviderSettings {
-    /// Low-cardinality identifier for tracing fields (`relay.provider.selected`).
+    /// Whether `id` has credentials configured.
     #[must_use]
-    pub const fn name(&self) -> &'static str {
-        match self {
-            Self::Openai { .. } => "openai",
-            Self::Anthropic { .. } => "anthropic",
+    pub const fn has(&self, id: ProviderId) -> bool {
+        match id {
+            ProviderId::Anthropic => self.anthropic.is_some(),
+            ProviderId::Openai => self.openai.is_some(),
+            ProviderId::Deepseek => self.deepseek.is_some(),
         }
+    }
+
+    /// Iterator over every configured [`ProviderId`].
+    pub fn configured(&self) -> impl Iterator<Item = ProviderId> + '_ {
+        ProviderId::ALL.iter().copied().filter(|&id| self.has(id))
     }
 }
 
-/// Flat env shape — every provider's credentials are optional. The presence of exactly
-/// one provider's `*_API_KEY` selects which provider runs; setting zero or more than one
-/// is a misconfiguration and rejected at the boundary. Kept private because `Settings`
-/// is the validated type.
+/// One backend's credentials: API key plus an optional base-URL override
+/// (lets DeepSeek reuse the OpenAI SDK against a non-default host, etc.).
+#[derive(Debug, Clone)]
+pub struct ProviderCredentials {
+    pub api_key: SecretString,
+    pub base_url: Option<String>,
+}
+
+/// Flat env shape — every provider's credentials are optional. At least one
+/// provider must be configured; any combination of the three is legal, and
+/// the per-agent model picks which one each turn routes to. Kept private
+/// because [`Settings`] is the validated type.
 #[derive(Debug, Deserialize)]
 struct RawSettings {
     #[serde(default)]
@@ -232,9 +257,14 @@ struct RawSettings {
     #[serde(default)]
     anthropic_base_url: Option<String>,
 
+    #[serde(default)]
+    deepseek_api_key: Option<SecretString>,
+    #[serde(default)]
+    deepseek_base_url: Option<String>,
+
     brave_search_api_key: SecretString,
     #[serde(default = "default_model")]
-    model: ModelId,
+    model: Model,
     #[serde(default = "default_http_addr")]
     http_addr: SocketAddr,
     database_url: SecretString,
@@ -351,8 +381,11 @@ fn default_timezone_raw() -> String {
     "UTC".to_string()
 }
 
-fn default_model() -> ModelId {
-    ModelId::try_from("claude-sonnet-4-5").expect("static default model id is valid")
+fn default_model() -> Model {
+    // Current Sonnet generation per Anthropic's official model list
+    // (https://github.com/anthropics/skills/blob/main/skills/claude-api/shared/models.md,
+    // May 2026). Operators override via the `MODEL` env var.
+    Model::try_from("claude-sonnet-4-6").expect("static default model is in the catalog")
 }
 
 fn default_http_addr() -> SocketAddr {
@@ -367,25 +400,37 @@ impl TryFrom<RawSettings> for Settings {
     // splitting it into helpers per field would obscure that.
     #[allow(clippy::too_many_lines)]
     fn try_from(raw: RawSettings) -> Result<Self, Self::Error> {
-        // Provider is inferred from which `*_API_KEY` is set. Refusing the ambiguous
-        // "both set" case is intentional: silently picking one would mask a copy-paste
-        // bug in the operator's environment for the cost of a clearer error here.
-        let provider = match (raw.openai_api_key, raw.anthropic_api_key) {
-            (Some(api_key), None) => ProviderSettings::Openai {
-                api_key,
-                base_url: raw.openai_base_url,
-            },
-            (None, Some(api_key)) => ProviderSettings::Anthropic {
+        // Multi-provider: each backend is independently opt-in. At least one
+        // must be present, and every provider the catalog references must be
+        // configured so the routing invariant holds at runtime (CLAUDE.md §6).
+        let providers = ProviderSettings {
+            anthropic: raw.anthropic_api_key.map(|api_key| ProviderCredentials {
                 api_key,
                 base_url: raw.anthropic_base_url,
-            },
-            (None, None) => return Err(SettingsError::NoProviderKey),
-            (Some(_), Some(_)) => {
-                return Err(SettingsError::MultipleProviderKeys {
-                    set: vec!["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
-                });
-            }
+            }),
+            openai: raw.openai_api_key.map(|api_key| ProviderCredentials {
+                api_key,
+                base_url: raw.openai_base_url,
+            }),
+            deepseek: raw.deepseek_api_key.map(|api_key| ProviderCredentials {
+                api_key,
+                base_url: raw.deepseek_base_url,
+            }),
         };
+        if providers.configured().next().is_none() {
+            return Err(SettingsError::NoProviderKey);
+        }
+        // Only the default model's provider is required at startup; per-agent
+        // models are validated at the HTTP/tool write boundary against the
+        // built registry, and the resolver falls back to the default with a
+        // tracing warn if an agent points at a provider that has since been
+        // dropped from config (graceful degradation, not a process crash).
+        if !providers.has(raw.model.provider()) {
+            return Err(SettingsError::DefaultModelProviderNotConfigured {
+                model: raw.model.as_str(),
+                provider: raw.model.provider(),
+            });
+        }
         let embedding = match (raw.embedding_api_key, raw.embedding_model) {
             (Some(api_key), Some(model)) => EmbeddingSettings {
                 api_key,
@@ -473,7 +518,7 @@ impl TryFrom<RawSettings> for Settings {
             _ => return Err(SettingsError::PartialR2Config),
         };
         Ok(Self {
-            provider,
+            providers,
             brave_search_api_key: raw.brave_search_api_key,
             model: raw.model,
             http_addr: raw.http_addr,
@@ -533,6 +578,8 @@ mod tests {
             openai_base_url: None,
             anthropic_api_key: None,
             anthropic_base_url: None,
+            deepseek_api_key: None,
+            deepseek_base_url: None,
             brave_search_api_key: secret("brave"),
             model: default_model(),
             http_addr: default_http_addr(),
@@ -572,38 +619,67 @@ mod tests {
     }
 
     #[test]
-    fn both_provider_keys_set_is_rejected() {
+    fn multiple_provider_keys_are_allowed() {
         let mut raw = empty_raw();
-        raw.openai_api_key = Some(secret("sk-x"));
         raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.openai_api_key = Some(secret("sk-x"));
+        raw.deepseek_api_key = Some(secret("sk-ds"));
+        let s = Settings::try_from(raw).expect("valid");
+        let configured: std::collections::HashSet<_> = s.providers.configured().collect();
+        assert!(configured.contains(&ProviderId::Anthropic));
+        assert!(configured.contains(&ProviderId::Openai));
+        assert!(configured.contains(&ProviderId::Deepseek));
+    }
+
+    #[test]
+    fn default_model_provider_must_be_configured() {
+        let mut raw = empty_raw();
+        // Default model is `claude-sonnet-4-6` (Anthropic); configuring only
+        // OpenAI leaves Anthropic missing, so the default cannot route.
+        raw.openai_api_key = Some(secret("sk-x"));
         let err = Settings::try_from(raw).expect_err("expected error");
-        assert!(matches!(err, SettingsError::MultipleProviderKeys { .. }));
+        assert!(matches!(
+            err,
+            SettingsError::DefaultModelProviderNotConfigured {
+                provider: ProviderId::Anthropic,
+                ..
+            }
+        ));
     }
 
     #[test]
-    fn openai_key_alone_selects_openai() {
-        let mut raw = empty_raw();
-        raw.openai_api_key = Some(secret("sk-x"));
-        raw.openai_base_url = Some("https://api.deepseek.com/v1".to_string());
-        let s = Settings::try_from(raw).expect("valid");
-        let ProviderSettings::Openai { base_url, .. } = &s.provider else {
-            panic!("expected openai");
-        };
-        assert_eq!(base_url.as_deref(), Some("https://api.deepseek.com/v1"));
-    }
-
-    #[test]
-    fn anthropic_key_alone_selects_anthropic() {
+    fn anthropic_key_alone_with_anthropic_default() {
         let mut raw = empty_raw();
         raw.anthropic_api_key = Some(secret("sk-ant"));
         let s = Settings::try_from(raw).expect("valid");
-        assert_eq!(s.provider.name(), "anthropic");
+        assert!(s.providers.has(ProviderId::Anthropic));
+        assert!(!s.providers.has(ProviderId::Openai));
+        assert_eq!(s.model.provider(), ProviderId::Anthropic);
+    }
+
+    #[test]
+    fn openai_default_routes_through_openai_only() {
+        let mut raw = empty_raw();
+        raw.openai_api_key = Some(secret("sk-x"));
+        raw.openai_base_url = Some("https://api.openai.com/v1".to_string());
+        raw.model = Model::try_from("gpt-4o-mini").expect("catalog");
+        let s = Settings::try_from(raw).expect("valid");
+        assert_eq!(s.model.provider(), ProviderId::Openai);
+        assert_eq!(
+            s.providers
+                .openai
+                .as_ref()
+                .expect("test wired openai credentials")
+                .base_url
+                .as_deref(),
+            Some("https://api.openai.com/v1")
+        );
     }
 
     #[test]
     fn invalid_default_timezone_is_rejected() {
         let mut raw = empty_raw();
-        raw.openai_api_key = Some(secret("sk-x"));
+        raw.anthropic_api_key = Some(secret("sk-ant"));
         raw.default_timezone = "Mars/Olympus_Mons".to_string();
         let err = Settings::try_from(raw).expect_err("expected error");
         assert!(matches!(err, SettingsError::InvalidDefaultTimezone { .. }));
@@ -612,7 +688,7 @@ mod tests {
     #[test]
     fn default_timezone_defaults_to_utc() {
         let mut raw = empty_raw();
-        raw.openai_api_key = Some(secret("sk-x"));
+        raw.anthropic_api_key = Some(secret("sk-ant"));
         let s = Settings::try_from(raw).expect("valid");
         assert_eq!(s.default_timezone, Tz::UTC);
     }
@@ -620,7 +696,7 @@ mod tests {
     #[test]
     fn default_timezone_parses_iana_name() {
         let mut raw = empty_raw();
-        raw.openai_api_key = Some(secret("sk-x"));
+        raw.anthropic_api_key = Some(secret("sk-ant"));
         raw.default_timezone = "Asia/Bangkok".to_string();
         let s = Settings::try_from(raw).expect("valid");
         assert_eq!(s.default_timezone, chrono_tz::Asia::Bangkok);
@@ -629,7 +705,7 @@ mod tests {
     #[test]
     fn missing_embedding_is_rejected() {
         let mut raw = empty_raw();
-        raw.openai_api_key = Some(secret("sk-x"));
+        raw.anthropic_api_key = Some(secret("sk-ant"));
         raw.embedding_api_key = None;
         raw.embedding_model = None;
         let err = Settings::try_from(raw).expect_err("expected error");

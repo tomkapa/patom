@@ -3,11 +3,11 @@ use std::time::Duration;
 use crate::clock::{SharedClock, SystemClock};
 use crate::hook::HookChain;
 use crate::memory::SharedMemory;
-use crate::provider::SharedProvider;
+use crate::provider::{Model, SharedProviderRegistry};
 use crate::session::SharedSessionStore;
 use crate::tools::system::todos::SharedSessionTodoStore;
 use crate::tools::{SharedToolCallStore, ToolBox, ToolRegistry};
-use crate::types::{MaxOutputTokens, MaxTurns, ModelId, ParseError};
+use crate::types::{MaxOutputTokens, MaxTurns, ParseError};
 
 use super::core::Agent;
 use super::limits::{
@@ -16,18 +16,18 @@ use super::limits::{
 
 /// Composition-root builder for [`Agent`].
 ///
-/// Required pieces (provider, sessions, memory, model) are constructor arguments;
+/// Required pieces (providers, sessions, memory, model) are constructor arguments;
 /// everything else has a sensible default. The builder consumes itself on `build` so a
 /// half-configured agent is unrepresentable.
 #[derive(Debug)]
 pub struct AgentBuilder {
-    provider: SharedProvider,
+    providers: SharedProviderRegistry,
     sessions: SharedSessionStore,
     memory: SharedMemory,
     clock: SharedClock,
     tools: ToolBox,
     hooks: HookChain,
-    model: ModelId,
+    model: Model,
     max_output_tokens: MaxOutputTokens,
     max_turns: MaxTurns,
     provider_timeout: Duration,
@@ -39,13 +39,13 @@ pub struct AgentBuilder {
 impl AgentBuilder {
     /// Construct a builder with mandatory pieces. Uses defaults for everything else.
     pub fn new(
-        provider: SharedProvider,
+        providers: SharedProviderRegistry,
         sessions: SharedSessionStore,
         memory: SharedMemory,
-        model: ModelId,
+        model: Model,
     ) -> Result<Self, ParseError> {
         Ok(Self {
-            provider,
+            providers,
             sessions,
             memory,
             clock: SystemClock::shared(),
@@ -137,7 +137,7 @@ impl AgentBuilder {
     #[must_use]
     pub fn build(self) -> Agent {
         Agent::new(
-            self.provider,
+            self.providers,
             self.sessions,
             self.memory,
             self.clock,

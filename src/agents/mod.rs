@@ -15,6 +15,7 @@
 mod cache;
 mod error;
 mod limits;
+mod model_resolver;
 mod pg_store;
 mod registry;
 mod render;
@@ -29,6 +30,7 @@ pub use limits::{
     MAX_ALLOWED_MCP_CATALOGS_PER_AGENT, MAX_ALLOWED_MCP_TOOLS_PER_CATALOG_PER_AGENT,
     MAX_SEARCH_AGENT_RESULTS,
 };
+pub use model_resolver::{ModelResolver, SharedModelResolver, StaticAgentModelResolver};
 pub use pg_store::PgAgentStore;
 pub use registry::{AgentFactory, Agents, AgentsError, CachedAgents, SharedAgents};
 pub use render::{AGENTS_TAG_CLOSE, AGENTS_TAG_OPEN, render_agents_block};

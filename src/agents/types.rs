@@ -257,6 +257,13 @@ pub struct AgentRecord {
     pub description: AgentDescription,
     pub is_default: bool,
     pub allowed_mcp_tools: AllowedMcpTools,
+    /// Per-agent LLM model selection. `None` means "use the workspace default"
+    /// (`Settings::model`); the [`crate::agents::ModelResolver`] is the single
+    /// chokepoint that turns `Option<Model>` into the effective `Model` at
+    /// agent-build time. The catalog membership and provider routing are
+    /// proved by the [`crate::provider::Model`] type itself (parse-don't-
+    /// validate, CLAUDE.md §1) — no further runtime lookup is needed.
+    pub model: Option<crate::provider::Model>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

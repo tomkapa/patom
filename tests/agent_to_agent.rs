@@ -49,8 +49,8 @@ use relay_rs::clock::SystemClock;
 use relay_rs::hook::HookChain;
 use relay_rs::memory::{SharedMemory, StaticMemory};
 use relay_rs::provider::{
-    AssistantContent, ChatRequest, ChatResponse, LlmProvider, ProviderError, SharedProvider,
-    StopReason, ToolCall, ToolCallId,
+    AssistantContent, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError, ProviderId,
+    ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, ToolCall, ToolCallId,
 };
 use relay_rs::runtime::queue::PromptQueue as _;
 use relay_rs::runtime::{
@@ -61,7 +61,7 @@ use relay_rs::runtime::{
 use relay_rs::session::{PgSessionStore, SharedSessionStore};
 use relay_rs::tools::system::SendMessageTool;
 use relay_rs::tools::{ToolBox, ToolRegistry};
-use relay_rs::types::{ModelId, Participant, Prompt, ToolName};
+use relay_rs::types::{Participant, Prompt, ToolName};
 use tokio_util::sync::CancellationToken;
 
 mod common;
@@ -156,6 +156,7 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
             .expect("desc"),
             is_default: false,
             allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::empty(),
+            model: None,
         })
         .await
         .expect("create translator");
@@ -210,7 +211,7 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
         Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(db.pool.clone()));
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
-    let model = ModelId::try_from("test-model").expect("model");
+    let model = Model::try_from("test-model").expect("catalog");
 
     let tool_registry = ToolRegistry::builder()
         .with(Arc::new(SendMessageTool::new(
@@ -233,18 +234,25 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
             (translator_id, translator_provider.clone()),
         ]));
     let factory: AgentFactory = {
-        let providers = providers_by_id.clone();
+        let providers_by_id = providers_by_id.clone();
         let sessions = sessions.clone();
         let memory = memory.clone();
         let toolbox = toolbox.clone();
-        let model = model.clone();
         let clock = clock.clone();
         Arc::new(move |record| {
-            let provider: SharedProvider = providers
+            let provider: SharedProvider = providers_by_id
                 .get(&record.id)
                 .cloned()
                 .expect("test wired a provider for every seeded agent");
-            AgentBuilder::new(provider, sessions.clone(), memory.clone(), model.clone())
+            // Per-agent registry: the scripted provider for this row is
+            // inserted under the model's catalog provider so
+            // `Agent::call_provider` routes to it.
+            let providers: SharedProviderRegistry = Arc::new(
+                ProviderRegistry::builder()
+                    .insert(ProviderId::Anthropic, provider)
+                    .build(),
+            );
+            AgentBuilder::new(providers, sessions.clone(), memory.clone(), model)
                 .expect("builder")
                 .with_clock(clock.clone())
                 .with_tools(toolbox.clone())

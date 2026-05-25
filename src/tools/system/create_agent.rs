@@ -66,6 +66,11 @@ struct Input {
     description: String,
     #[serde(default)]
     allowed_mcp_tools: AllowedMcpTools,
+    // `model` is intentionally absent here. Per-agent model selection is an
+    // operator decision and stays on the HTTP/web-UI surface; agents minted
+    // by the `create_agent` tool always inherit the workspace default. This
+    // keeps the recruiter from quietly escalating its hires onto an
+    // expensive backend.
 }
 
 #[derive(Debug, Serialize)]
@@ -186,9 +191,11 @@ impl CreateAgentTool {
             ToolError::Backend(format!("create_agent: caller lookup: {e}"))
         })?;
 
-        // `is_default` is intentionally not on the input schema and not
-        // patched here — promoting the default stays an operator action via
-        // `PUT /agents/{id}`.
+        // `is_default` and `model` are intentionally not on the input schema
+        // and not patched here — both stay operator decisions via
+        // `PUT /agents/{id}`. The recruiter cannot promote a hire to default
+        // and cannot pick an LLM backend for it; new hires always inherit the
+        // workspace default model.
         let payload = NewAgent {
             org_id: viewer_record.org_id,
             name,
@@ -196,6 +203,7 @@ impl CreateAgentTool {
             description,
             is_default: false,
             allowed_mcp_tools,
+            model: None,
         };
 
         // Every input field is pre-parsed via its newtype `TryFrom` above,

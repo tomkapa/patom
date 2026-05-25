@@ -17,13 +17,13 @@ use relay_rs::clock::SystemClock;
 use relay_rs::hook::HookChain;
 use relay_rs::memory::{SharedMemory, StaticMemory};
 use relay_rs::provider::{
-    AssistantContent, ChatRequest, ChatResponse, LlmProvider, ProviderError, SharedProvider,
-    StopReason, ToolCall, ToolCallId,
+    AssistantContent, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError, ProviderId,
+    ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, ToolCall, ToolCallId,
 };
 use relay_rs::runtime::PromptRequestId;
 use relay_rs::session::{PgSessionStore, SharedSessionStore};
 use relay_rs::tools::{SharedTool, Tool, ToolCallContext, ToolError, ToolRegistry};
-use relay_rs::types::{ModelId, Participant, Prompt, ToolName};
+use relay_rs::types::{Participant, Prompt, ToolName};
 
 mod common;
 use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
@@ -153,16 +153,34 @@ fn tool_call_response(name: &str, id: &str) -> ChatResponse {
 }
 
 fn build(db: &TestDb, provider: Arc<ScriptedProvider>, tools: Vec<SharedTool>) -> relay_rs::Agent {
+    build_with_model(
+        db,
+        provider,
+        tools,
+        Model::try_from("test-model").expect("catalog"),
+    )
+}
+
+fn build_with_model(
+    db: &TestDb,
+    provider: Arc<ScriptedProvider>,
+    tools: Vec<SharedTool>,
+    model: Model,
+) -> relay_rs::Agent {
     let provider: SharedProvider = provider;
     let clock = SystemClock::shared();
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(db.pool.clone(), clock));
     let memory: SharedMemory = Arc::new(StaticMemory::new("test prompt"));
-    let model = ModelId::try_from("test-model").expect("valid");
+    let providers: SharedProviderRegistry = Arc::new(
+        ProviderRegistry::builder()
+            .insert(model.provider(), provider)
+            .build(),
+    );
     let mut builder = ToolRegistry::builder();
     for t in tools {
         builder.register(t);
     }
-    AgentBuilder::new(provider, sessions, memory, model)
+    AgentBuilder::new(providers, sessions, memory, model)
         .expect("builder")
         .with_builtin_tools(builder.build())
         .with_hooks(HookChain::new())
@@ -316,4 +334,97 @@ async fn provider_specs_match_registered_tools() {
     let req = provider.last_request();
     assert_eq!(req.tools.len(), 1);
     assert_eq!(req.tools[0].name.as_str(), "counter");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_carries_its_model_into_the_provider_call() {
+    // Per-agent model selection: the model the agent was constructed with
+    // should land verbatim in `ChatRequest::model`. Sanity-checks the
+    // Agent::call_provider routing path under the new closed-catalog model
+    // type — request.model.as_str() must match the catalog name.
+    let db = TestDb::fresh().await;
+    let provider = Arc::new(ScriptedProvider::new(vec![text_response(
+        "ok",
+        StopReason::EndTurn,
+    )]));
+    let model = Model::try_from("test-model-openai").expect("catalog");
+    let agent = build_with_model(&db, provider.clone(), vec![], model);
+
+    let (session, request_id) = fresh_session(&db).await;
+    let prompt = Prompt::try_from("hi").expect("prompt");
+    let _ = agent
+        .reply(
+            session,
+            Participant::agent(db.default_agent_id),
+            vec![prompt],
+            request_id,
+            relay_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            relay_rs::runtime::RequestKindPayload::Normal {},
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("reply");
+
+    let req = provider.last_request();
+    assert_eq!(req.model.as_str(), "test-model-openai");
+    assert_eq!(req.model.provider(), ProviderId::Openai);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn registry_routes_model_to_its_catalog_provider() {
+    // Two scripted providers registered under different ProviderIds: only
+    // the one matching the model's catalog provider should be called. The
+    // other one staying at zero calls proves we're routing, not just
+    // grabbing the first thing in the registry.
+    let db = TestDb::fresh().await;
+    let anthropic_provider = Arc::new(ScriptedProvider::new(vec![text_response(
+        "anthropic-served",
+        StopReason::EndTurn,
+    )]));
+    let openai_provider = Arc::new(ScriptedProvider::new(vec![text_response(
+        "openai-served",
+        StopReason::EndTurn,
+    )]));
+    let model = Model::try_from("test-model-openai").expect("catalog");
+    let anthropic_shared: SharedProvider = anthropic_provider.clone();
+    let openai_shared: SharedProvider = openai_provider.clone();
+    let providers: SharedProviderRegistry = Arc::new(
+        ProviderRegistry::builder()
+            .insert(ProviderId::Anthropic, anthropic_shared)
+            .insert(ProviderId::Openai, openai_shared)
+            .build(),
+    );
+    let clock = SystemClock::shared();
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(db.pool.clone(), clock));
+    let memory: SharedMemory = Arc::new(StaticMemory::new("test prompt"));
+    let agent = AgentBuilder::new(providers, sessions, memory, model)
+        .expect("builder")
+        .with_builtin_tools(ToolRegistry::empty())
+        .with_hooks(HookChain::new())
+        .build();
+
+    let (session, request_id) = fresh_session(&db).await;
+    let prompt = Prompt::try_from("hi").expect("prompt");
+    let reply = agent
+        .reply(
+            session,
+            Participant::agent(db.default_agent_id),
+            vec![prompt],
+            request_id,
+            relay_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            relay_rs::runtime::RequestKindPayload::Normal {},
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("reply");
+
+    assert_eq!(reply.final_text(), "openai-served");
+    assert_eq!(openai_provider.calls(), 1);
+    assert_eq!(
+        anthropic_provider.calls(),
+        0,
+        "wrong provider was routed to"
+    );
 }

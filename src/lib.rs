@@ -31,5 +31,7 @@ pub mod types;
 
 pub use agent_core::{Agent, AgentBuilder, AgentError};
 pub use agents::{AgentId, AgentRecord, AgentStore, SharedAgentStore};
-pub use config::{ProviderSettings, R2Settings, Settings, SettingsError, SlackSettings};
+pub use config::{
+    ProviderCredentials, ProviderSettings, R2Settings, Settings, SettingsError, SlackSettings,
+};
 pub use error::AppError;

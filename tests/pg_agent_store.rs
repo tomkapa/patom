@@ -38,6 +38,7 @@ fn new_agent(db: &TestDb, name: &str, prompt: &str, is_default: bool) -> NewAgen
         description: AgentDescription::try_from(format!("Role: {name}")).expect("valid desc"),
         is_default,
         allowed_mcp_tools: AllowedMcpTools::empty(),
+        model: None,
     }
 }
 
@@ -302,6 +303,7 @@ async fn create_with_explicit_allowed_mcp_tools_round_trips() {
         description: AgentDescription::try_from("Scoped agent.").expect("desc"),
         is_default: false,
         allowed_mcp_tools: allowed(&["notion", "linear"]),
+        model: None,
     };
     let created = store.create(payload).await.expect("create");
     assert_eq!(created.allowed_mcp_tools.len(), 2);
@@ -339,6 +341,7 @@ async fn update_replaces_allowed_mcp_tools() {
             description: AgentDescription::try_from("Rotating MCP agent.").expect("desc"),
             is_default: false,
             allowed_mcp_tools: allowed(&["notion", "linear"]),
+            model: None,
         })
         .await
         .expect("create");
@@ -348,6 +351,7 @@ async fn update_replaces_allowed_mcp_tools() {
             agent.id,
             AgentUpdate {
                 allowed_mcp_tools: Some(allowed(&["jira"])),
+                model: None,
                 ..Default::default()
             },
         )
@@ -365,6 +369,7 @@ async fn update_replaces_allowed_mcp_tools() {
             agent.id,
             AgentUpdate {
                 allowed_mcp_tools: Some(AllowedMcpTools::empty()),
+                model: None,
                 ..Default::default()
             },
         )
@@ -378,6 +383,7 @@ async fn update_replaces_allowed_mcp_tools() {
             agent.id,
             AgentUpdate {
                 allowed_mcp_tools: Some(allowed(&["notion"])),
+                model: None,
                 ..Default::default()
             },
         )
