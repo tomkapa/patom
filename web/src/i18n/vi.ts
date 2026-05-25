@@ -219,8 +219,7 @@ const vi: TranslationTable = {
   "agent.detail.nav.aria": "Cài đặt Agent",
   "agent.detail.nav.eyebrow": "AGENT",
   "agent.detail.nav.section": "CÀI ĐẶT AGENT",
-  "agent.detail.nav.prompt": "Prompt hệ thống",
-  "agent.detail.nav.model": "Mô hình & suy luận",
+  "agent.detail.nav.general": "Tổng quan",
   "agent.detail.nav.tools": "Công cụ & kết nối",
   "agent.detail.nav.logs": "Nhật ký & chỉ số",
   "agent.detail.switcher.aria": "Chuyển Agent",
@@ -229,7 +228,23 @@ const vi: TranslationTable = {
   "agent.index.empty.body":
     "Workspace này chưa có Agent. Tạo mới từ phần cài đặt Agent.",
   "agent.detail.breadcrumb.agents": "Agent",
+  "agent.detail.breadcrumb.general": "Tổng quan",
   "agent.detail.breadcrumb.tools": "Công cụ & kết nối",
+  "agent.detail.general.title": "Tổng quan",
+  "agent.detail.general.subtitle":
+    "Cấu hình tên, mô tả, prompt hệ thống và mô hình của Agent.",
+  "agent.detail.general.save": "Lưu",
+  "agent.detail.general.modelLabel": "Mô hình",
+  "agent.detail.general.modelCaption":
+    "Mô hình ngôn ngữ Agent dùng để suy luận.",
+  "agent.detail.general.modelInherit": "Mặc định workspace",
+  "agent.detail.general.modelAria": "Chọn mô hình",
+  "agent.detail.general.prompt.title": "Mô tả công việc",
+  "agent.detail.general.prompt.lines": "{n} dòng",
+  "agent.detail.general.prompt.tokens": "~{n} token",
+  "agent.detail.general.prompt.chars": "{n} ký tự",
+  "agent.detail.general.prompt.fontHint": "IBM Plex Mono · 13px",
+  "agent.detail.general.prompt.aria": "Prompt hệ thống",
   "agent.detail.tools.title": "Công cụ & kết nối",
   "agent.detail.tools.subtitle":
     "Chọn các kết nối trong workspace mà {name} được dùng, và nếu muốn, giới hạn tới từng công cụ cụ thể.",
