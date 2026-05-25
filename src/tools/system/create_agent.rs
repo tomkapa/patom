@@ -66,8 +66,8 @@ struct Input {
     description: String,
     #[serde(default)]
     allowed_mcp_tools: AllowedMcpTools,
-    /// Optional catalog model id (e.g. `"claude-haiku-4-5"`, `"gpt-4o-mini"`,
-    /// `"deepseek-chat"`). Omit to inherit the workspace default. Unknown
+    /// Optional catalog model id (e.g. `"claude-haiku-4-5"`, `"gpt-5.4-mini"`,
+    /// `"deepseek-v4-flash"`). Omit to inherit the workspace default. Unknown
     /// names reject as `InvalidInput`.
     #[serde(default)]
     model: Option<crate::provider::Model>,
@@ -119,7 +119,7 @@ impl CreateAgentTool {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 128,
-                    "description": "Catalog model id (e.g. claude-haiku-4-5, gpt-4o-mini, deepseek-chat). Optional; omit to inherit the workspace default.",
+                    "description": "Catalog model id (e.g. claude-haiku-4-5, gpt-5.4-mini, deepseek-v4-flash). Optional; omit to inherit the workspace default.",
                 },
                 "allowed_mcp_tools": {
                     "type": "object",

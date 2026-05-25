@@ -33,9 +33,16 @@ pub struct CatalogEntry {
 /// dependencies]`, never in `cargo build --release`). Production builds never
 /// expose them, so a release HTTP boundary cannot accept a sentinel name.
 pub const MODEL_CATALOG: &[CatalogEntry] = &[
-    // Anthropic
+    // Anthropic — current generation per
+    // https://github.com/anthropics/skills/blob/main/skills/claude-api/shared/models.md
+    // (May 2026). `claude-sonnet-4-5` is legacy but still active; included for
+    // operators on the previous Sonnet generation.
     CatalogEntry {
-        name: "claude-sonnet-4-5",
+        name: "claude-opus-4-7",
+        provider: ProviderId::Anthropic,
+    },
+    CatalogEntry {
+        name: "claude-sonnet-4-6",
         provider: ProviderId::Anthropic,
     },
     CatalogEntry {
@@ -43,33 +50,44 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         provider: ProviderId::Anthropic,
     },
     CatalogEntry {
-        name: "claude-opus-4-7",
+        name: "claude-sonnet-4-5",
         provider: ProviderId::Anthropic,
     },
-    // OpenAI
+    // OpenAI — current generation per
+    // https://developers.openai.com/api/docs/models/all (May 2026).
+    // `gpt-4o-mini` is legacy but kept for cost-sensitive workloads still on
+    // the older lineup.
     CatalogEntry {
-        name: "gpt-4o",
+        name: "gpt-5.5",
+        provider: ProviderId::Openai,
+    },
+    CatalogEntry {
+        name: "gpt-5.4",
+        provider: ProviderId::Openai,
+    },
+    CatalogEntry {
+        name: "gpt-5.4-mini",
+        provider: ProviderId::Openai,
+    },
+    CatalogEntry {
+        name: "gpt-5.4-nano",
         provider: ProviderId::Openai,
     },
     CatalogEntry {
         name: "gpt-4o-mini",
         provider: ProviderId::Openai,
     },
+    // DeepSeek — current generation per
+    // https://api-docs.deepseek.com/quick_start/pricing (May 2026). The old
+    // `deepseek-chat` / `deepseek-reasoner` aliases retire 2026-07-24 and are
+    // intentionally omitted; both modes are reachable via v4-flash + the
+    // thinking/non-thinking switch.
     CatalogEntry {
-        name: "gpt-4.1",
-        provider: ProviderId::Openai,
-    },
-    CatalogEntry {
-        name: "gpt-4.1-mini",
-        provider: ProviderId::Openai,
-    },
-    // DeepSeek
-    CatalogEntry {
-        name: "deepseek-chat",
+        name: "deepseek-v4-pro",
         provider: ProviderId::Deepseek,
     },
     CatalogEntry {
-        name: "deepseek-reasoner",
+        name: "deepseek-v4-flash",
         provider: ProviderId::Deepseek,
     },
 ];

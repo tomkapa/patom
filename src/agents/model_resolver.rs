@@ -148,11 +148,11 @@ mod tests {
 
     #[test]
     fn falls_back_to_default_when_pinned_provider_missing() {
-        let default = Model::try_from("claude-sonnet-4-5").expect("catalog");
-        let pinned = Model::try_from("deepseek-chat").expect("catalog");
+        let default = Model::try_from("claude-sonnet-4-6").expect("catalog");
+        let pinned = Model::try_from("deepseek-v4-flash").expect("catalog");
         let resolver = StaticAgentModelResolver::new(default);
         let registry = registry_with(&[ProviderId::Anthropic]); // no deepseek
         let model = resolver.resolve(&record_with(Some(pinned)), &registry);
-        assert_eq!(model.as_str(), "claude-sonnet-4-5");
+        assert_eq!(model.as_str(), "claude-sonnet-4-6");
     }
 }

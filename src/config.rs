@@ -382,7 +382,10 @@ fn default_timezone_raw() -> String {
 }
 
 fn default_model() -> Model {
-    Model::try_from("claude-sonnet-4-5").expect("static default model is in the catalog")
+    // Current Sonnet generation per Anthropic's official model list
+    // (https://github.com/anthropics/skills/blob/main/skills/claude-api/shared/models.md,
+    // May 2026). Operators override via the `MODEL` env var.
+    Model::try_from("claude-sonnet-4-6").expect("static default model is in the catalog")
 }
 
 fn default_http_addr() -> SocketAddr {
@@ -631,7 +634,7 @@ mod tests {
     #[test]
     fn default_model_provider_must_be_configured() {
         let mut raw = empty_raw();
-        // Default model is `claude-sonnet-4-5` (Anthropic); configuring only
+        // Default model is `claude-sonnet-4-6` (Anthropic); configuring only
         // OpenAI leaves Anthropic missing, so the default cannot route.
         raw.openai_api_key = Some(secret("sk-x"));
         let err = Settings::try_from(raw).expect_err("expected error");
