@@ -4,6 +4,7 @@ use crate::hook::{HookDenied, HookError};
 use crate::memory::MemoryError;
 use crate::provider::ProviderError;
 use crate::session::SessionError;
+use crate::tools::system::todos::TodoStoreError;
 
 #[derive(Debug, Error)]
 pub enum AgentError {
@@ -15,6 +16,9 @@ pub enum AgentError {
 
     #[error("memory: {0}")]
     Memory(#[from] MemoryError),
+
+    #[error("todos: {0}")]
+    Todos(#[from] TodoStoreError),
 
     #[error("hook: {0}")]
     Hook(#[from] HookError),

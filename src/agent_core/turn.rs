@@ -218,10 +218,27 @@ impl Agent {
         messages.extend(parent);
         messages.extend(own);
 
-        let system = self
+        let memory_system = self
             .memory()
             .system_prompt(session, viewer, kind_payload)
             .await?;
+        // Fold the session's current todo list into the system prompt
+        // tail. Empty / missing-store cases render to the empty string,
+        // which `format!` below leaves as a no-op (no trailing
+        // separator). See `tools::system::todos::render_section` for
+        // the block format.
+        let todos_block = match self.todos_store() {
+            Some(store) => {
+                let list = store.get(session).await?;
+                crate::tools::system::todos::render_section(&list)
+            }
+            None => String::new(),
+        };
+        let system: std::sync::Arc<str> = if todos_block.is_empty() {
+            memory_system
+        } else {
+            std::sync::Arc::from(format!("{memory_system}\n{todos_block}").as_str())
+        };
         span.record("relay.system_prompt.bytes", system.len());
         span.record("relay.messages.count", messages.len());
 

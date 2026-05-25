@@ -712,6 +712,7 @@ impl Worker {
             e @ (AgentError::Provider(_)
             | AgentError::Session(_)
             | AgentError::Memory(_)
+            | AgentError::Todos(_)
             | AgentError::Hook(_)
             | AgentError::ToolTimeout { .. }
             | AgentError::UnknownTool(_)
