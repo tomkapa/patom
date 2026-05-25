@@ -25,7 +25,7 @@ export function OrgSwitcher() {
           aria-label="Switch organization"
           onClick={toggle}
           disabled={switchOrg.isPending}
-          className="flex w-full items-center justify-between gap-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-ink)]"
+          className="flex w-full cursor-pointer items-center justify-between gap-2 text-left outline-none transition-colors duration-150 ease-out focus-visible:ring-1 focus-visible:ring-[var(--color-ink)] disabled:cursor-not-allowed"
         >
           <div className="min-w-0">
             <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted)]">
@@ -65,7 +65,7 @@ export function OrgSwitcher() {
                   aria-selected={isActive}
                   onClick={onPick}
                   disabled={switchOrg.isPending}
-                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--color-paper-2)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-paper-2)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Monogram name={org.name} id={org.id} size={24} />
                   <div className="min-w-0 flex-1">

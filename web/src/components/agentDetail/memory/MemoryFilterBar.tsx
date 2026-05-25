@@ -1,13 +1,11 @@
-import type { ReactNode } from "react";
 import {
-  ChevronDown,
   ClockAlert,
   CircleDot,
   Layers,
   Pin,
   Search,
 } from "lucide-react";
-import { Dropdown } from "../../molecules/Dropdown";
+import { Select, type SelectOption } from "../../molecules/Select";
 import { cn } from "../../../lib/utils";
 import { useT } from "../../../i18n";
 import type { MemoryKind, MemoryState } from "../../../types/api";
@@ -35,8 +33,6 @@ const STATE_VALUES: readonly (MemoryState | "any")[] = [
 
 const PINNED_VALUES: readonly PinnedFilter[] = ["any", "yes", "no"] as const;
 
-type ChipOption<V extends string> = { value: V; label: string };
-
 export function MemoryFilterBar({
   filters,
   onChange,
@@ -50,7 +46,7 @@ export function MemoryFilterBar({
 }) {
   const { t } = useT();
 
-  const kindOptions: ChipOption<MemoryKind | "any">[] = KIND_VALUES.map(
+  const kindOptions: SelectOption<MemoryKind | "any">[] = KIND_VALUES.map(
     (v) => ({
       value: v,
       label:
@@ -59,7 +55,7 @@ export function MemoryFilterBar({
           : t(`agent.detail.memory.kind.${v}` as const),
     }),
   );
-  const stateOptions: ChipOption<MemoryState | "any">[] = STATE_VALUES.map(
+  const stateOptions: SelectOption<MemoryState | "any">[] = STATE_VALUES.map(
     (v) => ({
       value: v,
       label:
@@ -68,7 +64,7 @@ export function MemoryFilterBar({
           : t(`agent.detail.memory.state.${v}` as const),
     }),
   );
-  const pinnedOptions: ChipOption<PinnedFilter>[] = PINNED_VALUES.map((v) => ({
+  const pinnedOptions: SelectOption<PinnedFilter>[] = PINNED_VALUES.map((v) => ({
     value: v,
     label:
       v === "any"
@@ -95,46 +91,49 @@ export function MemoryFilterBar({
         />
       </label>
       <div className="flex flex-wrap items-center gap-1.5">
-        <FilterChip
-          label={
+        <Select<MemoryKind | "any">
+          variant="filter"
+          ariaLabel={t("agent.detail.memory.filter.kind")}
+          icon={<Layers className="h-3.5 w-3.5" strokeWidth={1.75} />}
+          triggerLabel={
             filters.kind === "any"
               ? t("agent.detail.memory.filter.kind")
               : t(`agent.detail.memory.kind.${filters.kind}` as const)
           }
-          icon={<Layers className="h-3.5 w-3.5" strokeWidth={1.75} />}
-          options={kindOptions}
-          value={filters.kind}
           active={filters.kind !== "any"}
-          ariaLabel={t("agent.detail.memory.filter.kind")}
-          onChange={(v) => onChange({ ...filters, kind: v })}
+          value={filters.kind}
+          options={kindOptions}
+          onChange={(kind) => onChange({ ...filters, kind })}
         />
-        <FilterChip
-          label={
+        <Select<MemoryState | "any">
+          variant="filter"
+          ariaLabel={t("agent.detail.memory.filter.state")}
+          icon={<CircleDot className="h-3.5 w-3.5" strokeWidth={1.75} />}
+          triggerLabel={
             filters.state === "any"
               ? t("agent.detail.memory.filter.state")
               : t(`agent.detail.memory.state.${filters.state}` as const)
           }
-          icon={<CircleDot className="h-3.5 w-3.5" strokeWidth={1.75} />}
-          options={stateOptions}
-          value={filters.state}
           active={filters.state !== "any"}
-          ariaLabel={t("agent.detail.memory.filter.state")}
-          onChange={(v) => onChange({ ...filters, state: v })}
+          value={filters.state}
+          options={stateOptions}
+          onChange={(state) => onChange({ ...filters, state })}
         />
-        <FilterChip
-          label={
+        <Select<PinnedFilter>
+          variant="filter"
+          ariaLabel={t("agent.detail.memory.filter.pinned")}
+          icon={<Pin className="h-3.5 w-3.5" strokeWidth={1.75} />}
+          triggerLabel={
             filters.pinned === "yes"
               ? t("agent.detail.memory.filter.pinned.yes")
               : filters.pinned === "no"
                 ? t("agent.detail.memory.filter.pinned.no")
                 : t("agent.detail.memory.filter.pinned")
           }
-          icon={<Pin className="h-3.5 w-3.5" strokeWidth={1.75} />}
-          options={pinnedOptions}
-          value={filters.pinned}
           active={filters.pinned !== "any"}
-          ariaLabel={t("agent.detail.memory.filter.pinned")}
-          onChange={(v) => onChange({ ...filters, pinned: v })}
+          value={filters.pinned}
+          options={pinnedOptions}
+          onChange={(pinned) => onChange({ ...filters, pinned })}
         />
         <div className="flex-1" />
         <button
@@ -145,7 +144,7 @@ export function MemoryFilterBar({
           disabled={!agingAvailable && !filters.aging}
           onClick={() => onChange({ ...filters, aging: !filters.aging })}
           className={cn(
-            "flex h-7 items-center gap-1.5 border px-2.5 text-[11px] font-semibold transition-colors",
+            "flex h-7 cursor-pointer items-center gap-1.5 border px-2.5 text-[11px] font-semibold transition-colors duration-150 ease-out",
             filters.aging
               ? "border-[#F59E0B] bg-[#FEF3C7] text-[#92400E]"
               : "border-[#F59E0B66] bg-[#FEF3C766] text-[#92400EAA]",
@@ -157,89 +156,5 @@ export function MemoryFilterBar({
         </button>
       </div>
     </div>
-  );
-}
-
-function FilterChip<V extends string>({
-  label,
-  icon,
-  options,
-  value,
-  active,
-  ariaLabel,
-  onChange,
-}: {
-  label: string;
-  icon: ReactNode;
-  options: ChipOption<V>[];
-  value: V;
-  active: boolean;
-  ariaLabel: string;
-  onChange: (next: V) => void;
-}) {
-  return (
-    <Dropdown
-      placement="bottom-start"
-      menuClassName="min-w-[160px] border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md"
-      renderTrigger={({ open, toggle }) => (
-        <button
-          type="button"
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          aria-label={ariaLabel}
-          onClick={toggle}
-          className={cn(
-            "flex h-7 items-center gap-1.5 border px-2.5 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-ink)]",
-            active
-              ? "border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
-              : "border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)]",
-          )}
-        >
-          <span
-            className={cn(
-              "shrink-0",
-              active
-                ? "text-[var(--color-moss)]"
-                : "text-[var(--color-muted-2)]",
-            )}
-          >
-            {icon}
-          </span>
-          <span>{label}</span>
-          <ChevronDown
-            className="h-3 w-3 text-[var(--color-muted)]"
-            strokeWidth={1.75}
-          />
-        </button>
-      )}
-    >
-      {({ close }) => (
-        <ul role="listbox" aria-label={ariaLabel}>
-          {options.map((opt) => {
-            const isActive = opt.value === value;
-            return (
-              <li key={opt.value}>
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={isActive}
-                  onClick={() => {
-                    close();
-                    if (opt.value !== value) onChange(opt.value);
-                  }}
-                  className={cn(
-                    "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[12.5px] hover:bg-[var(--color-paper-2)]",
-                    isActive &&
-                      "bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]",
-                  )}
-                >
-                  <span>{opt.label}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </Dropdown>
   );
 }

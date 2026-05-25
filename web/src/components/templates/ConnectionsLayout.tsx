@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { LayoutGrid, Link as LinkIcon } from "lucide-react";
+import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { MenuRail } from "../organisms/MenuRail";
 import { GlobalErrorBanner } from "../organisms/GlobalErrorBanner";
@@ -7,6 +8,7 @@ import { useMcpServers } from "../../hooks/useMcpServers";
 import { useT } from "../../i18n";
 import { useAuthStore } from "../../stores/authStore";
 import { cn } from "../../lib/utils";
+import { indicatorSpring } from "../../lib/motion";
 
 export function ConnectionsLayout({
   active,
@@ -66,15 +68,23 @@ export function ConnectionsLayout({
                 onClick={() => nav(it.to)}
                 aria-current={isActive ? "page" : undefined}
                 className={cn(
-                  "group flex items-center gap-2.5 px-3 py-2 text-left transition-colors",
+                  "group relative flex cursor-pointer items-center gap-2.5 px-3 py-2 text-left transition-colors duration-150 ease-out",
                   isActive
-                    ? "border-l-2 border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
-                    : "border-l-2 border-transparent text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+                    ? "bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
+                    : "text-[var(--color-muted)] hover:text-[var(--color-ink)]",
                 )}
               >
+                {isActive ? (
+                  <motion.span
+                    layoutId="connections-nav-indicator"
+                    className="absolute top-0 bottom-0 left-0 w-[2px] bg-[var(--color-moss)]"
+                    transition={indicatorSpring}
+                    aria-hidden
+                  />
+                ) : null}
                 <Icon
                   className={cn(
-                    "h-4 w-4 shrink-0",
+                    "h-4 w-4 shrink-0 transition-colors duration-150 ease-out",
                     isActive
                       ? "text-[var(--color-moss)]"
                       : "text-[var(--color-muted-2)]",
