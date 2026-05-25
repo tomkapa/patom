@@ -8,6 +8,7 @@ import {
 import { Button } from "../components/atoms/Button";
 import { Spinner } from "../components/atoms/Spinner";
 import { EmptyState } from "../components/molecules/EmptyState";
+import { PageTabHeader } from "../components/molecules/PageTabHeader";
 import { AllowlistCard } from "../components/agentDetail/AllowlistCard";
 import { CapabilitySummary } from "../components/agentDetail/CapabilitySummary";
 import { AgentActivityCard } from "../components/agentDetail/AgentActivityCard";
@@ -21,7 +22,7 @@ import {
   type Allowlist,
 } from "../components/agentDetail/allowlistState";
 
-export function AgentDetail() {
+export function AgentTools() {
   const { t } = useT();
   const nav = useNavigate();
   const { id } = useParams<{ id: string }>();
@@ -77,16 +78,10 @@ export function AgentDetail() {
         </div>
       ) : (
         <>
-          <header className="flex items-end justify-between gap-4 border-b border-[var(--color-line)] px-8 pt-2 pb-6">
-            <div className="min-w-0">
-              <h1 className="font-[var(--font-display)] text-[32px] leading-tight font-bold text-[var(--color-ink)]">
-                {t("agent.detail.tools.title")}
-              </h1>
-              <p className="mt-1 max-w-[68ch] text-[14px] text-[var(--color-muted)]">
-                {t("agent.detail.tools.subtitle", { name: agent.name })}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
+          <PageTabHeader
+            title={t("agent.detail.tools.title")}
+            subtitle={t("agent.detail.tools.subtitle", { name: agent.name })}
+            actions={
               <Button
                 variant="primary"
                 size="md"
@@ -104,8 +99,8 @@ export function AgentDetail() {
                   {t("agent.detail.tools.save")}
                 </span>
               </Button>
-            </div>
-          </header>
+            }
+          />
           <div className="min-h-0 flex-1 overflow-auto p-8">
             <div className="flex flex-col gap-6 lg:flex-row">
               <div className="flex min-w-0 flex-1 flex-col gap-5">

@@ -53,6 +53,10 @@ export type Agent = {
    *  agent has no MCP access. Mirrors
    *  `src/http/routes/agents.rs::AgentResponse.allowed_mcp_tools`. */
   allowed_mcp_tools?: Record<string, string[] | null>;
+  /** Pinned catalog model id (e.g. `"claude-sonnet-4-6"`) or `null` when
+   *  the agent inherits the workspace default. Mirrors
+   *  `src/http/routes/agents.rs::AgentResponse.model`. */
+  model?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -61,13 +65,23 @@ export type Agent = {
  *  the column untouched; `null`-meaning omissions follow the backend
  *  contract in `src/http/routes/agents.rs::UpdateAgentRequest`. The
  *  allowlist replaces atomically when present — `Some({})` is the
- *  explicit "lockdown" shape that revokes every server. */
+ *  explicit "lockdown" shape that revokes every server. The `model` field
+ *  is tri-state: omitted = leave untouched, `null` = clear to workspace
+ *  default, string = pin to that catalog model. */
 export type UpdateAgentRequest = {
   name?: string;
   system_prompt?: string;
   description?: string;
   is_default?: boolean;
   allowed_mcp_tools?: Record<string, string[] | null>;
+  model?: string | null;
+};
+
+/** One row of `GET /models`. Mirrors
+ *  `src/http/routes/models.rs::ModelEntry`. */
+export type ModelEntry = {
+  id: string;
+  provider: string;
 };
 
 export type RequestStatus = "pending" | "processing" | "done" | "failed";

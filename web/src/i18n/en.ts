@@ -221,8 +221,7 @@ const en = {
   "agent.detail.nav.aria": "Agent settings",
   "agent.detail.nav.eyebrow": "AGENTS",
   "agent.detail.nav.section": "AGENT SETTINGS",
-  "agent.detail.nav.prompt": "System prompt",
-  "agent.detail.nav.model": "Model & inference",
+  "agent.detail.nav.general": "General",
   "agent.detail.nav.tools": "Tools & connections",
   "agent.detail.nav.logs": "Logs & metrics",
   "agent.detail.switcher.aria": "Switch agent",
@@ -231,7 +230,23 @@ const en = {
   "agent.index.empty.body":
     "This workspace has no agents. Create one from the Agents settings.",
   "agent.detail.breadcrumb.agents": "Agents",
+  "agent.detail.breadcrumb.general": "General",
   "agent.detail.breadcrumb.tools": "Tools & connections",
+  "agent.detail.general.title": "General",
+  "agent.detail.general.subtitle":
+    "Configure the agent's name, description, system prompt, and model.",
+  "agent.detail.general.save": "Save",
+  "agent.detail.general.modelLabel": "Model",
+  "agent.detail.general.modelCaption":
+    "The language model this agent uses for inference.",
+  "agent.detail.general.modelInherit": "Workspace default",
+  "agent.detail.general.modelAria": "Pick a model",
+  "agent.detail.general.prompt.title": "Job description",
+  "agent.detail.general.prompt.lines": "{n} lines",
+  "agent.detail.general.prompt.tokens": "~{n} tokens",
+  "agent.detail.general.prompt.chars": "{n} chars",
+  "agent.detail.general.prompt.fontHint": "IBM Plex Mono · 13px",
+  "agent.detail.general.prompt.aria": "System prompt",
   "agent.detail.tools.title": "Tools & connections",
   "agent.detail.tools.subtitle":
     "Pick which workspace connections {name} can use, and optionally narrow down to individual tools.",

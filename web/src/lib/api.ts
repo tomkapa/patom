@@ -7,6 +7,7 @@ import type {
   Me,
   McpCatalogEntry,
   McpServer,
+  ModelEntry,
   OAuthStartRequest,
   OAuthStartResponse,
   Role,
@@ -105,6 +106,10 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ language }),
     }),
+
+  /** Read-only catalog of catalog model ids the agent picker offers.
+   *  Mirrors `src/http/routes/models.rs`. */
+  models: () => request<ModelEntry[]>("/models"),
 
   agents: () => request<Agent[]>("/agents"),
   agent: (id: string) => request<Agent>(`/agents/${id}`),

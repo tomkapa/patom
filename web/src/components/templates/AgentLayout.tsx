@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
-import { BarChart3, BookText, Check, ChevronsUpDown, Cpu, Shield } from "lucide-react";
+import { NavLink, useNavigate } from "react-router-dom";
+import { BarChart3, Check, ChevronsUpDown, Settings2, Shield } from "lucide-react";
 import { MenuRail } from "../organisms/MenuRail";
 import { GlobalErrorBanner } from "../organisms/GlobalErrorBanner";
 import { Monogram } from "../atoms/Monogram";
@@ -10,11 +10,19 @@ import { useAgents } from "../../hooks/useAgents";
 import { useDismissable } from "../../hooks/useDismissable";
 import type { Agent } from "../../types/api";
 
-/** Per-agent settings sub-navigation. Today only `tools` has a real page;
- *  the other three sit in the design as placeholders and render as
- *  `aria-disabled` items so the sidebar matches the design without
- *  inventing routes. */
-type AgentNavId = "prompt" | "model" | "tools" | "logs";
+/** Per-agent settings sub-navigation. `general` and `tools` are real
+ *  routes; `logs` is in the design but not yet built and stays
+ *  `aria-disabled` so the sidebar still mirrors the design. */
+type AgentNavId = "general" | "tools" | "logs";
+
+type NavItem = {
+  id: AgentNavId;
+  label: string;
+  icon: typeof Shield;
+  /** Sub-path under `/agents/:id/` — undefined for disabled items. */
+  to?: string;
+  disabled?: boolean;
+};
 
 export function AgentLayout({
   agent,
@@ -27,25 +35,19 @@ export function AgentLayout({
 }) {
   const { t } = useT();
 
-  const navItems: {
-    id: AgentNavId;
-    label: string;
-    icon: typeof Shield;
-    disabled?: boolean;
-  }[] = [
+  const navItems: NavItem[] = [
     {
-      id: "prompt",
-      label: t("agent.detail.nav.prompt"),
-      icon: BookText,
-      disabled: true,
+      id: "general",
+      label: t("agent.detail.nav.general"),
+      icon: Settings2,
+      to: "general",
     },
     {
-      id: "model",
-      label: t("agent.detail.nav.model"),
-      icon: Cpu,
-      disabled: true,
+      id: "tools",
+      label: t("agent.detail.nav.tools"),
+      icon: Shield,
+      to: "tools",
     },
-    { id: "tools", label: t("agent.detail.nav.tools"), icon: Shield },
     {
       id: "logs",
       label: t("agent.detail.nav.logs"),
@@ -74,40 +76,60 @@ export function AgentLayout({
           {navItems.map((it) => {
             const Icon = it.icon;
             const isActive = active === it.id;
-            return (
-              <button
-                key={it.id}
-                type="button"
-                aria-current={isActive ? "page" : undefined}
-                aria-disabled={it.disabled ? "true" : undefined}
-                disabled={it.disabled}
+            const itemClass = cn(
+              "group flex items-center gap-2.5 px-3 py-2 text-left transition-colors",
+              isActive
+                ? "border-l-2 border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
+                : it.disabled
+                  ? "cursor-not-allowed border-l-2 border-transparent text-[var(--color-muted-2)] opacity-60"
+                  : "cursor-pointer border-l-2 border-transparent text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+            );
+            const iconEl = (
+              <Icon
                 className={cn(
-                  "group flex items-center gap-2.5 px-3 py-2 text-left transition-colors",
+                  "h-4 w-4 shrink-0",
                   isActive
-                    ? "border-l-2 border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
-                    : it.disabled
-                      ? "cursor-not-allowed border-l-2 border-transparent text-[var(--color-muted-2)] opacity-60"
-                      : "cursor-pointer border-l-2 border-transparent text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+                    ? "text-[var(--color-moss)]"
+                    : "text-[var(--color-muted-2)]",
+                )}
+                strokeWidth={1.75}
+              />
+            );
+            const label = (
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate text-[13px]",
+                  isActive ? "font-medium" : "font-normal",
                 )}
               >
-                <Icon
-                  className={cn(
-                    "h-4 w-4 shrink-0",
-                    isActive
-                      ? "text-[var(--color-moss)]"
-                      : "text-[var(--color-muted-2)]",
-                  )}
-                  strokeWidth={1.75}
-                />
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 truncate text-[13px]",
-                    isActive ? "font-medium" : "font-normal",
-                  )}
+                {it.label}
+              </span>
+            );
+            if (it.disabled || !it.to || !agent) {
+              return (
+                <button
+                  key={it.id}
+                  type="button"
+                  aria-current={isActive ? "page" : undefined}
+                  aria-disabled={it.disabled ? "true" : undefined}
+                  disabled={it.disabled || !agent}
+                  className={itemClass}
                 >
-                  {it.label}
-                </span>
-              </button>
+                  {iconEl}
+                  {label}
+                </button>
+              );
+            }
+            return (
+              <NavLink
+                key={it.id}
+                to={`/agents/${agent.id}/${it.to}`}
+                aria-current={isActive ? "page" : undefined}
+                className={itemClass}
+              >
+                {iconEl}
+                {label}
+              </NavLink>
             );
           })}
         </nav>

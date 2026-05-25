@@ -1,5 +1,6 @@
-import { Route, Routes } from "react-router-dom";
-import { AgentDetail } from "./pages/AgentDetail";
+import { Navigate, Route, Routes } from "react-router-dom";
+import { AgentGeneral } from "./pages/AgentGeneral";
+import { AgentTools } from "./pages/AgentTools";
 import { AgentsIndex } from "./pages/AgentsIndex";
 import { ChatView } from "./pages/ChatView";
 import { ConnectionDetail } from "./pages/ConnectionDetail";
@@ -61,9 +62,21 @@ export function App() {
       />
       <Route
         path="/agents/:id"
+        element={<Navigate to="general" replace />}
+      />
+      <Route
+        path="/agents/:id/general"
         element={
           <Protected>
-            <AgentDetail />
+            <AgentGeneral />
+          </Protected>
+        }
+      />
+      <Route
+        path="/agents/:id/tools"
+        element={
+          <Protected>
+            <AgentTools />
           </Protected>
         }
       />

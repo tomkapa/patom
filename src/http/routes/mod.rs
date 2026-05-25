@@ -14,6 +14,7 @@ mod healthz;
 mod mcp;
 mod me;
 mod memory;
+mod models;
 pub(super) mod prompts;
 mod threads;
 mod uploads;
@@ -52,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .merge(agents::router())
         .merge(mcp::router())
         .merge(memory::router())
+        .merge(models::router())
         .merge(threads::router())
         .merge(me::router())
         .merge(uploads::router())
