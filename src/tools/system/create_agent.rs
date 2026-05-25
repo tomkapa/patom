@@ -66,11 +66,11 @@ struct Input {
     description: String,
     #[serde(default)]
     allowed_mcp_tools: AllowedMcpTools,
-    /// Optional catalog model id (e.g. `"claude-haiku-4-5"`, `"gpt-5.4-mini"`,
-    /// `"deepseek-v4-flash"`). Omit to inherit the workspace default. Unknown
-    /// names reject as `InvalidInput`.
-    #[serde(default)]
-    model: Option<crate::provider::Model>,
+    // `model` is intentionally absent here. Per-agent model selection is an
+    // operator decision and stays on the HTTP/web-UI surface; agents minted
+    // by the `create_agent` tool always inherit the workspace default. This
+    // keeps the recruiter from quietly escalating its hires onto an
+    // expensive backend.
 }
 
 #[derive(Debug, Serialize)]
@@ -114,12 +114,6 @@ impl CreateAgentTool {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": AGENT_DESCRIPTION_MAX_LEN,
-                },
-                "model": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 128,
-                    "description": "Catalog model id (e.g. claude-haiku-4-5, gpt-5.4-mini, deepseek-v4-flash). Optional; omit to inherit the workspace default.",
                 },
                 "allowed_mcp_tools": {
                     "type": "object",
@@ -186,7 +180,6 @@ impl CreateAgentTool {
         // returns `ToolError::InvalidInput` via the `serde_json::from_value`
         // call site below, not here.
         let allowed_mcp_tools = input.allowed_mcp_tools;
-        let model = input.model;
 
         // Hire into the calling agent's org. The viewer is always an
         // agent (guarded above), and every agent row has a NOT NULL
@@ -198,9 +191,11 @@ impl CreateAgentTool {
             ToolError::Backend(format!("create_agent: caller lookup: {e}"))
         })?;
 
-        // `is_default` is intentionally not on the input schema and not
-        // patched here — promoting the default stays an operator action via
-        // `PUT /agents/{id}`.
+        // `is_default` and `model` are intentionally not on the input schema
+        // and not patched here — both stay operator decisions via
+        // `PUT /agents/{id}`. The recruiter cannot promote a hire to default
+        // and cannot pick an LLM backend for it; new hires always inherit the
+        // workspace default model.
         let payload = NewAgent {
             org_id: viewer_record.org_id,
             name,
@@ -208,7 +203,7 @@ impl CreateAgentTool {
             description,
             is_default: false,
             allowed_mcp_tools,
-            model,
+            model: None,
         };
 
         // Every input field is pre-parsed via its newtype `TryFrom` above,
