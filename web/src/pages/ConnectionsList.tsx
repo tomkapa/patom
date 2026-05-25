@@ -10,6 +10,7 @@ import { Spinner } from "../components/atoms/Spinner";
 import { StatusSquare } from "../components/atoms/StatusSquare";
 import { Monogram } from "../components/atoms/Monogram";
 import { CatalogIcon } from "../components/atoms/CatalogIcon";
+import { Switch } from "../components/atoms/Switch";
 import { EmptyState } from "../components/molecules/EmptyState";
 import { ConnectModal } from "../components/organisms/ConnectModal";
 import { useT } from "../i18n";
@@ -282,21 +283,11 @@ function ConnectionRow({
         ) : null}
       </div>
       <div className="flex justify-center">
-        <button
-          type="button"
-          role="switch"
-          aria-checked={server.enabled}
-          aria-label={`${t("connections.list.col.enable")} ${server.catalog_id}`}
-          onClick={() => onToggle(!server.enabled)}
-          className={cn(
-            "flex h-5 w-9 items-center p-0.5 transition-colors",
-            server.enabled
-              ? "bg-[var(--color-moss)] justify-end"
-              : "bg-[var(--color-line)] justify-start",
-          )}
-        >
-          <span aria-hidden className="block h-4 w-4 bg-white" />
-        </button>
+        <Switch
+          checked={server.enabled}
+          onChange={onToggle}
+          ariaLabel={`${t("connections.list.col.enable")} ${server.catalog_id}`}
+        />
       </div>
       <div className="flex justify-end gap-1.5">
         {tone === "reconnect" || tone === "error" ? (

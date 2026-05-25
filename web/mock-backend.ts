@@ -305,6 +305,201 @@ alternative personas when requested. Always identify yourself as Atlas.`,
 
 const agentsById = new Map<string, AgentRow>(AGENTS.map((a) => [a.id, a]));
 
+// ─── Memory mock store ──────────────────────────────────────────────
+type MemKind = "self" | "other" | "collaborator" | "procedure" | "open";
+type MemState = "core" | "validated" | "held" | "tentative";
+type MemRow = {
+  id: string;
+  agent_id: string;
+  kind: MemKind;
+  content: string;
+  state: MemState;
+  pinned: boolean;
+  created_at: string;
+  last_validated_at: string;
+  last_accessed_at: string;
+  access_count: number;
+};
+type MemEvt = {
+  id: string;
+  agent_id: string;
+  mutation: "write" | "update" | "forget";
+  target_memory_id: string;
+  content_before: string | null;
+  content_after: string | null;
+  source: "turn" | "operator" | "librarian";
+  source_turn_id: string | null;
+  created_at: string;
+};
+
+const MEMORIES = new Map<string, MemRow[]>();
+const MEMORY_EVENTS = new Map<string, MemEvt[]>();
+
+const ATLAS_ID = "aaaaaaaa-0000-0000-0000-000000000001";
+const DAY_14_AGO = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+const DAY_8_AGO = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+const DAY_5_AGO = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+const DAY_2_AGO = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+const HOUR_3_AGO = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+
+MEMORIES.set(ATLAS_ID, [
+  {
+    id: "mem-0001",
+    agent_id: ATLAS_ID,
+    kind: "self",
+    content:
+      "I am Atlas, an AI assistant for the HOME workspace. My primary purpose is to help users manage their smart home devices, integrate new equipment, and optimize their home automation workflows.",
+    state: "core",
+    pinned: true,
+    created_at: DAY_14_AGO,
+    last_validated_at: DAY_14_AGO,
+    last_accessed_at: NOW,
+    access_count: 47,
+  },
+  {
+    id: "mem-0002",
+    agent_id: ATLAS_ID,
+    kind: "self",
+    content:
+      "I should always identify myself as Atlas when asked. I operate within a set of configured tool sandboxes and cannot take actions outside my defined scope.",
+    state: "validated",
+    pinned: false,
+    created_at: DAY_14_AGO,
+    last_validated_at: DAY_8_AGO,
+    last_accessed_at: NOW,
+    access_count: 23,
+  },
+  {
+    id: "mem-0003",
+    agent_id: ATLAS_ID,
+    kind: "other",
+    content:
+      "Jane prefers concise responses with bullet points and avoids lengthy explanations. Favors bullet points over prose paragraphs with multiple sentences.",
+    state: "held",
+    pinned: false,
+    created_at: DAY_5_AGO,
+    last_validated_at: DAY_5_AGO,
+    last_accessed_at: NOW,
+    access_count: 12,
+  },
+  {
+    id: "mem-0004",
+    agent_id: ATLAS_ID,
+    kind: "other",
+    content:
+      "Jane may be interested in outdoor lighting integration based on recent conversation patterns. Confidence low.",
+    state: "tentative",
+    pinned: false,
+    created_at: DAY_8_AGO,
+    last_validated_at: DAY_8_AGO,
+    last_accessed_at: HOUR_3_AGO,
+    access_count: 3,
+  },
+  {
+    id: "mem-0005",
+    agent_id: ATLAS_ID,
+    kind: "collaborator",
+    content:
+      "Librarian agent 'Archivist' is responsible for memory maintenance and validation. Runs nightly at 02:00 UTC on a 7-day inquiry/sync window.",
+    state: "validated",
+    pinned: false,
+    created_at: DAY_5_AGO,
+    last_validated_at: DAY_2_AGO,
+    last_accessed_at: NOW,
+    access_count: 8,
+  },
+  {
+    id: "mem-0006",
+    agent_id: ATLAS_ID,
+    kind: "procedure",
+    content:
+      "Always summarize quoted content. If new device join confirms intent, run set_state inside a try/except and roll back on failure.",
+    state: "held",
+    pinned: false,
+    created_at: DAY_2_AGO,
+    last_validated_at: DAY_2_AGO,
+    last_accessed_at: NOW,
+    access_count: 5,
+  },
+  {
+    id: "mem-0007",
+    agent_id: ATLAS_ID,
+    kind: "open",
+    content:
+      "The HOME workspace has 47 connected devices but I haven't fully mapped their owner/room metadata yet.",
+    state: "tentative",
+    pinned: false,
+    created_at: HOUR_3_AGO,
+    last_validated_at: HOUR_3_AGO,
+    last_accessed_at: HOUR_3_AGO,
+    access_count: 1,
+  },
+]);
+
+MEMORY_EVENTS.set(ATLAS_ID, [
+  {
+    id: "evt-0001",
+    agent_id: ATLAS_ID,
+    mutation: "write",
+    target_memory_id: "mem-0001",
+    content_before: null,
+    content_after:
+      "I am Atlas, an AI assistant for the HOME workspace. My primary purpose is to help users manage their smart home devices and integrate new equipment.",
+    source: "turn",
+    source_turn_id: "82a3f000-0000-0000-0000-000000000001",
+    created_at: DAY_14_AGO,
+  },
+  {
+    id: "evt-0002",
+    agent_id: ATLAS_ID,
+    mutation: "update",
+    target_memory_id: "mem-0003",
+    content_before: "Jane prefers concise responses.",
+    content_after:
+      "Jane prefers concise responses with bullet points and avoids lengthy explanations.",
+    source: "turn",
+    source_turn_id: "82a3f000-0000-0000-0000-000000000002",
+    created_at: DAY_5_AGO,
+  },
+  {
+    id: "evt-0003",
+    agent_id: ATLAS_ID,
+    mutation: "write",
+    target_memory_id: "mem-0007",
+    content_before: null,
+    content_after:
+      "The HOME workspace has 47 connected devices but I haven't fully mapped their owner/room metadata yet.",
+    source: "librarian",
+    source_turn_id: null,
+    created_at: HOUR_3_AGO,
+  },
+  {
+    id: "evt-0004",
+    agent_id: ATLAS_ID,
+    mutation: "forget",
+    target_memory_id: "mem-stale-1",
+    content_before:
+      "Outdated belief about device ABC-123 that was superseded by a newer write.",
+    content_after: null,
+    source: "operator",
+    source_turn_id: null,
+    created_at: DAY_2_AGO,
+  },
+]);
+
+function memoryListFor(agentId: string): MemRow[] {
+  return MEMORIES.get(agentId) ?? [];
+}
+function memoryEventsFor(agentId: string): MemEvt[] {
+  return MEMORY_EVENTS.get(agentId) ?? [];
+}
+function pushMemory(agentId: string, row: MemRow) {
+  MEMORIES.set(agentId, [row, ...memoryListFor(agentId)]);
+}
+function pushEvent(agentId: string, evt: MemEvt) {
+  MEMORY_EVENTS.set(agentId, [evt, ...memoryEventsFor(agentId)]);
+}
+
 const TOOL_FIXTURES: Record<string, ToolCall[]> = {};
 
 function buildFixture(serverId: string): ToolCall[] {
@@ -427,6 +622,130 @@ const server = Bun.serve({
         agentsById.set(id, next);
         return json(next);
       }
+      // ─── memory ─────────────────────────────────────────────────
+      if (sub === "/memory" && method === "GET") {
+        if (!a) return empty(404);
+        return json(memoryListFor(id));
+      }
+      if (sub === "/memory" && method === "POST") {
+        if (!a) return empty(404);
+        const body = (await req.json()) as {
+          kind: MemKind;
+          content: string;
+          state?: MemState;
+          pinned?: boolean;
+        };
+        const now = new Date().toISOString();
+        const memId = `mem-${crypto.randomUUID().slice(0, 8)}`;
+        const row: MemRow = {
+          id: memId,
+          agent_id: id,
+          kind: body.kind,
+          content: body.content,
+          state: body.state ?? "held",
+          pinned: Boolean(body.pinned),
+          created_at: now,
+          last_validated_at: now,
+          last_accessed_at: now,
+          access_count: 0,
+        };
+        pushMemory(id, row);
+        pushEvent(id, {
+          id: `evt-${crypto.randomUUID().slice(0, 8)}`,
+          agent_id: id,
+          mutation: "write",
+          target_memory_id: memId,
+          content_before: null,
+          content_after: body.content,
+          source: "operator",
+          source_turn_id: null,
+          created_at: now,
+        });
+        return json(row, 201);
+      }
+      if (sub === "/memory/events" && method === "GET") {
+        if (!a) return empty(404);
+        const qs = url.searchParams;
+        const source = qs.get("source");
+        const mutation = qs.get("mutation");
+        const out = memoryEventsFor(id).filter(
+          (e) =>
+            (!source || e.source === source) &&
+            (!mutation || e.mutation === mutation),
+        );
+        return json(out);
+      }
+      const pinMatch = sub.match(/^\/memory\/([^/]+)\/(pin|unpin)$/);
+      if (pinMatch && method === "POST") {
+        if (!a) return empty(404);
+        const memId = pinMatch[1]!;
+        const pinned = pinMatch[2] === "pin";
+        const list = memoryListFor(id);
+        const idx = list.findIndex((r) => r.id === memId);
+        if (idx === -1) return empty(404);
+        const updated: MemRow = { ...list[idx]!, pinned };
+        const nextList = [...list];
+        nextList[idx] = updated;
+        MEMORIES.set(id, nextList);
+        return json(updated);
+      }
+      const revertMatch = sub.match(/^\/memory\/events\/([^/]+)\/revert$/);
+      if (revertMatch && method === "POST") {
+        if (!a) return empty(404);
+        const eventId = revertMatch[1]!;
+        const events = memoryEventsFor(id);
+        const evt = events.find((e) => e.id === eventId);
+        if (!evt) return empty(404);
+        // Append an inverse event so the journal shows the operator
+        // action; mutate the row if applicable. Mirrors the real
+        // backend's behaviour at a high level.
+        const now = new Date().toISOString();
+        if (evt.mutation === "write") {
+          MEMORIES.set(
+            id,
+            memoryListFor(id).filter((r) => r.id !== evt.target_memory_id),
+          );
+          pushEvent(id, {
+            id: `evt-${crypto.randomUUID().slice(0, 8)}`,
+            agent_id: id,
+            mutation: "forget",
+            target_memory_id: evt.target_memory_id,
+            content_before: evt.content_after,
+            content_after: null,
+            source: "operator",
+            source_turn_id: null,
+            created_at: now,
+          });
+          return json({ removed: true });
+        }
+        if (evt.mutation === "update" && evt.content_before) {
+          const list = memoryListFor(id);
+          const idx = list.findIndex((r) => r.id === evt.target_memory_id);
+          if (idx !== -1) {
+            const updated: MemRow = {
+              ...list[idx]!,
+              content: evt.content_before,
+            };
+            const nextList = [...list];
+            nextList[idx] = updated;
+            MEMORIES.set(id, nextList);
+            pushEvent(id, {
+              id: `evt-${crypto.randomUUID().slice(0, 8)}`,
+              agent_id: id,
+              mutation: "update",
+              target_memory_id: evt.target_memory_id,
+              content_before: evt.content_after,
+              content_after: evt.content_before,
+              source: "operator",
+              source_turn_id: null,
+              created_at: now,
+            });
+            return json(updated);
+          }
+        }
+        return json({ removed: true });
+      }
+
       if (sub === "/tool-calls" && method === "GET") {
         if (!a) return empty(404);
         // Stitch the per-server fixtures for every allowlisted server,
