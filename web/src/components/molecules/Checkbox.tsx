@@ -31,7 +31,7 @@ export function Checkbox({
     >
       <span
         className={cn(
-          "flex h-[14px] w-[14px] shrink-0 items-center justify-center border transition-colors",
+          "flex h-[14px] w-[14px] shrink-0 items-center justify-center border transition-colors duration-150 ease-out",
           checked
             ? "border-[var(--color-moss)] bg-[var(--color-moss)]"
             : "border-[var(--color-line)] bg-[var(--color-card)]",
@@ -46,13 +46,14 @@ export function Checkbox({
           className="absolute h-0 w-0 opacity-0"
           {...rest}
         />
-        {checked ? (
-          <Check
-            className="h-2.5 w-2.5 text-white"
-            strokeWidth={3}
-            aria-hidden="true"
-          />
-        ) : null}
+        <Check
+          className={cn(
+            "h-2.5 w-2.5 text-white transition-[opacity,transform] duration-150 ease-out",
+            checked ? "scale-100 opacity-100" : "scale-50 opacity-0",
+          )}
+          strokeWidth={3}
+          aria-hidden="true"
+        />
       </span>
       {label ? (
         <span className="text-[12px] text-[var(--color-ink)]">{label}</span>

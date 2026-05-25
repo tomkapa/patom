@@ -26,15 +26,17 @@ export function Switch({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        "flex h-5 w-9 items-center p-0.5 transition-colors",
-        checked
-          ? "justify-end bg-[var(--color-moss)]"
-          : "justify-start bg-[var(--color-line)]",
+        "relative flex h-5 w-9 cursor-pointer items-center p-0.5 transition-colors duration-200 ease-out",
+        checked ? "bg-[var(--color-moss)]" : "bg-[var(--color-line)]",
         disabled && "cursor-not-allowed opacity-50",
         className,
       )}
     >
-      <span aria-hidden className="block h-4 w-4 bg-white" />
+      <span
+        aria-hidden
+        className="block h-4 w-4 bg-white transition-transform duration-200 ease-out"
+        style={{ transform: checked ? "translateX(16px)" : "translateX(0)" }}
+      />
     </button>
   );
 }

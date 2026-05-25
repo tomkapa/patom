@@ -1,6 +1,8 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
 import { useT } from "../../i18n";
+import { modalMotion, scrimMotion } from "../../lib/motion";
 
 const FOCUSABLE_SELECTOR =
   'a[href], area[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -76,28 +78,32 @@ export function Modal({
     };
   }, [open]);
 
-  if (!open) return null;
-
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={ariaLabel}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[#1E3322CC] p-8"
-      onMouseDown={(e) => {
-        // Close on backdrop click only (not when dragging from inside).
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        ref={dialogRef}
-        tabIndex={-1}
-        className="max-h-[calc(100vh-64px)] w-full overflow-auto border border-[var(--color-line)] bg-[var(--color-card)] shadow-xl focus:outline-none"
-        style={{ maxWidth: width }}
-      >
-        {children}
-      </div>
-    </div>
+    <AnimatePresence>
+      {open ? (
+        <motion.div
+          role="dialog"
+          aria-modal="true"
+          aria-label={ariaLabel}
+          {...scrimMotion}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#1E3322CC] p-8"
+          onMouseDown={(e) => {
+            // Close on backdrop click only (not when dragging from inside).
+            if (e.target === e.currentTarget) onClose();
+          }}
+        >
+          <motion.div
+            ref={dialogRef}
+            tabIndex={-1}
+            {...modalMotion}
+            className="max-h-[calc(100vh-64px)] w-full overflow-auto border border-[var(--color-line)] bg-[var(--color-card)] shadow-xl focus:outline-none"
+            style={{ maxWidth: width }}
+          >
+            {children}
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
   );
 }
 
@@ -128,7 +134,7 @@ export function ModalHeader({
         type="button"
         aria-label={t("connections.modal.close")}
         onClick={onClose}
-        className="-mt-1 -mr-1 shrink-0 p-1 text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+        className="-mt-1 -mr-1 shrink-0 cursor-pointer p-1 text-[var(--color-muted)] transition-colors duration-150 ease-out hover:text-[var(--color-ink)]"
       >
         <X className="h-4 w-4" />
       </button>
