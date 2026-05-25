@@ -15,6 +15,7 @@ use super::error::AuthError;
 use super::language::Language;
 use super::limits::MAX_SLUG_RETRIES;
 use super::locale_hint::LocaleHint;
+use super::org_rule::OrganizationRule;
 use super::store::{ConsumedOAuthState, NewOrg, OAuthStateRow, UpsertedUser, UserStore};
 use super::types::{
     Email, GoogleProfile, OAuthState, OrgId, OrgMembership, OrgSlug, PkceVerifier, Role, User,
@@ -177,7 +178,7 @@ impl UserStore for PgUserStore {
     async fn list_user_orgs(&self, user_id: UserId) -> Result<Vec<OrgMembership>, AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
         let rows = sqlx::query(
-            "SELECT o.id, o.name, o.slug::text AS slug, o.default_language, m.role
+            "SELECT o.id, o.name, o.slug::text AS slug, o.default_language, o.default_rule, m.role
              FROM org_members m
              JOIN organizations o ON o.id = m.org_id
              WHERE m.user_id = $1
@@ -189,6 +190,10 @@ impl UserStore for PgUserStore {
         tx.commit().await?;
         rows.into_iter()
             .map(|r| {
+                let default_rule = r
+                    .get::<Option<String>, _>("default_rule")
+                    .map(OrganizationRule::try_from)
+                    .transpose()?;
                 Ok(OrgMembership {
                     org_id: OrgId::from(r.get::<uuid::Uuid, _>("id")),
                     org_name: r.get("name"),
@@ -196,6 +201,7 @@ impl UserStore for PgUserStore {
                     role: Role::parse(r.get::<&str, _>("role"))
                         .ok_or(AuthError::Internal("unknown role in db"))?,
                     default_language: r.get::<Language, _>("default_language"),
+                    default_rule,
                 })
             })
             .collect()
@@ -291,6 +297,55 @@ impl UserStore for PgUserStore {
         updated.ok_or(AuthError::Internal(
             "org not found for default_language write",
         ))
+    }
+
+    async fn read_org_rule(&self, org_id: OrgId) -> Result<Option<OrganizationRule>, AuthError> {
+        let mut tx = super::begin_privileged(&self.pool).await?;
+        // Outer `Option` = row existence, inner `Option<String>` = the
+        // nullable column value. A missing row is a wiring bug (see
+        // `read_org_language`); a NULL column is the "no rule
+        // configured" sentinel and rides through to the caller.
+        let row: Option<Option<String>> =
+            sqlx::query_scalar("SELECT default_rule FROM organizations WHERE id = $1")
+                .bind(org_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        let column = row.ok_or(AuthError::Internal("org not found for default_rule read"))?;
+        column
+            .map(OrganizationRule::try_from)
+            .transpose()
+            .map_err(AuthError::from)
+    }
+
+    async fn set_org_rule(
+        &self,
+        org_id: OrgId,
+        rule: Option<OrganizationRule>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<OrganizationRule>, AuthError> {
+        let mut tx = super::begin_privileged(&self.pool).await?;
+        // Bind `Option<&str>` so `None` writes a SQL NULL — the column is
+        // nullable on purpose (see migration 40). Echo the persisted
+        // value back via RETURNING so the handler doesn't need a
+        // round-trip read.
+        let updated: Option<Option<String>> = sqlx::query_scalar(
+            "UPDATE organizations
+             SET default_rule = $2, updated_at = $3
+             WHERE id = $1
+             RETURNING default_rule",
+        )
+        .bind(org_id)
+        .bind(rule.as_ref().map(OrganizationRule::as_str))
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let column = updated.ok_or(AuthError::Internal("org not found for default_rule write"))?;
+        column
+            .map(OrganizationRule::try_from)
+            .transpose()
+            .map_err(AuthError::from)
     }
 
     async fn set_avatar_url(

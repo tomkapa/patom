@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::agents::AgentStoreError;
-use crate::auth::LanguageResolverError;
+use crate::auth::{LanguageResolverError, RuleResolverError};
 use crate::runtime::RequestKindPayload;
 use crate::session::{SessionError, SessionId};
 use crate::types::Participant;
@@ -23,6 +23,9 @@ pub enum MemoryError {
 
     #[error("language resolver: {0}")]
     Language(#[from] LanguageResolverError),
+
+    #[error("rule resolver: {0}")]
+    Rule(#[from] RuleResolverError),
 }
 
 /// Provides per-turn context to the agent. Returns the system prompt

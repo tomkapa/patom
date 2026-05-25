@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use super::error::AuthError;
 use super::language::Language;
 use super::locale_hint::LocaleHint;
+use super::org_rule::OrganizationRule;
 use super::types::{
     Email, GoogleProfile, OAuthState, OrgId, OrgMembership, PkceVerifier, Role, User, UserId,
 };
@@ -118,6 +119,24 @@ pub trait UserStore: std::fmt::Debug + Send + Sync + 'static {
         language: Language,
         now: DateTime<Utc>,
     ) -> Result<Language, AuthError>;
+
+    /// Read the org's `default_rule`. Called by the rule resolver on
+    /// cache miss. The column is nullable — `Ok(None)` is the "no rule
+    /// configured" state and is plumbed all the way through the
+    /// renderer (which omits the `<organization-rule>` tag entirely).
+    /// A missing row is itself a wiring bug; the impl surfaces it as
+    /// [`AuthError::Internal`] to match `read_org_language`.
+    async fn read_org_rule(&self, org_id: OrgId) -> Result<Option<OrganizationRule>, AuthError>;
+
+    /// Set the org's `default_rule`. `None` clears the rule (sets the
+    /// column to NULL). Returns the persisted value so the handler can
+    /// echo it back without a re-read.
+    async fn set_org_rule(
+        &self,
+        org_id: OrgId,
+        rule: Option<OrganizationRule>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<OrganizationRule>, AuthError>;
 
     /// Set the user's avatar URL. `None` clears it. Returns
     /// [`AuthError::Unauthenticated`] mapped from a missing row — the

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use relay_rs::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
-use relay_rs::auth::{Language, SharedOrgLanguageResolver};
+use relay_rs::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use relay_rs::clock::{SharedClock, SystemClock};
 use relay_rs::memory::{
     AgentMemory, MAX_MEMORY_MUTATIONS_PER_TURN, MemoryContent, MemoryHandle, MemoryKind,
@@ -32,6 +32,7 @@ use serde_json::json;
 mod common;
 use common::lang::StaticOrgLanguageResolver;
 use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
+use common::rule::StaticOrgRuleResolver;
 
 struct Fixture {
     deps: MemoryToolDeps,
@@ -62,6 +63,7 @@ async fn fixture(db: &TestDb) -> Fixture {
     let prompts = Arc::new(Prompts::load());
     let language_resolver: SharedOrgLanguageResolver =
         Arc::new(StaticOrgLanguageResolver::new(Language::En));
+    let rule_resolver: SharedOrgRuleResolver = Arc::new(StaticOrgRuleResolver::new(None));
     let _memory = AgentMemory::new(
         agents,
         prompt_cache,
@@ -69,6 +71,7 @@ async fn fixture(db: &TestDb) -> Fixture {
         loader.clone(),
         prompts,
         language_resolver,
+        rule_resolver,
         clock,
     );
     let session = human_to_agent_session(
@@ -390,6 +393,7 @@ async fn handle_round_trips_through_session_cache() {
         f.loader.clone(),
         Arc::new(Prompts::load()),
         Arc::new(StaticOrgLanguageResolver::new(Language::En)),
+        Arc::new(StaticOrgRuleResolver::new(None)),
         SystemClock::shared(),
     );
     let resolved = memory

@@ -135,6 +135,7 @@ impl AuthPromptsHarness {
             memberships: std::sync::Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
+            rule_resolver: common::rule::empty_resolver(),
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets: None,

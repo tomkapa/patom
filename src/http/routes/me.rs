@@ -11,7 +11,7 @@ use cookie::time::Duration as CookieDuration;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{
-    AuthError, Language, OrgId, OrgMembership, Principal, Role, User,
+    AuthError, Language, OrgId, OrgMembership, OrganizationRule, Principal, Role, User,
     limits::{COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_TOKEN_MAX_LEN},
 };
 
@@ -26,6 +26,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/auth/logout", post(logout))
         .route("/auth/switch-org", post(switch_org))
         .route("/me/org/language", patch(set_org_language))
+        .route("/me/org/rule", patch(set_org_rule))
 }
 
 #[derive(Debug, Serialize)]
@@ -54,6 +55,11 @@ struct OrgView {
     /// and the web app's i18n. The FE switches its locale on every
     /// change of this value for the active org.
     default_language: Language,
+    /// Per-org rule body injected into every agent's system prompt as
+    /// `<organization-rule>...</organization-rule>`. `None` when the
+    /// org hasn't configured a rule; the FE editor seeds with this
+    /// value on load.
+    default_rule: Option<String>,
 }
 
 async fn me(
@@ -111,6 +117,7 @@ fn view_org(m: &OrgMembership) -> OrgView {
         slug: m.org_slug.as_str().to_owned(),
         role: m.role,
         default_language: m.default_language,
+        default_rule: m.default_rule.as_ref().map(|r| r.as_str().to_owned()),
     }
 }
 
@@ -204,6 +211,66 @@ async fn set_org_language(
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({ "default_language": updated })),
+    )
+        .into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct SetOrgRuleRequest {
+    /// The rule body. Any of `null`, a missing field, `""`, or a
+    /// whitespace-only string clears the rule — the column is nullable
+    /// and "no rule" is a meaningful state. The handler folds the empty
+    /// / whitespace cases to `None` before parsing so a textarea that
+    /// the user blanked out clears the rule instead of returning 400.
+    rule: Option<String>,
+}
+
+/// `PATCH /me/org/rule` — set or clear the active org's
+/// `<organization-rule>` directive.
+///
+/// Authorization: owner or admin only. Members get 403. The rule shapes
+/// every agent the org runs; it is admin-tier configuration, not a
+/// per-user preference. Backend is the authority — the FE only hides
+/// the editor as a UX nicety.
+///
+/// Side effect: invalidates the in-process [`OrgRuleResolver`] cache so
+/// the agent worker picks up the new value on the next turn. Same
+/// whole-keyset invalidation strategy as
+/// [`set_org_language`] — cheap, bounded, and rare.
+async fn set_org_rule(
+    State(state): State<AppState>,
+    principal: Principal,
+    Json(req): Json<SetOrgRuleRequest>,
+) -> Result<Response, HttpError> {
+    let role = state
+        .users
+        .membership(principal.user_id, principal.active_org_id)
+        .await?
+        .ok_or(AuthError::NotMember(principal.active_org_id))?;
+    match role {
+        Role::Owner | Role::Admin => {}
+        Role::Member => return Err(HttpError::Forbidden("owner or admin role required")),
+    }
+    // Fold empty / whitespace-only bodies to `None` so the common FE
+    // pattern (textarea bound to "") clears the rule instead of 400ing
+    // on `ParseError::Empty`. Past that filter, `TryFrom` parses at the
+    // boundary (CLAUDE.md §1) and enforces the `MAX_ORG_RULE_BYTES`
+    // cap; `HttpError::Parse` -> 400 is already wired.
+    let parsed: Option<OrganizationRule> = req
+        .rule
+        .filter(|s| !s.trim().is_empty())
+        .map(OrganizationRule::try_from)
+        .transpose()?;
+    let now = state.clock.now_utc();
+    let updated = state
+        .users
+        .set_org_rule(principal.active_org_id, parsed, now)
+        .await?;
+    state.rule_resolver.invalidate_all();
+    let updated_str = updated.as_ref().map(|r| r.as_str().to_owned());
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "default_rule": updated_str })),
     )
         .into_response())
 }
