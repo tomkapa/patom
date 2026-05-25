@@ -35,6 +35,7 @@ struct ModelEntry {
     provider: &'static str,
 }
 
+#[tracing::instrument(name = "models.list", skip_all)]
 async fn list_models() -> Json<Vec<ModelEntry>> {
     let out: Vec<ModelEntry> = Model::all()
         .map(|m| ModelEntry {

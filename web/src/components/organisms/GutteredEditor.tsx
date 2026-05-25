@@ -27,8 +27,11 @@ export function GutteredEditor({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
 
+  // Match `promptStats.describePrompt`: empty content = 0 lines so the
+  // editor's gutter math and the consumer's footer counter never drift.
+  // The visual gutter still pads to >=26 rows via `gutterContent` below.
   const lineCount = useMemo(
-    () => Math.max(1, value.split("\n").length),
+    () => (value.length === 0 ? 0 : value.split("\n").length),
     [value],
   );
   // Render at least enough numbers to fill the visible gutter even when
