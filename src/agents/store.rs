@@ -36,6 +36,10 @@ pub struct NewAgent {
     /// server entry may carry `None` (= all of its tools) or `Some(set)`
     /// (= only those remote tool names).
     pub allowed_mcp_tools: AllowedMcpTools,
+    /// Optional per-agent LLM model. `None` defers to the workspace default
+    /// at agent-build time; `Some(model)` pins this agent to a specific
+    /// catalog model (and, transitively, its provider).
+    pub model: Option<crate::provider::Model>,
 }
 
 /// HTTP-PATCH-style update payload.
@@ -55,6 +59,14 @@ pub struct AgentUpdate {
     pub description: Option<AgentDescription>,
     pub is_default: Option<bool>,
     pub allowed_mcp_tools: Option<AllowedMcpTools>,
+    /// Patch the per-agent model. Double-`Option` follows the same nullable-
+    /// PATCH idiom as the HTTP layer: outer `None` = "field omitted, leave
+    /// untouched", outer `Some(None)` = "explicitly clear back to the
+    /// workspace default", outer `Some(Some(m))` = "pin to `m`".
+    /// `clippy::option_option` is allowed because the tri-state is the whole
+    /// reason this field exists — an enum split would inflate every caller.
+    #[allow(clippy::option_option)]
+    pub model: Option<Option<crate::provider::Model>>,
 }
 
 /// Storage trait for the agents registry. Implementations must be thread-safe.

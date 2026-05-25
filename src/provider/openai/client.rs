@@ -15,13 +15,22 @@ use crate::provider::traits::LlmProvider;
 use crate::types::{ModelId, SecretString};
 
 /// OpenAI-Chat-Completions implementation of [`LlmProvider`].
+///
+/// The `name` field carries the *backend label* this instance was constructed
+/// for ("openai", "deepseek", …). Two instances can point at the same SDK with
+/// different base URLs and API keys — the label is what surfaces in tracing
+/// (`relay.provider` and the `provider.<name>.send` span) so analytics can
+/// distinguish them.
 pub struct OpenAiProvider {
+    name: &'static str,
     client: Client<OpenAIConfig>,
 }
 
 impl std::fmt::Debug for OpenAiProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OpenAiProvider").finish_non_exhaustive()
+        f.debug_struct("OpenAiProvider")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
     }
 }
 
@@ -29,38 +38,57 @@ impl OpenAiProvider {
     /// Construct a provider against an OpenAI-Chat-Completions-compatible endpoint.
     /// Pass `base_url` to point at DeepSeek (`https://api.deepseek.com/v1`), Together,
     /// Groq, or any in-house gateway. Omit it to hit the public OpenAI API.
-    pub fn new(api_key: &SecretString, base_url: Option<String>) -> Self {
+    /// `name` is the low-cardinality backend label used in tracing fields.
+    pub fn new(name: &'static str, api_key: &SecretString, base_url: Option<String>) -> Self {
         // §6: assert the boundary precondition the type system already proves, so a
         // future refactor that loosens `SecretString` does not silently let an empty key
         // through.
         assert!(!api_key.is_empty(), "SecretString invariant: non-empty");
+        assert!(!name.is_empty(), "provider name invariant: non-empty");
 
         let mut config = OpenAIConfig::new().with_api_key(api_key.expose());
         if let Some(url) = base_url {
             config = config.with_api_base(url);
         }
         Self {
+            name,
             client: Client::with_config(config),
         }
+    }
+
+    /// Sugar for the public OpenAI backend.
+    #[must_use]
+    pub fn openai(api_key: &SecretString, base_url: Option<String>) -> Self {
+        Self::new("openai", api_key, base_url)
+    }
+
+    /// Sugar for DeepSeek. Defaults `base_url` to the public DeepSeek host
+    /// when the operator did not override it.
+    #[must_use]
+    pub fn deepseek(api_key: &SecretString, base_url: Option<String>) -> Self {
+        let base = base_url.or_else(|| Some("https://api.deepseek.com/v1".to_owned()));
+        Self::new("deepseek", api_key, base)
     }
 }
 
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     fn name(&self) -> &'static str {
-        "openai"
+        self.name
     }
 
     // GenAI semconv fields are declared `Empty` here and recorded inside the body so
     // both the request- and response-shaped attributes ride on the same span. Keeping
     // the span name stable (`provider.openai.send`) per CLAUDE.md §2; the spec's
     // recommended `chat <model>` form would put the model in the name and inflate
-    // cardinality.
+    // cardinality. The `relay.provider` field is populated dynamically from
+    // `self.name` so DeepSeek (and any future OpenAI-SDK-compatible backend)
+    // reports its own backend label without forking the implementation.
     #[instrument(
         name = "provider.openai.send",
         skip_all,
         fields(
-            relay.provider = "openai",
+            relay.provider = self.name,
             relay.model = %request.model,
             relay.messages = request.messages.len(),
             relay.tools = request.tools.len(),
@@ -78,7 +106,7 @@ impl LlmProvider for OpenAiProvider {
         ),
     )]
     async fn send(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
-        gen_ai::record_chat_request("openai", &request);
+        gen_ai::record_chat_request(self.name, &request);
 
         let mut messages = Vec::with_capacity(request.messages.len() + 1);
         messages.push(system_message(&request.system));

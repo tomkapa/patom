@@ -27,7 +27,7 @@ use crate::auth::{
     SharedOrgLanguageResolver, SharedOrgRuleResolver, SharedUserStore,
 };
 use crate::clock::{SharedClock, SystemClock};
-use crate::config::{EmbeddingSettings, ProviderSettings, Settings};
+use crate::config::{EmbeddingSettings, Settings};
 use crate::crypto::OrgEncryptor;
 use crate::error::AppError;
 use crate::hook::HookChain;
@@ -48,7 +48,7 @@ use crate::memory::{
 use crate::prompts::Prompts;
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::openai::{OpenAiEmbeddingProvider, OpenAiProvider};
-use crate::provider::{SharedEmbeddingProvider, SharedProvider};
+use crate::provider::{SharedEmbeddingProvider, SharedProviderRegistry};
 use crate::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
     SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream, WorkerConfig,
@@ -113,7 +113,7 @@ pub struct Server {
 /// Pre-built collaborators shared by the agent and the runtime.
 #[derive(Debug)]
 struct Collaborators {
-    provider: SharedProvider,
+    providers: SharedProviderRegistry,
     pool: PgPool,
     sessions: SharedSessionStore,
     agents: SharedAgentStore,
@@ -326,7 +326,7 @@ impl Collaborators {
         // tools) by the clones above. The reflection scheduler builds
         // its own handles from `pieces.pool` / `pieces.queue` later.
         Ok(Self {
-            provider: build_provider(settings)?,
+            providers: build_provider_registry(settings)?,
             pool,
             sessions,
             agents,
@@ -361,13 +361,13 @@ impl Collaborators {
 /// already `Clone` over cheap state) so the factory closure can hold it.
 #[derive(Clone)]
 struct AgentFactoryPieces {
-    provider: SharedProvider,
+    providers: SharedProviderRegistry,
     sessions: SharedSessionStore,
     memory: SharedMemory,
     clock: SharedClock,
     builtin_tools: ToolRegistry,
     mcp_registry: McpRegistry,
-    model: crate::types::ModelId,
+    model_resolver: crate::agents::SharedModelResolver,
     tool_call_store: crate::tools::SharedToolCallStore,
 }
 
@@ -383,11 +383,28 @@ impl AgentFactoryPieces {
             &catalog_to_server,
         ));
         let toolbox = ToolBox::new(self.builtin_tools.clone(), dynamic);
+        let model = self.model_resolver.resolve(record, self.providers.as_ref());
+        // Routed-provider attribution lands as a structured event so dashboards
+        // can break down per-agent model selection over time. `source` is
+        // `"agent"` when the row pinned its own model, `"default"` when the
+        // resolver fell back to the workspace default (CLAUDE.md §2).
+        let source = if record.model.is_some() {
+            "agent"
+        } else {
+            "default"
+        };
+        tracing::info!(
+            event = "agent.model.resolved",
+            relay.agent.id = %record.id,
+            relay.provider = model.provider().as_str(),
+            relay.model = %model,
+            source,
+        );
         AgentBuilder::new(
-            self.provider.clone(),
+            self.providers.clone(),
             self.sessions.clone(),
             self.memory.clone(),
-            self.model.clone(),
+            model,
         )
         .expect("invariant: limits constants are static and parse")
         .with_tools(toolbox)
@@ -537,10 +554,10 @@ fn build_agent_from(pieces: &Collaborators, settings: &Settings) -> Agent {
         crate::tools::PgToolCallStore::new(pieces.pool.clone(), pieces.clock.clone()),
     );
     AgentBuilder::new(
-        pieces.provider.clone(),
+        pieces.providers.clone(),
         pieces.sessions.clone(),
         pieces.memory.clone(),
-        settings.model.clone(),
+        settings.model,
     )
     .expect("invariant: limits constants are static and parse")
     .with_tools(toolbox)
@@ -565,14 +582,16 @@ pub async fn build_server(
     let tool_call_store: crate::tools::SharedToolCallStore = Arc::new(
         crate::tools::PgToolCallStore::new(pieces.pool.clone(), pieces.clock.clone()),
     );
+    let model_resolver: crate::agents::SharedModelResolver =
+        Arc::new(crate::agents::StaticAgentModelResolver::new(settings.model));
     let factory_pieces = AgentFactoryPieces {
-        provider: pieces.provider.clone(),
+        providers: pieces.providers.clone(),
         sessions: pieces.sessions.clone(),
         memory: pieces.memory.clone(),
         clock: pieces.clock.clone(),
         builtin_tools: pieces.builtin_tools.clone(),
         mcp_registry: pieces.mcp_registry.clone(),
-        model: settings.model.clone(),
+        model_resolver,
         tool_call_store,
     };
     let factory: AgentFactory = Arc::new(move |record| factory_pieces.build(record));
@@ -882,16 +901,30 @@ fn build_embedding_provider(s: &EmbeddingSettings) -> SharedEmbeddingProvider {
     ))
 }
 
-fn build_provider(settings: &Settings) -> Result<SharedProvider, AppError> {
-    let provider: SharedProvider = match &settings.provider {
-        ProviderSettings::Openai { api_key, base_url } => {
-            Arc::new(OpenAiProvider::new(api_key, base_url.clone()))
-        }
-        ProviderSettings::Anthropic { api_key, base_url } => {
-            Arc::new(AnthropicProvider::new(api_key, base_url.clone())?)
-        }
-    };
-    Ok(provider)
+fn build_provider_registry(
+    settings: &Settings,
+) -> Result<crate::provider::SharedProviderRegistry, AppError> {
+    use crate::provider::{ProviderId, ProviderRegistry};
+    let mut builder = ProviderRegistry::builder();
+    if let Some(c) = &settings.providers.anthropic {
+        builder = builder.insert(
+            ProviderId::Anthropic,
+            Arc::new(AnthropicProvider::new(&c.api_key, c.base_url.clone())?),
+        );
+    }
+    if let Some(c) = &settings.providers.openai {
+        builder = builder.insert(
+            ProviderId::Openai,
+            Arc::new(OpenAiProvider::openai(&c.api_key, c.base_url.clone())),
+        );
+    }
+    if let Some(c) = &settings.providers.deepseek {
+        builder = builder.insert(
+            ProviderId::Deepseek,
+            Arc::new(OpenAiProvider::deepseek(&c.api_key, c.base_url.clone())),
+        );
+    }
+    Ok(Arc::new(builder.build()))
 }
 
 fn build_http_client() -> Result<Client, reqwest::Error> {

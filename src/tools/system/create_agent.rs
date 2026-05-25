@@ -66,6 +66,11 @@ struct Input {
     description: String,
     #[serde(default)]
     allowed_mcp_tools: AllowedMcpTools,
+    /// Optional catalog model id (e.g. `"claude-haiku-4-5"`, `"gpt-4o-mini"`,
+    /// `"deepseek-chat"`). Omit to inherit the workspace default. Unknown
+    /// names reject as `InvalidInput`.
+    #[serde(default)]
+    model: Option<crate::provider::Model>,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,6 +114,10 @@ impl CreateAgentTool {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": AGENT_DESCRIPTION_MAX_LEN,
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Catalog model id (e.g. claude-haiku-4-5, gpt-4o-mini, deepseek-chat). Optional; omit to inherit the workspace default.",
                 },
                 "allowed_mcp_tools": {
                     "type": "object",
@@ -175,6 +184,7 @@ impl CreateAgentTool {
         // returns `ToolError::InvalidInput` via the `serde_json::from_value`
         // call site below, not here.
         let allowed_mcp_tools = input.allowed_mcp_tools;
+        let model = input.model;
 
         // Hire into the calling agent's org. The viewer is always an
         // agent (guarded above), and every agent row has a NOT NULL
@@ -196,6 +206,7 @@ impl CreateAgentTool {
             description,
             is_default: false,
             allowed_mcp_tools,
+            model,
         };
 
         // Every input field is pre-parsed via its newtype `TryFrom` above,

@@ -172,6 +172,7 @@ impl AuthMemoryHarness {
                 description: AgentDescription::try_from(format!("agent {name}")).expect("desc"),
                 is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
+                model: None,
             })
             .await
             .expect("create agent");

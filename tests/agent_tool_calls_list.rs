@@ -423,6 +423,7 @@ async fn excludes_calls_from_other_agents() {
             description: relay_rs::agents::AgentDescription::try_from("a helper").expect("desc"),
             is_default: false,
             allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::default(),
+            model: None,
         })
         .await
         .expect("create other agent")
@@ -577,6 +578,7 @@ async fn cross_org_agent_returns_404() {
             description: relay_rs::agents::AgentDescription::try_from("eavesdrop").expect("desc"),
             is_default: false,
             allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::default(),
+            model: None,
         })
         .await
         .expect("create foreign agent")

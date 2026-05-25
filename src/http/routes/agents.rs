@@ -31,6 +31,7 @@ use crate::agents::{
 };
 use crate::auth::{AuthError, Principal, VisibilityTable, visible_to};
 use crate::mcp::McpServerId;
+use crate::provider::Model;
 use crate::tools::{DEFAULT_TOOL_CALLS_PAGE, MAX_TOOL_CALLS_PAGE, ToolCallRowId};
 
 use super::super::error::HttpError;
@@ -64,6 +65,11 @@ struct AgentResponse {
     /// tool names. Always present; an empty object means the agent has no
     /// MCP access (the default for newly minted agents).
     allowed_mcp_tools: AllowedMcpTools,
+    /// Pinned per-agent model name, or `null` when the agent inherits the
+    /// workspace default. Each catalog model is served by exactly one
+    /// provider; the FE can derive the provider chip from the catalog if
+    /// needed.
+    model: Option<&'static str>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -77,6 +83,7 @@ impl From<AgentRecord> for AgentResponse {
             description: r.description.as_str().to_owned(),
             is_default: r.is_default,
             allowed_mcp_tools: r.allowed_mcp_tools,
+            model: r.model.map(Model::as_str),
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -100,6 +107,12 @@ struct CreateAgentRequest {
     /// "unrestricted" mode. The operator opts in explicitly.
     #[serde(default)]
     allowed_mcp_tools: AllowedMcpTools,
+    /// Optional catalog model id. Omit to inherit the workspace default
+    /// (`Settings::model`). Unknown names reject at parse time with the
+    /// `UnknownModel` reason. The provider is derived from the catalog —
+    /// callers do not send it separately.
+    #[serde(default)]
+    model: Option<Model>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,6 +135,28 @@ struct UpdateAgentRequest {
     /// (field omitted) leaves the existing allowlist untouched.
     #[serde(default)]
     allowed_mcp_tools: Option<AllowedMcpTools>,
+    /// Patch the per-agent model. Double-`Option` distinguishes
+    /// "field omitted (leave untouched)" from `null` ("clear back to
+    /// workspace default") from `"<name>"` ("pin to this catalog model").
+    /// Mirrors the PATCH idiom used by `description`. `clippy::option_option`
+    /// is allowed here because the tri-state is intentional — the alternative
+    /// (a per-field enum) would inflate every PATCH route.
+    #[allow(clippy::option_option)]
+    #[serde(default, deserialize_with = "deserialize_optional_optional_model")]
+    model: Option<Option<Model>>,
+}
+
+/// Tri-state deserialiser so `{}` (omitted), `{"model": null}` (clear), and
+/// `{"model": "claude-sonnet-4-5"}` (set) all map distinctly onto
+/// `Option<Option<Model>>`. The default `Option` deserialise collapses null
+/// and missing, which would force every PATCH to send the field — breaking
+/// partial updates.
+#[allow(clippy::option_option)]
+fn deserialize_optional_optional_model<'de, D>(d: D) -> Result<Option<Option<Model>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<Model>::deserialize(d)?))
 }
 
 async fn create_agent(
@@ -142,6 +177,7 @@ async fn create_agent(
             description,
             is_default: payload.is_default,
             allowed_mcp_tools: payload.allowed_mcp_tools,
+            model: payload.model,
         })
         .await?;
     Ok((StatusCode::CREATED, Json(record.into())))
@@ -158,7 +194,7 @@ async fn list_agents(
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let rows = sqlx::query_as::<_, AgentRowForList>(
         "SELECT id, org_id, name, system_prompt, description, is_default, \
-                allowed_mcp_tools, created_at, updated_at \
+                allowed_mcp_tools, model, created_at, updated_at \
          FROM agents ORDER BY created_at ASC",
     )
     .fetch_all(&mut *tx)
@@ -181,7 +217,7 @@ async fn read_agent(
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let row = sqlx::query_as::<_, AgentRowForList>(
         "SELECT id, org_id, name, system_prompt, description, is_default, \
-                allowed_mcp_tools, created_at, updated_at \
+                allowed_mcp_tools, model, created_at, updated_at \
          FROM agents WHERE id = $1",
     )
     .bind(id)
@@ -238,6 +274,7 @@ async fn update_agent(
                 description,
                 is_default: payload.is_default,
                 allowed_mcp_tools,
+                model: payload.model,
             },
         )
         .await?;
@@ -277,6 +314,7 @@ struct AgentRowForList {
     description: String,
     is_default: bool,
     allowed_mcp_tools: SqlxJson<AllowedMcpTools>,
+    model: Option<Model>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -291,6 +329,7 @@ impl AgentRowForList {
             description: self.description,
             is_default: self.is_default,
             allowed_mcp_tools: self.allowed_mcp_tools.0,
+            model: self.model.map(Model::as_str),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }

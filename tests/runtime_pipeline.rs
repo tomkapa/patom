@@ -24,8 +24,8 @@ use relay_rs::clock::SystemClock;
 use relay_rs::hook::HookChain;
 use relay_rs::memory::{SharedMemory, StaticMemory};
 use relay_rs::provider::{
-    AssistantContent, ChatRequest, ChatResponse, LlmProvider, ProviderError, SharedProvider,
-    StopReason,
+    AssistantContent, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError, ProviderId,
+    ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason,
 };
 use relay_rs::runtime::queue::PromptQueue as _;
 use relay_rs::runtime::{
@@ -36,7 +36,7 @@ use relay_rs::runtime::{
 use relay_rs::session::{PgSessionStore, SharedSessionStore};
 use relay_rs::tools::system::SendMessageTool;
 use relay_rs::tools::{ToolBox, ToolRegistry};
-use relay_rs::types::{ModelId, Prompt};
+use relay_rs::types::Prompt;
 
 mod common;
 use common::pg::{TestDb, human_to_agent_session};
@@ -118,7 +118,12 @@ async fn build_harness(provider: Arc<ScriptedProvider>) -> Harness {
 
     let provider: SharedProvider = provider;
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
-    let model = ModelId::try_from("test-model").expect("model");
+    let model = Model::try_from("test-model").expect("catalog");
+    let providers: SharedProviderRegistry = Arc::new(
+        ProviderRegistry::builder()
+            .insert(ProviderId::Anthropic, provider)
+            .build(),
+    );
     let agent_store: SharedAgentStore =
         common::pg::shared_agent_store(db.pool.clone(), clock.clone());
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(db.pool.clone()));
@@ -133,7 +138,7 @@ async fn build_harness(provider: Arc<ScriptedProvider>) -> Harness {
             hub.clone(),
         )))
         .build();
-    let agent = AgentBuilder::new(provider, sessions.clone(), memory, model)
+    let agent = AgentBuilder::new(providers, sessions.clone(), memory, model)
         .expect("builder")
         .with_clock(clock.clone())
         .with_tools(ToolBox::from_builtins(registry))

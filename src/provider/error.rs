@@ -1,16 +1,11 @@
 use thiserror::Error;
 
-use crate::types::ModelId;
-
 /// One error type at the provider boundary.
 ///
 /// Callers exhaustively match on this per CLAUDE.md §12. New providers must map their
 /// failures into these variants — they may not leak provider-specific error types up.
 #[derive(Debug, Error)]
 pub enum ProviderError {
-    #[error("model `{0}` not supported by this provider")]
-    UnsupportedModel(ModelId),
-
     #[error("provider rejected the request: {0}")]
     InvalidRequest(String),
 

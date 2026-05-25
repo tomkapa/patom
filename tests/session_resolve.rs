@@ -35,6 +35,7 @@ async fn fresh_agent(db: &TestDb, name: &str) -> Participant {
             description: relay_rs::agents::AgentDescription::try_from("test desc").expect("desc"),
             is_default: false,
             allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::empty(),
+            model: None,
         })
         .await
         .expect("create agent");

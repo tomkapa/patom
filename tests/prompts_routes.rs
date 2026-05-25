@@ -157,6 +157,7 @@ impl PromptsHarness {
                     .expect("desc"),
                 is_default: false,
                 allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::empty(),
+                model: None,
             })
             .await
             .expect("create agent")

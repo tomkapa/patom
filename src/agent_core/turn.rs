@@ -227,7 +227,7 @@ impl Agent {
 
         let tools = self.tools().specs_for(kind);
         Ok(ChatRequest {
-            model: self.model().clone(),
+            model: self.model(),
             system,
             messages,
             tools,

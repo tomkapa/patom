@@ -7,13 +7,11 @@ use crate::auth::Caller;
 use crate::clock::SharedClock;
 use crate::hook::{HookChain, TurnContext};
 use crate::memory::SharedMemory;
-use crate::provider::{ChatMessage, SharedProvider, UserContent};
+use crate::provider::{ChatMessage, Model, SharedProviderRegistry, UserContent};
 use crate::runtime::{PromptRequestId, RequestKindPayload};
 use crate::session::{SessionError, SessionId, SharedSessionStore};
 use crate::tools::{SharedToolCallStore, ToolBox};
-use crate::types::{
-    AgentReply, MaxOutputTokens, MaxTurns, MessageSender, ModelId, Participant, Prompt,
-};
+use crate::types::{AgentReply, MaxOutputTokens, MaxTurns, MessageSender, Participant, Prompt};
 
 use super::error::AgentError;
 use super::observer::SharedTurnObserver;
@@ -34,13 +32,13 @@ pub(super) const fn send_message_tool_name() -> &'static str {
 /// touching this struct.
 #[derive(Debug, Clone)]
 pub struct Agent {
-    provider: SharedProvider,
+    providers: SharedProviderRegistry,
     sessions: SharedSessionStore,
     memory: SharedMemory,
     clock: SharedClock,
     tools: ToolBox,
     hooks: HookChain,
-    model: ModelId,
+    model: Model,
     max_output_tokens: MaxOutputTokens,
     max_turns: MaxTurns,
     provider_timeout: Duration,
@@ -54,13 +52,13 @@ pub struct Agent {
 impl Agent {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
-        provider: SharedProvider,
+        providers: SharedProviderRegistry,
         sessions: SharedSessionStore,
         memory: SharedMemory,
         clock: SharedClock,
         tools: ToolBox,
         hooks: HookChain,
-        model: ModelId,
+        model: Model,
         max_output_tokens: MaxOutputTokens,
         max_turns: MaxTurns,
         provider_timeout: Duration,
@@ -68,7 +66,7 @@ impl Agent {
         tool_call_store: Option<SharedToolCallStore>,
     ) -> Self {
         Self {
-            provider,
+            providers,
             sessions,
             memory,
             clock,
@@ -83,8 +81,18 @@ impl Agent {
         }
     }
 
-    pub(super) fn provider(&self) -> &SharedProvider {
-        &self.provider
+    /// Routing-time provider lookup. Returns the [`crate::provider::SharedProvider`]
+    /// that serves [`Self::model`]'s `provider()` discriminant. The
+    /// `expect` documents the invariant: per-agent models are validated
+    /// against the registry at the write boundary, and the workspace default's
+    /// provider is validated at startup (`SettingsError::DefaultModelProviderNotConfigured`),
+    /// so a `None` here means an operator dropped a provider key while a row
+    /// still pointed at it — an operational fault we surface immediately.
+    pub(super) fn provider(&self) -> &crate::provider::SharedProvider {
+        self.providers.get(self.model.provider()).expect(
+            "invariant: registry contains every provider any reachable Model can route to; \
+             populated at startup from Settings::providers and checked at agent write",
+        )
     }
     pub(super) fn sessions(&self) -> &SharedSessionStore {
         &self.sessions
@@ -98,8 +106,8 @@ impl Agent {
     pub(super) fn hooks(&self) -> &HookChain {
         &self.hooks
     }
-    pub(super) fn model(&self) -> &ModelId {
-        &self.model
+    pub(super) fn model(&self) -> Model {
+        self.model
     }
     pub(super) fn max_output_tokens(&self) -> MaxOutputTokens {
         self.max_output_tokens
@@ -135,7 +143,7 @@ impl Agent {
             relay.session.id = %session,
             relay.viewer = %viewer,
             relay.request.kind = kind_payload.kind().as_str(),
-            relay.provider = self.provider.name(),
+            relay.provider = self.provider().name(),
             relay.model = %self.model,
             relay.batch_size = prompts.len(),
             relay.max_turns = self.max_turns.get(),
@@ -226,7 +234,7 @@ impl Agent {
             relay.session.id = %session,
             relay.viewer = %viewer,
             relay.request.kind = kind_payload.kind().as_str(),
-            relay.provider = self.provider.name(),
+            relay.provider = self.provider().name(),
             relay.model = %self.model,
             relay.max_turns = self.max_turns.get(),
             relay.dag.root = tracing::field::Empty,

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
+use crate::provider::Model;
 use crate::types::{MaxOutputTokens, ModelId, ParseError, ToolName};
 
 /// Maximum bytes accepted in a `ToolCallId`.
@@ -171,7 +172,11 @@ pub struct ToolSpec {
 /// drain or transform internally.
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
-    pub model: ModelId,
+    /// Catalog-resolved model handle. Carries its own provider via
+    /// `model.provider()`; the registry-level routing has already happened by
+    /// the time a provider sees this request, so the provider only needs the
+    /// name string (`model.as_str()`) for the wire payload.
+    pub model: Model,
     pub system: Arc<str>,
     pub messages: Vec<ChatMessage>,
     pub tools: Arc<[ToolSpec]>,
