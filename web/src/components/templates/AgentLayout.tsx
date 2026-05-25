@@ -1,6 +1,13 @@
 import { type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { BarChart3, Check, ChevronsUpDown, Settings2, Shield } from "lucide-react";
+import {
+  BarChart3,
+  Brain,
+  Check,
+  ChevronsUpDown,
+  Settings2,
+  Shield,
+} from "lucide-react";
 import { MenuRail } from "../organisms/MenuRail";
 import { GlobalErrorBanner } from "../organisms/GlobalErrorBanner";
 import { Monogram } from "../atoms/Monogram";
@@ -10,10 +17,10 @@ import { cn } from "../../lib/utils";
 import { useAgents } from "../../hooks/useAgents";
 import type { Agent } from "../../types/api";
 
-/** Per-agent settings sub-navigation. `general` and `tools` are real
- *  routes; `logs` is in the design but not yet built and stays
+/** Per-agent settings sub-navigation. `general`, `tools`, and `memory`
+ *  are real routes; `logs` is in the design but not yet built and stays
  *  `aria-disabled` so the sidebar still mirrors the design. */
-type AgentNavId = "general" | "tools" | "logs";
+type AgentNavId = "general" | "tools" | "memory" | "logs";
 
 type NavItem = {
   id: AgentNavId;
@@ -47,6 +54,12 @@ export function AgentLayout({
       label: t("agent.detail.nav.tools"),
       icon: Shield,
       to: "tools",
+    },
+    {
+      id: "memory",
+      label: t("agent.detail.nav.memory"),
+      icon: Brain,
+      to: "memory",
     },
     {
       id: "logs",

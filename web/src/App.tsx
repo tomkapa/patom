@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AgentGeneral } from "./pages/AgentGeneral";
+import { AgentMemory } from "./pages/AgentMemory";
 import { AgentTools } from "./pages/AgentTools";
 import { AgentsIndex } from "./pages/AgentsIndex";
 import { ChatView } from "./pages/ChatView";
@@ -77,6 +78,14 @@ export function App() {
         element={
           <Protected>
             <AgentTools />
+          </Protected>
+        }
+      />
+      <Route
+        path="/agents/:id/memory"
+        element={
+          <Protected>
+            <AgentMemory />
           </Protected>
         }
       />

@@ -382,3 +382,69 @@ export type OAuthStartRequest = {
 };
 
 export type OAuthStartResponse = { authorize_url: string };
+
+// ─── Agent memory ───────────────────────────────────────────────────
+// Wire labels mirror `src/memory/types.rs` exactly (snake-case); the
+// frontend never reads the pretty `display_label` form — that's the
+// model-facing prompt header, not an API contract.
+
+export type MemoryKind =
+  | "self"
+  | "other"
+  | "collaborator"
+  | "procedure"
+  | "open";
+
+export type MemoryState = "core" | "validated" | "held" | "tentative";
+
+export type MutationKind = "write" | "update" | "forget";
+
+export type MutationSource = "turn" | "operator" | "librarian";
+
+/** GET /agents/{id}/memory row. Mirrors
+ *  `src/http/routes/memory.rs::MemoryRowResponse`. */
+export type MemoryRow = {
+  id: string;
+  agent_id: string;
+  kind: MemoryKind;
+  content: string;
+  state: MemoryState;
+  pinned: boolean;
+  created_at: string;
+  last_validated_at: string;
+  last_accessed_at: string;
+  access_count: number;
+};
+
+/** GET /agents/{id}/memory/events row. Mirrors
+ *  `src/http/routes/memory.rs::EventResponse`. `content_before` and
+ *  `content_after` are derived from the mutation kind: write → only
+ *  after, update → both, forget → only before. */
+export type MemoryEvent = {
+  id: string;
+  agent_id: string;
+  mutation: MutationKind;
+  target_memory_id: string;
+  content_before: string | null;
+  content_after: string | null;
+  source: MutationSource;
+  source_turn_id: string | null;
+  created_at: string;
+};
+
+/** POST /agents/{id}/memory body. `state` defaults to `"held"` server-
+ *  side; we pass it explicitly so an operator endorsing a note at
+ *  `validated`/`core` also records a validation event. */
+export type CreateMemoryNoteRequest = {
+  kind: MemoryKind;
+  content: string;
+  state?: MemoryState;
+  pinned?: boolean;
+};
+
+/** Filters for `GET /agents/{id}/memory/events`. Omitted fields don't
+ *  add the query param; backend treats absence as "no filter". */
+export type MemoryEventsFilter = {
+  source?: MutationSource;
+  mutation?: MutationKind;
+};

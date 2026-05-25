@@ -2,11 +2,15 @@ import type {
   Agent,
   AgentToolCallList,
   CreateMcpServerRequest,
+  CreateMemoryNoteRequest,
   CredentialInput,
   Language,
   Me,
   McpCatalogEntry,
   McpServer,
+  MemoryEvent,
+  MemoryEventsFilter,
+  MemoryRow,
   ModelEntry,
   OAuthStartRequest,
   OAuthStartResponse,
@@ -130,6 +134,42 @@ export const api = {
       `/agents/${id}/tool-calls${q ? `?${q}` : ""}`,
     );
   },
+
+  // ─── Agent memory ────────────────────────────────────────────────────
+  // All five routes are declared in `src/http/routes/memory.rs`. Every
+  // path is tenant-gated by `gate_agent` server-side; a 404 here means
+  // "this agent is not visible to your principal" (intentional — we
+  // don't leak cross-org existence).
+  agentMemory: (id: string) => request<MemoryRow[]>(`/agents/${id}/memory`),
+  agentMemoryEvents: (id: string, filter?: MemoryEventsFilter) => {
+    const search = new URLSearchParams();
+    if (filter?.source) search.set("source", filter.source);
+    if (filter?.mutation) search.set("mutation", filter.mutation);
+    const q = search.toString();
+    return request<MemoryEvent[]>(
+      `/agents/${id}/memory/events${q ? `?${q}` : ""}`,
+    );
+  },
+  createMemoryNote: (id: string, input: CreateMemoryNoteRequest) =>
+    request<MemoryRow>(`/agents/${id}/memory`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  pinMemory: (id: string, memoryId: string) =>
+    request<MemoryRow>(`/agents/${id}/memory/${memoryId}/pin`, {
+      method: "POST",
+    }),
+  unpinMemory: (id: string, memoryId: string) =>
+    request<MemoryRow>(`/agents/${id}/memory/${memoryId}/unpin`, {
+      method: "POST",
+    }),
+  // BE returns one of `MemoryRowResponse` or `{ removed: true }` —
+  // collapsed to a discriminated union so callers can branch cleanly.
+  revertMemoryEvent: (id: string, eventId: string) =>
+    request<MemoryRow | { removed: true }>(
+      `/agents/${id}/memory/events/${eventId}/revert`,
+      { method: "POST" },
+    ),
 
   threads: () => request<ThreadSummary[]>("/threads"),
 
