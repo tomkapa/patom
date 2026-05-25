@@ -83,15 +83,20 @@ impl Agent {
 
     /// Routing-time provider lookup. Returns the [`crate::provider::SharedProvider`]
     /// that serves [`Self::model`]'s `provider()` discriminant. The
-    /// `expect` documents the invariant: per-agent models are validated
-    /// against the registry at the write boundary, and the workspace default's
-    /// provider is validated at startup (`SettingsError::DefaultModelProviderNotConfigured`),
-    /// so a `None` here means an operator dropped a provider key while a row
-    /// still pointed at it — an operational fault we surface immediately.
+    /// `expect` documents the invariant: the workspace default's provider is
+    /// validated at startup
+    /// (`SettingsError::DefaultModelProviderNotConfigured`), and
+    /// [`crate::agents::StaticAgentModelResolver`] degrades any per-agent
+    /// pin whose provider has since been dropped from config back to that
+    /// default — so by the time a `Model` reaches this getter, its provider
+    /// is known to be in the registry. A `None` here means that invariant
+    /// was bypassed (custom resolver, in-memory mutation) and is an
+    /// operational fault we surface immediately.
     pub(super) fn provider(&self) -> &crate::provider::SharedProvider {
         self.providers.get(self.model.provider()).expect(
-            "invariant: registry contains every provider any reachable Model can route to; \
-             populated at startup from Settings::providers and checked at agent write",
+            "invariant: registry contains the provider for every Model that reaches \
+             call_provider — upheld by startup config validation + the resolver's \
+             graceful-degrade fallback to the workspace default",
         )
     }
     pub(super) fn sessions(&self) -> &SharedSessionStore {

@@ -86,7 +86,7 @@ impl LlmProvider for OpenAiProvider {
     // the span name stable (`provider.openai.send`) per CLAUDE.md §2; the spec's
     // recommended `chat <model>` form would put the model in the name and inflate
     // cardinality. The `relay.provider` field is populated dynamically from
-    // `self.name` so DeepSeek (and any future OpenAI-SDK-compatible backend)
+    // `self.backend` so DeepSeek (and any future OpenAI-SDK-compatible backend)
     // reports its own backend label without forking the implementation.
     #[instrument(
         name = "provider.openai.send",

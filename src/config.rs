@@ -206,8 +206,9 @@ pub struct EmbeddingSettings {
 /// Each field is independently optional; the `TryFrom<RawSettings>` impl
 /// requires at least one to be present and additionally requires that the
 /// default model's provider is configured — so the workspace default is
-/// always routable at startup. Per-agent models are validated against the
-/// registry at the write boundary.
+/// always routable at startup. Per-agent models that point at a provider
+/// the operator has since dropped from config degrade to the default at
+/// resolve time (see [`crate::agents::StaticAgentModelResolver`]).
 #[derive(Debug, Clone, Default)]
 pub struct ProviderSettings {
     pub anthropic: Option<ProviderCredentials>,
@@ -240,10 +241,10 @@ pub struct ProviderCredentials {
     pub base_url: Option<String>,
 }
 
-/// Flat env shape — every provider's credentials are optional. The presence of exactly
-/// one provider's `*_API_KEY` selects which provider runs; setting zero or more than one
-/// is a misconfiguration and rejected at the boundary. Kept private because `Settings`
-/// is the validated type.
+/// Flat env shape — every provider's credentials are optional. At least one
+/// provider must be configured; any combination of the three is legal, and
+/// the per-agent model picks which one each turn routes to. Kept private
+/// because [`Settings`] is the validated type.
 #[derive(Debug, Deserialize)]
 struct RawSettings {
     #[serde(default)]

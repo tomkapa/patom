@@ -7,10 +7,14 @@
 //! Lookup is O(1) via [`std::collections::HashMap`]. The registry is the
 //! routing surface that `Agent::call_provider` consults per turn — given a
 //! [`crate::provider::Model`], the agent calls `registry.get(model.provider())`
-//! to pick the right backend. Startup config validation (`SettingsError::
-//! CatalogProviderMissing`) proves the registry contains every provider any
-//! catalog model could route to, so the `Option::expect` on the get is a
-//! documented invariant (CLAUDE.md §6).
+//! to pick the right backend. The invariant that backs the `Option::expect`
+//! at the call site is upheld by two layers (CLAUDE.md §6):
+//! 1. startup validation
+//!    ([`crate::config::SettingsError::DefaultModelProviderNotConfigured`])
+//!    guarantees the workspace default's provider is present, and
+//! 2. [`crate::agents::StaticAgentModelResolver`] degrades any per-agent
+//!    pin whose provider has been dropped from config back to that default
+//!    (with a tracing warn).
 
 use std::collections::HashMap;
 use std::sync::Arc;
