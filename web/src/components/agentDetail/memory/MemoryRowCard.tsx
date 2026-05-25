@@ -1,6 +1,6 @@
 import { ExternalLink, Eye, Pin } from "lucide-react";
 import { cn } from "../../../lib/utils";
-import { relativeTime } from "../../../lib/time";
+import { useTimeAgo } from "../../../lib/time";
 import { useT } from "../../../i18n";
 import type { MemoryRow, MemoryState } from "../../../types/api";
 
@@ -21,6 +21,7 @@ export function MemoryRowCard({
   pinPending: boolean;
 }) {
   const { t } = useT();
+  const timeAgo = useTimeAgo();
   const pill = STATE_PILL[row.state];
   return (
     <div
@@ -60,7 +61,7 @@ export function MemoryRowCard({
         </button>
         <span className="text-[var(--color-muted-2)]">·</span>
         <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
-          {relativeTime(row.created_at)} ago
+          {timeAgo(row.created_at)}
         </span>
         <span className="text-[var(--color-muted-2)]">·</span>
         <span className="inline-flex items-center gap-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">

@@ -65,8 +65,13 @@ export function applyFilters(
     if (filters.state !== "any" && r.state !== filters.state) return false;
     if (filters.pinned === "yes" && !r.pinned) return false;
     if (filters.pinned === "no" && r.pinned) return false;
-    if (filters.aging && !(r.state === "tentative" || isAging(r, nowMs)))
-      return false;
+    // The "Tentative & aging" chip surfaces every row that hasn't been
+    // promoted out of `tentative` yet — that includes both fresh
+    // tentative writes and ones past the maturation window. `isAging`
+    // already requires `state === "tentative"`, so the chip is
+    // equivalent to a state filter on tentative; we keep `isAging`
+    // available for callers that want only the *overdue* subset.
+    if (filters.aging && r.state !== "tentative") return false;
     if (needle && !r.content.toLowerCase().includes(needle)) return false;
     return true;
   });

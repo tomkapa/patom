@@ -348,7 +348,7 @@ MEMORIES.set(ATLAS_ID, [
     agent_id: ATLAS_ID,
     kind: "self",
     content:
-      "I am Atlas, an AI assistant for the HOME workspace. My primary purpose is to help users manage their smart home devices, integrate new equipment, and optimize their home automation workflows.",
+      "I am Atlas, an AI assistant for the ACME workspace. My primary purpose is to help users manage their smart home devices, integrate new equipment, and optimize their home automation workflows.",
     state: "core",
     pinned: true,
     created_at: DAY_14_AGO,
@@ -426,7 +426,7 @@ MEMORIES.set(ATLAS_ID, [
     agent_id: ATLAS_ID,
     kind: "open",
     content:
-      "The HOME workspace has 47 connected devices but I haven't fully mapped their owner/room metadata yet.",
+      "The ACME workspace has 47 connected devices but I haven't fully mapped their owner/room metadata yet.",
     state: "tentative",
     pinned: false,
     created_at: HOUR_3_AGO,
@@ -444,7 +444,7 @@ MEMORY_EVENTS.set(ATLAS_ID, [
     target_memory_id: "mem-0001",
     content_before: null,
     content_after:
-      "I am Atlas, an AI assistant for the HOME workspace. My primary purpose is to help users manage their smart home devices and integrate new equipment.",
+      "I am Atlas, an AI assistant for the ACME workspace. My primary purpose is to help users manage their smart home devices and integrate new equipment.",
     source: "turn",
     source_turn_id: "82a3f000-0000-0000-0000-000000000001",
     created_at: DAY_14_AGO,
@@ -468,7 +468,7 @@ MEMORY_EVENTS.set(ATLAS_ID, [
     target_memory_id: "mem-0007",
     content_before: null,
     content_after:
-      "The HOME workspace has 47 connected devices but I haven't fully mapped their owner/room metadata yet.",
+      "The ACME workspace has 47 connected devices but I haven't fully mapped their owner/room metadata yet.",
     source: "librarian",
     source_turn_id: null,
     created_at: HOUR_3_AGO,

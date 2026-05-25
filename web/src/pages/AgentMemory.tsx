@@ -201,8 +201,10 @@ export function AgentMemory() {
             <EventJournalPanel
               events={eventsQuery.data ?? []}
               loading={eventsQuery.isLoading}
+              error={eventsQuery.isError ? eventsQuery.error : null}
               filter={eventFilter}
               onFilterChange={setEventFilter}
+              onRetry={() => eventsQuery.refetch()}
               onRevert={(eventId) =>
                 revert.mutate({ agentId: agent.id, eventId })
               }

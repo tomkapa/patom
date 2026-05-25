@@ -1,6 +1,9 @@
 import { ScrollText } from "lucide-react";
 import { Spinner } from "../../atoms/Spinner";
+import { Button } from "../../atoms/Button";
+import { EmptyState } from "../../molecules/EmptyState";
 import { cn } from "../../../lib/utils";
+import { formatError } from "../../../lib/errors";
 import { useT } from "../../../i18n";
 import type {
   MemoryEvent,
@@ -30,15 +33,21 @@ const MUTATION_CHIP: Record<MutationKind, { fill: string; ink: string; border: s
 export function EventJournalPanel({
   events,
   loading,
+  error,
   filter,
   onFilterChange,
+  onRetry,
   onRevert,
   revertingId,
 }: {
   events: MemoryEvent[];
   loading: boolean;
+  /** Surfaces a fetch failure as a retryable error state instead of
+   *  letting the panel collapse into the "no events" empty state. */
+  error: unknown;
   filter: MemoryEventsFilter;
   onFilterChange: (next: MemoryEventsFilter) => void;
+  onRetry: () => void;
   onRevert: (eventId: string) => void;
   revertingId: string | null;
 }) {
@@ -94,6 +103,18 @@ export function EventJournalPanel({
         {loading && events.length === 0 ? (
           <div className="flex items-center justify-center p-6 text-[var(--color-muted)]">
             <Spinner size={14} />
+          </div>
+        ) : error ? (
+          <div className="p-6">
+            <EmptyState
+              title={t("agent.detail.memory.loadError.title")}
+              description={formatError(error)}
+              action={
+                <Button variant="primary" onClick={onRetry}>
+                  {t("agent.detail.memory.loadError.cta")}
+                </Button>
+              }
+            />
           </div>
         ) : events.length === 0 ? (
           <div className="px-5 py-6 text-[13px] text-[var(--color-muted)]">
