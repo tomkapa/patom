@@ -11,7 +11,7 @@ export function CatalogIcon({
   size = 36,
   className,
 }: {
-  name: string;
+  name: string | null | undefined;
   iconUrl?: string | null;
   size?: number;
   className?: string;
@@ -33,12 +33,13 @@ export function CatalogIcon({
       />
     );
   }
+  const safeName = name ?? "";
   return (
     <Monogram
-      name={name}
+      name={safeName}
       size={size}
       tone="neutral"
-      glyph={(name[0] ?? "?").toUpperCase()}
+      glyph={(safeName[0] ?? "?").toUpperCase()}
       className={className}
     />
   );

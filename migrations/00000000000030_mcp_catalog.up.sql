@@ -87,7 +87,7 @@ VALUES
         NULL,
         'Notion',
         'Notion workspace integration. Use for free-form docs, wikis, meeting notes, and lightweight project pages. Exposes search across pages and the ability to read, create, and append page content.',
-        'https://www.notion.so/help/mcp',
+        'https://developers.notion.com/guides/mcp/overview',
         '{"type":"http","url":"https://mcp.notion.com/mcp"}'::jsonb,
         'oauth2'
     ),
@@ -105,7 +105,7 @@ VALUES
         NULL,
         'Slack',
         'Slack workspace integration. Use for cross-team messaging context: channel history, threads, posting to channels or DMs. Pick for agents whose role is to monitor, summarise, or respond inside Slack.',
-        'https://api.slack.com/docs/mcp',
+        'https://docs.slack.dev/ai/slack-mcp-server/',
         '{"type":"http","url":"https://mcp.slack.com/mcp"}'::jsonb,
         'oauth2'
     ),
@@ -114,7 +114,7 @@ VALUES
         NULL,
         'Jira',
         'Atlassian Jira integration. Use when the team tracks work in Jira rather than Linear: issue search, create, transition, comment. Includes Confluence-adjacent context where the same Atlassian MCP exposes it.',
-        'https://www.atlassian.com/software/jira/mcp',
+        'https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/',
         '{"type":"http","url":"https://mcp.atlassian.com/v1/sse"}'::jsonb,
         'oauth2'
     )

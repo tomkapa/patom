@@ -403,6 +403,27 @@ const server = Bun.serve({
       }
     }
 
+    if (path === "/mcp-catalog" && method === "GET") {
+      return json([
+        {
+          catalog_id: "11111111-1111-7111-8111-111111111111",
+          display_name: "Notion",
+          description: "Notion workspace pages and databases",
+          auth_kind: "oauth2",
+          is_custom: false,
+          wired: true,
+        },
+        {
+          catalog_id: "22222222-2222-7222-8222-222222222222",
+          display_name: "Linear",
+          description: "Linear issues, projects, and cycles",
+          auth_kind: "oauth2",
+          is_custom: false,
+          wired: true,
+        },
+      ]);
+    }
+
     if (path === "/mcp-servers" && method === "GET") {
       return json([...servers.values()].sort((a, b) => a.alias.localeCompare(b.alias)));
     }
