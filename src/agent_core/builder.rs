@@ -5,6 +5,7 @@ use crate::hook::HookChain;
 use crate::memory::SharedMemory;
 use crate::provider::{Model, SharedProviderRegistry};
 use crate::session::SharedSessionStore;
+use crate::tools::system::todos::SharedSessionTodoStore;
 use crate::tools::{SharedToolCallStore, ToolBox, ToolRegistry};
 use crate::types::{MaxOutputTokens, MaxTurns, ParseError};
 
@@ -32,6 +33,7 @@ pub struct AgentBuilder {
     provider_timeout: Duration,
     tool_timeout: Duration,
     tool_call_store: Option<SharedToolCallStore>,
+    todos_store: Option<SharedSessionTodoStore>,
 }
 
 impl AgentBuilder {
@@ -55,6 +57,7 @@ impl AgentBuilder {
             provider_timeout: PROVIDER_CALL_TIMEOUT,
             tool_timeout: TOOL_CALL_TIMEOUT,
             tool_call_store: None,
+            todos_store: None,
         })
     }
 
@@ -119,6 +122,18 @@ impl AgentBuilder {
         self
     }
 
+    /// Attach the per-session todo store.
+    ///
+    /// Optional: agent_core unit tests skip it. With this wired,
+    /// [`Agent::build_chat_request`] folds the current session's
+    /// `<todos>` block into the system prompt so the model sees its
+    /// own list at the top of every turn.
+    #[must_use]
+    pub fn with_todos_store(mut self, store: SharedSessionTodoStore) -> Self {
+        self.todos_store = Some(store);
+        self
+    }
+
     #[must_use]
     pub fn build(self) -> Agent {
         Agent::new(
@@ -134,6 +149,7 @@ impl AgentBuilder {
             self.provider_timeout,
             self.tool_timeout,
             self.tool_call_store,
+            self.todos_store,
         )
     }
 }

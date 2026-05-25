@@ -32,6 +32,7 @@ mod scheduling;
 mod search_agents;
 mod search_tools;
 mod send_message;
+pub mod todos;
 mod web_fetch;
 mod web_search;
 
@@ -46,5 +47,8 @@ pub use scheduling::{CancelScheduledTaskTool, ListScheduledTasksTool, ScheduleTa
 pub use search_agents::SearchAgentsTool;
 pub use search_tools::SearchToolsTool;
 pub use send_message::SendMessageTool;
+pub use todos::{
+    PgSessionTodoStore, SessionTodoStore, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool,
+};
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;

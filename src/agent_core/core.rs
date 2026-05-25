@@ -10,6 +10,7 @@ use crate::memory::SharedMemory;
 use crate::provider::{ChatMessage, Model, SharedProviderRegistry, UserContent};
 use crate::runtime::{PromptRequestId, RequestKindPayload};
 use crate::session::{SessionError, SessionId, SharedSessionStore};
+use crate::tools::system::todos::SharedSessionTodoStore;
 use crate::tools::{SharedToolCallStore, ToolBox};
 use crate::types::{AgentReply, MaxOutputTokens, MaxTurns, MessageSender, Participant, Prompt};
 
@@ -47,6 +48,13 @@ pub struct Agent {
     /// agent_core unit tests; production wires
     /// [`crate::tools::PgToolCallStore`] in through the worker pool.
     tool_call_store: Option<SharedToolCallStore>,
+    /// Per-session todo store. `None` in agent_core unit tests that do
+    /// not exercise the per-turn context fold (the builder leaves it
+    /// off when not provided); the production composition root wires
+    /// [`crate::tools::system::todos::PgSessionTodoStore`] in via the
+    /// agent factory. When `None`, `build_chat_request` skips the
+    /// `<todos>` block entirely.
+    todos_store: Option<SharedSessionTodoStore>,
 }
 
 impl Agent {
@@ -64,6 +72,7 @@ impl Agent {
         provider_timeout: Duration,
         tool_timeout: Duration,
         tool_call_store: Option<SharedToolCallStore>,
+        todos_store: Option<SharedSessionTodoStore>,
     ) -> Self {
         Self {
             providers,
@@ -78,6 +87,7 @@ impl Agent {
             provider_timeout,
             tool_timeout,
             tool_call_store,
+            todos_store,
         }
     }
 
@@ -128,6 +138,9 @@ impl Agent {
     }
     pub(super) fn tool_call_store(&self) -> Option<&SharedToolCallStore> {
         self.tool_call_store.as_ref()
+    }
+    pub(super) fn todos_store(&self) -> Option<&SharedSessionTodoStore> {
+        self.todos_store.as_ref()
     }
 
     /// Drive a batch of user prompts to a final assistant text answer, running
