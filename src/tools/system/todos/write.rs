@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::debug;
+use tracing::{Instrument, debug, error, info_span};
 
 use crate::tools::{Tool, ToolCallContext, ToolError};
 use crate::types::ToolName;
@@ -138,38 +138,57 @@ impl Tool for TodoWriteTool {
         self.input_schema.clone()
     }
     async fn execute(&self, input: Value, ctx: &ToolCallContext) -> Result<String, ToolError> {
-        let parsed: Input = serde_json::from_value(input)?;
-        check_cap(&self.deps.counter, ctx.request_id)?;
-        let list =
-            TodoList::try_from(parsed.items).map_err(|e| ToolError::InvalidInput(e.to_string()))?;
-        let count = list.len();
-        let stored = self
-            .deps
-            .store
-            .replace(
-                ctx.acting_user_id,
-                ctx.session_id,
-                ctx.org_id,
-                ctx.request_id,
-                list,
-            )
-            .await
-            .map_err(store_to_tool_err)?;
-
-        debug!(
+        // CLAUDE.md §2: externally-triggered unit of work opens its own
+        // span. Low-cardinality name, dynamic values on fields.
+        let span = info_span!(
+            "tool.todo_write",
             relay.session.id = %ctx.session_id,
             relay.request.id = %ctx.request_id,
-            todo.count = count,
-            "todo_write.ok",
+            todo.count = tracing::field::Empty,
         );
+        async move {
+            let parsed: Input = serde_json::from_value(input).map_err(|e| {
+                error!(event = "todo_write.invalid_json", error = ?e);
+                ToolError::from(e)
+            })?;
+            if let Err(e) = check_cap(&self.deps.counter, ctx.request_id) {
+                error!(event = "todo_write.cap_exceeded", error = ?e);
+                return Err(e);
+            }
+            let list = TodoList::try_from(parsed.items).map_err(|e| {
+                error!(event = "todo_write.invariant_rejected", error = ?e);
+                ToolError::InvalidInput(e.to_string())
+            })?;
+            let count = list.len();
+            tracing::Span::current().record("todo.count", count);
+            let stored = self
+                .deps
+                .store
+                .replace(
+                    ctx.acting_user_id,
+                    ctx.session_id,
+                    ctx.org_id,
+                    ctx.request_id,
+                    list,
+                )
+                .await
+                .map_err(|e| {
+                    error!(event = "todo_write.store_error", error = ?e);
+                    store_to_tool_err(e)
+                })?;
 
-        let out = Output {
-            items: stored,
-            count,
-            note: "Todo list saved. It will be re-shown to you at the top of every \
-                   future turn in this session.",
-        };
-        Ok(serde_json::to_string(&out)?)
+            debug!(event = "todo_write.ok", todo.count = count);
+
+            let out = Output {
+                items: stored,
+                count,
+                note: "Todo list saved. It will be re-shown to you at the top of every \
+                       future turn in this session.",
+            };
+            Ok(serde_json::to_string(&out)?)
+        }
+        .instrument(span)
+        .await
     }
 }
 

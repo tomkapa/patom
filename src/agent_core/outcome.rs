@@ -42,6 +42,7 @@ fn error_label(err: &AgentError) -> &'static str {
         AgentError::Session(_) => "session_error",
         AgentError::Memory(_) => "memory_error",
         AgentError::Todos(_) => "todos_error",
+        AgentError::TodosLoadTimeout => "todos_load_timeout",
     }
 }
 

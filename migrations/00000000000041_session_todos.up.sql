@@ -25,9 +25,19 @@ CREATE TABLE session_todos (
     session_id            UUID        PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     org_id                UUID        NOT NULL    REFERENCES organizations(id) ON DELETE CASCADE,
     items                 JSONB       NOT NULL,
-    item_count            SMALLINT    NOT NULL    CHECK (item_count BETWEEN 0 AND 50),
+    item_count            SMALLINT    NOT NULL,
     updated_at            TIMESTAMPTZ NOT NULL,
-    updated_in_request_id UUID        NOT NULL
+    updated_in_request_id UUID        NOT NULL,
+    -- `items` must be a JSON array, `item_count` must equal its length,
+    -- and the count must respect the §5 hard cap. Belt-and-braces against
+    -- the app-side `TodoList::try_from` invariants — a malformed row
+    -- written by hand or via a future migration would otherwise crash
+    -- the pre-turn read on `TodoList::try_from`.
+    CONSTRAINT session_todos_items_well_formed CHECK (
+        jsonb_typeof(items) = 'array'
+        AND item_count BETWEEN 0 AND 50
+        AND item_count = jsonb_array_length(items)
+    )
 );
 
 CREATE INDEX session_todos_org_idx ON session_todos (org_id);

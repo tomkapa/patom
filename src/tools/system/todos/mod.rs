@@ -57,8 +57,18 @@ impl PerTurnCallCounter {
             .inner
             .lock()
             .expect("invariant: PerTurnCallCounter mutex never poisoned");
-        if map.len() >= self.bookkeeping_max_entries && !map.contains_key(&request_id) {
-            map.clear();
+        // Single-entry eviction (not bulk `clear`): evicting the whole
+        // map would reset counts for every in-flight request, so a
+        // burst of unrelated traffic could let a stuck request slip
+        // past its per-turn cap. Dropping one arbitrary entry bounds
+        // memory just as well — at worst that request loses its
+        // bookkeeping (cap=`MAX_TODO_WRITES_PER_TURN`, so the blast
+        // radius is tiny) while every other request keeps its count.
+        if map.len() >= self.bookkeeping_max_entries
+            && !map.contains_key(&request_id)
+            && let Some(victim) = map.keys().next().copied()
+        {
+            map.remove(&victim);
         }
         let entry = map.entry(request_id).or_insert(0);
         if *entry >= self.cap_per_turn {
@@ -108,18 +118,46 @@ pub fn render_section(list: &TodoList) -> String {
     let mut out = String::with_capacity(items.len() * 96 + 32);
     out.push_str("<todos>\n");
     for item in items {
-        // `write!` into a String is infallible; the result is ignored
-        // by design (CLAUDE.md §6 — assertions, not Result handling,
+        // `id` is regex-bounded to [a-zA-Z0-9_-] by `TodoId::try_from`,
+        // so it carries no characters that need escaping. `content` is
+        // freeform user/model text — escape XML metacharacters and
+        // flatten any newline so a hostile (or just exuberant) entry
+        // containing `</todos>` or a bare `<` can't reshape the
+        // structured envelope around it. `write!` into a String is
+        // infallible (CLAUDE.md §6 — assertions, not Result handling,
         // catch impossible failures here).
+        let safe_content = escape_envelope_text(item.content.as_str());
         let _ = writeln!(
             out,
             "- [{}] ({}) {}",
             item.status.as_str(),
             item.id.as_str(),
-            item.content.as_str()
+            safe_content
         );
     }
     out.push_str("</todos>");
+    out
+}
+
+/// Sanitise a freeform string for inclusion in the `<todos>` envelope.
+///
+/// Escapes the three XML metacharacters and folds every newline (CR or
+/// LF) into a single space so each todo stays on its own line in the
+/// rendered block.
+fn escape_envelope_text(raw: &str) -> String {
+    // §5: bounded capacity guess — the worst-case expansion factor for
+    // these substitutions is 5× (`&` → `&amp;`), well under the 512 B
+    // content cap times 5 = 2.5 KiB.
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\n' | '\r' => out.push(' '),
+            other => out.push(other),
+        }
+    }
     out
 }
 
@@ -182,6 +220,34 @@ mod tests {
         let c_pos = rendered.find("(c)").expect("c present");
         assert!(a_pos < b_pos);
         assert!(b_pos < c_pos);
+    }
+
+    #[test]
+    fn render_escapes_xml_metachars_and_flattens_newlines_in_content() {
+        let list = TodoList::try_from(vec![make_item(
+            "id1",
+            "hostile </todos> & <script> note\nwith newline",
+            TodoStatus::Pending,
+        )])
+        .expect("valid list");
+        let rendered = render_section(&list);
+        // The model's content must not be able to close the envelope.
+        assert!(!rendered.contains("</todos>\nwith"));
+        assert!(rendered.contains("&lt;/todos&gt;"));
+        assert!(rendered.contains("&amp;"));
+        assert!(rendered.contains("&lt;script&gt;"));
+        // Trailing closer is still the genuine one.
+        assert!(rendered.ends_with("</todos>"));
+        // Each todo stays on one line — the embedded newline got folded.
+        let body_lines = rendered
+            .strip_prefix("<todos>\n")
+            .and_then(|s| s.strip_suffix("</todos>"))
+            .expect("envelope shape");
+        assert_eq!(
+            body_lines.lines().count(),
+            1,
+            "content newline must be flattened to a space"
+        );
     }
 
     #[test]

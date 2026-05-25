@@ -229,7 +229,13 @@ impl Agent {
         // the block format.
         let todos_block = match self.todos_store() {
             Some(store) => {
-                let list = store.get(session).await?;
+                // CLAUDE.md §5: every I/O await is wrapped. PK-lookup
+                // against a single row; the bound here just keeps a
+                // stalled pool/connection from holding the turn hostage.
+                let list =
+                    tokio::time::timeout(super::limits::TODOS_LOAD_TIMEOUT, store.get(session))
+                        .await
+                        .map_err(|_| AgentError::TodosLoadTimeout)??;
                 crate::tools::system::todos::render_section(&list)
             }
             None => String::new(),

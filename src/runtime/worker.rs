@@ -707,7 +707,7 @@ impl Worker {
         // than silently falling through to `Provider`.
         let reason = match err {
             AgentError::Cancelled => FailureReason::Cancelled,
-            AgentError::ProviderTimeout => FailureReason::Timeout,
+            AgentError::ProviderTimeout | AgentError::TodosLoadTimeout => FailureReason::Timeout,
             AgentError::HookDenied(d) => FailureReason::Hook(d.0),
             e @ (AgentError::Provider(_)
             | AgentError::Session(_)

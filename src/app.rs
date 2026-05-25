@@ -567,6 +567,7 @@ fn build_agent_from(pieces: &Collaborators, settings: &Settings) -> Agent {
     .with_hooks(HookChain::new())
     .with_clock(pieces.clock.clone())
     .with_tool_call_store(tool_call_store)
+    .with_todos_store(pieces.todos_store.clone())
     .build()
 }
 

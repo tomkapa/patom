@@ -20,6 +20,9 @@ pub enum AgentError {
     #[error("todos: {0}")]
     Todos(#[from] TodoStoreError),
 
+    #[error("todos pre-turn read timed out")]
+    TodosLoadTimeout,
+
     #[error("hook: {0}")]
     Hook(#[from] HookError),
 
