@@ -26,6 +26,12 @@ pub struct CatalogEntry {
 
 /// Every model Relay accepts on the chat path. Linear scan is fine — the slice
 /// is bounded by the source file. Adding a new model = one row here.
+///
+/// Test-only sentinel models (`test-model`, `test-model-openai`) live in
+/// [`TEST_CATALOG_EXTENSION`] and are spliced into this slice **only** when
+/// the `test-catalog` cargo feature is enabled (auto-enabled in `[dev-
+/// dependencies]`, never in `cargo build --release`). Production builds never
+/// expose them, so a release HTTP boundary cannot accept a sentinel name.
 pub const MODEL_CATALOG: &[CatalogEntry] = &[
     // Anthropic
     CatalogEntry {
@@ -66,12 +72,13 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         name: "deepseek-reasoner",
         provider: ProviderId::Deepseek,
     },
-    // Test-only sentinels. Real model names would also work here, but
-    // tests prefer to assert against a stable name that won't collide with
-    // a real ChatRequest in production traces. Keeping them as catalog
-    // entries (rather than gating with #[cfg(test)]) lets the
-    // integration-tests crate construct `Model` values without separate
-    // build-feature plumbing.
+];
+
+/// Test-only sentinel rows, off by default. Enabled via the `test-catalog`
+/// cargo feature, which is auto-enabled when integration tests pull in the
+/// crate as a dev-dependency. Release builds never see this slice.
+#[cfg(feature = "test-catalog")]
+const TEST_CATALOG_EXTENSION: &[CatalogEntry] = &[
     CatalogEntry {
         name: "test-model",
         provider: ProviderId::Anthropic,
@@ -129,14 +136,36 @@ impl Model {
 
     /// Every catalog entry, in declaration order. Bounded by the catalog.
     pub fn all() -> impl Iterator<Item = Self> {
-        MODEL_CATALOG.iter().map(|entry| Self { entry })
+        all_entries().iter().map(|entry| Self { entry })
     }
+}
+
+/// Active catalog slice. In release builds this is just [`MODEL_CATALOG`];
+/// when the `test-catalog` cargo feature is enabled (auto-enabled by
+/// `[dev-dependencies]`) the test sentinel rows are spliced in via a
+/// per-call static lazy join. Keeping the join out of `MODEL_CATALOG` itself
+/// means a release-mode HTTP boundary cannot accept the sentinel names.
+#[cfg(feature = "test-catalog")]
+fn all_entries() -> &'static [CatalogEntry] {
+    use std::sync::OnceLock;
+    static JOINED: OnceLock<Vec<CatalogEntry>> = OnceLock::new();
+    JOINED.get_or_init(|| {
+        let mut v = Vec::with_capacity(MODEL_CATALOG.len() + TEST_CATALOG_EXTENSION.len());
+        v.extend_from_slice(MODEL_CATALOG);
+        v.extend_from_slice(TEST_CATALOG_EXTENSION);
+        v
+    })
+}
+
+#[cfg(not(feature = "test-catalog"))]
+const fn all_entries() -> &'static [CatalogEntry] {
+    MODEL_CATALOG
 }
 
 impl TryFrom<&str> for Model {
     type Error = UnknownModel;
     fn try_from(raw: &str) -> Result<Self, Self::Error> {
-        MODEL_CATALOG
+        all_entries()
             .iter()
             .find(|entry| entry.name == raw)
             .map(|entry| Self { entry })
@@ -214,7 +243,7 @@ mod tests {
 
     #[test]
     fn every_catalog_entry_round_trips() {
-        for entry in MODEL_CATALOG {
+        for entry in all_entries() {
             let parsed = Model::try_from(entry.name).expect("catalog name parses");
             assert_eq!(parsed.as_str(), entry.name);
             assert_eq!(parsed.provider(), entry.provider);
@@ -235,7 +264,7 @@ mod tests {
     #[test]
     fn catalog_has_no_duplicate_names() {
         let mut seen = HashSet::new();
-        for entry in MODEL_CATALOG {
+        for entry in all_entries() {
             assert!(
                 seen.insert(entry.name),
                 "duplicate catalog entry: {}",

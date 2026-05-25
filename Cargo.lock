@@ -3095,6 +3095,7 @@ dependencies = [
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "rand 0.8.6",
+ "relay-rs",
  "reqwest 0.13.3",
  "rmcp",
  "serde",

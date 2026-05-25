@@ -117,6 +117,8 @@ impl CreateAgentTool {
                 },
                 "model": {
                     "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
                     "description": "Catalog model id (e.g. claude-haiku-4-5, gpt-4o-mini, deepseek-chat). Optional; omit to inherit the workspace default.",
                 },
                 "allowed_mcp_tools": {

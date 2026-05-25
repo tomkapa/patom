@@ -385,10 +385,13 @@ impl AgentFactoryPieces {
         let toolbox = ToolBox::new(self.builtin_tools.clone(), dynamic);
         let model = self.model_resolver.resolve(record, self.providers.as_ref());
         // Routed-provider attribution lands as a structured event so dashboards
-        // can break down per-agent model selection over time. `source` is
-        // `"agent"` when the row pinned its own model, `"default"` when the
-        // resolver fell back to the workspace default (CLAUDE.md §2).
-        let source = if record.model.is_some() {
+        // can break down per-agent model selection over time. `relay.model.source`
+        // is `"agent"` only when the resolved model matches the row's pin —
+        // otherwise the resolver degraded a missing-provider pin back to the
+        // default, and we want dashboards to see that as `"default"` so
+        // degraded routing is visible, not hidden under the original pin
+        // (CLAUDE.md §2; `relay.*` prefix for custom attributes).
+        let source = if record.model == Some(model) {
             "agent"
         } else {
             "default"
@@ -398,7 +401,7 @@ impl AgentFactoryPieces {
             relay.agent.id = %record.id,
             relay.provider = model.provider().as_str(),
             relay.model = %model,
-            source,
+            relay.model.source = source,
         );
         AgentBuilder::new(
             self.providers.clone(),

@@ -16,20 +16,21 @@ use crate::types::{ModelId, SecretString};
 
 /// OpenAI-Chat-Completions implementation of [`LlmProvider`].
 ///
-/// The `name` field carries the *backend label* this instance was constructed
-/// for ("openai", "deepseek", …). Two instances can point at the same SDK with
-/// different base URLs and API keys — the label is what surfaces in tracing
-/// (`relay.provider` and the `provider.<name>.send` span) so analytics can
-/// distinguish them.
+/// The `backend` field carries the [`ProviderId`] this instance was
+/// constructed for (`Openai`, `Deepseek`, …). Two instances can point at the
+/// same SDK with different base URLs and API keys — the id is what surfaces
+/// in tracing (`relay.provider`) so analytics can distinguish them. Typing
+/// it as `ProviderId` instead of `&'static str` enforces the low-cardinality
+/// label invariant at the type level (CLAUDE.md §2).
 pub struct OpenAiProvider {
-    name: &'static str,
+    backend: crate::provider::ProviderId,
     client: Client<OpenAIConfig>,
 }
 
 impl std::fmt::Debug for OpenAiProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenAiProvider")
-            .field("name", &self.name)
+            .field("backend", &self.backend)
             .finish_non_exhaustive()
     }
 }
@@ -38,20 +39,23 @@ impl OpenAiProvider {
     /// Construct a provider against an OpenAI-Chat-Completions-compatible endpoint.
     /// Pass `base_url` to point at DeepSeek (`https://api.deepseek.com/v1`), Together,
     /// Groq, or any in-house gateway. Omit it to hit the public OpenAI API.
-    /// `name` is the low-cardinality backend label used in tracing fields.
-    pub fn new(name: &'static str, api_key: &SecretString, base_url: Option<String>) -> Self {
+    /// `backend` is the low-cardinality [`ProviderId`] used in tracing fields.
+    pub fn new(
+        backend: crate::provider::ProviderId,
+        api_key: &SecretString,
+        base_url: Option<String>,
+    ) -> Self {
         // §6: assert the boundary precondition the type system already proves, so a
         // future refactor that loosens `SecretString` does not silently let an empty key
         // through.
         assert!(!api_key.is_empty(), "SecretString invariant: non-empty");
-        assert!(!name.is_empty(), "provider name invariant: non-empty");
 
         let mut config = OpenAIConfig::new().with_api_key(api_key.expose());
         if let Some(url) = base_url {
             config = config.with_api_base(url);
         }
         Self {
-            name,
+            backend,
             client: Client::with_config(config),
         }
     }
@@ -59,7 +63,7 @@ impl OpenAiProvider {
     /// Sugar for the public OpenAI backend.
     #[must_use]
     pub fn openai(api_key: &SecretString, base_url: Option<String>) -> Self {
-        Self::new("openai", api_key, base_url)
+        Self::new(crate::provider::ProviderId::Openai, api_key, base_url)
     }
 
     /// Sugar for DeepSeek. Defaults `base_url` to the public DeepSeek host
@@ -67,14 +71,14 @@ impl OpenAiProvider {
     #[must_use]
     pub fn deepseek(api_key: &SecretString, base_url: Option<String>) -> Self {
         let base = base_url.or_else(|| Some("https://api.deepseek.com/v1".to_owned()));
-        Self::new("deepseek", api_key, base)
+        Self::new(crate::provider::ProviderId::Deepseek, api_key, base)
     }
 }
 
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     fn name(&self) -> &'static str {
-        self.name
+        self.backend.as_str()
     }
 
     // GenAI semconv fields are declared `Empty` here and recorded inside the body so
@@ -88,7 +92,7 @@ impl LlmProvider for OpenAiProvider {
         name = "provider.openai.send",
         skip_all,
         fields(
-            relay.provider = self.name,
+            relay.provider = self.backend.as_str(),
             relay.model = %request.model,
             relay.messages = request.messages.len(),
             relay.tools = request.tools.len(),
@@ -106,7 +110,7 @@ impl LlmProvider for OpenAiProvider {
         ),
     )]
     async fn send(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
-        gen_ai::record_chat_request(self.name, &request);
+        gen_ai::record_chat_request(self.backend.as_str(), &request);
 
         let mut messages = Vec::with_capacity(request.messages.len() + 1);
         messages.push(system_message(&request.system));
