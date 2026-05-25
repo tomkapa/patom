@@ -1,13 +1,13 @@
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { BarChart3, Check, ChevronsUpDown, Settings2, Shield } from "lucide-react";
 import { MenuRail } from "../organisms/MenuRail";
 import { GlobalErrorBanner } from "../organisms/GlobalErrorBanner";
 import { Monogram } from "../atoms/Monogram";
+import { Dropdown } from "../molecules/Dropdown";
 import { useT } from "../../i18n";
 import { cn } from "../../lib/utils";
 import { useAgents } from "../../hooks/useAgents";
-import { useDismissable } from "../../hooks/useDismissable";
 import type { Agent } from "../../types/api";
 
 /** Per-agent settings sub-navigation. `general` and `tools` are real
@@ -145,51 +145,42 @@ export function AgentLayout({
 function AgentSwitcher({ current }: { current: Agent | null }) {
   const { t } = useT();
   const nav = useNavigate();
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const close = useCallback(() => setOpen(false), []);
-  useDismissable(rootRef, open, close);
   const list = useAgents();
   const agents = list.data ?? [];
 
-  const pick = (id: string) => {
-    setOpen(false);
-    if (id !== current?.id) nav(`/agents/${id}`);
-  };
-
   return (
-    <div ref={rootRef} className="relative mt-2">
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={t("agent.detail.switcher.aria")}
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-ink)]"
-      >
-        <Monogram
-          name={current?.name ?? "—"}
-          id={current?.id}
-          size={32}
-          tone="moss"
-        />
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-[var(--font-display)] text-[18px] leading-tight font-bold text-[var(--color-ink)]">
-            {current?.name ?? "…"}
-          </div>
-        </div>
-        <ChevronsUpDown
-          className="h-4 w-4 shrink-0 text-[var(--color-muted)]"
-          strokeWidth={1.75}
-        />
-      </button>
-
-      {open ? (
-        <ul
-          role="listbox"
+    <Dropdown
+      rootClassName="mt-2"
+      menuClassName="max-h-[60vh] overflow-y-auto border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md scroll-thin"
+      renderTrigger={({ open, toggle }) => (
+        <button
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
           aria-label={t("agent.detail.switcher.aria")}
-          className="absolute left-0 right-0 top-full z-20 mt-1 max-h-[60vh] overflow-y-auto border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md scroll-thin"
+          onClick={toggle}
+          className="flex w-full items-center gap-2.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-ink)]"
         >
+          <Monogram
+            name={current?.name ?? "—"}
+            id={current?.id}
+            size={32}
+            tone="moss"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-[var(--font-display)] text-[18px] leading-tight font-bold text-[var(--color-ink)]">
+              {current?.name ?? "…"}
+            </div>
+          </div>
+          <ChevronsUpDown
+            className="h-4 w-4 shrink-0 text-[var(--color-muted)]"
+            strokeWidth={1.75}
+          />
+        </button>
+      )}
+    >
+      {({ close }) => (
+        <ul role="listbox" aria-label={t("agent.detail.switcher.aria")}>
           {agents.length === 0 ? (
             <li className="px-3 py-2 text-[12.5px] text-[var(--color-muted)]">
               {t("agent.detail.switcher.empty")}
@@ -203,7 +194,10 @@ function AgentSwitcher({ current }: { current: Agent | null }) {
                     type="button"
                     role="option"
                     aria-selected={isActive}
-                    onClick={() => pick(a.id)}
+                    onClick={() => {
+                      close();
+                      if (!isActive) nav(`/agents/${a.id}`);
+                    }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--color-paper-2)]"
                   >
                     <Monogram name={a.name} id={a.id} size={24} tone="moss" />
@@ -219,8 +213,8 @@ function AgentSwitcher({ current }: { current: Agent | null }) {
             })
           )}
         </ul>
-      ) : null}
-    </div>
+      )}
+    </Dropdown>
   );
 }
 

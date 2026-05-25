@@ -1,13 +1,13 @@
-import { useCallback, useRef, useState } from "react";
+import { useState } from "react";
 import { LogOut } from "lucide-react";
 import { useAuthStore } from "../../stores/authStore";
 import { useLogout } from "../../hooks/useLogout";
-import { useDismissable } from "../../hooks/useDismissable";
 import { useT } from "../../i18n";
 import type { TranslationKey } from "../../i18n/en";
 import { api } from "../../lib/api";
 import { initials } from "../../lib/utils";
 import type { Language } from "../../types/api";
+import { Dropdown } from "../molecules/Dropdown";
 import { ImageUploader } from "../molecules/ImageUploader";
 
 // Exhaustive list of selectable languages. Adding a `Language` variant
@@ -23,12 +23,8 @@ export function UserMenu() {
   const me = useAuthStore((s) => s.me);
   const logout = useLogout();
   const { t, language } = useT();
-  const [open, setOpen] = useState(false);
   const [langError, setLangError] = useState<string | null>(null);
   const [langPending, setLangPending] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const close = useCallback(() => setOpen(false), []);
-  useDismissable(rootRef, open, close);
 
   if (!me) return null;
 
@@ -64,33 +60,34 @@ export function UserMenu() {
   const displayName = me.user.display_name ?? me.user.email;
 
   return (
-    <div ref={rootRef} className="relative">
-      <button
-        type="button"
-        aria-label="User menu"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className="flex h-9 w-9 items-center justify-center overflow-hidden border border-white bg-[var(--color-moss)] transition-colors hover:bg-[var(--color-moss-deep)]"
-      >
-        {me.user.avatar_url ? (
-          <img
-            src={me.user.avatar_url}
-            alt=""
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <span className="font-mono text-[11px] font-bold tracking-tight text-white">
-            {initials(displayName)}
-          </span>
-        )}
-      </button>
-
-      {open ? (
-        <div
-          role="menu"
-          className="absolute bottom-0 left-full z-20 ml-2 w-[240px] border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md"
+    <Dropdown
+      placement="right-bottom"
+      menuClassName="w-[240px] border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md"
+      renderTrigger={({ open, toggle }) => (
+        <button
+          type="button"
+          aria-label="User menu"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={toggle}
+          className="flex h-9 w-9 items-center justify-center overflow-hidden border border-white bg-[var(--color-moss)] transition-colors hover:bg-[var(--color-moss-deep)]"
         >
+          {me.user.avatar_url ? (
+            <img
+              src={me.user.avatar_url}
+              alt=""
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <span className="font-mono text-[11px] font-bold tracking-tight text-white">
+              {initials(displayName)}
+            </span>
+          )}
+        </button>
+      )}
+    >
+      {() => (
+        <div role="menu">
           <div className="border-b border-[var(--color-line)] px-3 py-2">
             <div className="truncate text-[12px] font-semibold text-[var(--color-ink)]">
               {displayName}
@@ -164,7 +161,7 @@ export function UserMenu() {
             {t("usermenu.signout")}
           </button>
         </div>
-      ) : null}
-    </div>
+      )}
+    </Dropdown>
   );
 }

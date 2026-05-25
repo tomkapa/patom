@@ -1,9 +1,8 @@
-import { useCallback, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { useAuthStore } from "../../stores/authStore";
 import { useActiveOrg } from "../../hooks/useMe";
 import { useSwitchOrg } from "../../hooks/useSwitchOrg";
-import { useDismissable } from "../../hooks/useDismissable";
+import { Dropdown } from "../molecules/Dropdown";
 import { Monogram } from "../atoms/Monogram";
 import { Spinner } from "../atoms/Spinner";
 
@@ -11,63 +10,60 @@ export function OrgSwitcher() {
   const me = useAuthStore((s) => s.me);
   const activeOrg = useActiveOrg();
   const switchOrg = useSwitchOrg();
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const close = useCallback(() => setOpen(false), []);
-  useDismissable(rootRef, open, close);
 
   if (!me || !activeOrg) return null;
 
-  const onPick = (orgId: string) => {
-    if (switchOrg.isPending) return;
-    if (orgId === me.active_org_id) {
-      setOpen(false);
-      return;
-    }
-    switchOrg.mutate(orgId, { onSettled: () => setOpen(false) });
-  };
-
   return (
-    <div ref={rootRef} className="relative w-full">
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label="Switch organization"
-        onClick={() => setOpen((v) => !v)}
-        disabled={switchOrg.isPending}
-        className="flex w-full items-center justify-between gap-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-ink)]"
-      >
-        <div className="min-w-0">
-          <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted)]">
-            Relay
-          </div>
-          <div className="mt-0.5 truncate font-[var(--font-display)] text-[18px] font-bold tracking-tight text-[var(--color-ink)]">
-            {activeOrg.name}
-          </div>
-        </div>
-        {switchOrg.isPending ? (
-          <Spinner size={14} />
-        ) : (
-          <ChevronDown className="h-4 w-4 shrink-0 text-[var(--color-muted)]" />
-        )}
-      </button>
-
-      {open ? (
-        <ul
-          role="listbox"
-          aria-label="Organizations"
-          className="absolute left-0 right-0 top-full z-20 mt-1 max-h-[60vh] overflow-y-auto border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md scroll-thin"
+    <Dropdown
+      rootClassName="w-full"
+      menuClassName="max-h-[60vh] overflow-y-auto border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md scroll-thin"
+      renderTrigger={({ open, toggle }) => (
+        <button
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label="Switch organization"
+          onClick={toggle}
+          disabled={switchOrg.isPending}
+          className="flex w-full items-center justify-between gap-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-ink)]"
         >
+          <div className="min-w-0">
+            <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted)]">
+              Relay
+            </div>
+            <div className="mt-0.5 truncate font-[var(--font-display)] text-[18px] font-bold tracking-tight text-[var(--color-ink)]">
+              {activeOrg.name}
+            </div>
+          </div>
+          {switchOrg.isPending ? (
+            <Spinner size={14} />
+          ) : (
+            <ChevronDown className="h-4 w-4 shrink-0 text-[var(--color-muted)]" />
+          )}
+        </button>
+      )}
+    >
+      {({ close }) => (
+        <ul role="listbox" aria-label="Organizations">
           {me.orgs.map((org) => {
             const isActive = org.id === me.active_org_id;
+            const onPick = () => {
+              if (switchOrg.isPending) return;
+              if (isActive) {
+                close();
+                return;
+              }
+              // Hold the menu open during the round-trip so the spinner on
+              // the trigger gives users feedback; close once it settles.
+              switchOrg.mutate(org.id, { onSettled: close });
+            };
             return (
               <li key={org.id}>
                 <button
                   type="button"
                   role="option"
                   aria-selected={isActive}
-                  onClick={() => onPick(org.id)}
+                  onClick={onPick}
                   disabled={switchOrg.isPending}
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--color-paper-2)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -88,7 +84,7 @@ export function OrgSwitcher() {
             );
           })}
         </ul>
-      ) : null}
-    </div>
+      )}
+    </Dropdown>
   );
 }

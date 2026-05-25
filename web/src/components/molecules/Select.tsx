@@ -1,7 +1,6 @@
-import { useCallback, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Check, ChevronsUpDown } from "lucide-react";
-import { useDismissable } from "../../hooks/useDismissable";
+import { Dropdown } from "./Dropdown";
 import { cn } from "../../lib/utils";
 
 export type SelectOption<V extends string> = {
@@ -20,7 +19,9 @@ type RenderTrigger<V extends string> = (state: {
 
 /** Generic single-select dropdown. The default trigger matches the
  *  agent-detail "Model" chip in design.pen `qZPNz` (border, mono label,
- *  ChevronsUpDown affordance); callers can override via `renderTrigger`. */
+ *  ChevronsUpDown affordance); callers can override via `renderTrigger`.
+ *  Built on the `Dropdown` primitive so all open/close behaviour stays
+ *  in lockstep with the other dropdowns in the app. */
 export function Select<V extends string>({
   value,
   options,
@@ -42,46 +43,32 @@ export function Select<V extends string>({
   ariaLabel: string;
   className?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const close = useCallback(() => setOpen(false), []);
-  useDismissable(rootRef, open, close);
-
   const selected = options.find((o) => o.value === value) ?? null;
 
-  const onPick = (v: V) => {
-    setOpen(false);
-    if (v !== value) onChange(v);
-  };
-
-  const trigger = renderTrigger
-    ? renderTrigger({ selected, open })
-    : defaultTrigger({ selected, placeholder });
-
   return (
-    <div
-      ref={rootRef}
-      className={cn("relative", className)}
-      style={width !== undefined ? { width } : undefined}
+    <Dropdown
+      rootClassName={className}
+      menuClassName="max-h-[60vh] overflow-y-auto border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md scroll-thin"
+      renderTrigger={({ open, toggle }) => (
+        <div style={width !== undefined ? { width } : undefined}>
+          <button
+            type="button"
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            aria-label={ariaLabel}
+            disabled={disabled}
+            onClick={toggle}
+            className="flex w-full items-center justify-between gap-2 border border-[var(--color-line-strong)] bg-[var(--color-card)] px-3 py-2 text-left outline-none transition-colors hover:bg-[var(--color-paper-2)] focus-visible:ring-1 focus-visible:ring-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {renderTrigger
+              ? renderTrigger({ selected, open })
+              : defaultTrigger({ selected, placeholder })}
+          </button>
+        </div>
+      )}
     >
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={ariaLabel}
-        disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-2 border border-[var(--color-line-strong)] bg-[var(--color-card)] px-3 py-2 text-left outline-none transition-colors hover:bg-[var(--color-paper-2)] focus-visible:ring-1 focus-visible:ring-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {trigger}
-      </button>
-
-      {open ? (
-        <ul
-          role="listbox"
-          aria-label={ariaLabel}
-          className="scroll-thin absolute top-full right-0 left-0 z-20 mt-1 max-h-[60vh] overflow-y-auto border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md"
-        >
+      {({ close }) => (
+        <ul role="listbox" aria-label={ariaLabel}>
           {options.length === 0 ? (
             <li className="px-3 py-2 text-[12.5px] text-[var(--color-muted)]">
               {placeholder ?? "No options"}
@@ -95,7 +82,10 @@ export function Select<V extends string>({
                     type="button"
                     role="option"
                     aria-selected={isActive}
-                    onClick={() => onPick(opt.value)}
+                    onClick={() => {
+                      close();
+                      if (opt.value !== value) onChange(opt.value);
+                    }}
                     className={cn(
                       "flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--color-paper-2)]",
                       isActive && "bg-[var(--color-moss-tint)]",
@@ -125,8 +115,8 @@ export function Select<V extends string>({
             })
           )}
         </ul>
-      ) : null}
-    </div>
+      )}
+    </Dropdown>
   );
 }
 
