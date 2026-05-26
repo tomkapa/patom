@@ -76,3 +76,26 @@ export function useAgentTurns(
     staleTime: 0,
   });
 }
+
+const TURN_DETAIL_KEY = (requestId: string) =>
+  ["turns", requestId, "detail"] as const;
+
+/** Drawer payload for one turn. Enabled only when the caller passes a
+ *  non-null request id — the drawer mounts on row expand and unmounts
+ *  on collapse, so the hook only fires while the row is open.
+ *
+ *  Stale-after: 30 s. The data is audit-flavoured (post-turn snapshot),
+ *  not realtime — refetching aggressively would burn the BE without
+ *  giving the operator any new information mid-turn.
+ *
+ *  Mirrors `src/http/routes/turns.rs::TurnDetailResponse`. */
+export function useTurnDetail(requestId: string | null) {
+  return useQuery({
+    queryKey: requestId
+      ? TURN_DETAIL_KEY(requestId)
+      : (["turns", "none", "detail"] as const),
+    enabled: Boolean(requestId),
+    queryFn: () => api.turnDetail(requestId ?? ""),
+    staleTime: 30_000,
+  });
+}

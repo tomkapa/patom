@@ -5,6 +5,7 @@ import { Button } from "../../atoms/Button";
 import { Spinner } from "../../atoms/Spinner";
 import { EmptyState } from "../../molecules/EmptyState";
 import type { AgentTurnRow } from "../../../types/api";
+import { TurnDrawer } from "./TurnDrawer";
 
 const COL_WIDTHS =
   "minmax(90px,110px) minmax(60px,80px) minmax(80px,110px) minmax(140px,200px) minmax(80px,110px) minmax(80px,110px) minmax(0,1fr) 28px";
@@ -15,7 +16,9 @@ type SortDir = "asc" | "desc";
 /** Mirrors the grid in AgentActivityCard. Sortable headers, reflection
  *  rows tinted moss, failed rows tinted rose, prompt-edit separator rows
  *  inserted whenever consecutive turns straddle a version boundary, and
- *  an "Load more" button for `useInfiniteQuery` cursor pagination. */
+ *  a "Load more" button for `useInfiniteQuery` cursor pagination.
+ *
+ *  Click a row to mount `TurnDrawer` in-place below it (doc §5.4). */
 export function TurnsTimeline({
   pages,
   isLoading,
@@ -31,6 +34,7 @@ export function TurnsTimeline({
 }) {
   const [sortKey, setSortKey] = useState<SortKey>("started_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const sorted = useMemo(() => sortRows(pages, sortKey, sortDir), [pages, sortKey, sortDir]);
 
@@ -61,6 +65,10 @@ export function TurnsTimeline({
     }
   };
 
+  const toggleExpanded = (requestId: string) => {
+    setExpanded((cur) => (cur === requestId ? null : requestId));
+  };
+
   return (
     <SectionCard header={<SectionHeader eyebrow="TURNS" />}>
       <div
@@ -89,7 +97,12 @@ export function TurnsTimeline({
           r.type === "sep" ? (
             <SeparatorRow key={`sep-${i}`} from={r.from} to={r.to} />
           ) : (
-            <TurnRowView key={r.row.request_id} row={r.row} />
+            <TurnRowView
+              key={r.row.request_id}
+              row={r.row}
+              open={expanded === r.row.request_id}
+              onToggle={() => toggleExpanded(r.row.request_id)}
+            />
           ),
         )
       )}
@@ -127,7 +140,15 @@ function HeaderCell({
   );
 }
 
-function TurnRowView({ row }: { row: AgentTurnRow }) {
+function TurnRowView({
+  row,
+  open,
+  onToggle,
+}: {
+  row: AgentTurnRow;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const tone =
     row.status === "failed"
       ? "bg-[var(--color-rose-soft)]"
@@ -143,37 +164,48 @@ function TurnRowView({ row }: { row: AgentTurnRow }) {
         ? "✗ tmo"
         : "✓";
   return (
-    <div
-      className={`grid items-center gap-3 border-b border-[var(--color-line)] px-5 py-2.5 last:border-b-0 ${tone}`}
-      style={{ gridTemplateColumns: COL_WIDTHS }}
-    >
-      <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-muted)]">
-        {formatTime(row.started_at)}
-      </span>
-      <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]">
-        v{row.prompt_version}
-      </span>
-      <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]">
-        {row.kind}
-      </span>
-      <span className="truncate font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]" title={row.model}>
-        {row.model}
-      </span>
-      <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]" title={tooltip}>
-        {tokenTotal.toLocaleString()}
-      </span>
-      <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]">
-        {formatMs(row.duration_ms)}
-      </span>
-      <span
-        className={`font-[var(--font-mono)] text-[12px] ${row.status === "failed" ? "text-[var(--color-rose)] font-semibold" : "text-[var(--color-ink)]"}`}
+    <>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className={`grid w-full items-center gap-3 border-b border-[var(--color-line)] px-5 py-2.5 text-left last:border-b-0 hover:bg-[var(--color-paper-2)] ${tone}`}
+        style={{ gridTemplateColumns: COL_WIDTHS }}
       >
-        {outcome}
-      </span>
-      <span className="text-[var(--color-muted)]" aria-hidden>
-        ▸
-      </span>
-    </div>
+        <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-muted)]">
+          {formatTime(row.started_at)}
+        </span>
+        <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]">
+          v{row.prompt_version}
+        </span>
+        <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]">
+          {row.kind}
+        </span>
+        <span className="truncate font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]" title={row.model}>
+          {row.model}
+        </span>
+        <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]" title={tooltip}>
+          {tokenTotal.toLocaleString()}
+        </span>
+        <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]">
+          {formatMs(row.duration_ms)}
+        </span>
+        <span
+          className={`font-[var(--font-mono)] text-[12px] ${row.status === "failed" ? "text-[var(--color-rose)] font-semibold" : "text-[var(--color-ink)]"}`}
+        >
+          {outcome}
+        </span>
+        <span className="text-[var(--color-muted)]" aria-hidden>
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open ? (
+        <TurnDrawer
+          requestId={row.request_id}
+          onCollapse={() => onToggle()}
+        />
+      ) : null}
+    </>
   );
 }
 
