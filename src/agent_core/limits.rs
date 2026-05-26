@@ -17,6 +17,13 @@ pub const DEFAULT_MAX_TURNS: u32 = 12;
 /// fans out an unreasonable number of parallel calls.
 pub const MAX_TOOL_CALLS_PER_TURN: usize = 16;
 
+/// Hard cap on hook evaluations recorded for a single turn.
+///
+/// Defends the per-turn drawer join (`/turns/:id`) — `hook_events` lands in slice
+/// 3 but the cap belongs next to the tool-call cap so the join knows its ceiling
+/// today.
+pub const MAX_HOOKS_PER_TURN: usize = 32;
+
 /// Per-call timeout for `LlmProvider::send`. CLAUDE.md §5: every I/O await is wrapped.
 pub const PROVIDER_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 

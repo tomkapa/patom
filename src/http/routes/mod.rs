@@ -17,6 +17,7 @@ mod memory;
 mod models;
 pub(super) mod prompts;
 mod threads;
+mod turns;
 mod uploads;
 
 use axum::Router;
@@ -55,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         .merge(memory::router())
         .merge(models::router())
         .merge(threads::router())
+        .merge(turns::router())
         .merge(me::router())
         .merge(uploads::router())
         // Slack install endpoint — signed-in user only.

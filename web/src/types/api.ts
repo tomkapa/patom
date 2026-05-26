@@ -526,3 +526,93 @@ export type LogsKindFilter = TurnKind | "all";
 
 /** Compare-window mode. */
 export type LogsCompareMode = "prev_window" | "none";
+
+// ─── Logs & Metrics — turn drawer ─────────────────────────────────────
+// Wire types for `GET /turns/{request_id}` (slice 2). Mirrors
+// `src/http/routes/turns.rs::TurnDetailResponse`; see doc/logs_metrics_tab.md §5.4.
+
+/** `turn_metrics` row + the parent `prompt_requests.failure_reason`,
+ *  joined into one payload for the drawer header chips. */
+export type TurnMetrics = {
+  request_id: string;
+  session_id: string;
+  agent_id: string;
+  prompt_version_id: string;
+  /** "normal" | "reflection" | "resolution" — mirrors the
+   *  `prompt_requests.kind` enum. */
+  kind: string;
+  model: string;
+  /** "anthropic" | "openai" — mirrors the `turn_metrics.provider`
+   *  CHECK constraint. */
+  provider: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number | null;
+  cache_read_tokens: number | null;
+  duration_ms: number;
+  /** "end_turn" | "tool_use" | "length" | "timeout" | … — model- /
+   *  provider-defined. The drawer just renders the string. */
+  stop_reason: string;
+  history_count: number;
+  started_at: string;
+  created_at: string;
+  /** Non-null only when the parent request failed; the drawer paints a
+   *  rose banner with this text when present. */
+  failure_reason: string | null;
+};
+
+/** One reasoning block extracted from `session_messages.body`. The
+ *  drawer collapses these by default and shows the byte count up-front
+ *  so the operator can decide whether to expand. */
+export type TurnReasoningBlock = {
+  text: string;
+  byte_count: number;
+};
+
+/** One `tool_calls` row scoped to a single turn. Mirrors `AgentToolCall`
+ *  one-for-one but with `mcp_server_alias` instead of catalog id (the
+ *  drawer renders the alias inline). */
+export type TurnToolCall = {
+  id: string;
+  tool_name: string;
+  mcp_server_id: string | null;
+  mcp_server_alias: string | null;
+  started_at: string;
+  duration_ms: number;
+  is_error: boolean;
+  error_message: string | null;
+};
+
+/** One `memory_events` row attributed to this turn (`source_turn_id =
+ *  request_id`). Mirrors the existing `MemoryEvent` shape narrowed to
+ *  the fields the drawer renders. */
+export type TurnMemoryEvent = {
+  id: string;
+  /** "write" | "update" | "forget" — mirrors `memory_events.mutation`. */
+  mutation: string;
+  target_memory_id: string;
+  content_before: string | null;
+  content_after: string | null;
+  created_at: string;
+};
+
+/** `agent_prompt_versions` snapshot for the version that was active when
+ *  this turn ran. Read-only here; the restore action lives on a separate
+ *  endpoint (slice 3). */
+export type TurnPromptVersion = {
+  id: string;
+  version: number;
+  system_prompt: string;
+  model: string | null;
+  edited_by: string | null;
+  created_at: string;
+};
+
+/** Full payload for `GET /turns/{request_id}`. */
+export type TurnDetail = {
+  turn: TurnMetrics;
+  reasoning_blocks: TurnReasoningBlock[];
+  tool_calls: TurnToolCall[];
+  memory_writes: TurnMemoryEvent[];
+  prompt_version: TurnPromptVersion;
+};

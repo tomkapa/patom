@@ -637,6 +637,112 @@ function buildTurnsFixture(qs: URLSearchParams) {
   return { items: page, next_cursor };
 }
 
+// Deterministic per-turn drawer payload (slice 2). Same shape as
+// `TurnDetail` in web/src/types/api.ts and `TurnDetailResponse` in
+// src/http/routes/turns.rs. One fixture covers every request_id — the
+// drawer's contract is per-row, not per-list, so the mock can return
+// the same body regardless. Slice 1's seed will share these
+// request_ids when its timeline rows are wired up.
+//
+// Fixture matches the example in doc/logs_metrics_tab.md §5 — the
+// 04:09:22 timeout row with model `claude-opus-4-7`.
+const TURN_DETAIL_FIXTURE_REQUEST_ID = "82a3f000-0000-0000-0000-000000000099";
+
+type TurnDetailFixture = {
+  turn: Record<string, unknown>;
+  reasoning_blocks: { text: string; byte_count: number }[];
+  tool_calls: Record<string, unknown>[];
+  memory_writes: Record<string, unknown>[];
+  prompt_version: Record<string, unknown>;
+};
+
+function buildTurnDetail(requestId: string): TurnDetailFixture {
+  // We treat the requested id as authoritative — it lets playwright
+  // navigate to /turns/<row id> without first looking the row up.
+  const id = requestId || TURN_DETAIL_FIXTURE_REQUEST_ID;
+  const reasoning =
+    "User asked for the latest CVE feed. I should query the security MCP server first, " +
+    "then summarize. There's no cached result so I'll call search.cve_lookup with severity>=high " +
+    "and limit 50, then de-dupe by CVE id before passing to web_search for context.";
+  return {
+    turn: {
+      request_id: id,
+      session_id: "82a3f000-0000-0000-0000-0000000aaaaa",
+      agent_id: ATLAS_ID,
+      prompt_version_id: "82a3f000-0000-0000-0000-000000007007",
+      kind: "normal",
+      model: "claude-opus-4-7",
+      provider: "anthropic",
+      input_tokens: 7200,
+      output_tokens: 0,
+      cache_creation_tokens: null,
+      cache_read_tokens: 1800,
+      duration_ms: 28_000,
+      stop_reason: "timeout",
+      history_count: 42,
+      started_at: MIN_2_AGO,
+      created_at: NOW,
+      failure_reason: "provider deadline exceeded (25s) waiting on tool result",
+    },
+    reasoning_blocks: [
+      { text: reasoning, byte_count: reasoning.length },
+    ],
+    tool_calls: [
+      {
+        id: "tc-0001",
+        tool_name: "search.cve_lookup",
+        mcp_server_id: "11111111-1111-7111-8111-111111111111",
+        mcp_server_alias: "security-mcp",
+        started_at: MIN_2_AGO,
+        duration_ms: 1_400,
+        is_error: false,
+        error_message: null,
+      },
+      {
+        id: "tc-0002",
+        tool_name: "web_search",
+        mcp_server_id: "22222222-2222-7222-8222-222222222222",
+        mcp_server_alias: "upstream",
+        started_at: MIN_2_AGO,
+        duration_ms: 25_000,
+        is_error: true,
+        error_message: "upstream 503",
+      },
+      {
+        id: "tc-0003",
+        tool_name: "memory.read",
+        mcp_server_id: null,
+        mcp_server_alias: null,
+        started_at: MIN_2_AGO,
+        duration_ms: 700,
+        is_error: false,
+        error_message: null,
+      },
+    ],
+    memory_writes: [
+      {
+        id: "mev-0001",
+        mutation: "write",
+        target_memory_id: "mem-cve",
+        content_before: null,
+        content_after:
+          "cve.cve_lookup_failed · last_seen 04:09 · falls back to web_search when security-mcp returns 503",
+        created_at: MIN_2_AGO,
+      },
+    ],
+    prompt_version: {
+      id: "82a3f000-0000-0000-0000-000000007007",
+      version: 7,
+      system_prompt:
+        "You are a security analyst. When asked about CVEs, prefer the security MCP server's " +
+        "`search.cve_lookup` tool. Cite CVE ids and severity. Keep responses under 200 words.",
+      model: "claude-opus-4-7",
+      edited_by: USER_ID,
+      created_at: DAY_3_AGO,
+    },
+  };
+}
+
 function maybeOAuthStart(id: string): Response {
   // Mock authorize_url just bounces to the fake callback success — gives
   // the FE a usable round-trip without a vendor. We also simulate the
@@ -1002,6 +1108,19 @@ const server = Bun.serve({
 
     if (path === "/auth/switch-org" && method === "POST") {
       return json({ active_org_id: ORG_ID, role: "owner" });
+    }
+
+    // ─── Logs & Metrics turn drawer (slice 2) ─────────────────────────
+    // GET /turns/:request_id — see doc/logs_metrics_tab.md §5.4. The
+    // mock returns one deterministic payload for any request_id so
+    // playwright can drive the drawer without depending on Slice 1's
+    // not-yet-merged timeline endpoint. When Slice 1's mock lands its
+    // /agents/:id/turns rows, their `request_id`s flow straight into
+    // this handler unchanged.
+    const turnDetailMatch = path.match(/^\/turns\/([^/]+)$/);
+    if (turnDetailMatch && method === "GET") {
+      const requestId = turnDetailMatch[1]!;
+      return json(buildTurnDetail(requestId));
     }
 
     return empty(404);

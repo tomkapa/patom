@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentToolCallList,
   AgentTurnsList,
+  TurnDetail,
   CreateMcpServerRequest,
   CreateMemoryNoteRequest,
   CredentialInput,
@@ -138,7 +139,7 @@ export const api = {
   },
 
   // ─── Agent logs & metrics ────────────────────────────────────────────
-  // Declared in `src/http/routes/agents.rs`. Both paths are tenant-gated
+  // Declared in `src/http/routes/agents.rs`. All paths are tenant-gated
   // server-side; a 404 means "this agent isn't visible to your principal"
   // (intentional, no cross-org leak).
   agentMetricsTimeseries: (
@@ -177,6 +178,12 @@ export const api = {
     const q = search.toString();
     return request<AgentTurnsList>(`/agents/${id}/turns${q ? `?${q}` : ""}`);
   },
+  /** Drawer payload for one turn (doc/logs_metrics_tab.md §5.4). The BE
+   *  caps every join (`MAX_TOOL_CALLS_PER_TURN`,
+   *  `MAX_MEMORY_WRITES_PER_TURN`, `MAX_REASONING_BLOCKS_PER_TURN`), so
+   *  the response is bounded — no follow-up pagination needed. */
+  turnDetail: (requestId: string) =>
+    request<TurnDetail>(`/turns/${requestId}`),
 
   // ─── Agent memory ────────────────────────────────────────────────────
   // All five routes are declared in `src/http/routes/memory.rs`. Every
