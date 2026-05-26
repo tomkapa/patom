@@ -392,3 +392,129 @@ pub struct Principal {
     pub active_org_id: OrgId,
     pub role: Role,
 }
+
+/// Editable display name for an organization.
+///
+/// The schema's `organizations.name` column is `octet_length BETWEEN
+/// 1 AND 200`. Whitespace-only inputs are rejected at this seam so the
+/// FE can't slip an empty-looking name past the CHECK with a row of
+/// spaces.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct OrgName(Arc<str>);
+
+impl OrgName {
+    pub const MAX_BYTES: usize = super::limits::MAX_ORG_NAME_BYTES;
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for OrgName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("OrgName").field(&self.as_str()).finish()
+    }
+}
+
+impl std::fmt::Display for OrgName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<&str> for OrgName {
+    type Error = ParseError;
+
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(ParseError::Empty { field: "org_name" });
+        }
+        if trimmed.len() > Self::MAX_BYTES {
+            return Err(ParseError::TooLong {
+                field: "org_name",
+                max: Self::MAX_BYTES,
+                got: trimmed.len(),
+            });
+        }
+        Ok(Self(Arc::from(trimmed)))
+    }
+}
+
+impl TryFrom<String> for OrgName {
+    type Error = ParseError;
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        Self::try_from(raw.as_str())
+    }
+}
+
+crate::uuid_newtype! {
+    /// Opaque identifier for one `org_invites` row.
+    pub InviteId
+}
+
+/// Single-use invite secret.
+///
+/// URL-safe base64 of 32 random bytes (≈43 chars). Stored hashed at
+/// rest (`org_invites.token_hash` = SHA-256 of the cleartext); the
+/// cleartext only ever exists in memory at the moment of issuance and
+/// is handed to the FE once in the invite-mail link.
+#[derive(Clone, PartialEq, Eq)]
+pub struct InviteToken(Arc<str>);
+
+impl InviteToken {
+    /// 32 bytes of entropy → 43 chars of unpadded base64url.
+    pub const RAW_ENTROPY_BYTES: usize = 32;
+    pub const MIN_BYTES: usize = 43;
+    pub const MAX_BYTES: usize = 64;
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for InviteToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Treat as a secret in any printed form.
+        f.write_str("InviteToken(***)")
+    }
+}
+
+impl TryFrom<&str> for InviteToken {
+    type Error = ParseError;
+
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        if raw.len() < Self::MIN_BYTES {
+            return Err(ParseError::Malformed {
+                field: "invite_token",
+                detail: "too short",
+            });
+        }
+        if raw.len() > Self::MAX_BYTES {
+            return Err(ParseError::TooLong {
+                field: "invite_token",
+                max: Self::MAX_BYTES,
+                got: raw.len(),
+            });
+        }
+        if !raw
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        {
+            return Err(ParseError::Malformed {
+                field: "invite_token",
+                detail: "non-URL-safe character",
+            });
+        }
+        Ok(Self(Arc::from(raw)))
+    }
+}
+
+impl TryFrom<String> for InviteToken {
+    type Error = ParseError;
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        Self::try_from(raw.as_str())
+    }
+}

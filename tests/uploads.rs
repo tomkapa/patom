@@ -158,6 +158,8 @@ impl UploadsHarness {
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets,
+            orgs: std::sync::Arc::new(relay_rs::orgs::PgOrgStore::new(pool.clone())),
+            mailer: std::sync::Arc::new(relay_rs::orgs::LogMailer),
         };
 
         Self {

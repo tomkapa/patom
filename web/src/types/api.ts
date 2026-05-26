@@ -35,6 +35,72 @@ export type Me = {
 
 export type AgentRef = { id: string; name: string };
 
+// ─── Workspace settings (src/http/routes/org.rs) ──────────────────────
+
+/** General-tab payload returned by `GET /me/org`. */
+export type OrgDetails = {
+  id: string;
+  name: string;
+  slug: string;
+  default_language: Language;
+  member_count: number;
+  created_at: string;
+  role: Role;
+};
+
+/** Status of a row on the Members tab. */
+export type MemberStatus = "active" | "invited" | "expired";
+
+/** One row on the Members tab — `kind` discriminates between real
+ *  members and pending invites. */
+export type MemberRow = {
+  kind: "member" | "invite";
+  user_id: string | null;
+  invite_id: string | null;
+  email: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  role: Role;
+  status: MemberStatus;
+  joined_at: string;
+  expires_at: string | null;
+};
+
+/** Cardinality counters powering the filter tabs. */
+export type MemberCounts = {
+  all: number;
+  active: number;
+  invited: number;
+  expired: number;
+};
+
+export type ListMembersResponse = {
+  rows: MemberRow[];
+  total: number;
+  counts: MemberCounts;
+  page: number;
+  per_page: number;
+};
+
+export type ListMembersQuery = {
+  q?: string;
+  status?: MemberStatus;
+  role?: Role;
+  page?: number;
+  per_page?: number;
+};
+
+/** One issued invite. `token` is the **cleartext** single-use URL
+ *  secret returned only at issuance; surface it in the copy-link
+ *  affordance and never log it. */
+export type IssuedInvite = {
+  invite_id: string;
+  email: string;
+  role: Role;
+  token: string;
+  expires_at: string;
+};
+
 export type Agent = {
   id: string;
   name: string;

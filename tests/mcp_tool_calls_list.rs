@@ -114,7 +114,7 @@ impl Harness {
             oauth_redirect_base: Arc::from("http://localhost:8080"),
             web_base_url: None,
             thread_stream,
-            pool,
+            pool: pool.clone(),
             jwt,
             oauth,
             users,
@@ -127,6 +127,8 @@ impl Harness {
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets: None,
+            orgs: std::sync::Arc::new(relay_rs::orgs::PgOrgStore::new(pool.clone())),
+            mailer: std::sync::Arc::new(relay_rs::orgs::LogMailer),
         };
 
         Self {

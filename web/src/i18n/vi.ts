@@ -502,6 +502,122 @@ const vi: TranslationTable = {
     "Đã tạo — hoàn tất ở mục Kết nối.",
   "thread.wireRequest.error.generic":
     "Không khởi động được kết nối. Hãy thử lại từ mục Connections.",
+
+  // ─── Workspace settings ───────────────────────────────────────────
+  "menu.settings": "Cài đặt",
+  "settings.breadcrumb.workspace": "Workspace",
+  "settings.breadcrumb.settings": "Cài đặt",
+  "settings.workspace.eyebrow": "WORKSPACE",
+  "settings.sectionTitle.settings": "CÀI ĐẶT WORKSPACE",
+  "settings.nav.title": "Cài đặt",
+  "settings.nav.general": "Chung",
+  "settings.nav.members": "Thành viên",
+  "settings.nav.billing": "Thanh toán",
+  "settings.nav.webhooks": "API & webhooks",
+  "settings.nav.notifications": "Thông báo",
+  "settings.comingSoon.title": "{label}",
+  "settings.comingSoon.body": "Phần này sẽ ra mắt sớm. Quay lại sau nhé.",
+
+  // General tab
+  "settings.general.title": "Chung",
+  "settings.general.subtitle":
+    "Danh tính workspace và mặc định áp dụng cho cả team.",
+  "settings.general.save": "Lưu",
+  "settings.general.savedToast": "Đã cập nhật workspace",
+  "settings.general.cancel": "Huỷ",
+  "settings.general.identity.title": "DANH TÍNH · 2 trường",
+  "settings.general.identity.helper": "Tên và slug URL",
+  "settings.general.identity.name": "Tên",
+  "settings.general.identity.name.helper":
+    "Hiển thị ở thanh điều hướng, breadcrumb và email.",
+  "settings.general.identity.slug": "Slug",
+  "settings.general.identity.slug.helper":
+    "Định danh URL. Thay đổi sẽ phá vỡ link hiện có.",
+  "settings.general.identity.slug.invalid":
+    "Chỉ chữ thường, số và dấu gạch ngang.",
+  "settings.general.identity.slug.taken":
+    "Slug này đã có người dùng.",
+  "settings.general.defaults.title": "MẶC ĐỊNH · 1 trường",
+  "settings.general.defaults.helper":
+    "Áp dụng cho agent mới tạo trong workspace.",
+  "settings.general.defaults.language": "Ngôn ngữ mặc định",
+  "settings.general.defaults.language.helper":
+    "Dùng khi agent không tự ghi đè.",
+  "settings.general.danger.title": "VÙNG NGUY HIỂM · 2 hành động",
+  "settings.general.danger.helper": "Không thể hoàn tác.",
+  "settings.general.danger.leave.title": "Rời workspace",
+  "settings.general.danger.leave.body":
+    "Rời {name}. Bạn sẽ mất quyền truy cập mọi agent và luồng chat. Thành viên khác có thể mời lại bạn.",
+  "settings.general.danger.leave.cta": "Rời workspace",
+  "settings.general.danger.leave.confirm":
+    "Bạn có chắc muốn rời {name}?",
+  "settings.general.danger.delete.title": "Xoá workspace",
+  "settings.general.danger.delete.body":
+    "Xoá vĩnh viễn {name} — agent, luồng chat, file đã tải. Chỉ owner — phải nhập slug để xác nhận.",
+  "settings.general.danger.delete.cta": "Xoá workspace",
+  "settings.general.danger.delete.confirm.title": "Xoá {name}?",
+  "settings.general.danger.delete.confirm.body":
+    "Không thể hoàn tác. Nhập {slug} để xác nhận.",
+  "settings.general.danger.delete.confirm.placeholder": "Nhập slug để xác nhận",
+
+  // Members tab
+  "settings.members.title": "Thành viên",
+  "settings.members.subtitle":
+    "Người có quyền truy cập workspace này. Quản lý vai trò và lời mời đang chờ.",
+  "settings.members.invite": "Mời thành viên",
+  "settings.members.search.placeholder": "Tìm theo tên hoặc email",
+  "settings.members.export": "Xuất CSV",
+  "settings.members.filter.all": "Tất cả {count}",
+  "settings.members.filter.active": "Hoạt động {count}",
+  "settings.members.filter.invited": "Đã mời {count}",
+  "settings.members.filter.expired": "Hết hạn {count}",
+  "settings.members.table.person": "NGƯỜI",
+  "settings.members.table.role": "VAI TRÒ",
+  "settings.members.table.status": "TRẠNG THÁI",
+  "settings.members.table.joined": "GIA NHẬP / ĐƯỢC MỜI",
+  "settings.members.status.active": "Hoạt động",
+  "settings.members.status.invited": "Đã mời · hết hạn {when}",
+  "settings.members.status.expired": "Hết hạn {when}",
+  "settings.members.status.activeShort": "Hoạt động",
+  "settings.members.status.invitedShort": "Đã mời",
+  "settings.members.status.expiredShort": "Hết hạn",
+  "settings.members.row.change_role": "Đổi vai trò",
+  "settings.members.row.resend": "Gửi lại lời mời",
+  "settings.members.row.copyLink": "Sao chép link mời",
+  "settings.members.row.remove": "Xoá khỏi workspace",
+  "settings.members.row.revoke": "Thu hồi lời mời",
+  "settings.members.role.owner": "Owner",
+  "settings.members.role.admin": "Admin",
+  "settings.members.role.member": "Member",
+  "settings.members.empty": "Không có thành viên phù hợp.",
+  "settings.members.joined": "Gia nhập {when}",
+  "settings.members.invited": "Mời {when}",
+  "settings.members.pagination.prev": "Trước",
+  "settings.members.pagination.next": "Sau",
+  "settings.members.pagination.range":
+    "Hiển thị {from} trên {total}",
+
+  // Invite modal
+  "settings.invite.eyebrow": "INV",
+  "settings.invite.title": "Mời vào {org}",
+  "settings.invite.subtitle":
+    "Người được mời nhận email và link dùng một lần. Link hết hạn sau 7 ngày.",
+  "settings.invite.emails": "Email",
+  "settings.invite.emails.helper": "phẩy hoặc enter để thêm",
+  "settings.invite.role": "Vai trò",
+  "settings.invite.role.member.desc": "Dùng được agent",
+  "settings.invite.role.admin.desc": "Quản lý agent & thành viên",
+  "settings.invite.role.owner.desc": "Toàn quyền · thanh toán",
+  "settings.invite.link.helper":
+    "hoặc chia sẻ link dùng lại được · hết hạn sau 7 ngày",
+  "settings.invite.link.copy": "Sao chép",
+  "settings.invite.link.copied": "Đã sao chép",
+  "settings.invite.cancel": "Huỷ",
+  "settings.invite.send": "Gửi lời mời",
+  "settings.invite.count.one": "1 lời mời sẽ được gửi",
+  "settings.invite.count.many": "{n} lời mời sẽ được gửi",
+  "settings.invite.error.lastOwner":
+    "Workspace phải còn ít nhất một owner.",
 };
 
 export default vi;

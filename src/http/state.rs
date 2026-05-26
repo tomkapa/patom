@@ -16,6 +16,7 @@ use crate::mcp::{
     TestConnectRateLimiter,
 };
 use crate::memory::SharedMemoryStore;
+use crate::orgs::{SharedMailer, SharedOrgStore};
 use crate::prompts::Prompts;
 use crate::runtime::{
     SharedDagBudget, SharedLeaseManager, SharedPromptQueue, SharedResponseSource,
@@ -127,6 +128,13 @@ pub struct AppState {
     /// `Some` when `RELAY_R2_*` env vars are configured; `None` makes
     /// the upload routes 503 with "asset storage not configured".
     pub assets: Option<SharedAssetStore>,
+    /// Workspace-settings store. Reads/writes `organizations`,
+    /// `org_members`, `org_invites`. See [`crate::orgs::OrgStore`].
+    pub orgs: SharedOrgStore,
+    /// Outbound mail for workspace invites. The default impl writes
+    /// to logs (see [`crate::orgs::LogMailer`]); production builds
+    /// swap in an SMTP / SES implementation at app construction.
+    pub mailer: SharedMailer,
 }
 
 impl AppState {

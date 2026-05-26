@@ -9,6 +9,9 @@ import { ConnectionDetail } from "./pages/ConnectionDetail";
 import { ConnectionsCatalog } from "./pages/ConnectionsCatalog";
 import { ConnectionsList } from "./pages/ConnectionsList";
 import { OAuthCallback } from "./pages/OAuthCallback";
+import { SettingsComingSoon } from "./pages/SettingsComingSoon";
+import { SettingsGeneral } from "./pages/SettingsGeneral";
+import { SettingsMembers } from "./pages/SettingsMembers";
 import { SignIn } from "./pages/SignIn";
 import { Protected } from "./components/organisms/Protected";
 import { useLangFromOrg } from "./i18n";
@@ -95,6 +98,47 @@ export function App() {
         element={
           <Protected>
             <AgentLogs />
+          </Protected>
+        }
+      />
+      <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
+      <Route
+        path="/settings/general"
+        element={
+          <Protected>
+            <SettingsGeneral />
+          </Protected>
+        }
+      />
+      <Route
+        path="/settings/members"
+        element={
+          <Protected>
+            <SettingsMembers />
+          </Protected>
+        }
+      />
+      <Route
+        path="/settings/billing"
+        element={
+          <Protected>
+            <SettingsComingSoon kind="billing" />
+          </Protected>
+        }
+      />
+      <Route
+        path="/settings/integrations"
+        element={
+          <Protected>
+            <SettingsComingSoon kind="webhooks" />
+          </Protected>
+        }
+      />
+      <Route
+        path="/settings/notifications"
+        element={
+          <Protected>
+            <SettingsComingSoon kind="notifications" />
           </Protected>
         }
       />

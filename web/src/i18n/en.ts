@@ -503,6 +503,122 @@ const en = {
   "thread.wireRequest.created": "Created — finish setup in Connections.",
   "thread.wireRequest.error.generic":
     "Couldn't start the connection. Try again from Connections.",
+
+  // ─── Workspace settings ───────────────────────────────────────────
+  "menu.settings": "Settings",
+  "settings.breadcrumb.workspace": "Workspace",
+  "settings.breadcrumb.settings": "Settings",
+  "settings.workspace.eyebrow": "WORKSPACE",
+  "settings.sectionTitle.settings": "WORKSPACE SETTINGS",
+  "settings.nav.title": "Settings",
+  "settings.nav.general": "General",
+  "settings.nav.members": "Members",
+  "settings.nav.billing": "Billing",
+  "settings.nav.webhooks": "API & webhooks",
+  "settings.nav.notifications": "Notifications",
+  "settings.comingSoon.title": "{label}",
+  "settings.comingSoon.body": "This area is coming soon. Check back later.",
+
+  // General tab
+  "settings.general.title": "General",
+  "settings.general.subtitle":
+    "Workspace identity and defaults applied across this team.",
+  "settings.general.save": "Save",
+  "settings.general.savedToast": "Workspace updated",
+  "settings.general.cancel": "Cancel",
+  "settings.general.identity.title": "IDENTITY · 2 fields",
+  "settings.general.identity.helper": "Name and URL slug",
+  "settings.general.identity.name": "Name",
+  "settings.general.identity.name.helper":
+    "Shown in the rail, breadcrumbs, and email notifications.",
+  "settings.general.identity.slug": "Slug",
+  "settings.general.identity.slug.helper":
+    "URL identifier. Changing this breaks existing links.",
+  "settings.general.identity.slug.invalid":
+    "Lowercase letters, digits, and dashes only.",
+  "settings.general.identity.slug.taken":
+    "That slug is already taken.",
+  "settings.general.defaults.title": "DEFAULTS · 1 field",
+  "settings.general.defaults.helper":
+    "Applied to new agents created in this workspace.",
+  "settings.general.defaults.language": "Default language",
+  "settings.general.defaults.language.helper":
+    "Used when an agent doesn't override it.",
+  "settings.general.danger.title": "DANGER ZONE · 2 actions",
+  "settings.general.danger.helper": "Cannot be undone.",
+  "settings.general.danger.leave.title": "Leave workspace",
+  "settings.general.danger.leave.body":
+    "Remove your seat from {name}. You'll lose access to all agents and threads. Another member can re-invite you.",
+  "settings.general.danger.leave.cta": "Leave workspace",
+  "settings.general.danger.leave.confirm":
+    "Are you sure you want to leave {name}?",
+  "settings.general.danger.delete.title": "Delete workspace",
+  "settings.general.danger.delete.body":
+    "Permanently delete {name} — agents, threads, uploads. Owner-only — requires typing the slug to confirm.",
+  "settings.general.danger.delete.cta": "Delete workspace",
+  "settings.general.danger.delete.confirm.title": "Delete {name}?",
+  "settings.general.danger.delete.confirm.body":
+    "This cannot be undone. Type {slug} to confirm.",
+  "settings.general.danger.delete.confirm.placeholder": "Type slug to confirm",
+
+  // Members tab
+  "settings.members.title": "Members",
+  "settings.members.subtitle":
+    "People with access to this workspace. Manage roles and pending invites.",
+  "settings.members.invite": "Invite member",
+  "settings.members.search.placeholder": "Search by name or email",
+  "settings.members.export": "Export CSV",
+  "settings.members.filter.all": "All {count}",
+  "settings.members.filter.active": "Active {count}",
+  "settings.members.filter.invited": "Invited {count}",
+  "settings.members.filter.expired": "Expired {count}",
+  "settings.members.table.person": "PERSON",
+  "settings.members.table.role": "ROLE",
+  "settings.members.table.status": "STATUS",
+  "settings.members.table.joined": "JOINED / INVITED",
+  "settings.members.status.active": "Active",
+  "settings.members.status.invited": "Invited · expires {when}",
+  "settings.members.status.expired": "Expired {when}",
+  "settings.members.status.activeShort": "Active",
+  "settings.members.status.invitedShort": "Invited",
+  "settings.members.status.expiredShort": "Expired",
+  "settings.members.row.change_role": "Change role",
+  "settings.members.row.resend": "Resend invite",
+  "settings.members.row.copyLink": "Copy invite link",
+  "settings.members.row.remove": "Remove from workspace",
+  "settings.members.row.revoke": "Revoke invite",
+  "settings.members.role.owner": "Owner",
+  "settings.members.role.admin": "Admin",
+  "settings.members.role.member": "Member",
+  "settings.members.empty": "No members match those filters.",
+  "settings.members.joined": "Joined {when}",
+  "settings.members.invited": "Invited {when}",
+  "settings.members.pagination.prev": "Prev",
+  "settings.members.pagination.next": "Next",
+  "settings.members.pagination.range":
+    "{from} of {total} seats shown",
+
+  // Invite modal
+  "settings.invite.eyebrow": "INV",
+  "settings.invite.title": "Invite to {org}",
+  "settings.invite.subtitle":
+    "Invitees get an email and a single-use link. Links expire in 7 days.",
+  "settings.invite.emails": "Emails",
+  "settings.invite.emails.helper": "comma or enter to add",
+  "settings.invite.role": "Role",
+  "settings.invite.role.member.desc": "Can use agents",
+  "settings.invite.role.admin.desc": "Can manage agents & members",
+  "settings.invite.role.owner.desc": "Full control · billing",
+  "settings.invite.link.helper":
+    "or share a single re-usable link · expires in 7d",
+  "settings.invite.link.copy": "Copy",
+  "settings.invite.link.copied": "Copied",
+  "settings.invite.cancel": "Cancel",
+  "settings.invite.send": "Send invites",
+  "settings.invite.count.one": "1 invite will be sent",
+  "settings.invite.count.many": "{n} invites will be sent",
+  "settings.invite.error.lastOwner":
+    "At least one owner must remain in the workspace.",
 } as const;
 
 export type TranslationKey = keyof typeof en;

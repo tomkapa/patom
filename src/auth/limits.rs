@@ -77,3 +77,7 @@ pub const MAX_ORG_RULE_BYTES: usize = 16 * 1024;
 /// `Accept-Language` value is preserved rather than silently dropped —
 /// the `Language::from_locale_hint` parser is the final filter.
 pub const DETECTED_LOCALE_MAX_LEN: usize = 32;
+
+/// Maximum bytes accepted for an organization display name.
+/// Mirrors the migration 14 `organizations.name` CHECK (1..=200).
+pub const MAX_ORG_NAME_BYTES: usize = 200;

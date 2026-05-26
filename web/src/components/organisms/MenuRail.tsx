@@ -1,4 +1,4 @@
-import { Bot, House, Plug } from "lucide-react";
+import { Bot, House, Plug, Settings } from "lucide-react";
 import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
@@ -43,6 +43,13 @@ export function MenuRail() {
       icon: Plug,
       match: (p) => p.startsWith("/connections"),
       to: "/connections",
+    },
+    {
+      id: "settings",
+      label: t("menu.settings"),
+      icon: Settings,
+      match: (p) => p.startsWith("/settings"),
+      to: "/settings",
     },
   ];
 
