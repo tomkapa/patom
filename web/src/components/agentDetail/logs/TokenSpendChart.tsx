@@ -1,3 +1,4 @@
+import type React from "react";
 import { useMemo, useState } from "react";
 import { SectionCard } from "../../molecules/SectionCard";
 import { SectionHeader } from "../../atoms/SectionHeader";
@@ -261,21 +262,63 @@ function CaptionRow({
   totals: MetricsTotals;
   deltas: MetricsDeltas;
 }) {
+  // Four KPI tiles below the chart — matches pencil frame NJOCg. The
+  // values restate the chart's headline metrics so a glance answers the
+  // four-question loop (doc §1) without parsing the bars.
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]">
-      <span>
-        {formatTokens(totals.tokens)} {renderDeltaInline(deltas.tokens)}
+    <div className="mt-4 grid grid-cols-4 gap-3">
+      <KpiTile
+        label="TOKENS"
+        value={formatTokens(totals.tokens)}
+        delta={renderDeltaInline(deltas.tokens)}
+      />
+      <KpiTile
+        label="TURNS"
+        value={totals.turns.toLocaleString()}
+      />
+      <KpiTile
+        label="LATENCY p50 · p95"
+        value={`${formatMs(totals.latency_p50_ms)} · ${formatMs(totals.latency_p95_ms)}`}
+        delta={renderDeltaInline(deltas.latency_p95_ms)}
+      />
+      <KpiTile
+        label="FAILED"
+        value={String(totals.failure_count)}
+        delta={renderDeltaInline(deltas.failure_count)}
+        tone={totals.failure_count > 0 ? "rose" : undefined}
+      />
+    </div>
+  );
+}
+
+function KpiTile({
+  label,
+  value,
+  delta,
+  tone,
+}: {
+  label: string;
+  value: string;
+  delta?: React.ReactNode;
+  tone?: "rose";
+}) {
+  const valueColor =
+    tone === "rose" ? "text-[var(--color-rose)]" : "text-[var(--color-ink)]";
+  return (
+    <div className="flex flex-col gap-1 rounded border border-[var(--color-line)] bg-[var(--color-card)] px-4 py-3">
+      <span className="font-[var(--font-mono)] text-[10px] tracking-[0.15em] uppercase text-[var(--color-muted)]">
+        {label}
       </span>
-      <span aria-hidden className="text-[var(--color-muted)]">·</span>
-      <span>
-        p50 {formatMs(totals.latency_p50_ms)} · p95 {formatMs(totals.latency_p95_ms)}{" "}
-        {renderDeltaInline(deltas.latency_p95_ms)}
-      </span>
-      <span aria-hidden className="text-[var(--color-muted)]">·</span>
-      <span className={totals.failure_count > 0 ? "text-[var(--color-rose)]" : ""}>
-        ✗ {totals.failure_count} failed{" "}
-        {renderDeltaInline(deltas.failure_count)}
-      </span>
+      <div className="flex items-baseline gap-2">
+        <span
+          className={`font-[var(--font-display)] text-[22px] leading-none font-semibold ${valueColor}`}
+        >
+          {value}
+        </span>
+        {delta ? (
+          <span className="font-[var(--font-mono)] text-[11px]">{delta}</span>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { SectionCard } from "../../molecules/SectionCard";
-import { SectionHeader } from "../../atoms/SectionHeader";
 import { Button } from "../../atoms/Button";
 import { Spinner } from "../../atoms/Spinner";
 import { EmptyState } from "../../molecules/EmptyState";
@@ -70,7 +69,23 @@ export function TurnsTimeline({
   };
 
   return (
-    <SectionCard header={<SectionHeader eyebrow="TURNS" />}>
+    <SectionCard
+      header={
+        <div className="flex items-baseline justify-between gap-3 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-3">
+          <div className="flex flex-col gap-0.5">
+            <span className="font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.15em] uppercase text-[var(--color-muted)]">
+              TURNS
+            </span>
+            <h2 className="font-[var(--font-display)] text-[15px] font-semibold text-[var(--color-ink)]">
+              Recent turns
+            </h2>
+          </div>
+          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+            {pages.length} in window
+          </span>
+        </div>
+      }
+    >
       <div
         className="grid items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5 font-[var(--font-mono)] text-[9px] tracking-[0.15em] uppercase text-[var(--color-muted)]"
         style={{ gridTemplateColumns: COL_WIDTHS }}
