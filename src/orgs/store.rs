@@ -39,6 +39,20 @@ pub enum MemberStatus {
     Expired,
 }
 
+impl MemberStatus {
+    /// Wire / DB label. Used both in SQL bindings and the HTTP
+    /// response shape so the FE filter tabs and `?status=` query
+    /// parameter share one vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Invited => "invited",
+            Self::Expired => "expired",
+        }
+    }
+}
+
 /// One row on the Members tab — either a real `org_members` row or a
 /// pending `org_invites` row. The two shapes share a column structure
 /// so the UI can render them in one table.

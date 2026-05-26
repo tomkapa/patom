@@ -4,6 +4,7 @@ import { Save, LogOut, Trash2 } from "lucide-react";
 import {
   SettingsBreadcrumb,
   SettingsLayout,
+  SettingsPageHeader,
 } from "../components/templates/SettingsLayout";
 import { Button } from "../components/atoms/Button";
 import { Spinner } from "../components/atoms/Spinner";
@@ -110,33 +111,29 @@ export function SettingsGeneral() {
           { label: t("settings.nav.general"), current: true },
         ]}
       />
-      <header className="flex items-end justify-between gap-4 border-b border-[var(--color-line)] px-8 pt-2 pb-6">
-        <div className="min-w-0">
-          <h1 className="font-[var(--font-display)] text-[32px] leading-tight font-bold text-[var(--color-ink)]">
-            {t("settings.general.title")}
-          </h1>
-          <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted)]">
-            {t("settings.general.subtitle")}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          {savedToast ? (
-            <span className="font-[var(--font-mono)] text-[11px] tracking-[0.06em] text-[var(--color-moss-deep)] uppercase">
-              ✓ {t("settings.general.savedToast")}
-            </span>
-          ) : null}
-          <Button
-            variant="primary"
-            disabled={!canSave}
-            loading={updateOrg.isPending}
-            onClick={onSave}
-            data-testid="settings-general-save"
-          >
-            <Save className="h-3.5 w-3.5" strokeWidth={2} />
-            {t("settings.general.save")}
-          </Button>
-        </div>
-      </header>
+      <SettingsPageHeader
+        title={t("settings.general.title")}
+        subtitle={t("settings.general.subtitle")}
+        right={
+          <>
+            {savedToast ? (
+              <span className="font-[var(--font-mono)] text-[11px] tracking-[0.06em] text-[var(--color-moss-deep)] uppercase">
+                ✓ {t("settings.general.savedToast")}
+              </span>
+            ) : null}
+            <Button
+              variant="primary"
+              disabled={!canSave}
+              loading={updateOrg.isPending}
+              onClick={onSave}
+              data-testid="settings-general-save"
+            >
+              <Save className="h-3.5 w-3.5" strokeWidth={2} />
+              {t("settings.general.save")}
+            </Button>
+          </>
+        }
+      />
 
       <div className="min-h-0 flex-1 overflow-auto p-8">
         {serverError ? (

@@ -165,3 +165,32 @@ export function SettingsBreadcrumb({
     </div>
   );
 }
+
+/** Shared title + subtitle + CTA bar used at the top of each settings
+ *  page (General, Members). Keeping the markup in one place stops the
+ *  two pages from drifting on padding / typography. */
+export function SettingsPageHeader({
+  title,
+  subtitle,
+  right,
+}: {
+  title: string;
+  subtitle: string;
+  right?: ReactNode;
+}) {
+  return (
+    <header className="flex items-end justify-between gap-4 border-b border-[var(--color-line)] px-8 pt-2 pb-6">
+      <div className="min-w-0">
+        <h1 className="font-[var(--font-display)] text-[32px] leading-tight font-bold text-[var(--color-ink)]">
+          {title}
+        </h1>
+        <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted)]">
+          {subtitle}
+        </p>
+      </div>
+      {right ? (
+        <div className="flex shrink-0 items-center gap-3">{right}</div>
+      ) : null}
+    </header>
+  );
+}

@@ -142,11 +142,7 @@ impl OrgStore for PgOrgStore {
         filter: MemberFilter,
         now: DateTime<Utc>,
     ) -> Result<MemberPage, OrgError> {
-        // MAX_MEMBERS_PER_PAGE fits in u32 by construction (50). The
-        // `expect` is named after the invariant per CLAUDE.md §6.
-        let max_per_page = u32::try_from(super::MAX_MEMBERS_PER_PAGE)
-            .expect("invariant: MAX_MEMBERS_PER_PAGE fits in u32");
-        let per_page = u32::min(filter.per_page, max_per_page).max(1);
+        let per_page = filter.per_page.clamp(1, super::MAX_MEMBERS_PER_PAGE);
         let page = filter.page.max(1);
         let offset = i64::from(page - 1) * i64::from(per_page);
 
@@ -223,7 +219,7 @@ LIMIT $6 OFFSET $7
             .bind(org_id)
             .bind(query_pattern.as_deref())
             .bind(role_filter.as_deref())
-            .bind(filter.status.map(member_status_label))
+            .bind(filter.status.map(MemberStatus::as_str))
             .bind(now)
             .bind(i64::from(per_page))
             .bind(offset)
@@ -518,12 +514,4 @@ async fn last_owner_guard(
         return Err(OrgError::LastOwnerProtected);
     }
     Ok(())
-}
-
-const fn member_status_label(status: MemberStatus) -> &'static str {
-    match status {
-        MemberStatus::Active => "active",
-        MemberStatus::Invited => "invited",
-        MemberStatus::Expired => "expired",
-    }
 }

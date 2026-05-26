@@ -77,22 +77,27 @@ struct OrgDetailsView {
     role: Role,
 }
 
+impl OrgDetailsView {
+    fn new(details: crate::orgs::OrgDetails, role: Role) -> Self {
+        Self {
+            id: details.id,
+            name: details.name,
+            slug: details.slug.as_str().to_owned(),
+            default_language: details.default_language,
+            member_count: details.member_count,
+            created_at: details.created_at,
+            role,
+        }
+    }
+}
+
 async fn read_org(
     State(state): State<AppState>,
     principal: Principal,
 ) -> Result<Response, HttpError> {
     let role = live_role(&state, &principal).await?;
     let details = state.orgs.read_org(principal.active_org_id).await?;
-    Ok(Json(OrgDetailsView {
-        id: details.id,
-        name: details.name,
-        slug: details.slug.as_str().to_owned(),
-        default_language: details.default_language,
-        member_count: details.member_count,
-        created_at: details.created_at,
-        role,
-    })
-    .into_response())
+    Ok(Json(OrgDetailsView::new(details, role)).into_response())
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -121,16 +126,7 @@ async fn update_org(
         .orgs
         .update_org(principal.active_org_id, OrgUpdate { name, slug }, now)
         .await?;
-    Ok(Json(OrgDetailsView {
-        id: details.id,
-        name: details.name,
-        slug: details.slug.as_str().to_owned(),
-        default_language: details.default_language,
-        member_count: details.member_count,
-        created_at: details.created_at,
-        role,
-    })
-    .into_response())
+    Ok(Json(OrgDetailsView::new(details, role)).into_response())
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -198,23 +194,18 @@ async fn list_members(
     let _ = live_role(&state, &principal).await?;
 
     let page = req.page.unwrap_or(1).max(1);
-    let per_page = req.per_page.unwrap_or(20).clamp(
-        1,
-        u32::try_from(MAX_MEMBERS_PER_PAGE).expect("invariant: MAX_MEMBERS_PER_PAGE fits in u32"),
-    );
+    let per_page = req.per_page.unwrap_or(20).clamp(1, MAX_MEMBERS_PER_PAGE);
 
     let status = req.status.as_deref().and_then(parse_member_status);
     let role_filter = req.role.as_deref().and_then(Role::parse);
 
     let filter = MemberFilter {
-        query: req.q.as_ref().and_then(|q| {
-            let t = q.trim();
-            if t.is_empty() {
-                None
-            } else {
-                Some(t.to_owned())
-            }
-        }),
+        query: req
+            .q
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
         status,
         role: role_filter,
         page,
@@ -258,11 +249,7 @@ async fn list_members(
                 display_name: None,
                 avatar_url: None,
                 role: i.role,
-                status: match i.status {
-                    MemberStatus::Active => "active",
-                    MemberStatus::Invited => "invited",
-                    MemberStatus::Expired => "expired",
-                },
+                status: i.status.as_str(),
                 joined_at: i.invited_at,
                 expires_at: Some(i.expires_at),
             },
@@ -398,6 +385,18 @@ struct IssuedInviteView {
     expires_at: chrono::DateTime<chrono::Utc>,
 }
 
+impl From<crate::orgs::IssuedInvite> for IssuedInviteView {
+    fn from(i: crate::orgs::IssuedInvite) -> Self {
+        Self {
+            invite_id: i.invite_id,
+            email: i.email.as_str().to_owned(),
+            role: i.role,
+            token: i.token.as_str().to_owned(),
+            expires_at: i.expires_at,
+        }
+    }
+}
+
 async fn invite_members(
     State(state): State<AppState>,
     principal: Principal,
@@ -453,16 +452,7 @@ async fn invite_members(
             .await;
     }
 
-    let view: Vec<IssuedInviteView> = issued
-        .into_iter()
-        .map(|i| IssuedInviteView {
-            invite_id: i.invite_id,
-            email: i.email.as_str().to_owned(),
-            role: i.role,
-            token: i.token.as_str().to_owned(),
-            expires_at: i.expires_at,
-        })
-        .collect();
+    let view: Vec<IssuedInviteView> = issued.into_iter().map(Into::into).collect();
     Ok((StatusCode::CREATED, Json(view)).into_response())
 }
 
@@ -495,14 +485,7 @@ async fn resend_invite(
             web_base_url: state.web_base_url.as_deref(),
         })
         .await;
-    Ok(Json(IssuedInviteView {
-        invite_id: issued.invite_id,
-        email: issued.email.as_str().to_owned(),
-        role: issued.role,
-        token: issued.token.as_str().to_owned(),
-        expires_at: issued.expires_at,
-    })
-    .into_response())
+    Ok(Json(IssuedInviteView::from(issued)).into_response())
 }
 
 // ─────────────────────────────────────────────────────────────────────

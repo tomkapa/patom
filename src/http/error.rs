@@ -65,11 +65,6 @@ pub enum HttpError {
     #[error("org: {0}")]
     Org(#[from] OrgError),
 
-    /// `org_invites.expires_at < now`. Maps to 410 GONE so the FE can
-    /// distinguish "expired, please resend" from "never existed".
-    #[error("invite expired")]
-    InviteExpired,
-
     #[error("asset: {0}")]
     Asset(#[from] AssetError),
 
@@ -208,9 +203,7 @@ impl IntoResponse for HttpError {
             }
             #[allow(clippy::match_same_arms)]
             Self::Org(OrgError::NotFound) => (StatusCode::NOT_FOUND, "not found".into()),
-            Self::Org(OrgError::InviteExpired) | Self::InviteExpired => {
-                (StatusCode::GONE, "invite.expired".into())
-            }
+            Self::Org(OrgError::InviteExpired) => (StatusCode::GONE, "invite.expired".into()),
             Self::Org(OrgError::InviteAlreadyConsumed) => {
                 (StatusCode::CONFLICT, "invite.consumed".into())
             }

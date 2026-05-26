@@ -10,4 +10,9 @@ pub const INVITE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 pub const MAX_INVITE_BATCH: usize = 25;
 
 /// Hard ceiling on `?per_page=` for the members listing.
-pub const MAX_MEMBERS_PER_PAGE: usize = 50;
+///
+/// Typed as `u32` to match the wire-side `?per_page=` query
+/// parameter — the only callers compare or clamp against another
+/// `u32`, so a `usize` would just sprout `try_from` boilerplate at
+/// every seam.
+pub const MAX_MEMBERS_PER_PAGE: u32 = 50;

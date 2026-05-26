@@ -11,6 +11,7 @@ import {
 import {
   SettingsBreadcrumb,
   SettingsLayout,
+  SettingsPageHeader,
 } from "../components/templates/SettingsLayout";
 import { Button } from "../components/atoms/Button";
 import { Monogram } from "../components/atoms/Monogram";
@@ -35,6 +36,7 @@ import {
   useRevokeInvite,
 } from "../hooks/useOrg";
 import { useT } from "../i18n";
+import type { TranslationKey } from "../i18n/en";
 import { useTimeAgo } from "../lib/time";
 import { cn } from "../lib/utils";
 import type { MemberRow, MemberStatus, Role } from "../types/api";
@@ -86,26 +88,22 @@ export function SettingsMembers() {
           { label: t("settings.nav.members"), current: true },
         ]}
       />
-      <header className="flex items-end justify-between gap-4 border-b border-[var(--color-line)] px-8 pt-2 pb-6">
-        <div className="min-w-0">
-          <h1 className="font-[var(--font-display)] text-[32px] leading-tight font-bold text-[var(--color-ink)]">
-            {t("settings.members.title")}
-          </h1>
-          <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted)]">
-            {t("settings.members.subtitle")}
-          </p>
-        </div>
-        {canManage ? (
-          <Button
-            variant="primary"
-            onClick={() => setInviteOpen(true)}
-            data-testid="settings-members-invite"
-          >
-            <Plus className="h-3.5 w-3.5" strokeWidth={2} />
-            {t("settings.members.invite")}
-          </Button>
-        ) : null}
-      </header>
+      <SettingsPageHeader
+        title={t("settings.members.title")}
+        subtitle={t("settings.members.subtitle")}
+        right={
+          canManage ? (
+            <Button
+              variant="primary"
+              onClick={() => setInviteOpen(true)}
+              data-testid="settings-members-invite"
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+              {t("settings.members.invite")}
+            </Button>
+          ) : undefined
+        }
+      />
 
       <div className="min-h-0 flex-1 overflow-auto p-8">
         <div className="flex flex-col gap-5">
@@ -129,46 +127,21 @@ export function SettingsMembers() {
             />
           </div>
           <div className="flex items-center gap-1.5">
-            <FilterTab
-              active={statusFilter === "all"}
-              onClick={() => {
-                setStatusFilter("all");
-                setPage(1);
-              }}
-              count={counts.all}
-              label={t("settings.members.filter.all", { count: counts.all })}
-              testId="filter-all"
-            />
-            <FilterTab
-              active={statusFilter === "active"}
-              onClick={() => {
-                setStatusFilter("active");
-                setPage(1);
-              }}
-              count={counts.active}
-              label={t("settings.members.filter.active", { count: counts.active })}
-              testId="filter-active"
-            />
-            <FilterTab
-              active={statusFilter === "invited"}
-              onClick={() => {
-                setStatusFilter("invited");
-                setPage(1);
-              }}
-              count={counts.invited}
-              label={t("settings.members.filter.invited", { count: counts.invited })}
-              testId="filter-invited"
-            />
-            <FilterTab
-              active={statusFilter === "expired"}
-              onClick={() => {
-                setStatusFilter("expired");
-                setPage(1);
-              }}
-              count={counts.expired}
-              label={t("settings.members.filter.expired", { count: counts.expired })}
-              testId="filter-expired"
-            />
+            {(["all", "active", "invited", "expired"] as const).map((key) => (
+              <FilterTab
+                key={key}
+                active={statusFilter === key}
+                onClick={() => {
+                  setStatusFilter(key);
+                  setPage(1);
+                }}
+                count={counts[key]}
+                label={t(`settings.members.filter.${key}`, {
+                  count: counts[key],
+                })}
+                testId={`filter-${key}`}
+              />
+            ))}
           </div>
           <button
             type="button"
@@ -352,56 +325,71 @@ function FilterTab({
   );
 }
 
+const ROLE_STYLE: Record<
+  Role,
+  { icon: typeof Crown; className: string; labelKey: TranslationKey }
+> = {
+  owner: {
+    icon: Crown,
+    className: "border-[var(--color-amber)] text-[var(--color-amber)]",
+    labelKey: "settings.members.role.owner",
+  },
+  admin: {
+    icon: Shield,
+    className: "border-[var(--color-moss)] text-[var(--color-moss-deep)]",
+    labelKey: "settings.members.role.admin",
+  },
+  member: {
+    icon: UserIcon,
+    className: "border-[var(--color-line-2)] text-[var(--color-muted)]",
+    labelKey: "settings.members.role.member",
+  },
+};
+
 function RoleBadge({ role }: { role: Role }) {
   const { t } = useT();
-  const Icon = role === "owner" ? Crown : role === "admin" ? Shield : UserIcon;
-  const label =
-    role === "owner"
-      ? t("settings.members.role.owner")
-      : role === "admin"
-        ? t("settings.members.role.admin")
-        : t("settings.members.role.member");
+  const { icon: Icon, className, labelKey } = ROLE_STYLE[role];
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1 border px-2 py-0.5 font-[var(--font-mono)] text-[10.5px] tracking-[0.04em] uppercase",
-        role === "owner"
-          ? "border-[var(--color-amber)] text-[var(--color-amber)]"
-          : role === "admin"
-            ? "border-[var(--color-moss)] text-[var(--color-moss-deep)]"
-            : "border-[var(--color-line-2)] text-[var(--color-muted)]",
+        className,
       )}
     >
       <Icon className="h-2.5 w-2.5" strokeWidth={2} />
-      {label}
+      {t(labelKey)}
     </span>
   );
 }
 
+const STATUS_STYLE: Record<
+  MemberStatus,
+  { tone: string; dot: string; labelKey: TranslationKey }
+> = {
+  active: {
+    tone: "text-[var(--color-moss-deep)]",
+    dot: "bg-[var(--color-moss)]",
+    labelKey: "settings.members.status.activeShort",
+  },
+  invited: {
+    tone: "text-[var(--color-amber)]",
+    dot: "bg-[var(--color-amber)]",
+    labelKey: "settings.members.status.invitedShort",
+  },
+  expired: {
+    tone: "text-[var(--color-rose)]",
+    dot: "bg-[var(--color-rose)]",
+    labelKey: "settings.members.status.expiredShort",
+  },
+};
+
 function StatusPill({ status, when }: { status: MemberStatus; when?: string }) {
   const { t } = useT();
-  const tone =
-    status === "active"
-      ? "text-[var(--color-moss-deep)]"
-      : status === "invited"
-        ? "text-[var(--color-amber)]"
-        : "text-[var(--color-rose)]";
-  const dot =
-    status === "active"
-      ? "bg-[var(--color-moss)]"
-      : status === "invited"
-        ? "bg-[var(--color-amber)]"
-        : "bg-[var(--color-rose)]";
-  const label =
-    status === "active"
-      ? t("settings.members.status.activeShort")
-      : status === "invited"
-        ? t("settings.members.status.invitedShort")
-        : t("settings.members.status.expiredShort");
+  const { tone, dot, labelKey } = STATUS_STYLE[status];
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-[12px]", tone)}>
       <span className={cn("h-1.5 w-1.5 rounded-full", dot)} aria-hidden />
-      <span className="font-medium">{label}</span>
+      <span className="font-medium">{t(labelKey)}</span>
       {when ? (
         <span className="text-[var(--color-muted)]">· {when}</span>
       ) : null}
@@ -456,11 +444,9 @@ function MemberRowView({
         <StatusPill
           status={row.status}
           when={
-            row.status === "active"
-              ? undefined
-              : row.expires_at
-                ? timeAgo(row.expires_at)
-                : undefined
+            row.status !== "active" && row.expires_at
+              ? timeAgo(row.expires_at)
+              : undefined
           }
         />
       </DataTableCell>
