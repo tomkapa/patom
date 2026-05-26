@@ -129,7 +129,7 @@ impl ThreadsHarness {
             oauth_redirect_base: std::sync::Arc::from("http://localhost:8080"),
             web_base_url: None,
             thread_stream: thread_stream.clone(),
-            pool,
+            pool: pool.clone(),
             jwt,
             oauth,
             users,
@@ -142,6 +142,8 @@ impl ThreadsHarness {
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets: None,
+            orgs: std::sync::Arc::new(relay_rs::orgs::PgOrgStore::new(pool.clone())),
+            mailer: std::sync::Arc::new(relay_rs::orgs::LogMailer),
         };
 
         // The threads we enqueue belong to `db.default_org_id`, so the

@@ -36,8 +36,8 @@ pub use store::{
     ConsumedOAuthState, NewOrg, OAuthStateRow, SharedUserStore, UpsertedUser, UserStore,
 };
 pub use types::{
-    Email, GoogleProfile, GoogleSubject, OAuthState, OrgId, OrgMembership, OrgSlug, PkceVerifier,
-    Principal, Role, User, UserId,
+    Email, GoogleProfile, GoogleSubject, InviteId, InviteToken, OAuthState, OrgId, OrgMembership,
+    OrgName, OrgSlug, PkceVerifier, Principal, Role, User, UserId,
 };
 
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};

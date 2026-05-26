@@ -8,6 +8,7 @@ use crate::agents::{AgentStoreError, PromptVersionError};
 use crate::assets::AssetError;
 use crate::auth::AuthError;
 use crate::mcp::McpError;
+use crate::orgs::OrgError;
 use crate::runtime::{PromptError, ResponseError};
 use crate::session::SessionError;
 use crate::types::ParseError;
@@ -60,6 +61,14 @@ pub enum HttpError {
 
     #[error("auth: {0}")]
     Auth(#[from] AuthError),
+
+    #[error("org: {0}")]
+    Org(#[from] OrgError),
+
+    /// `org_invites.expires_at < now`. Maps to 410 GONE so the FE can
+    /// distinguish "expired, please resend" from "never existed".
+    #[error("invite expired")]
+    InviteExpired,
 
     #[error("asset: {0}")]
     Asset(#[from] AssetError),
@@ -193,6 +202,29 @@ impl IntoResponse for HttpError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "asset storage not configured".into(),
             ),
+            Self::Org(OrgError::SlugTaken) => (StatusCode::CONFLICT, "org_slug.taken".into()),
+            Self::Org(OrgError::LastOwnerProtected) => {
+                (StatusCode::CONFLICT, "org.last_owner".into())
+            }
+            #[allow(clippy::match_same_arms)]
+            Self::Org(OrgError::NotFound) => (StatusCode::NOT_FOUND, "not found".into()),
+            Self::Org(OrgError::InviteExpired) | Self::InviteExpired => {
+                (StatusCode::GONE, "invite.expired".into())
+            }
+            Self::Org(OrgError::InviteAlreadyConsumed) => {
+                (StatusCode::CONFLICT, "invite.consumed".into())
+            }
+            #[allow(clippy::match_same_arms)]
+            Self::Org(OrgError::InviteBatchTooLarge { .. }) => {
+                (StatusCode::PAYLOAD_TOO_LARGE, self.to_string())
+            }
+            Self::Org(OrgError::Parse(e)) => (StatusCode::BAD_REQUEST, e.to_string()),
+            Self::Org(OrgError::Auth(e)) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("auth: {e}"))
+            }
+            Self::Org(OrgError::Db(_)) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "org store error".into())
+            }
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
         };
         // CLAUDE.md §2: every error response that maps to a 5xx is a

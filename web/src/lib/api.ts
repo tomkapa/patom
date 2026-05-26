@@ -6,7 +6,10 @@ import type {
   CreateMcpServerRequest,
   CreateMemoryNoteRequest,
   CredentialInput,
+  IssuedInvite,
   Language,
+  ListMembersQuery,
+  ListMembersResponse,
   Me,
   McpCatalogEntry,
   McpServer,
@@ -15,6 +18,7 @@ import type {
   MemoryRow,
   MetricsTimeseriesResponse,
   ModelEntry,
+  OrgDetails,
   PromptVersionList,
   RestorePromptVersionResponse,
   OAuthStartRequest,
@@ -115,6 +119,47 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ language }),
     }),
+
+  // ─── Workspace settings (src/http/routes/org.rs) ────────────────────
+  /** Read the General-tab payload for the active workspace. */
+  org: () => request<OrgDetails>("/me/org"),
+  updateOrg: (patch: { name?: string; slug?: string }) =>
+    request<OrgDetails>("/me/org", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  members: (q: ListMembersQuery = {}) => {
+    const search = new URLSearchParams();
+    if (q.q) search.set("q", q.q);
+    if (q.status) search.set("status", q.status);
+    if (q.role) search.set("role", q.role);
+    if (q.page !== undefined) search.set("page", String(q.page));
+    if (q.per_page !== undefined)
+      search.set("per_page", String(q.per_page));
+    const qs = search.toString();
+    return request<ListMembersResponse>(
+      `/me/org/members${qs ? `?${qs}` : ""}`,
+    );
+  },
+  changeMemberRole: (userId: string, role: Role) =>
+    request<void>(`/me/org/members/${userId}/role`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    }),
+  removeMember: (userId: string) =>
+    request<void>(`/me/org/members/${userId}`, { method: "DELETE" }),
+  leaveOrg: () => request<void>("/me/org/leave", { method: "POST" }),
+  inviteMembers: (emails: string[], role: Role) =>
+    request<IssuedInvite[]>("/me/org/invites", {
+      method: "POST",
+      body: JSON.stringify({ emails, role }),
+    }),
+  resendInvite: (inviteId: string) =>
+    request<IssuedInvite>(`/me/org/invites/${inviteId}/resend`, {
+      method: "POST",
+    }),
+  revokeInvite: (inviteId: string) =>
+    request<void>(`/me/org/invites/${inviteId}`, { method: "DELETE" }),
 
   /** Read-only catalog of catalog model ids the agent picker offers.
    *  Mirrors `src/http/routes/models.rs`. */

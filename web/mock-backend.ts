@@ -174,25 +174,143 @@ const seed: Server[] = [
 
 const servers = new Map<string, Server>(seed.map((s) => [s.id, s]));
 
+// Mutable workspace details so the General-tab PATCH round-trips.
+const orgState = {
+  id: ORG_ID,
+  name: "Acme Robotics",
+  slug: "acme-robotics",
+  default_language: "en" as "en" | "vi",
+  created_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(),
+};
+
 const me = {
   user: {
     id: USER_ID,
     email: "alice@example.com",
-    display_name: "Alice",
+    display_name: "Alex Lui",
     avatar_url: null,
   },
   orgs: [
     {
       id: ORG_ID,
-      name: "Acme",
-      slug: "acme",
+      get name() {
+        return orgState.name;
+      },
+      get slug() {
+        return orgState.slug;
+      },
       role: "owner" as const,
-      default_language: "en" as const,
+      get default_language() {
+        return orgState.default_language;
+      },
     },
   ],
   active_org_id: ORG_ID,
   role: "owner" as const,
 };
+
+// ─── Workspace members + invites ─────────────────────────────────────
+// Seeded from the design frame `v0wdAd` (Workspace Settings — Members)
+// so the playwright pixel comparison hits the same content as Pencil.
+type MemberMock = {
+  user_id: string;
+  email: string;
+  display_name: string;
+  avatar_url: string | null;
+  role: "owner" | "admin" | "member";
+  joined_at: string;
+};
+type InviteMock = {
+  invite_id: string;
+  email: string;
+  role: "owner" | "admin" | "member";
+  invited_at: string;
+  expires_at: string;
+  token: string;
+};
+
+const D = (days: number) =>
+  new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+const DAY_FWD = (days: number) =>
+  new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+const MEMBERS: MemberMock[] = [
+  {
+    user_id: USER_ID,
+    email: "alex@acme.com",
+    display_name: "Alex Lui",
+    avatar_url: null,
+    role: "owner",
+    joined_at: D(132),
+  },
+  {
+    user_id: "00000000-0000-7000-8000-000000000002",
+    email: "priya@acme.com",
+    display_name: "Priya Shah",
+    avatar_url: null,
+    role: "admin",
+    joined_at: D(95),
+  },
+  {
+    user_id: "00000000-0000-7000-8000-000000000003",
+    email: "marvin@acme.com",
+    display_name: "Marvin Diaz",
+    avatar_url: null,
+    role: "admin",
+    joined_at: D(74),
+  },
+  {
+    user_id: "00000000-0000-7000-8000-000000000004",
+    email: "jules@acme.com",
+    display_name: "Jules Tanaka",
+    avatar_url: null,
+    role: "member",
+    joined_at: D(60),
+  },
+  {
+    user_id: "00000000-0000-7000-8000-000000000005",
+    email: "riley@acme.com",
+    display_name: "Riley Okafor",
+    avatar_url: null,
+    role: "member",
+    joined_at: D(53),
+  },
+  {
+    user_id: "00000000-0000-7000-8000-000000000006",
+    email: "sam@acme.com",
+    display_name: "Sam Vora",
+    avatar_url: null,
+    role: "member",
+    joined_at: D(31),
+  },
+];
+
+const INVITES: InviteMock[] = [
+  {
+    invite_id: "10000000-0000-7000-8000-000000000001",
+    email: "elia@partner.io",
+    role: "member",
+    invited_at: D(2),
+    expires_at: DAY_FWD(5),
+    token: "mock-invite-token-elia",
+  },
+  {
+    invite_id: "10000000-0000-7000-8000-000000000002",
+    email: "erik@acme.com",
+    role: "admin",
+    invited_at: D(3),
+    expires_at: DAY_FWD(4),
+    token: "mock-invite-token-erik",
+  },
+  {
+    invite_id: "10000000-0000-7000-8000-000000000003",
+    email: "pol.linh@acme.com",
+    role: "member",
+    invited_at: D(10),
+    expires_at: D(2), // already expired
+    token: "mock-invite-token-pol",
+  },
+];
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -1197,6 +1315,233 @@ const server = Bun.serve({
 
     if (path === "/auth/switch-org" && method === "POST") {
       return json({ active_org_id: ORG_ID, role: "owner" });
+    }
+
+    // ─── Workspace settings ───────────────────────────────────────────
+    // Mirrors src/http/routes/org.rs.
+    if (path === "/me/org" && method === "GET") {
+      return json({
+        id: orgState.id,
+        name: orgState.name,
+        slug: orgState.slug,
+        default_language: orgState.default_language,
+        member_count: MEMBERS.length,
+        created_at: orgState.created_at,
+        role: me.role,
+      });
+    }
+    if (path === "/me/org" && method === "PATCH") {
+      const body = (await req.json()) as { name?: string; slug?: string };
+      if (typeof body.name === "string") {
+        const trimmed = body.name.trim();
+        if (!trimmed) return json({ error: "org_name is empty" }, 400);
+        if (trimmed.length > 200)
+          return json({ error: "org_name too long" }, 400);
+        orgState.name = trimmed;
+      }
+      if (typeof body.slug === "string") {
+        if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(body.slug))
+          return json({ error: "org_slug malformed" }, 400);
+        // Simulate slug-taken collision for the literal "taken".
+        if (body.slug === "taken")
+          return json({ error: "org_slug.taken" }, 409);
+        orgState.slug = body.slug;
+      }
+      return json({
+        id: orgState.id,
+        name: orgState.name,
+        slug: orgState.slug,
+        default_language: orgState.default_language,
+        member_count: MEMBERS.length,
+        created_at: orgState.created_at,
+        role: me.role,
+      });
+    }
+    if (path === "/me/org/language" && method === "PATCH") {
+      const body = (await req.json()) as { language: "en" | "vi" };
+      orgState.default_language = body.language;
+      return json({ default_language: body.language });
+    }
+    if (path === "/me/org/members" && method === "GET") {
+      const qs = url.searchParams;
+      const q = qs.get("q")?.toLowerCase() ?? null;
+      const statusFilter = qs.get("status");
+      const roleFilter = qs.get("role");
+      const page = Math.max(1, Number(qs.get("page") ?? 1));
+      const perPage = Math.min(50, Math.max(1, Number(qs.get("per_page") ?? 20)));
+      const now = Date.now();
+      const memberRows = MEMBERS.map((m) => ({
+        kind: "member" as const,
+        user_id: m.user_id,
+        invite_id: null,
+        email: m.email,
+        display_name: m.display_name,
+        avatar_url: m.avatar_url,
+        role: m.role,
+        status: "active" as const,
+        joined_at: m.joined_at,
+        expires_at: null as string | null,
+      }));
+      const inviteRows = INVITES.map((i) => {
+        const expired = new Date(i.expires_at).getTime() < now;
+        return {
+          kind: "invite" as const,
+          user_id: null as string | null,
+          invite_id: i.invite_id,
+          email: i.email,
+          display_name: null as string | null,
+          avatar_url: null as string | null,
+          role: i.role,
+          status: (expired ? "expired" : "invited") as
+            | "invited"
+            | "expired",
+          joined_at: i.invited_at,
+          expires_at: i.expires_at,
+        };
+      });
+      const all = [...memberRows, ...inviteRows]
+        .filter(
+          (r) =>
+            !q ||
+            r.email.toLowerCase().includes(q) ||
+            (r.display_name?.toLowerCase().includes(q) ?? false),
+        )
+        .filter((r) => !roleFilter || r.role === roleFilter)
+        .filter((r) => !statusFilter || r.status === statusFilter)
+        .sort((a, b) => (a.joined_at < b.joined_at ? 1 : -1));
+
+      const start = (page - 1) * perPage;
+      const rows = all.slice(start, start + perPage);
+      const counts = {
+        active: memberRows.length,
+        invited: inviteRows.filter((r) => r.status === "invited").length,
+        expired: inviteRows.filter((r) => r.status === "expired").length,
+        all: memberRows.length + inviteRows.length,
+      };
+      return json({
+        rows,
+        total: all.length,
+        counts,
+        page,
+        per_page: perPage,
+      });
+    }
+    const memberRoleMatch = path.match(
+      /^\/me\/org\/members\/([^/]+)\/role$/,
+    );
+    if (memberRoleMatch && method === "PATCH") {
+      const userId = memberRoleMatch[1]!;
+      const body = (await req.json()) as { role: "owner" | "admin" | "member" };
+      const idx = MEMBERS.findIndex((m) => m.user_id === userId);
+      if (idx === -1) return empty(404);
+      const owners = MEMBERS.filter((m) => m.role === "owner").length;
+      if (
+        MEMBERS[idx]!.role === "owner" &&
+        body.role !== "owner" &&
+        owners <= 1
+      ) {
+        return json({ error: "org.last_owner" }, 409);
+      }
+      MEMBERS[idx] = { ...MEMBERS[idx]!, role: body.role };
+      return empty(204);
+    }
+    const memberDelMatch = path.match(/^\/me\/org\/members\/([^/]+)$/);
+    if (memberDelMatch && method === "DELETE") {
+      const userId = memberDelMatch[1]!;
+      const idx = MEMBERS.findIndex((m) => m.user_id === userId);
+      if (idx === -1) return empty(404);
+      const owners = MEMBERS.filter((m) => m.role === "owner").length;
+      if (MEMBERS[idx]!.role === "owner" && owners <= 1) {
+        return json({ error: "org.last_owner" }, 409);
+      }
+      MEMBERS.splice(idx, 1);
+      return empty(204);
+    }
+    if (path === "/me/org/leave" && method === "POST") {
+      const idx = MEMBERS.findIndex((m) => m.user_id === USER_ID);
+      const owners = MEMBERS.filter((m) => m.role === "owner").length;
+      if (idx === -1) return empty(404);
+      if (MEMBERS[idx]!.role === "owner" && owners <= 1) {
+        return json({ error: "org.last_owner" }, 409);
+      }
+      MEMBERS.splice(idx, 1);
+      return empty(204);
+    }
+    if (path === "/me/org/invites" && method === "POST") {
+      const body = (await req.json()) as {
+        emails: string[];
+        role: "owner" | "admin" | "member";
+      };
+      if (!Array.isArray(body.emails))
+        return json({ error: "emails missing" }, 400);
+      if (body.emails.length > 25)
+        return json(
+          { error: `invite batch too large: max 25, got ${body.emails.length}` },
+          413,
+        );
+      const now = Date.now();
+      const issued = body.emails.map((email) => {
+        const trimmed = email.trim();
+        const existingIdx = INVITES.findIndex((i) => i.email === trimmed);
+        const id =
+          existingIdx === -1
+            ? `inv-${crypto.randomUUID()}`
+            : INVITES[existingIdx]!.invite_id;
+        const token = `mock-${crypto.randomUUID().slice(0, 8)}`;
+        const expiresAt = new Date(
+          now + 7 * 24 * 60 * 60 * 1000,
+        ).toISOString();
+        const invitedAt = new Date(now).toISOString();
+        const next: InviteMock = {
+          invite_id: id,
+          email: trimmed,
+          role: body.role,
+          invited_at: invitedAt,
+          expires_at: expiresAt,
+          token,
+        };
+        if (existingIdx === -1) INVITES.push(next);
+        else INVITES[existingIdx] = next;
+        return {
+          invite_id: id,
+          email: trimmed,
+          role: body.role,
+          token,
+          expires_at: expiresAt,
+        };
+      });
+      return json(issued, 201);
+    }
+    const inviteResendMatch = path.match(
+      /^\/me\/org\/invites\/([^/]+)\/resend$/,
+    );
+    if (inviteResendMatch && method === "POST") {
+      const id = inviteResendMatch[1]!;
+      const idx = INVITES.findIndex((i) => i.invite_id === id);
+      if (idx === -1) return empty(404);
+      const token = `mock-${crypto.randomUUID().slice(0, 8)}`;
+      const now = Date.now();
+      INVITES[idx] = {
+        ...INVITES[idx]!,
+        invited_at: new Date(now).toISOString(),
+        expires_at: new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        token,
+      };
+      return json({
+        invite_id: id,
+        email: INVITES[idx]!.email,
+        role: INVITES[idx]!.role,
+        token,
+        expires_at: INVITES[idx]!.expires_at,
+      });
+    }
+    const inviteRevokeMatch = path.match(/^\/me\/org\/invites\/([^/]+)$/);
+    if (inviteRevokeMatch && method === "DELETE") {
+      const id = inviteRevokeMatch[1]!;
+      const idx = INVITES.findIndex((i) => i.invite_id === id);
+      if (idx === -1) return empty(404);
+      INVITES.splice(idx, 1);
+      return empty(204);
     }
 
     // ─── Logs & Metrics turn drawer (slice 2) ─────────────────────────

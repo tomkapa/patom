@@ -813,6 +813,10 @@ pub async fn build_server(
         shared
     });
 
+    let orgs_store: crate::orgs::SharedOrgStore =
+        Arc::new(crate::orgs::PgOrgStore::new(pieces.pool.clone()));
+    let mailer: crate::orgs::SharedMailer = Arc::new(crate::orgs::LogMailer);
+
     let state = AppState {
         queue: pieces.queue,
         leases: pieces.leases,
@@ -845,6 +849,8 @@ pub async fn build_server(
         web_dist: settings.web_dist.clone(),
         slack: slack_app_state,
         assets,
+        orgs: orgs_store,
+        mailer,
     };
 
     Ok(Server {
