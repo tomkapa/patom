@@ -481,15 +481,17 @@ function HeaderCell({
   dir: SortDir;
   onClick?: () => void;
 }) {
-  const icon = !sortable ? null : active ? (
-    dir === "asc" ? (
-      <ArrowUpNarrowWide className="h-3 w-3 text-[var(--color-ink)]" />
-    ) : (
-      <ArrowDownNarrowWide className="h-3 w-3 text-[var(--color-ink)]" />
-    )
-  ) : (
-    <ChevronsUpDown className="h-3 w-3 text-[var(--color-muted-2)]" />
-  );
+  let icon: ReactNode = null;
+  if (sortable && active) {
+    icon =
+      dir === "asc" ? (
+        <ArrowUpNarrowWide className="h-3 w-3 text-[var(--color-ink)]" />
+      ) : (
+        <ArrowDownNarrowWide className="h-3 w-3 text-[var(--color-ink)]" />
+      );
+  } else if (sortable) {
+    icon = <ChevronsUpDown className="h-3 w-3 text-[var(--color-muted-2)]" />;
+  }
   const className = cn(
     "flex items-center gap-1 text-left",
     sortable && "cursor-pointer",
@@ -524,12 +526,12 @@ function TurnRowView({
   visibleColumnDefs: ColumnDef[];
   gridTemplate: string;
 }) {
-  const tone =
-    row.status === "failed"
-      ? "bg-[var(--color-rose-soft)]"
-      : row.kind === "reflection"
-        ? "bg-[var(--color-moss-tint)]"
-        : "";
+  let tone = "";
+  if (row.status === "failed") {
+    tone = "bg-[var(--color-rose-soft)]";
+  } else if (row.kind === "reflection") {
+    tone = "bg-[var(--color-moss-tint)]";
+  }
   return (
     <>
       <button

@@ -209,9 +209,6 @@ export function PromptDiffModal({
 
   const { added, removed } = useMemo(() => countChanges(rows), [rows]);
   const totalChanges = added + removed;
-  const modelChanged =
-    leftVersion?.model !== rightVersion?.model &&
-    Boolean(leftVersion || rightVersion);
 
   const handleApply = async () => {
     if (!leftVersion || leftVersion.version === rightVersion?.version) return;
@@ -323,11 +320,6 @@ export function PromptDiffModal({
           value={t("agent.detail.logs.diff.meta.changes.value", {
             added,
             removed,
-            model: t(
-              modelChanged
-                ? "agent.detail.logs.diff.meta.model.changed"
-                : "agent.detail.logs.diff.meta.model.unchanged",
-            ),
           })}
         />
         <MetaDivider />
@@ -549,6 +541,14 @@ function VersionPills({
       {slice.map((v) => {
         const isTarget = v.version === targetVersion;
         const isLeft = v.version === leftVersion;
+        let pillTone: string;
+        if (isTarget) {
+          pillTone = "cursor-default border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-card)]";
+        } else if (isLeft) {
+          pillTone = "cursor-pointer border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]";
+        } else {
+          pillTone = "cursor-pointer border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)]";
+        }
         return (
           <button
             key={v.version}
@@ -558,11 +558,7 @@ function VersionPills({
             onClick={() => onPickLeft(v.version)}
             className={cn(
               "border px-2.5 py-1 font-[var(--font-mono)] text-[12px] font-semibold transition-colors duration-150 ease-out",
-              isTarget
-                ? "cursor-default border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-card)]"
-                : isLeft
-                  ? "cursor-pointer border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
-                  : "cursor-pointer border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+              pillTone,
             )}
           >
             v{v.version}
@@ -641,7 +637,7 @@ function SinceCell({
   const value = (() => {
     if (delta == null) return "—";
     if (format === "absolute") {
-      const sign = delta > 0 ? "+" : delta < 0 ? "" : "";
+      const sign = delta > 0 ? "+" : "";
       return `${sign}${delta.toLocaleString()}`;
     }
     if (base == null || base === 0) return "—";
@@ -650,12 +646,14 @@ function SinceCell({
     return `${sign}${pct.toFixed(1)}%`;
   })();
   const positive = delta != null && delta > 0;
-  const tone =
-    delta == null || delta === 0
-      ? "border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)]"
-      : positive
-        ? "border-[var(--color-rose)] bg-[var(--color-rose-soft)] text-[var(--color-rose)]"
-        : "border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]";
+  let tone: string;
+  if (delta == null || delta === 0) {
+    tone = "border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)]";
+  } else if (positive) {
+    tone = "border-[var(--color-rose)] bg-[var(--color-rose-soft)] text-[var(--color-rose)]";
+  } else {
+    tone = "border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]";
+  }
   return (
     <div className="flex items-center gap-2.5">
       <span className="font-[var(--font-body)] text-[12px] text-[var(--color-muted)]">

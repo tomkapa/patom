@@ -93,11 +93,13 @@ impl DurationMs {
     /// `as`-narrowing casts.
     #[must_use]
     pub fn saturating_from_millis(ms: u128) -> Self {
-        let cap_unsigned = u128::try_from(Self::SAT_CAP).unwrap_or(u128::MAX);
-        if ms >= cap_unsigned {
+        // §6: i32::MAX always fits in u128; the conversion is infallible.
+        let cap = u128::try_from(Self::SAT_CAP).expect("invariant: i32 fits u128");
+        if ms >= cap {
             return Self(Self::SAT_CAP);
         }
-        Self(i32::try_from(ms).unwrap_or(Self::SAT_CAP))
+        // `ms < cap_unsigned` guarantees `ms` fits in i32.
+        Self(i32::try_from(ms).expect("invariant: ms < i32::MAX after bound check"))
     }
 }
 

@@ -462,7 +462,6 @@ export type MetricsBucket = {
   latency_p50_ms: number;
   latency_p95_ms: number;
   failure_count: number;
-  prompt_version_id: string | null;
 };
 
 export type MetricsTotals = {
@@ -610,15 +609,15 @@ export type TurnPromptVersion = {
 
 // ─── Prompt versions (doc/logs_metrics_tab.md §4.1, §4.5) ────────────
 /** One row in `agent_prompt_versions`. The diff modal renders these as
- *  the left/right panes. `version` is monotonic per agent, `model` is
- *  `null` when the historical version inherited the workspace default,
- *  and `edited_by` is `null` for the v1 seed row that migration 43
- *  minted for every existing agent. */
+ *  the left/right panes. `version` is monotonic per agent, and
+ *  `edited_by` is `null` for the v1 seed row that migration 43
+ *  minted for every existing agent. Model is intentionally absent --
+ *  model selection is orthogonal to prompt versioning and lives on
+ *  `agents.model`, mutated in place. */
 export type PromptVersion = {
   id: string;
   version: number;
   system_prompt: string;
-  model: string | null;
   edited_by: string | null;
   created_at: string;
 };

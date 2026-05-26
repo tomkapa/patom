@@ -467,9 +467,7 @@ const en = {
   "agent.detail.logs.diff.meta.appliedFrom": "APPLIED FROM",
   "agent.detail.logs.diff.meta.editedBy.fallback": "system seed",
   "agent.detail.logs.diff.meta.changes.value":
-    "+{added} lines · -{removed} lines · {model}",
-  "agent.detail.logs.diff.meta.model.changed": "model changed",
-  "agent.detail.logs.diff.meta.model.unchanged": "model unchanged",
+    "+{added} lines · -{removed} lines",
   "agent.detail.logs.diff.meta.appliedFrom.value": "v{version} onward",
   "agent.detail.logs.diff.since.label":
     "SINCE v{right} (vs v{left}, {window}):",

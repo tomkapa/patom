@@ -287,18 +287,18 @@ function MemoryWritesSection({ events }: { events: TurnMemoryEvent[] }) {
 }
 
 function MemoryWriteRow({ event }: { event: TurnMemoryEvent }) {
-  const verb =
-    event.mutation === "write"
-      ? "+"
-      : event.mutation === "forget"
-        ? "−"
-        : "~";
-  const tone =
-    event.mutation === "write"
-      ? "text-[var(--color-moss-deep)]"
-      : event.mutation === "forget"
-        ? "text-[var(--color-rose)]"
-        : "text-[var(--color-ink)]";
+  let verb: string;
+  let tone: string;
+  if (event.mutation === "write") {
+    verb = "+";
+    tone = "text-[var(--color-moss-deep)]";
+  } else if (event.mutation === "forget") {
+    verb = "−";
+    tone = "text-[var(--color-rose)]";
+  } else {
+    verb = "~";
+    tone = "text-[var(--color-ink)]";
+  }
   const shown = event.content_after ?? event.content_before ?? "—";
   return (
     <li className="flex items-start gap-2 font-[var(--font-mono)] text-[11.5px]">

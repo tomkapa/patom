@@ -175,12 +175,15 @@ struct TurnMemoryEventResponse {
 /// `agent_prompt_versions` snapshot — the answer to "what was the agent
 /// running when this turn happened?" (doc §5.4). Read-only here; the
 /// restore action lives on a separate endpoint (slice 3).
+///
+/// Model is intentionally absent — it lives on `agents.model`, not on
+/// the version row (migration 43 doc: "Versions ONLY the system_prompt").
+/// The drawer's MODEL chip reads from `TurnMetricsResponse.model` above.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct PromptVersionSnapshot {
     id: PromptVersionId,
     version: i32,
     system_prompt: String,
-    model: Option<String>,
     edited_by: Option<UserId>,
     created_at: DateTime<Utc>,
 }
@@ -374,7 +377,7 @@ async fn fetch_prompt_version(
     prompt_version_id: PromptVersionId,
 ) -> Result<PromptVersionSnapshot, TurnDetailError> {
     let row = sqlx::query_as::<_, PromptVersionSnapshot>(
-        "SELECT id, version, system_prompt, model, edited_by, created_at \
+        "SELECT id, version, system_prompt, edited_by, created_at \
          FROM agent_prompt_versions \
          WHERE id = $1",
     )

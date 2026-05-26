@@ -464,9 +464,7 @@ const vi: TranslationTable = {
   "agent.detail.logs.diff.meta.appliedFrom": "ÁP DỤNG TỪ",
   "agent.detail.logs.diff.meta.editedBy.fallback": "khởi tạo hệ thống",
   "agent.detail.logs.diff.meta.changes.value":
-    "+{added} dòng · -{removed} dòng · {model}",
-  "agent.detail.logs.diff.meta.model.changed": "model đã đổi",
-  "agent.detail.logs.diff.meta.model.unchanged": "model không đổi",
+    "+{added} dòng · -{removed} dòng",
   "agent.detail.logs.diff.meta.appliedFrom.value": "từ v{version} trở đi",
   "agent.detail.logs.diff.since.label":
     "TỪ v{right} (so với v{left}, {window}):",

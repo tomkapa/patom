@@ -15,8 +15,6 @@ import { PromptDiffModal } from "../components/agentDetail/logs/PromptDiffModal"
 import {
   useAgentMetricsTimeseries,
   useAgentTurns,
-  usePromptVersions,
-  useRestorePromptVersion,
 } from "../hooks/useAgentLogs";
 import { useAgent } from "../hooks/useAgents";
 import { useT } from "../i18n";

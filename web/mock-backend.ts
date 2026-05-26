@@ -315,7 +315,6 @@ type PromptVersionMock = {
   id: string;
   version: number;
   system_prompt: string;
-  model: string | null;
   edited_by: string | null;
   created_at: string;
 };
@@ -342,7 +341,6 @@ PROMPT_VERSIONS.set(DEFAULT_AGENT_ID, [
     id: "11111111-aaaa-0000-0000-000000000007",
     version: 7,
     system_prompt: ATLAS_V7_PROMPT,
-    model: "claude-sonnet-4-6",
     edited_by: USER_ID,
     created_at: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
   },
@@ -350,7 +348,6 @@ PROMPT_VERSIONS.set(DEFAULT_AGENT_ID, [
     id: "11111111-aaaa-0000-0000-000000000006",
     version: 6,
     system_prompt: ATLAS_V6_PROMPT,
-    model: "claude-sonnet-4-6",
     edited_by: USER_ID,
     created_at: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString(),
   },
@@ -619,7 +616,6 @@ function buildTimeseriesFixture() {
       latency_p50_ms: b.p50,
       latency_p95_ms: b.p95,
       failure_count: b.failures,
-      prompt_version_id: null as string | null,
     };
   });
 
@@ -1034,7 +1030,6 @@ const server = Bun.serve({
           id: `mock-restore-${crypto.randomUUID()}`,
           version: nextVersion,
           system_prompt: snapshot.system_prompt,
-          model: snapshot.model,
           edited_by: USER_ID,
           created_at: new Date().toISOString(),
         };
@@ -1044,7 +1039,6 @@ const server = Bun.serve({
         agentsById.set(id, {
           ...a,
           system_prompt: snapshot.system_prompt,
-          model: snapshot.model,
           updated_at: minted.created_at,
         });
         return json({
