@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { useDismissable } from "../../hooks/useDismissable";
+import { popoverMotion } from "../../lib/motion";
 import { cn } from "../../lib/utils";
 
 /** Pop-over anchor relative to the trigger. The default `bottom-start`
@@ -51,11 +53,19 @@ export function Dropdown({
   return (
     <div ref={rootRef} className={cn("relative", rootClassName)}>
       {renderTrigger(state)}
-      {open ? (
-        <div className={cn(PLACEMENT[placement], "z-20", menuClassName)}>
-          {children(state)}
-        </div>
-      ) : null}
+      <AnimatePresence>
+        {open ? (
+          <motion.div
+            {...popoverMotion}
+            // Scale from the edge nearest the trigger so the popover
+            // feels rooted to its source instead of ballooning in mid-air.
+            style={{ transformOrigin: ORIGIN[placement] }}
+            className={cn(PLACEMENT[placement], "z-20", menuClassName)}
+          >
+            {children(state)}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
@@ -68,4 +78,10 @@ const PLACEMENT: Record<DropdownPlacement, string> = {
   // Anchored to the right edge of the trigger, baseline-aligned at bottom
   // (the menu rail's UserMenu pops out to the right).
   "right-bottom": "absolute bottom-0 left-full ml-2",
+};
+
+const ORIGIN: Record<DropdownPlacement, string> = {
+  "bottom-start": "top left",
+  "bottom-stretch": "top center",
+  "right-bottom": "bottom left",
 };

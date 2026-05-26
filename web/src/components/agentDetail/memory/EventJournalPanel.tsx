@@ -2,7 +2,7 @@ import { ScrollText } from "lucide-react";
 import { Spinner } from "../../atoms/Spinner";
 import { Button } from "../../atoms/Button";
 import { EmptyState } from "../../molecules/EmptyState";
-import { cn } from "../../../lib/utils";
+import { TogglePill, type TogglePillTone } from "../../molecules/TogglePill";
 import { formatError } from "../../../lib/errors";
 import { useT } from "../../../i18n";
 import type {
@@ -16,19 +16,17 @@ import { EventJournalRow } from "./EventJournalRow";
 const SOURCES: readonly MutationSource[] = ["turn", "operator", "librarian"];
 const MUTATIONS: readonly MutationKind[] = ["write", "update", "forget"];
 
-const SOURCE_CHIP: Record<MutationSource, { fill: string; ink: string; border: string }> =
-  {
-    turn: { fill: "#EFF6FF", ink: "#1D4ED8", border: "#1D4ED8" },
-    operator: { fill: "#F5F3FF", ink: "#7C3AED", border: "#7C3AED" },
-    librarian: { fill: "#ECFDF5", ink: "#065F46", border: "#065F46" },
-  };
+const SOURCE_CHIP: Record<MutationSource, TogglePillTone> = {
+  turn: { fill: "#EFF6FF", ink: "#1D4ED8", border: "#1D4ED8" },
+  operator: { fill: "#F5F3FF", ink: "#7C3AED", border: "#7C3AED" },
+  librarian: { fill: "#ECFDF5", ink: "#065F46", border: "#065F46" },
+};
 
-const MUTATION_CHIP: Record<MutationKind, { fill: string; ink: string; border: string }> =
-  {
-    write: { fill: "#E8F0EA", ink: "#2D6B3F", border: "#2D6B3F" },
-    update: { fill: "#EFF6FF", ink: "#1D4ED8", border: "#1D4ED8" },
-    forget: { fill: "#FEF2F2", ink: "#DC2626", border: "#DC2626" },
-  };
+const MUTATION_CHIP: Record<MutationKind, TogglePillTone> = {
+  write: { fill: "#E8F0EA", ink: "#2D6B3F", border: "#2D6B3F" },
+  update: { fill: "#EFF6FF", ink: "#1D4ED8", border: "#1D4ED8" },
+  forget: { fill: "#FEF2F2", ink: "#DC2626", border: "#DC2626" },
+};
 
 export function EventJournalPanel({
   events,
@@ -147,7 +145,7 @@ function LegendRow<V extends string>({
   values: readonly V[];
   current: V | null;
   renderLabel: (v: V) => string;
-  style: Record<V, { fill: string; ink: string; border: string }>;
+  style: Record<V, TogglePillTone>;
   onSelect: (v: V) => void;
 }) {
   return (
@@ -156,27 +154,17 @@ function LegendRow<V extends string>({
         {label}
       </span>
       {values.map((v) => {
-        const s = style[v];
         const isActive = current === v;
-        const isDimmed = current !== null && !isActive;
         return (
-          <button
+          <TogglePill
             key={v}
-            type="button"
-            aria-pressed={isActive}
+            active={isActive}
+            dimmed={current !== null && !isActive}
+            tone={style[v]}
             onClick={() => onSelect(v)}
-            className={cn(
-              "inline-flex items-center border px-2 py-[2px] font-[var(--font-mono)] text-[11px] font-semibold transition-opacity",
-              isDimmed && "opacity-40",
-            )}
-            style={{
-              backgroundColor: s.fill,
-              color: s.ink,
-              borderColor: s.border,
-            }}
           >
             {renderLabel(v)}
-          </button>
+          </TogglePill>
         );
       })}
     </div>

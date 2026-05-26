@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Check, ChevronsUpDown } from "lucide-react";
+import { Check, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { Dropdown } from "./Dropdown";
 import { cn } from "../../lib/utils";
 
@@ -12,104 +12,130 @@ export type SelectOption<V extends string> = {
   leading?: ReactNode;
 };
 
+/** Visual mode.
+ *  - `"default"` — full-width chip styled after the agent-detail Model
+ *    picker (`qZPNz` in design.pen). Big rows with leading slot, caption,
+ *    and a Check on the active option.
+ *  - `"filter"` — compact `h-7` chip for filter bars (Memory page Kind /
+ *    State / Pinned). Chrome turns moss-tint when `active` is true; rows
+ *    are dense, single-line, highlight the active option via background.
+ *
+ *  When you reach for a single-select dropdown anywhere in the app, this
+ *  is the component — variants cover both the prominent picker and the
+ *  filter-row chip without duplicating Dropdown plumbing or listbox a11y. */
+export type SelectVariant = "default" | "filter";
+
 type RenderTrigger<V extends string> = (state: {
   selected: SelectOption<V> | null;
   open: boolean;
 }) => ReactNode;
 
-/** Generic single-select dropdown. The default trigger matches the
- *  agent-detail "Model" chip in design.pen `qZPNz` (border, mono label,
- *  ChevronsUpDown affordance); callers can override via `renderTrigger`.
- *  Built on the `Dropdown` primitive so all open/close behaviour stays
- *  in lockstep with the other dropdowns in the app. */
+/** Generic single-select dropdown. Use `variant="default"` for prominent
+ *  pickers (model, kind, state in modals) and `variant="filter"` for the
+ *  compact filter-bar chips. Both render the same listbox semantics, the
+ *  same open/close primitive (Dropdown), and the same option-row a11y
+ *  contract — only the chrome differs. */
 export function Select<V extends string>({
   value,
   options,
   onChange,
+  ariaLabel,
+  className,
+  disabled,
+  variant = "default",
+  // default-variant trigger:
   placeholder,
   renderTrigger,
   width,
-  disabled,
-  ariaLabel,
-  className,
+  // filter-variant trigger:
+  triggerLabel,
+  icon,
+  active = false,
 }: {
   value: V | null;
   options: SelectOption<V>[];
   onChange: (next: V) => void;
+  ariaLabel: string;
+  className?: string;
+  disabled?: boolean;
+  variant?: SelectVariant;
+  // ── default-variant only ──────────────────────────────────────────
   placeholder?: ReactNode;
   renderTrigger?: RenderTrigger<V>;
   width?: number | string;
-  disabled?: boolean;
-  ariaLabel: string;
-  className?: string;
+  // ── filter-variant only ───────────────────────────────────────────
+  /** Trigger label — the caller controls the text (often the selected
+   *  option's label, or a category fallback when value is the "any"
+   *  sentinel). */
+  triggerLabel?: string;
+  /** Leading icon for the filter chip. */
+  icon?: ReactNode;
+  /** Whether the chip should render in its selected / moss-tint state.
+   *  Usually `value !== "any"` or `value !== null`. */
+  active?: boolean;
 }) {
   const selected = options.find((o) => o.value === value) ?? null;
+  const isFilter = variant === "filter";
 
   return (
     <Dropdown
       rootClassName={className}
-      menuClassName="max-h-[60vh] overflow-y-auto border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md scroll-thin"
-      renderTrigger={({ open, toggle }) => (
-        <div style={width !== undefined ? { width } : undefined}>
-          <button
-            type="button"
-            aria-haspopup="listbox"
-            aria-expanded={open}
-            aria-label={ariaLabel}
+      placement={isFilter ? "bottom-start" : "bottom-stretch"}
+      menuClassName={cn(
+        "border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md scroll-thin",
+        isFilter ? "min-w-[160px]" : "max-h-[60vh] overflow-y-auto",
+      )}
+      renderTrigger={({ open, toggle }) =>
+        isFilter ? (
+          <FilterTrigger
+            ariaLabel={ariaLabel}
             disabled={disabled}
-            onClick={toggle}
-            className="flex w-full items-center justify-between gap-2 border border-[var(--color-line-strong)] bg-[var(--color-card)] px-3 py-2 text-left outline-none transition-colors hover:bg-[var(--color-paper-2)] focus-visible:ring-1 focus-visible:ring-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50"
+            open={open}
+            onToggle={toggle}
+            icon={icon}
+            label={triggerLabel ?? ""}
+            active={active}
+          />
+        ) : (
+          <DefaultTrigger
+            ariaLabel={ariaLabel}
+            disabled={disabled}
+            open={open}
+            onToggle={toggle}
+            width={width}
           >
             {renderTrigger
               ? renderTrigger({ selected, open })
-              : defaultTrigger({ selected, placeholder })}
-          </button>
-        </div>
-      )}
+              : defaultTriggerContent({ selected, placeholder })}
+          </DefaultTrigger>
+        )
+      }
     >
       {({ close }) => (
         <ul role="listbox" aria-label={ariaLabel}>
           {options.length === 0 ? (
-            <li className="px-3 py-2 text-[12.5px] text-[var(--color-muted)]">
+            <li
+              className={cn(
+                "text-[12.5px] text-[var(--color-muted)]",
+                isFilter ? "px-3 py-1.5" : "px-3 py-2",
+              )}
+            >
               {placeholder ?? "No options"}
             </li>
           ) : (
             options.map((opt) => {
               const isActive = opt.value === value;
+              const onPick = () => {
+                close();
+                if (opt.value !== value) onChange(opt.value);
+              };
               return (
                 <li key={opt.value}>
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={isActive}
-                    onClick={() => {
-                      close();
-                      if (opt.value !== value) onChange(opt.value);
-                    }}
-                    className={cn(
-                      "flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--color-paper-2)]",
-                      isActive && "bg-[var(--color-moss-tint)]",
-                    )}
-                  >
-                    {opt.leading ? (
-                      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--color-moss)]">
-                        {opt.leading}
-                      </span>
-                    ) : null}
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-[var(--font-mono)] text-[13px] text-[var(--color-ink)]">
-                        {opt.label}
-                      </span>
-                      {opt.caption ? (
-                        <span className="block truncate font-[var(--font-mono)] text-[10.5px] tracking-[0.08em] text-[var(--color-muted)] uppercase">
-                          {opt.caption}
-                        </span>
-                      ) : null}
-                    </span>
-                    {isActive ? (
-                      <Check className="h-3.5 w-3.5 shrink-0 text-[var(--color-moss)]" />
-                    ) : null}
-                  </button>
+                  {isFilter ? (
+                    <FilterRow option={opt} isActive={isActive} onPick={onPick} />
+                  ) : (
+                    <DefaultRow option={opt} isActive={isActive} onPick={onPick} />
+                  )}
                 </li>
               );
             })
@@ -120,7 +146,157 @@ export function Select<V extends string>({
   );
 }
 
-function defaultTrigger<V extends string>({
+function DefaultTrigger({
+  ariaLabel,
+  disabled,
+  open,
+  onToggle,
+  width,
+  children,
+}: {
+  ariaLabel: string;
+  disabled?: boolean;
+  open: boolean;
+  onToggle: () => void;
+  width?: number | string;
+  children: ReactNode;
+}) {
+  return (
+    <div style={width !== undefined ? { width } : undefined}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        disabled={disabled}
+        onClick={onToggle}
+        className="flex w-full cursor-pointer items-center justify-between gap-2 border border-[var(--color-line-strong)] bg-[var(--color-card)] px-3 py-2 text-left outline-none transition-colors duration-150 ease-out hover:bg-[var(--color-paper-2)] focus-visible:ring-1 focus-visible:ring-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {children}
+      </button>
+    </div>
+  );
+}
+
+function FilterTrigger({
+  ariaLabel,
+  disabled,
+  open,
+  onToggle,
+  icon,
+  label,
+  active,
+}: {
+  ariaLabel: string;
+  disabled?: boolean;
+  open: boolean;
+  onToggle: () => void;
+  icon?: ReactNode;
+  label: string;
+  active: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-haspopup="listbox"
+      aria-expanded={open}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onClick={onToggle}
+      className={cn(
+        "flex h-7 cursor-pointer items-center gap-1.5 border px-2.5 text-[12px] outline-none transition-colors duration-150 ease-out focus-visible:ring-1 focus-visible:ring-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50",
+        active
+          ? "border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
+          : "border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+      )}
+    >
+      {icon ? (
+        <span
+          className={cn(
+            "shrink-0",
+            active ? "text-[var(--color-moss)]" : "text-[var(--color-muted-2)]",
+          )}
+        >
+          {icon}
+        </span>
+      ) : null}
+      <span>{label}</span>
+      <ChevronDown
+        className="h-3 w-3 text-[var(--color-muted)]"
+        strokeWidth={1.75}
+      />
+    </button>
+  );
+}
+
+function DefaultRow<V extends string>({
+  option,
+  isActive,
+  onPick,
+}: {
+  option: SelectOption<V>;
+  isActive: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={isActive}
+      onClick={onPick}
+      className={cn(
+        "flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-paper-2)]",
+        isActive && "bg-[var(--color-moss-tint)]",
+      )}
+    >
+      {option.leading ? (
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--color-moss)]">
+          {option.leading}
+        </span>
+      ) : null}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-[var(--font-mono)] text-[13px] text-[var(--color-ink)]">
+          {option.label}
+        </span>
+        {option.caption ? (
+          <span className="block truncate font-[var(--font-mono)] text-[10.5px] tracking-[0.08em] text-[var(--color-muted)] uppercase">
+            {option.caption}
+          </span>
+        ) : null}
+      </span>
+      {isActive ? (
+        <Check className="h-3.5 w-3.5 shrink-0 text-[var(--color-moss)]" />
+      ) : null}
+    </button>
+  );
+}
+
+function FilterRow<V extends string>({
+  option,
+  isActive,
+  onPick,
+}: {
+  option: SelectOption<V>;
+  isActive: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={isActive}
+      onClick={onPick}
+      className={cn(
+        "flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors duration-100 ease-out hover:bg-[var(--color-paper-2)]",
+        isActive && "bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]",
+      )}
+    >
+      <span>{option.label}</span>
+    </button>
+  );
+}
+
+function defaultTriggerContent<V extends string>({
   selected,
   placeholder,
 }: {

@@ -70,7 +70,7 @@ export function UserMenu() {
           aria-haspopup="menu"
           aria-expanded={open}
           onClick={toggle}
-          className="flex h-9 w-9 items-center justify-center overflow-hidden border border-white bg-[var(--color-moss)] transition-colors hover:bg-[var(--color-moss-deep)]"
+          className="flex h-9 w-9 cursor-pointer items-center justify-center overflow-hidden border border-white bg-[var(--color-moss)] transition-colors duration-150 ease-out hover:bg-[var(--color-moss-deep)]"
         >
           {me.user.avatar_url ? (
             <img
@@ -155,7 +155,7 @@ export function UserMenu() {
             role="menuitem"
             onClick={() => logout.mutate()}
             disabled={logout.isPending}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-[var(--color-rose)] hover:bg-[var(--color-rose-soft)] disabled:opacity-50"
+            className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-[12px] text-[var(--color-rose)] transition-colors duration-100 ease-out hover:bg-[var(--color-rose-soft)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <LogOut className="h-3.5 w-3.5" />
             {t("usermenu.signout")}

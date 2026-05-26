@@ -1,8 +1,10 @@
 import { Bot, House, Plug } from "lucide-react";
+import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { useT } from "../../i18n";
 import { useAuthStore } from "../../stores/authStore";
+import { indicatorSpring } from "../../lib/motion";
 import { UserMenu } from "./UserMenu";
 
 type MenuItem = {
@@ -70,14 +72,22 @@ export function MenuRail() {
             onClick={() => nav(item.to)}
             aria-current={active ? "page" : undefined}
             className={cn(
-              "flex w-full flex-col items-center gap-1 px-2 py-1 transition-colors",
+              "relative flex w-full cursor-pointer flex-col items-center gap-1 px-2 py-1 transition-colors duration-150 ease-out",
               active
-                ? "bg-white/10 text-white"
+                ? "text-white"
                 : "text-white/80 hover:bg-white/5 hover:text-white",
             )}
           >
-            <Icon className="h-5 w-5" strokeWidth={1.75} />
-            <span className="font-sans text-[11px] font-medium leading-none">
+            {active ? (
+              <motion.span
+                layoutId="menu-rail-active"
+                className="absolute inset-0 bg-white/10"
+                transition={indicatorSpring}
+                aria-hidden
+              />
+            ) : null}
+            <Icon className="relative h-5 w-5" strokeWidth={1.75} />
+            <span className="relative font-sans text-[11px] font-medium leading-none">
               {item.label}
             </span>
           </button>

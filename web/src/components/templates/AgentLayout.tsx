@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
+import { motion } from "motion/react";
 import {
   BarChart3,
   Brain,
@@ -14,6 +15,7 @@ import { Monogram } from "../atoms/Monogram";
 import { Dropdown } from "../molecules/Dropdown";
 import { useT } from "../../i18n";
 import { cn } from "../../lib/utils";
+import { indicatorSpring } from "../../lib/motion";
 import { useAgents } from "../../hooks/useAgents";
 import type { Agent } from "../../types/api";
 
@@ -90,17 +92,25 @@ export function AgentLayout({
             const Icon = it.icon;
             const isActive = active === it.id;
             const itemClass = cn(
-              "group flex items-center gap-2.5 px-3 py-2 text-left transition-colors",
+              "group relative flex items-center gap-2.5 pl-3 pr-3 py-2 text-left transition-colors duration-150 ease-out",
               isActive
-                ? "border-l-2 border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
+                ? "bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
                 : it.disabled
-                  ? "cursor-not-allowed border-l-2 border-transparent text-[var(--color-muted-2)] opacity-60"
-                  : "cursor-pointer border-l-2 border-transparent text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+                  ? "cursor-not-allowed text-[var(--color-muted-2)] opacity-60"
+                  : "cursor-pointer text-[var(--color-muted)] hover:text-[var(--color-ink)]",
             );
+            const indicator = isActive ? (
+              <motion.span
+                layoutId="agent-nav-indicator"
+                className="absolute top-0 bottom-0 left-0 w-[2px] bg-[var(--color-moss)]"
+                transition={indicatorSpring}
+                aria-hidden
+              />
+            ) : null;
             const iconEl = (
               <Icon
                 className={cn(
-                  "h-4 w-4 shrink-0",
+                  "h-4 w-4 shrink-0 transition-colors duration-150 ease-out",
                   isActive
                     ? "text-[var(--color-moss)]"
                     : "text-[var(--color-muted-2)]",
@@ -128,6 +138,7 @@ export function AgentLayout({
                   disabled={it.disabled || !agent}
                   className={itemClass}
                 >
+                  {indicator}
                   {iconEl}
                   {label}
                 </button>
@@ -140,6 +151,7 @@ export function AgentLayout({
                 aria-current={isActive ? "page" : undefined}
                 className={itemClass}
               >
+                {indicator}
                 {iconEl}
                 {label}
               </NavLink>
@@ -172,7 +184,7 @@ function AgentSwitcher({ current }: { current: Agent | null }) {
           aria-expanded={open}
           aria-label={t("agent.detail.switcher.aria")}
           onClick={toggle}
-          className="flex w-full items-center gap-2.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-ink)]"
+          className="flex w-full cursor-pointer items-center gap-2.5 text-left outline-none transition-colors duration-150 ease-out focus-visible:ring-1 focus-visible:ring-[var(--color-ink)]"
         >
           <Monogram
             name={current?.name ?? "—"}
@@ -211,7 +223,7 @@ function AgentSwitcher({ current }: { current: Agent | null }) {
                       close();
                       if (!isActive) nav(`/agents/${a.id}`);
                     }}
-                    className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--color-paper-2)]"
+                    className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-paper-2)]"
                   >
                     <Monogram name={a.name} id={a.id} size={24} tone="moss" />
                     <div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-[var(--color-ink)]">
