@@ -1,0 +1,33 @@
+-- Drop `agents.system_prompt`. The live prompt now resolves through
+-- `agent_prompt_versions` at read time (MAX-version JOIN). `agents.model`
+-- STAYS — model selection is orthogonal to the prompt: a user can switch
+-- backends without changing the agent's voice, and a prompt edit doesn't
+-- imply a model swap.
+--
+-- Before this migration `agents.system_prompt` was the live value and
+-- `agent_prompt_versions.system_prompt` was the history. Keeping both in
+-- sync was best-effort: if the bump on `PATCH /agents/:id` failed after
+-- the `agents` UPDATE succeeded, future `turn_metrics` rows recorded the
+-- OLD `prompt_version_id` while the worker ran the NEW prompt — silent
+-- corruption against the audit log.
+--
+-- After this migration `agent_prompt_versions` is the single source of
+-- truth for the prompt. "Current" is *not* a stored pointer — it's
+-- `MAX(version) WHERE agent_id = X`, served by the existing
+-- `UNIQUE (agent_id, version)` index. Single write per prompt edit:
+-- INSERT into `agent_prompt_versions`. Atomic by construction.
+--
+-- Reads now resolve the live prompt through:
+--
+--     SELECT a.*, apv.system_prompt
+--       FROM agents a
+--       JOIN LATERAL (
+--           SELECT id, system_prompt FROM agent_prompt_versions
+--            WHERE agent_id = a.id
+--            ORDER BY version DESC LIMIT 1
+--       ) apv ON TRUE
+--
+-- Pre-launch single-step migration: NOT NULL with no fallback shim. Dev
+-- DBs are wiped before applying (feedback_no_backcompat).
+
+ALTER TABLE agents DROP COLUMN system_prompt;

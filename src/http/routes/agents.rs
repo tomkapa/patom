@@ -27,7 +27,7 @@ use uuid::Uuid;
 
 use crate::agent_core::{MAX_TURN_LIST_PAGE_SIZE, MAX_TURNS_PER_TIMESERIES_RESPONSE};
 use crate::agents::prompt_versions::{
-    NewPromptVersion, PromptVersionError, PromptVersionId, PromptVersionNumber, PromptVersionRow,
+    PromptVersionError, PromptVersionId, PromptVersionNumber, PromptVersionRow,
 };
 use crate::agents::{
     AgentDescription, AgentId, AgentName, AgentRecord, AgentSystemPrompt, AgentUpdate,
@@ -37,7 +37,8 @@ use crate::auth::{
     AuthError, OrgId, Principal, UserId, VisibilityTable, run_privileged, visible_to,
 };
 use crate::mcp::McpServerId;
-use crate::provider::Model;
+use crate::provider::{Model, ProviderId};
+use crate::runtime::RequestKind;
 use crate::tools::{DEFAULT_TOOL_CALLS_PAGE, MAX_TOOL_CALLS_PAGE, ToolCallRowId};
 
 use super::super::error::HttpError;
@@ -197,6 +198,7 @@ async fn create_agent(
             is_default: payload.is_default,
             allowed_mcp_tools: payload.allowed_mcp_tools,
             model: payload.model,
+            edited_by: Some(principal.user_id),
         })
         .await?;
     Ok((StatusCode::CREATED, Json(record.into())))
@@ -210,15 +212,12 @@ async fn list_agents(
     // let the `agents_org_isolation` RLS policy do the filtering. Mirrors
     // the mcp_servers route — bypasses the store's privileged read path
     // so the user can see only their own org's rows.
+    let sql = format!("SELECT {AGENT_LIST_SELECT} ORDER BY a.created_at ASC");
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
-    let rows = sqlx::query_as::<_, AgentRowForList>(
-        "SELECT id, org_id, name, system_prompt, description, is_default, \
-                allowed_mcp_tools, model, created_at, updated_at \
-         FROM agents ORDER BY created_at ASC",
-    )
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(AuthError::from)?;
+    let rows = sqlx::query_as::<_, AgentRowForList>(&sql)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
     tx.commit().await.map_err(AuthError::from)?;
     let out = rows
         .into_iter()
@@ -233,16 +232,13 @@ async fn read_agent(
     Path(id): Path<Uuid>,
 ) -> Result<Json<AgentResponse>, HttpError> {
     let id = AgentId::from(id);
+    let sql = format!("SELECT {AGENT_LIST_SELECT} WHERE a.id = $1");
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
-    let row = sqlx::query_as::<_, AgentRowForList>(
-        "SELECT id, org_id, name, system_prompt, description, is_default, \
-                allowed_mcp_tools, model, created_at, updated_at \
-         FROM agents WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(AuthError::from)?;
+    let row = sqlx::query_as::<_, AgentRowForList>(&sql)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
     tx.commit().await.map_err(AuthError::from)?;
     let row = row.ok_or(HttpError::NotFound)?;
     Ok(Json(row.into_response()))
@@ -283,17 +279,13 @@ async fn update_agent(
     {
         return Err(HttpError::NotFound);
     }
-    // Snapshot the prior (system_prompt, model) so we can detect an
-    // effective edit. The store update returns the *new* record; we want
-    // the *old* for the bump comparison.
-    //
-    // Two concurrent PATCH requests can each see the same `before` and
-    // both decide to bump — the UNIQUE (agent_id, version) constraint
-    // forces them to different versions; the only observable side-effect
-    // is two history rows with identical content, which is exactly the
-    // (rare) shape a real human "double-saved" edit produces. Slice 3's
-    // restore path follows the same idempotent shape (doc §4.5).
-    let before = state.agents.read(id).await?;
+    // Store handles the prompt-version bump internally inside the same
+    // transaction as the agents UPDATE. There's no second write to keep
+    // in sync — the agents table no longer carries `system_prompt`, and
+    // "current version" is `MAX(version)` (migration 45). Two concurrent
+    // PATCHes serialise on `FOR UPDATE` of the agents row; the
+    // `UNIQUE (agent_id, version)` constraint is the load-bearing safety
+    // net if both decide to bump.
     let new_record = state
         .agents
         .update(
@@ -305,37 +297,10 @@ async fn update_agent(
                 is_default: payload.is_default,
                 allowed_mcp_tools,
                 model: payload.model,
+                edited_by: Some(principal.user_id),
             },
         )
         .await?;
-
-    // Bump `agent_prompt_versions` only when the prompt or model actually
-    // changed. The two are treated as one tuple — a model swap is the same
-    // act as a prompt edit (doc/logs_metrics_tab.md §4.1).
-    let prompt_changed = before.system_prompt.as_str() != new_record.system_prompt.as_str();
-    let model_changed = before.model != new_record.model;
-    if prompt_changed || model_changed {
-        // Best-effort: an insert failure here means the audit history is
-        // momentarily stale but the agents table has the authoritative
-        // current values. Log loudly so a recurring failure is visible.
-        if let Err(e) = state
-            .prompt_versions
-            .insert_bump(NewPromptVersion {
-                agent_id: id,
-                org_id: new_record.org_id,
-                system_prompt: new_record.system_prompt.clone(),
-                model: new_record.model,
-                edited_by: Some(principal.user_id),
-            })
-            .await
-        {
-            tracing::error!(
-                error = ?e,
-                relay.agent.id = %id,
-                "agent_prompt_versions.bump.failed",
-            );
-        }
-    }
     Ok(Json(new_record.into()))
 }
 
@@ -359,10 +324,20 @@ async fn delete_agent(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// Local row type for the tenant-scoped SELECTs. Mirrors the columns
-// returned by the store's read path but lives here so the route can run
-// raw SQL inside the principal-scoped tx without going through the
+// Local row type for the tenant-scoped SELECTs. Mirrors the join shape
+// the store uses, with `system_prompt` from the latest-version row in
+// `agent_prompt_versions` (migration 45). Lives here so the route can
+// run raw SQL inside the principal-scoped tx without going through the
 // store's privileged transaction.
+const AGENT_LIST_SELECT: &str = "a.id, a.org_id, a.name, apv.system_prompt, a.description, \
+    a.is_default, a.allowed_mcp_tools, a.model, a.created_at, a.updated_at \
+    FROM agents a \
+    JOIN LATERAL ( \
+        SELECT system_prompt FROM agent_prompt_versions \
+         WHERE agent_id = a.id \
+         ORDER BY version DESC LIMIT 1 \
+    ) apv ON TRUE";
+
 #[derive(sqlx::FromRow)]
 struct AgentRowForList {
     id: AgentId,
@@ -548,16 +523,28 @@ impl TimeseriesBucket {
     }
 }
 
+/// `?compare=…` query value. Closed enum so an unknown spelling (typo
+/// like `?compare=prev`) 400s at deserialise time instead of silently
+/// dropping deltas from the response.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CompareWindow {
+    /// Aggregate the same width of time immediately preceding `[from, to)`
+    /// for `Δ vs compare window`. Default — caption needs deltas populated.
+    #[default]
+    PrevWindow,
+    /// Skip the compare query entirely; deltas come back as `null`.
+    None,
+}
+
 #[derive(Debug, Deserialize)]
 struct MetricsTimeseriesQuery {
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
     #[serde(default)]
     bucket: TimeseriesBucket,
-    /// `prev_window` | `none` — UI uses `prev_window` by default so the
-    /// caption's `Δ vs compare window` is populated.
     #[serde(default)]
-    compare: Option<String>,
+    compare: CompareWindow,
 }
 
 #[derive(Debug, Serialize)]
@@ -574,10 +561,10 @@ struct TimeseriesBucketRow {
     latency_p50_ms: i64,
     latency_p95_ms: i64,
     failure_count: i64,
-    /// `prompt_version_id` active for this bucket (most recent version
-    /// whose `created_at <= bucket.start`). Nullable for windows that
-    /// predate the first version row.
-    prompt_version_id: Option<crate::agents::prompt_versions::PromptVersionId>,
+    // Per-bucket `prompt_version_id` was added speculatively in slice 1
+    // and never populated (the writer hard-coded `None`). Removed until
+    // the per-bucket join actually lands — half-implemented fields that
+    // always serialise as null mislead the FE and the docs.
 }
 
 #[derive(Debug, Serialize)]
@@ -622,7 +609,6 @@ struct BucketAggRow {
     normal: Option<i64>,
     reflection: Option<i64>,
     resolution: Option<i64>,
-    tokens: Option<i64>,
     p50: Option<f64>,
     p95: Option<f64>,
     failures: Option<i64>,
@@ -646,15 +632,23 @@ async fn get_agent_metrics_timeseries(
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let rows = fetch_buckets(&mut tx, agent_id, from, to, trunc_unit).await?;
     let edits = fetch_prompt_edits(&mut tx, agent_id, from, to).await?;
-    let compare_totals = match params.compare.as_deref() {
-        None | Some("prev_window") => Some(fetch_compare(&mut tx, agent_id, from, to).await?),
-        _ => None,
-    }
-    .flatten();
+    // Run the totals aggregate over the un-bucketed window so the chart
+    // caption's p50/p95 are real window-level percentiles — not the
+    // statistically meaningless median of per-bucket medians.
+    let window_totals = fetch_window_totals(&mut tx, agent_id, from, to).await?;
+    let compare_totals = match params.compare {
+        CompareWindow::PrevWindow => fetch_compare(&mut tx, agent_id, from, to).await?,
+        CompareWindow::None => None,
+    };
     tx.commit().await.map_err(AuthError::from)?;
 
-    let (totals, totals_p95) = compute_totals(&rows);
-    let deltas = compute_deltas(&totals, totals_p95, compare_totals);
+    let totals = build_totals(window_totals);
+    let deltas = compute_deltas(
+        totals.tokens,
+        totals.latency_p95_ms,
+        totals.failure_count,
+        compare_totals,
+    );
     let buckets = rows.into_iter().map(bucket_row_into_response).collect();
     let prompt_edits = edits
         .into_iter()
@@ -709,7 +703,6 @@ async fn fetch_buckets(
     let sql = format!(
         "WITH base AS ( \
             SELECT tm.started_at, tm.kind, \
-                   (tm.input_tokens + tm.output_tokens)::bigint AS total_tokens, \
                    tm.duration_ms::float8 AS duration_ms, \
                    pr.status = 'failed' AS is_failure \
               FROM turn_metrics tm \
@@ -724,7 +717,6 @@ async fn fetch_buckets(
                 COUNT(*) FILTER (WHERE kind = 'normal')     AS normal, \
                 COUNT(*) FILTER (WHERE kind = 'reflection') AS reflection, \
                 COUNT(*) FILTER (WHERE kind = 'resolution') AS resolution, \
-                COALESCE(SUM(total_tokens), 0)::bigint AS tokens, \
                 percentile_cont(0.5)  WITHIN GROUP (ORDER BY duration_ms) AS p50, \
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95, \
                 COUNT(*) FILTER (WHERE is_failure)          AS failures \
@@ -788,42 +780,59 @@ async fn fetch_compare(
     .map_err(|e| HttpError::from(AuthError::from(e)))
 }
 
-/// Fold the per-bucket aggregate into `(totals, totals_p95)`.
-/// Split out to keep `get_agent_metrics_timeseries` under the
-/// 70-line cap (CLAUDE.md §4).
-fn compute_totals(rows: &[BucketAggRow]) -> (TimeseriesTotals, i64) {
-    let mut total_tokens: i64 = 0;
-    let mut total_turns: i64 = 0;
-    let mut total_failures: i64 = 0;
-    let mut p50_samples: Vec<i64> = Vec::with_capacity(rows.len());
-    let mut p95_samples: Vec<i64> = Vec::with_capacity(rows.len());
-    for r in rows {
-        total_tokens += r.tokens.unwrap_or(0);
-        total_turns +=
-            r.normal.unwrap_or(0) + r.reflection.unwrap_or(0) + r.resolution.unwrap_or(0);
-        total_failures += r.failures.unwrap_or(0);
-        p50_samples.push(f64_ms_to_i64(r.p50.unwrap_or(0.0)));
-        p95_samples.push(f64_ms_to_i64(r.p95.unwrap_or(0.0)));
-    }
-    let totals_p50 = median(&mut p50_samples);
-    let totals_p95 = median(&mut p95_samples);
-    (
-        TimeseriesTotals {
-            tokens: total_tokens,
-            turns: total_turns,
-            latency_p50_ms: totals_p50,
-            latency_p95_ms: totals_p95,
-            failure_count: total_failures,
-        },
-        totals_p95,
+/// Window-level aggregate returned by [`fetch_window_totals`]. Each
+/// column comes back from `percentile_cont` / `SUM` / `COUNT FILTER`,
+/// computed over every row in `[from, to)` — not per-bucket — so the
+/// p50/p95 are true window-level percentiles.
+type WindowTotals = (i64, i64, Option<f64>, Option<f64>, i64);
+
+async fn fetch_window_totals(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    agent_id: AgentId,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<WindowTotals, HttpError> {
+    let row: Option<WindowTotals> = sqlx::query_as(
+        "SELECT COALESCE(SUM(tm.input_tokens + tm.output_tokens), 0)::bigint AS tokens, \
+                COUNT(*)::bigint                                              AS turns, \
+                percentile_cont(0.5)  WITHIN GROUP (ORDER BY tm.duration_ms::float8) AS p50, \
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY tm.duration_ms::float8) AS p95, \
+                COUNT(*) FILTER (WHERE pr.status = 'failed')::bigint          AS failures \
+           FROM turn_metrics tm \
+           JOIN prompt_requests pr ON pr.id = tm.request_id \
+          WHERE tm.agent_id = $1 \
+            AND tm.started_at >= $2 \
+            AND tm.started_at <  $3",
     )
+    .bind(agent_id)
+    .bind(from)
+    .bind(to)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| HttpError::from(AuthError::from(e)))?;
+    Ok(row.unwrap_or((0, 0, None, None, 0)))
+}
+
+/// Project the window aggregate into the wire shape. `p50`/`p95` are
+/// nullable in SQL (no rows in window) and clamp to 0 here so the
+/// caption renders sensibly on an empty window.
+fn build_totals(window: WindowTotals) -> TimeseriesTotals {
+    let (tokens, turns, p50, p95, failure_count) = window;
+    TimeseriesTotals {
+        tokens,
+        turns,
+        latency_p50_ms: f64_ms_to_i64(p50.unwrap_or(0.0)),
+        latency_p95_ms: f64_ms_to_i64(p95.unwrap_or(0.0)),
+        failure_count,
+    }
 }
 
 /// Build the `Δ vs compare window` payload. Returns the "no compare"
 /// shape when the upstream query was skipped (`compare=none`).
 fn compute_deltas(
-    totals: &TimeseriesTotals,
-    totals_p95: i64,
+    totals_tokens: i64,
+    totals_p95_ms: i64,
+    totals_failure_count: i64,
     compare: Option<(i64, Option<f64>, i64)>,
 ) -> TimeseriesDeltas {
     compare.map_or(
@@ -833,9 +842,9 @@ fn compute_deltas(
             failure_count: None,
         },
         |(tokens, p95, failures)| TimeseriesDeltas {
-            tokens: Some(totals.tokens - tokens),
-            latency_p95_ms: Some(totals_p95 - f64_ms_to_i64(p95.unwrap_or(0.0))),
-            failure_count: Some(totals.failure_count - failures),
+            tokens: Some(totals_tokens - tokens),
+            latency_p95_ms: Some(totals_p95_ms - f64_ms_to_i64(p95.unwrap_or(0.0))),
+            failure_count: Some(totals_failure_count - failures),
         },
     )
 }
@@ -851,20 +860,7 @@ fn bucket_row_into_response(r: BucketAggRow) -> TimeseriesBucketRow {
         latency_p50_ms: f64_ms_to_i64(r.p50.unwrap_or(0.0)),
         latency_p95_ms: f64_ms_to_i64(r.p95.unwrap_or(0.0)),
         failure_count: r.failures.unwrap_or(0),
-        // Resolved client-side in slice 2 (drawer) — leaving null
-        // until the per-bucket join lands.
-        prompt_version_id: None,
     }
-}
-
-/// Median of a small bounded `Vec<i64>`. Sorts in place; returns 0 on
-/// empty input. Used for chart caption totals.
-fn median(xs: &mut [i64]) -> i64 {
-    if xs.is_empty() {
-        return 0;
-    }
-    xs.sort_unstable();
-    xs[xs.len() / 2]
 }
 
 /// Clamp an `f64` millisecond value into `i64`, saturating at the bounds
@@ -914,9 +910,9 @@ struct TurnsListQuery {
 struct TurnRow {
     request_id: crate::runtime::PromptRequestId,
     started_at: DateTime<Utc>,
-    kind: String,
-    model: String,
-    provider: String,
+    kind: RequestKind,
+    model: Model,
+    provider: ProviderId,
     input_tokens: i32,
     output_tokens: i32,
     cache_creation_tokens: Option<i32>,
@@ -953,15 +949,14 @@ async fn list_agent_turns(
         return Err(HttpError::NotFound);
     }
 
-    // Validate the optional `kind` filter against the closed enum to
-    // avoid passing raw user input into the SQL `=` even with a bound
-    // param (defence in depth + clearer 400s).
-    let kind_filter = match params.kind.as_deref() {
-        // Omitted, empty, or "all" all map to "no filter" — the chart
-        // strip's default for a fresh load.
+    // Parse the optional `kind` filter into the closed `RequestKind`
+    // enum so the SQL bind is the typed form. "all"/empty map to "no
+    // filter" — the chart strip's default for a fresh load.
+    let kind_filter: Option<RequestKind> = match params.kind.as_deref() {
         None | Some("" | "all") => None,
-        Some(k @ ("normal" | "reflection" | "resolution")) => Some(k.to_owned()),
-        Some(_) => return Err(HttpError::BadRequest("unknown kind".into())),
+        Some(raw) => Some(
+            RequestKind::parse(raw).ok_or_else(|| HttpError::BadRequest("unknown kind".into()))?,
+        ),
     };
 
     let now = state.clock.now_utc();
@@ -969,13 +964,45 @@ async fn list_agent_turns(
     let from = params
         .from
         .unwrap_or_else(|| to - chrono::Duration::hours(24));
-    let cursor = params.cursor;
 
     let limit = i64::from(MAX_TURN_LIST_PAGE_SIZE);
-    let fetch_limit = limit + 1;
-
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
-    let mut items = sqlx::query_as::<_, TurnRow>(
+    let mut items = fetch_turn_rows(
+        &mut tx,
+        agent_id,
+        from,
+        to,
+        kind_filter,
+        params.cursor,
+        limit,
+    )
+    .await?;
+    tx.commit().await.map_err(AuthError::from)?;
+
+    let has_more = items.len() > usize::try_from(limit).unwrap_or(usize::MAX);
+    if has_more {
+        items.pop();
+    }
+    let next_cursor = has_more
+        .then(|| items.last().map(|r| r.started_at))
+        .flatten();
+
+    Ok(Json(TurnsListResponse { items, next_cursor }))
+}
+
+/// One-page fetch for [`list_agent_turns`]. Fetches `limit + 1` rows so
+/// the caller can detect "has more" without committing the extra row.
+async fn fetch_turn_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    agent_id: AgentId,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    kind_filter: Option<RequestKind>,
+    cursor: Option<DateTime<Utc>>,
+    limit: i64,
+) -> Result<Vec<TurnRow>, HttpError> {
+    let fetch_limit = limit.saturating_add(1);
+    sqlx::query_as::<_, TurnRow>(
         "SELECT tm.request_id, tm.started_at, tm.kind, tm.model, tm.provider, \
                 tm.input_tokens, tm.output_tokens, tm.cache_creation_tokens, tm.cache_read_tokens, \
                 tm.duration_ms, tm.stop_reason, tm.history_count, \
@@ -998,20 +1025,9 @@ async fn list_agent_turns(
     .bind(kind_filter)
     .bind(cursor)
     .bind(fetch_limit)
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await
-    .map_err(AuthError::from)?;
-    tx.commit().await.map_err(AuthError::from)?;
-
-    let has_more = items.len() > usize::try_from(limit).unwrap_or(usize::MAX);
-    if has_more {
-        items.pop();
-    }
-    let next_cursor = has_more
-        .then(|| items.last().map(|r| r.started_at))
-        .flatten();
-
-    Ok(Json(TurnsListResponse { items, next_cursor }))
+    .map_err(|e| HttpError::from(AuthError::from(e)))
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -1033,7 +1049,6 @@ struct PromptVersionRowDb {
     org_id: OrgId,
     version: PromptVersionNumber,
     system_prompt: String,
-    model: Option<String>,
     edited_by: Option<UserId>,
     created_at: DateTime<Utc>,
 }
@@ -1041,24 +1056,12 @@ struct PromptVersionRowDb {
 impl TryFrom<PromptVersionRowDb> for PromptVersionRow {
     type Error = PromptVersionError;
     fn try_from(r: PromptVersionRowDb) -> Result<Self, Self::Error> {
-        let parsed_prompt = AgentSystemPrompt::try_from(r.system_prompt)?;
-        let parsed_model = r
-            .model
-            .map(|m| Model::try_from(m.as_str()))
-            .transpose()
-            .map_err(|_| {
-                PromptVersionError::Parse(crate::types::ParseError::OutOfRange {
-                    field: "model",
-                    detail: "unknown model in agent_prompt_versions row",
-                })
-            })?;
         Ok(Self {
             id: r.id,
             agent_id: r.agent_id,
             org_id: r.org_id,
             version: r.version,
-            system_prompt: parsed_prompt,
-            model: parsed_model,
+            system_prompt: AgentSystemPrompt::try_from(r.system_prompt)?,
             edited_by: r.edited_by,
             created_at: r.created_at,
         })
@@ -1067,12 +1070,13 @@ impl TryFrom<PromptVersionRowDb> for PromptVersionRow {
 
 /// Wire shape for one prompt-version row in the list endpoint. Keeps
 /// the route layer's external schema independent of the domain row.
+/// Model is intentionally absent — model selection is orthogonal to
+/// prompt history and lives on the live `agents.model` column.
 #[derive(Debug, Serialize)]
 struct PromptVersionWire {
     id: PromptVersionId,
     version: PromptVersionNumber,
     system_prompt: String,
-    model: Option<&'static str>,
     edited_by: Option<UserId>,
     created_at: DateTime<Utc>,
 }
@@ -1083,7 +1087,6 @@ impl From<PromptVersionRow> for PromptVersionWire {
             id: r.id,
             version: r.version,
             system_prompt: r.system_prompt.as_str().to_owned(),
-            model: r.model.map(Model::as_str),
             edited_by: r.edited_by,
             created_at: r.created_at,
         }
@@ -1118,7 +1121,7 @@ async fn list_agent_prompt_versions(
 
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let rows = sqlx::query_as::<_, PromptVersionRowDb>(
-        "SELECT id, agent_id, org_id, version, system_prompt, model, edited_by, created_at \
+        "SELECT id, agent_id, org_id, version, system_prompt, edited_by, created_at \
          FROM agent_prompt_versions \
          WHERE agent_id = $1 \
          ORDER BY version DESC \
@@ -1163,6 +1166,13 @@ async fn restore_agent_prompt_version(
     Ok(Json(outcome))
 }
 
+/// Restore is now a single write: INSERT a new `MAX(version) + 1` row in
+/// `agent_prompt_versions` byte-identical to the target row's prompt.
+/// No second UPDATE on `agents` — "current" is `MAX(version)` (migration
+/// 45), so the INSERT itself promotes the restored prompt. The model is
+/// untouched: model selection is orthogonal to prompt history (it lives
+/// on `agents.model`), so reverting a prompt doesn't second-guess the
+/// operator's current model pick.
 async fn restore_in_tx(
     tx: &mut crate::auth::PrivilegedTx<'_>,
     agent_id: AgentId,
@@ -1171,65 +1181,24 @@ async fn restore_in_tx(
     now: DateTime<Utc>,
 ) -> Result<RestorePromptVersionResponse, PromptVersionError> {
     // Lock the parent agent so a concurrent PATCH bumper or restore
-    // serialises behind us.
-    let agent_org: Option<(OrgId,)> =
-        sqlx::query_as("SELECT org_id FROM agents WHERE id = $1 FOR UPDATE")
-            .bind(agent_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-    let (org_id,) = agent_org.ok_or(PromptVersionError::AgentNotFound(agent_id))?;
+    // serialises behind us; snapshot the target version's prompt under
+    // the same lock.
+    let (org_id, snapshot_prompt) = lock_and_snapshot(tx, agent_id, target_version).await?;
 
-    let snapshot: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT system_prompt, model FROM agent_prompt_versions \
-         WHERE agent_id = $1 AND version = $2",
-    )
-    .bind(agent_id)
-    .bind(target_version)
-    .fetch_optional(&mut **tx)
-    .await?;
-    let (snapshot_prompt, snapshot_model) =
-        snapshot.ok_or(PromptVersionError::VersionNotFound {
-            agent: agent_id,
-            version: target_version,
-        })?;
-
-    let max_version: Option<i32> =
-        sqlx::query_scalar("SELECT MAX(version) FROM agent_prompt_versions WHERE agent_id = $1")
-            .bind(agent_id)
-            .fetch_one(&mut **tx)
-            .await?;
-    let next_number = match max_version {
-        Some(n) => PromptVersionNumber::try_from(n.saturating_add(1))?,
-        None => PromptVersionNumber::FIRST,
-    };
-
+    let next_number = next_version_number(tx, agent_id).await?;
     let new_id = PromptVersionId::new();
+
     sqlx::query(
         "INSERT INTO agent_prompt_versions \
-         (id, agent_id, org_id, version, system_prompt, model, edited_by, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         (id, agent_id, org_id, version, system_prompt, edited_by, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(new_id)
     .bind(agent_id)
     .bind(org_id)
     .bind(next_number)
     .bind(&snapshot_prompt)
-    .bind(snapshot_model.as_deref())
     .bind(acting_user)
-    .bind(now)
-    .execute(&mut **tx)
-    .await?;
-
-    // Mirror onto the live `agents` row so workers pick up the change
-    // after the AGENT_PROMPT_CACHE_TTL (60s).
-    sqlx::query(
-        "UPDATE agents \
-         SET system_prompt = $2, model = $3, updated_at = $4 \
-         WHERE id = $1",
-    )
-    .bind(agent_id)
-    .bind(&snapshot_prompt)
-    .bind(snapshot_model.as_deref())
     .bind(now)
     .execute(&mut **tx)
     .await?;
@@ -1239,4 +1208,54 @@ async fn restore_in_tx(
         id: new_id,
         created_at: now,
     })
+}
+
+/// Lock the agent row (`FOR UPDATE`) and snapshot the target version's
+/// `system_prompt` under the same lock. Returns the agent's `org_id`
+/// plus the snapshot, or a typed 404 when either the agent or the
+/// version is missing.
+async fn lock_and_snapshot(
+    tx: &mut crate::auth::PrivilegedTx<'_>,
+    agent_id: AgentId,
+    target_version: PromptVersionNumber,
+) -> Result<(OrgId, String), PromptVersionError> {
+    let agent_org: Option<(OrgId,)> =
+        sqlx::query_as("SELECT org_id FROM agents WHERE id = $1 FOR UPDATE")
+            .bind(agent_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let (org_id,) = agent_org.ok_or(PromptVersionError::AgentNotFound(agent_id))?;
+
+    let snapshot: Option<(String,)> = sqlx::query_as(
+        "SELECT system_prompt FROM agent_prompt_versions \
+         WHERE agent_id = $1 AND version = $2",
+    )
+    .bind(agent_id)
+    .bind(target_version)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (prompt,) = snapshot.ok_or(PromptVersionError::VersionNotFound {
+        agent: agent_id,
+        version: target_version,
+    })?;
+    Ok((org_id, prompt))
+}
+
+/// `MAX(version) + 1`, or `FIRST` when no rows exist yet. Treated as a
+/// best-effort hint — the row lock plus the `UNIQUE (agent_id, version)`
+/// constraint are the load-bearing defence against a duplicate.
+async fn next_version_number(
+    tx: &mut crate::auth::PrivilegedTx<'_>,
+    agent_id: AgentId,
+) -> Result<PromptVersionNumber, PromptVersionError> {
+    let max_version: Option<i32> =
+        sqlx::query_scalar("SELECT MAX(version) FROM agent_prompt_versions WHERE agent_id = $1")
+            .bind(agent_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let next = match max_version {
+        Some(n) => PromptVersionNumber::try_from(n.saturating_add(1))?,
+        None => PromptVersionNumber::FIRST,
+    };
+    Ok(next)
 }

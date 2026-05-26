@@ -91,12 +91,6 @@ impl Harness {
             responses,
             sessions,
             agents: agents.clone(),
-            prompt_versions: std::sync::Arc::new(
-                relay_rs::agents::prompt_versions::PgPromptVersionStore::new(
-                    pool.clone(),
-                    clock.clone(),
-                ),
-            ),
             dag,
             memory_store,
             mcp_store: mcp_store.clone(),
@@ -430,6 +424,7 @@ async fn excludes_calls_from_other_agents() {
             is_default: false,
             allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::default(),
             model: None,
+            edited_by: None,
         })
         .await
         .expect("create other agent")
@@ -585,6 +580,7 @@ async fn cross_org_agent_returns_404() {
             is_default: false,
             allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::default(),
             model: None,
+            edited_by: None,
         })
         .await
         .expect("create foreign agent")

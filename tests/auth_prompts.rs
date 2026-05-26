@@ -100,12 +100,6 @@ impl AuthPromptsHarness {
             responses,
             sessions,
             agents: agents.clone(),
-            prompt_versions: std::sync::Arc::new(
-                relay_rs::agents::prompt_versions::PgPromptVersionStore::new(
-                    pool.clone(),
-                    clock.clone(),
-                ),
-            ),
             dag,
             memory_store,
             mcp_store,
@@ -174,6 +168,7 @@ impl AuthPromptsHarness {
                 is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
+                edited_by: None,
             })
             .await
             .expect("seed agent")

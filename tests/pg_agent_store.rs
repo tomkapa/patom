@@ -39,6 +39,7 @@ fn new_agent(db: &TestDb, name: &str, prompt: &str, is_default: bool) -> NewAgen
         is_default,
         allowed_mcp_tools: AllowedMcpTools::empty(),
         model: None,
+        edited_by: None,
     }
 }
 
@@ -304,6 +305,7 @@ async fn create_with_explicit_allowed_mcp_tools_round_trips() {
         is_default: false,
         allowed_mcp_tools: allowed(&["notion", "linear"]),
         model: None,
+        edited_by: None,
     };
     let created = store.create(payload).await.expect("create");
     assert_eq!(created.allowed_mcp_tools.len(), 2);
@@ -342,6 +344,7 @@ async fn update_replaces_allowed_mcp_tools() {
             is_default: false,
             allowed_mcp_tools: allowed(&["notion", "linear"]),
             model: None,
+            edited_by: None,
         })
         .await
         .expect("create");
@@ -352,6 +355,7 @@ async fn update_replaces_allowed_mcp_tools() {
             AgentUpdate {
                 allowed_mcp_tools: Some(allowed(&["jira"])),
                 model: None,
+                edited_by: None,
                 ..Default::default()
             },
         )
@@ -370,6 +374,7 @@ async fn update_replaces_allowed_mcp_tools() {
             AgentUpdate {
                 allowed_mcp_tools: Some(AllowedMcpTools::empty()),
                 model: None,
+                edited_by: None,
                 ..Default::default()
             },
         )
@@ -384,6 +389,7 @@ async fn update_replaces_allowed_mcp_tools() {
             AgentUpdate {
                 allowed_mcp_tools: Some(allowed(&["notion"])),
                 model: None,
+                edited_by: None,
                 ..Default::default()
             },
         )

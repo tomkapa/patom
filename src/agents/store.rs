@@ -40,6 +40,11 @@ pub struct NewAgent {
     /// at agent-build time; `Some(model)` pins this agent to a specific
     /// catalog model (and, transitively, its provider).
     pub model: Option<crate::provider::Model>,
+    /// Principal who minted this agent, stamped onto the seeded v1
+    /// `agent_prompt_versions` row. `None` for system-seeded agents
+    /// (composition root, OAuth callback) where no user is in hand;
+    /// `Some` for HTTP create and the `create_agent` tool.
+    pub edited_by: Option<UserId>,
 }
 
 /// HTTP-PATCH-style update payload.
@@ -67,6 +72,11 @@ pub struct AgentUpdate {
     /// reason this field exists — an enum split would inflate every caller.
     #[allow(clippy::option_option)]
     pub model: Option<Option<crate::provider::Model>>,
+    /// Principal driving this edit. Stamped on the new
+    /// `agent_prompt_versions` row when (and only when) the prompt or
+    /// model actually changes. `None` is reserved for paths with no user
+    /// principal in hand (rare — most updates are HTTP PATCH).
+    pub edited_by: Option<UserId>,
 }
 
 /// Storage trait for the agents registry. Implementations must be thread-safe.

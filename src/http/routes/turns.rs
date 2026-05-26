@@ -25,10 +25,12 @@ use uuid::Uuid;
 
 use crate::agent_core::MAX_TOOL_CALLS_PER_TURN;
 use crate::agents::AgentId;
+use crate::agents::prompt_versions::PromptVersionId;
 use crate::auth::{AuthError, Principal, UserId, VisibilityTable, visible_to};
 use crate::mcp::McpServerId;
 use crate::memory::{MemoryEventId, MemoryId};
-use crate::runtime::PromptRequestId;
+use crate::provider::{Model, ProviderId};
+use crate::runtime::{PromptRequestId, RequestKind};
 use crate::session::SessionId;
 use crate::tools::ToolCallRowId;
 
@@ -67,6 +69,12 @@ pub enum TurnDetailError {
     /// the FE can render a "still recording…" spinner if it wants to.
     #[error("turn {0} metrics not recorded yet")]
     MetricsMissing(PromptRequestId),
+    /// `turn_metrics.prompt_version_id` references a row that
+    /// `fetch_prompt_version` couldn't resolve. Should be impossible
+    /// under the FK constraint; logged loudly and 404'd so a single
+    /// corrupt row can't take down the worker.
+    #[error("prompt version {0} not found for turn")]
+    PromptVersionMissing(PromptVersionId),
     /// Tx open / sqlx query failure. Every inner sqlx call wraps its
     /// error via `AuthError::from`, so this is the single bridge for
     /// every database failure surface this route can hit.
@@ -77,9 +85,13 @@ pub enum TurnDetailError {
 impl From<TurnDetailError> for HttpError {
     fn from(e: TurnDetailError) -> Self {
         match e {
-            // Both "request gone" and "metrics not recorded yet" map to
-            // 404 on the wire — the drawer treats both the same way.
-            TurnDetailError::NotFound(_) | TurnDetailError::MetricsMissing(_) => Self::NotFound,
+            // Request gone / metrics not yet recorded / prompt-version
+            // parent unresolvable all map to 404 on the wire — the drawer
+            // treats them the same way. PromptVersionMissing is logged
+            // inside `fetch_prompt_version` so we don't double-log here.
+            TurnDetailError::NotFound(_)
+            | TurnDetailError::MetricsMissing(_)
+            | TurnDetailError::PromptVersionMissing(_) => Self::NotFound,
             // The HTTP layer's `IntoResponse for HttpError` logs the
             // 5xx variant via `tracing::error!` already (see
             // `src/http/error.rs`), so we just bridge the variant.
@@ -97,13 +109,10 @@ struct TurnMetricsResponse {
     request_id: PromptRequestId,
     session_id: SessionId,
     agent_id: AgentId,
-    // Slice 1 introduces the `PromptVersionId` newtype; this field
-    // stays as a bare `Uuid` until then so we don't fork the type. The
-    // JSON shape is identical so the migration is a one-line edit.
-    prompt_version_id: Uuid,
-    kind: String,
-    model: String,
-    provider: String,
+    prompt_version_id: PromptVersionId,
+    kind: RequestKind,
+    model: Model,
+    provider: ProviderId,
     input_tokens: i32,
     output_tokens: i32,
     cache_creation_tokens: Option<i32>,
@@ -168,11 +177,7 @@ struct TurnMemoryEventResponse {
 /// restore action lives on a separate endpoint (slice 3).
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct PromptVersionSnapshot {
-    // `id` is left as a raw `Uuid` deliberately: slice 1 owns the
-    // `PromptVersionId` newtype + its module (see plan §"Slice 1"). When
-    // that lands, this field migrates to the typed form in one PR; no
-    // wire change for the FE because the JSON shape is identical.
-    id: Uuid,
+    id: PromptVersionId,
     version: i32,
     system_prompt: String,
     model: Option<String>,
@@ -360,10 +365,13 @@ async fn fetch_memory_writes(
 /// 5. The `agent_prompt_versions` snapshot for "what was the agent
 ///    running". The FK from `turn_metrics.prompt_version_id` plus the
 ///    append-only invariant on `agent_prompt_versions` make a missing
-///    row schema corruption — CLAUDE.md §6: assert and crash.
+///    row genuinely impossible under a healthy schema. On the off chance
+///    it happens (operator restored a partial backup, RLS hid the row
+///    from the principal mid-tx), log loudly and 404 the whole drawer
+///    rather than aborting the worker process.
 async fn fetch_prompt_version(
     tx: &mut TenantTx<'_>,
-    prompt_version_id: Uuid,
+    prompt_version_id: PromptVersionId,
 ) -> Result<PromptVersionSnapshot, TurnDetailError> {
     let row = sqlx::query_as::<_, PromptVersionSnapshot>(
         "SELECT id, version, system_prompt, model, edited_by, created_at \
@@ -374,12 +382,14 @@ async fn fetch_prompt_version(
     .fetch_optional(&mut **tx)
     .await
     .map_err(AuthError::from)?;
-    Ok(row.unwrap_or_else(|| {
-        panic!(
-            "invariant: turn_metrics.prompt_version_id {prompt_version_id} \
-             has no parent in agent_prompt_versions"
-        )
-    }))
+    row.ok_or_else(|| {
+        tracing::error!(
+            relay.prompt_version.id = %prompt_version_id,
+            "turn_detail.prompt_version.missing: turn_metrics row references an \
+             unresolvable agent_prompt_versions parent",
+        );
+        TurnDetailError::PromptVersionMissing(prompt_version_id)
+    })
 }
 
 /// Walk every assistant-message body and pull every `Reasoning` content

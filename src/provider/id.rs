@@ -57,6 +57,33 @@ impl TryFrom<&str> for ProviderId {
     }
 }
 
+impl sqlx::Type<sqlx::Postgres> for ProviderId {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <&str as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <&str as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for ProviderId {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        let raw = <&str as sqlx::Decode<'r, sqlx::Postgres>>::decode(value)?;
+        // §6: schema CHECK (provider IN ('anthropic','openai','deepseek'))
+        // forbids any other value; observing one means schema and code disagree.
+        Self::try_from(raw).map_err(|_| format!("invariant: unknown ProviderId {raw:?}").into())
+    }
+}
+
+impl<'q> sqlx::Encode<'q, sqlx::Postgres> for ProviderId {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        <&str as sqlx::Encode<'q, sqlx::Postgres>>::encode(self.as_str(), buf)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

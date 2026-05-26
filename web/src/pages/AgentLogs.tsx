@@ -28,6 +28,13 @@ import type {
   LogsTimeRange,
 } from "../types/api";
 
+const RANGE_LABEL_KEYS = {
+  "1h": "agent.detail.logs.scope.windowLabel.1h",
+  "24h": "agent.detail.logs.scope.windowLabel.24h",
+  "7d": "agent.detail.logs.scope.windowLabel.7d",
+  "30d": "agent.detail.logs.scope.windowLabel.30d",
+} as const;
+
 export function AgentLogs() {
   const { t } = useT();
   const nav = useNavigate();
@@ -63,7 +70,7 @@ export function AgentLogs() {
           { label: workspaceLabel },
           { label: t("agent.detail.breadcrumb.agents") },
           { label: agent?.name ?? "…" },
-          { label: t("agent.detail.nav.logs"), current: true },
+          { label: t("agent.detail.breadcrumb.logs"), current: true },
         ]}
       />
       {agentQuery.isLoading && !agentQuery.isError ? (
@@ -81,8 +88,8 @@ export function AgentLogs() {
       ) : (
         <>
           <PageTabHeader
-            title={t("agent.detail.nav.logs")}
-            subtitle="Audit token spend, latency, and failures. Compare turns across prompt versions."
+            title={t("agent.detail.logs.title")}
+            subtitle={t("agent.detail.logs.subtitle")}
           />
           <ScopeStrip
             range={range}
@@ -92,6 +99,7 @@ export function AgentLogs() {
             compare={compare}
             onCompareChange={setCompare}
             updatedAt={updatedAt}
+            bucketLabel={metrics.data?.bucket_label}
           />
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-8 py-4">
             <TokenSpendChart
@@ -123,6 +131,7 @@ export function AgentLogs() {
               isFetchingNextPage={turns.isFetchingNextPage}
               onLoadMore={() => turns.fetchNextPage()}
               onSeparatorClick={(v) => setDiffTarget(v)}
+              promptEdits={metrics.data?.prompt_edits ?? []}
             />
           </div>
         </>
@@ -133,6 +142,9 @@ export function AgentLogs() {
           targetVersion={diffTarget}
           open={diffTarget != null}
           onClose={() => setDiffTarget(null)}
+          metricsTotals={metrics.data?.totals}
+          metricsDeltas={metrics.data?.deltas_vs_compare}
+          windowLabel={t(RANGE_LABEL_KEYS[range])}
         />
       ) : null}
     </AgentLayout>

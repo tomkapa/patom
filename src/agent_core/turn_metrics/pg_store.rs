@@ -46,8 +46,9 @@ impl TurnMetricsStore for PgTurnMetricsStore {
             relay.agent.id = %row.agent_id,
             relay.request.id = %row.request_id,
             relay.request.kind = row.kind.as_str(),
-            relay.provider = row.provider,
-            relay.model = %row.model,
+            relay.provider = row.provider.as_str(),
+            relay.model = row.model.as_str(),
+            // §1: Model is the catalog handle; `as_str()` returns the &'static name.
             relay.tokens.input = row.input_tokens.get(),
             relay.tokens.output = row.output_tokens.get(),
             relay.duration_ms = row.duration_ms.get(),
@@ -71,8 +72,8 @@ impl TurnMetricsStore for PgTurnMetricsStore {
             .bind(row.agent_id)
             .bind(row.prompt_version_id)
             .bind(row.kind.as_str())
-            .bind(&row.model)
-            .bind(row.provider)
+            .bind(row.model)
+            .bind(row.provider.as_str())
             .bind(row.input_tokens.get())
             .bind(row.output_tokens.get())
             .bind(row.cache_creation_tokens.map(InputTokens::get))

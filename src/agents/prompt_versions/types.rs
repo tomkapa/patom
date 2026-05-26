@@ -1,11 +1,19 @@
 //! Domain types for `agent_prompt_versions`.
+//!
+//! Versions ONLY the `system_prompt`. The model is orthogonal — it lives
+//! on `agents.model`, mutated in place when the operator picks a
+//! different backend. The `turn_metrics` table still snapshots
+//! `(prompt_version_id, model)` per call so analytics can pivot on either
+//! dimension independently.
 
 use chrono::{DateTime, Utc};
 
 use crate::agents::{AgentId, AgentSystemPrompt};
 use crate::auth::{OrgId, UserId};
-use crate::provider::Model;
 use crate::types::ParseError;
+// `NewPromptVersion` is intentionally absent: the writer (`bump_prompt_version`
+// in `PgAgentStore`) builds its INSERT inline now that the store-trait
+// indirection is gone. Reintroduce only when a second caller appears.
 
 crate::uuid_newtype! {
     /// Opaque row id in `agent_prompt_versions`. Minted server-side on every
@@ -64,28 +72,7 @@ pub struct PromptVersionRow {
     pub org_id: OrgId,
     pub version: PromptVersionNumber,
     pub system_prompt: AgentSystemPrompt,
-    pub model: Option<Model>,
     /// `None` = system seed (no user principal in hand at insert time).
     pub edited_by: Option<UserId>,
     pub created_at: DateTime<Utc>,
-}
-
-/// Input to [`super::PromptVersionStore::insert_bump`]. Server-side fields
-/// (`id`, `version`, `created_at`) are minted inside the store transaction.
-#[derive(Debug, Clone)]
-pub struct NewPromptVersion {
-    pub agent_id: AgentId,
-    pub org_id: OrgId,
-    pub system_prompt: AgentSystemPrompt,
-    pub model: Option<Model>,
-    pub edited_by: Option<UserId>,
-}
-
-/// Snapshot the "Apply v6" path consumes to restore a prior version.
-/// Slice 3 wires the actual restore endpoint; this type sits in the
-/// module so the API surface is stable.
-#[derive(Debug, Clone)]
-pub struct RestorePayload {
-    pub system_prompt: AgentSystemPrompt,
-    pub model: Option<Model>,
 }

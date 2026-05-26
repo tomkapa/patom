@@ -79,6 +79,7 @@ impl AuthSchedHarness {
                 is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
+                edited_by: None,
             })
             .await
             .expect("create agent")

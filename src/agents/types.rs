@@ -253,6 +253,11 @@ pub struct AgentRecord {
     /// required because `agents.org_id` is `NOT NULL`.
     pub org_id: OrgId,
     pub name: AgentName,
+    /// Resolved by joining `agent_prompt_versions` at read time on the
+    /// agent's MAX(version) — the dual storage is gone (migration 45).
+    /// "Current" is structural, not a stored pointer: restore is
+    /// append-only (`max + 1`), so `MAX(version) WHERE agent_id = X` IS
+    /// the current row by construction.
     pub system_prompt: AgentSystemPrompt,
     pub description: AgentDescription,
     pub is_default: bool,
@@ -260,10 +265,13 @@ pub struct AgentRecord {
     /// Per-agent LLM model selection. `None` means "use the workspace default"
     /// (`Settings::model`); the [`crate::agents::ModelResolver`] is the single
     /// chokepoint that turns `Option<Model>` into the effective `Model` at
-    /// agent-build time. The catalog membership and provider routing are
-    /// proved by the [`crate::provider::Model`] type itself (parse-don't-
-    /// validate, CLAUDE.md §1) — no further runtime lookup is needed.
+    /// agent-build time. Resolved through the same JOIN as `system_prompt`.
     pub model: Option<crate::provider::Model>,
+    /// Id of the current (= MAX(version)) prompt-version row. Surfaced
+    /// here so the turn-metrics writer can attribute each turn to the
+    /// version the worker actually ran without re-querying. Derived from
+    /// the same join that populates `system_prompt` and `model`.
+    pub current_prompt_version_id: super::prompt_versions::PromptVersionId,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

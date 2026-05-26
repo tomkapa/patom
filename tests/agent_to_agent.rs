@@ -157,6 +157,7 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
             is_default: false,
             allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::empty(),
             model: None,
+            edited_by: None,
         })
         .await
         .expect("create translator");

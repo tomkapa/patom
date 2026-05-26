@@ -204,6 +204,7 @@ impl CreateAgentTool {
             is_default: false,
             allowed_mcp_tools,
             model: None,
+            edited_by: Some(ctx.acting_user_id),
         };
 
         // Every input field is pre-parsed via its newtype `TryFrom` above,

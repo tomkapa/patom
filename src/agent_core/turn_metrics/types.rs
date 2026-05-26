@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::agents::AgentId;
 use crate::agents::prompt_versions::PromptVersionId;
 use crate::auth::OrgId;
+use crate::provider::{Model, ProviderId};
 use crate::runtime::{PromptRequestId, RequestKind};
 use crate::session::SessionId;
 use crate::types::ParseError;
@@ -166,12 +167,12 @@ pub struct TurnMetricsRow {
     pub agent_id: AgentId,
     pub prompt_version_id: PromptVersionId,
     pub kind: RequestKind,
-    /// Free-form model id reported by the provider (or the request model
-    /// when the provider doesn't echo one back). Validated at the column's
-    /// `octet_length BETWEEN 1 AND 128` CHECK.
-    pub model: String,
-    /// `anthropic` | `openai` | `deepseek`.
-    pub provider: &'static str,
+    /// Catalog model the worker resolved at turn-start. Recorded as the
+    /// catalog handle (not the provider-echoed string) so every row is
+    /// guaranteed-resolvable. `Model` already enforces `octet_length`-fit
+    /// via the catalog name length cap — no separate newtype needed.
+    pub model: Model,
+    pub provider: ProviderId,
     pub input_tokens: InputTokens,
     pub output_tokens: OutputTokens,
     pub cache_creation_tokens: Option<InputTokens>,

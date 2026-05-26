@@ -113,6 +113,7 @@ mod tests {
             is_default: false,
             allowed_mcp_tools: AllowedMcpTools::empty(),
             model,
+            current_prompt_version_id: crate::agents::PromptVersionId::new(),
             created_at: now,
             updated_at: now,
         }

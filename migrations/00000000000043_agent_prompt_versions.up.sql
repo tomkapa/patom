@@ -1,14 +1,17 @@
--- agent_prompt_versions — append-only history of an agent's system_prompt + model.
+-- agent_prompt_versions — append-only history of an agent's system_prompt.
 --
--- The `agents` table keeps the current values for cheap per-turn reads (no JOIN
--- on the hot path). This table is the audit anchor: every `PATCH /agents/:id`
--- that actually changes `system_prompt` or `model` writes a new row in the
--- same transaction as the agents UPDATE. The Logs & Metrics tab pivots on
--- `prompt_version_id` to answer "compared to what?" (doc/logs_metrics_tab.md §4.1).
+-- Versions ONLY the system_prompt. The model lives on `agents.model` and
+-- is mutated in place — a model swap is a runtime preference (which
+-- backend serves this agent), independent of the prompt that defines
+-- the agent's behaviour. Coupling them here would falsely conflate
+-- "the agent's voice changed" with "we routed to a different provider";
+-- the Logs & Metrics tab still records both per-turn dimensions on
+-- `turn_metrics` so analytics can group on either axis.
 --
--- Treating model + prompt as one tuple is deliberate: from a tuning-loop
--- perspective, a model swap and a prompt edit are the same act (the agent's
--- behaviour changed at time T).
+-- "Current" is `MAX(version) WHERE agent_id = X` — derivable from the
+-- UNIQUE index below via a backwards index scan. Restore is append-only
+-- (every revert mints a fresh `max+1` row), so this holds for every
+-- mutation path; no `current_prompt_version_id` pointer column.
 --
 -- Pre-launch single-step migration: NOT NULL with no backfill. Dev DBs are
 -- wiped before applying (feedback_no_backcompat).
@@ -19,8 +22,6 @@ CREATE TABLE agent_prompt_versions (
     org_id        UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     version       INTEGER NOT NULL CHECK (version > 0),
     system_prompt TEXT NOT NULL,
-    -- NULL = workspace default (mirrors `agents.model`).
-    model         TEXT,
     -- NULL = system seed (e.g. the per-org default agent created at sign-up)
     -- or any path where no user principal was in hand.
     edited_by     UUID,
@@ -69,10 +70,16 @@ CREATE POLICY agent_prompt_versions_org_isolation ON agent_prompt_versions
     WITH CHECK (app_user_is_member(org_id));
 
 -- Seed version = 1 for every existing agent so turn_metrics inserts (migration
--- 44) always have a foreign-key target. `system_prompt` and `model` are copied
--- verbatim from the live row; `edited_by` is NULL (system seed); `created_at`
--- is the agent's own created_at so the first version's anchor is the agent's
--- birth, not the migration run.
-INSERT INTO agent_prompt_versions (id, agent_id, org_id, version, system_prompt, model, edited_by, created_at)
-SELECT gen_random_uuid(), a.id, a.org_id, 1, a.system_prompt, a.model, NULL, a.created_at
-FROM agents a;
+-- 44) always have a foreign-key target. `system_prompt` is copied verbatim
+-- from the live row; `edited_by` is NULL (system seed); `created_at` is the
+-- agent's own created_at so the first version's anchor is the agent's birth,
+-- not the migration run.
+--
+-- `ON CONFLICT DO NOTHING` against the `(agent_id, version)` UNIQUE so the
+-- seed is idempotent: an operator who hand-ran this insert before the
+-- migration landed (or a half-applied recovery from backup) doesn't trip
+-- a constraint failure on the second pass.
+INSERT INTO agent_prompt_versions (id, agent_id, org_id, version, system_prompt, edited_by, created_at)
+SELECT gen_random_uuid(), a.id, a.org_id, 1, a.system_prompt, NULL, a.created_at
+FROM agents a
+ON CONFLICT (agent_id, version) DO NOTHING;

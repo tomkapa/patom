@@ -118,9 +118,6 @@ struct Collaborators {
     pool: PgPool,
     sessions: SharedSessionStore,
     agents: SharedAgentStore,
-    /// Append-only prompt-version history. Threaded into `AppState` so
-    /// `PATCH /agents/:id` can write a new row on every effective edit.
-    prompt_versions: crate::agents::prompt_versions::SharedPromptVersionStore,
     memory: SharedMemory,
     memory_store: SharedMemoryStore,
     clock: SharedClock,
@@ -186,10 +183,6 @@ impl Collaborators {
             embedding_provider.clone(),
         ));
         let agents: SharedAgentStore = agents_impl;
-
-        let prompt_versions: crate::agents::prompt_versions::SharedPromptVersionStore = Arc::new(
-            crate::agents::prompt_versions::PgPromptVersionStore::new(pool.clone(), clock.clone()),
-        );
 
         let sessions: SharedSessionStore =
             Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
@@ -352,7 +345,6 @@ impl Collaborators {
             pool,
             sessions,
             agents,
-            prompt_versions,
             memory,
             memory_store,
             clock,
@@ -827,7 +819,6 @@ pub async fn build_server(
         responses: pieces.responses,
         sessions: pieces.sessions,
         agents: pieces.agents,
-        prompt_versions: pieces.prompt_versions,
         dag: pieces.dag,
         memory_store: pieces.memory_store.clone(),
         mcp_store: pieces.mcp_store,
