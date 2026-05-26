@@ -1358,7 +1358,10 @@ const server = Bun.serve({
       });
     }
     if (path === "/me/org/language" && method === "PATCH") {
-      const body = (await req.json()) as { language: "en" | "vi" };
+      const body = (await req.json()) as { language?: unknown };
+      if (body.language !== "en" && body.language !== "vi") {
+        return json({ error: "language.invalid" }, 400);
+      }
       orgState.default_language = body.language;
       return json({ default_language: body.language });
     }
@@ -1367,8 +1370,14 @@ const server = Bun.serve({
       const q = qs.get("q")?.toLowerCase() ?? null;
       const statusFilter = qs.get("status");
       const roleFilter = qs.get("role");
-      const page = Math.max(1, Number(qs.get("page") ?? 1));
-      const perPage = Math.min(50, Math.max(1, Number(qs.get("per_page") ?? 20)));
+      // `Number("abc")` is NaN — clamp would propagate that into
+      // slice/return; validate first and fall back to defaults.
+      const pageRaw = Number(qs.get("page"));
+      const perPageRaw = Number(qs.get("per_page"));
+      const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.trunc(pageRaw) : 1;
+      const perPage = Number.isFinite(perPageRaw) && perPageRaw > 0
+        ? Math.min(50, Math.trunc(perPageRaw))
+        : 20;
       const now = Date.now();
       const memberRows = MEMBERS.map((m) => ({
         kind: "member" as const,
@@ -1431,7 +1440,14 @@ const server = Bun.serve({
     );
     if (memberRoleMatch && method === "PATCH") {
       const userId = memberRoleMatch[1]!;
-      const body = (await req.json()) as { role: "owner" | "admin" | "member" };
+      const body = (await req.json()) as { role?: unknown };
+      if (
+        body.role !== "owner" &&
+        body.role !== "admin" &&
+        body.role !== "member"
+      ) {
+        return json({ error: "member_role.invalid" }, 400);
+      }
       const idx = MEMBERS.findIndex((m) => m.user_id === userId);
       if (idx === -1) return empty(404);
       const owners = MEMBERS.filter((m) => m.role === "owner").length;

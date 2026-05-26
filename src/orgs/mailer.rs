@@ -43,21 +43,21 @@ pub struct LogMailer;
 #[async_trait]
 impl Mailer for LogMailer {
     async fn send_invite(&self, mail: InviteMail<'_>) {
-        // The token is sensitive — emitted only at DEBUG so prod
-        // logs do not leak invite material. The accept URL is built
-        // at INFO so operators can confirm the *shape* of the
-        // outbound mail without exposing the secret.
+        // Recipient email and token cleartext are both PII / secret —
+        // emit only at DEBUG per CLAUDE.md §2 so production exporters
+        // can strip them. INFO carries only the non-identifying shape
+        // (which org, what role, which host the link points at). All
+        // custom attributes sit under the `relay.*` namespace.
         let base = mail.web_base_url.unwrap_or("https://relay.app");
         tracing::info!(
             event = "org.invite.sent",
             relay.org.slug = %mail.org_slug,
             relay.invite.role = %mail.role.as_str(),
-            mail.to = %mail.to,
-            mail.accept_url_host = %base,
+            relay.invite.accept_url_host = %base,
         );
         tracing::debug!(
             event = "org.invite.sent.token",
-            mail.to = %mail.to,
+            relay.invite.recipient = %mail.to,
             relay.invite.token = mail.token.as_str(),
         );
     }

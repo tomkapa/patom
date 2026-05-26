@@ -6,14 +6,23 @@ import {
 } from "../components/templates/SettingsLayout";
 import { useT } from "../i18n";
 
-export function SettingsComingSoon({ kind }: { kind: SettingsNavId }) {
+/** Narrowed to only the IA slots that genuinely have no real page
+ *  yet. Passing "general" or "members" should fail at the call site
+ *  rather than render a misleading "Notifications" label. */
+type ComingSoonKind = Extract<
+  SettingsNavId,
+  "billing" | "webhooks" | "notifications"
+>;
+
+const LABEL_KEYS = {
+  billing: "settings.nav.billing",
+  webhooks: "settings.nav.webhooks",
+  notifications: "settings.nav.notifications",
+} as const satisfies Record<ComingSoonKind, string>;
+
+export function SettingsComingSoon({ kind }: { kind: ComingSoonKind }) {
   const { t } = useT();
-  const labelKey =
-    kind === "billing"
-      ? "settings.nav.billing"
-      : kind === "webhooks"
-        ? "settings.nav.webhooks"
-        : "settings.nav.notifications";
+  const labelKey = LABEL_KEYS[kind];
   return (
     <SettingsLayout active={kind}>
       <SettingsBreadcrumb

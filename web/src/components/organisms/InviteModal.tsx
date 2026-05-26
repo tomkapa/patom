@@ -27,6 +27,11 @@ export function InviteModal({
   const [role, setRole] = useState<Role>("member");
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Cleartext invite token, populated after the most recent send.
+   *  Used to build the share link below. Until the first send the
+   *  copy button is disabled — copying a placeholder would mint a
+   *  dead link. */
+  const [latestToken, setLatestToken] = useState<string | null>(null);
 
   // Reset on open so the modal is clean each invocation.
   useEffect(() => {
@@ -35,21 +40,28 @@ export function InviteModal({
       setRole("member");
       setCopied(false);
       setError(null);
+      setLatestToken(null);
     }
   }, [open]);
 
   const validChips = chips.filter((c) => !c.invalid);
   const canSend = validChips.length > 0 && !invite.isPending;
 
-  const shareLink = `relay.app/i/${orgSlug}/aH7-d2x9`;
+  const shareLink = latestToken
+    ? `relay.app/i/${orgSlug}/${latestToken}`
+    : null;
 
   const onSend = async () => {
     setError(null);
     try {
-      await invite.mutateAsync({
+      const issued = await invite.mutateAsync({
         emails: validChips.map((c) => c.value),
         role,
       });
+      // Stash the most recent issued token so the share-link button
+      // resolves to a real, redeemable URL.
+      const first = issued[0];
+      if (first) setLatestToken(first.token);
       onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -126,23 +138,30 @@ export function InviteModal({
                 strokeWidth={1.75}
               />
               <div className="min-w-0 truncate font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]">
-                {shareLink}
+                {shareLink ?? `relay.app/i/${orgSlug}/…`}
               </div>
             </div>
             <button
               type="button"
               data-testid="invite-copy-link"
+              disabled={!shareLink}
               onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(shareLink);
+                if (!shareLink) return;
+                // Both paths schedule the same 1.2s reset so the
+                // button label can't get wedged on "Copied" if the
+                // clipboard API is unavailable (some test envs).
+                const finish = () => {
                   setCopied(true);
                   window.setTimeout(() => setCopied(false), 1200);
+                };
+                try {
+                  await navigator.clipboard.writeText(shareLink);
+                  finish();
                 } catch {
-                  // Clipboard might not be available in test envs; ignore.
-                  setCopied(true);
+                  finish();
                 }
               }}
-              className="inline-flex h-7 cursor-pointer items-center border border-[var(--color-line)] bg-[var(--color-card)] px-2.5 font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.06em] text-[var(--color-ink)] hover:bg-[var(--color-paper)]"
+              className="inline-flex h-7 cursor-pointer items-center border border-[var(--color-line)] bg-[var(--color-card)] px-2.5 font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.06em] text-[var(--color-ink)] hover:bg-[var(--color-paper)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {copied
                 ? t("settings.invite.link.copied")
@@ -176,7 +195,7 @@ export function InviteModal({
           {t("settings.invite.cancel")}
         </Button>
         <Button
-          variant="moss"
+          variant="primary"
           disabled={!canSend}
           loading={invite.isPending}
           onClick={onSend}

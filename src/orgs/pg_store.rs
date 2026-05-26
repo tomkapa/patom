@@ -84,6 +84,7 @@ async fn fetch_org_details_priv(
 
 #[async_trait]
 impl OrgStore for PgOrgStore {
+    #[tracing::instrument(skip(self), fields(relay.org.id = %org_id))]
     async fn read_org(&self, org_id: OrgId) -> Result<OrgDetails, OrgError> {
         let mut tx = auth::begin_privileged(&self.pool).await?;
         let details = fetch_org_details_priv(&mut tx, org_id).await?;
@@ -91,6 +92,7 @@ impl OrgStore for PgOrgStore {
         Ok(details)
     }
 
+    #[tracing::instrument(skip(self, patch, now), fields(relay.org.id = %org_id))]
     async fn update_org(
         &self,
         org_id: OrgId,
@@ -133,6 +135,7 @@ impl OrgStore for PgOrgStore {
     // The union + filter + count query is naturally long; splitting
     // would either bloat the trait surface or force three round trips.
     #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(skip(self, filter, now), fields(relay.org.id = %org_id))]
     async fn list_members(
         &self,
         org_id: OrgId,
@@ -150,10 +153,19 @@ impl OrgStore for PgOrgStore {
         // Bind the role filter as text|null so the same prepared
         // statement covers "all" + "one role". CITEXT for `email` /
         // `slug` so `LIKE` is case-insensitive.
-        let query_pattern = filter
-            .query
-            .as_ref()
-            .map(|q| format!("%{}%", q.replace(['%', '_'], "")));
+        //
+        // Escape backslash first so the subsequent `%` / `_` escapes
+        // don't get re-escaped, then add `ESCAPE '\'` on the ILIKE
+        // clause (see below) so PostgreSQL treats backslash as the
+        // escape char. Without all three steps, an input of `a\%b`
+        // would still match a literal `%` and skew search results.
+        let query_pattern = filter.query.as_ref().map(|q| {
+            let escaped = q
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            format!("%{escaped}%")
+        });
 
         let role_filter = filter.role.map(|r| r.as_str().to_owned());
 
@@ -200,7 +212,7 @@ WITH unified AS (
 )
 SELECT *, COUNT(*) OVER () AS total
 FROM unified
-WHERE ($2::text IS NULL OR email ILIKE $2)
+WHERE ($2::text IS NULL OR email ILIKE $2 ESCAPE '\')
   AND ($3::text IS NULL OR role = $3)
   AND ($4::text IS NULL OR status = $4)
 ORDER BY joined_at DESC
@@ -297,6 +309,14 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         })
     }
 
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            relay.org.id = %org_id,
+            relay.target.user_id = %user_id,
+            relay.role = %new_role.as_str(),
+        )
+    )]
     async fn change_role(
         &self,
         org_id: OrgId,
@@ -319,6 +339,7 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(relay.org.id = %org_id, relay.target.user_id = %user_id))]
     async fn remove_member(&self, org_id: OrgId, user_id: UserId) -> Result<(), OrgError> {
         let mut tx = auth::begin_privileged(&self.pool).await?;
         last_owner_guard(&mut tx, org_id, user_id, None).await?;
@@ -335,6 +356,14 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         Ok(())
     }
 
+    #[tracing::instrument(
+        skip(self, emails, now, ttl),
+        fields(
+            relay.org.id = %org_id,
+            relay.role = %role.as_str(),
+            relay.invite.batch_size = emails.len(),
+        )
+    )]
     async fn create_invites(
         &self,
         org_id: OrgId,
@@ -396,6 +425,10 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         Ok(out)
     }
 
+    #[tracing::instrument(
+        skip(self, now, ttl),
+        fields(relay.org.id = %org_id, relay.invite.id = %invite_id)
+    )]
     async fn resend_invite(
         &self,
         org_id: OrgId,
@@ -432,6 +465,7 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         })
     }
 
+    #[tracing::instrument(skip(self), fields(relay.org.id = %org_id, relay.invite.id = %invite_id))]
     async fn revoke_invite(&self, org_id: OrgId, invite_id: InviteId) -> Result<(), OrgError> {
         let mut tx = auth::begin_privileged(&self.pool).await?;
         let n = sqlx::query("DELETE FROM org_invites WHERE id = $1 AND org_id = $2")

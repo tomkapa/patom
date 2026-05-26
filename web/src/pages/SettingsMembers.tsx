@@ -175,13 +175,23 @@ export function SettingsMembers() {
             className="ml-auto inline-flex h-7 cursor-pointer items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-card)] px-2.5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
             onClick={() => {
               // Mock-only: trigger download from current cached rows.
+              // RFC-4180 escaping + formula-injection guard (Excel /
+              // Sheets execute leading `= + - @` as a formula when a
+              // CSV is opened, so prefix those with a leading apostrophe).
+              const escapeCsv = (raw: string | null | undefined) => {
+                const s = String(raw ?? "");
+                const guarded = /^[=+\-@]/.test(s) ? `'${s}` : s;
+                return `"${guarded.replace(/"/g, '""')}"`;
+              };
               const csv = [
                 "email,role,status,joined_at",
                 ...rows.map((r) =>
-                  [r.email, r.role, r.status, r.joined_at].join(","),
+                  [r.email, r.role, r.status, r.joined_at]
+                    .map(escapeCsv)
+                    .join(","),
                 ),
               ].join("\n");
-              const blob = new Blob([csv], { type: "text/csv" });
+              const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
               const url = URL.createObjectURL(blob);
               const a = document.createElement("a");
               a.href = url;
@@ -343,9 +353,14 @@ function FilterTab({
 }
 
 function RoleBadge({ role }: { role: Role }) {
+  const { t } = useT();
   const Icon = role === "owner" ? Crown : role === "admin" ? Shield : UserIcon;
   const label =
-    role === "owner" ? "Owner" : role === "admin" ? "Admin" : "Member";
+    role === "owner"
+      ? t("settings.members.role.owner")
+      : role === "admin"
+        ? t("settings.members.role.admin")
+        : t("settings.members.role.member");
   return (
     <span
       className={cn(
@@ -364,6 +379,7 @@ function RoleBadge({ role }: { role: Role }) {
 }
 
 function StatusPill({ status, when }: { status: MemberStatus; when?: string }) {
+  const { t } = useT();
   const tone =
     status === "active"
       ? "text-[var(--color-moss-deep)]"
@@ -376,10 +392,16 @@ function StatusPill({ status, when }: { status: MemberStatus; when?: string }) {
       : status === "invited"
         ? "bg-[var(--color-amber)]"
         : "bg-[var(--color-rose)]";
+  const label =
+    status === "active"
+      ? t("settings.members.status.activeShort")
+      : status === "invited"
+        ? t("settings.members.status.invitedShort")
+        : t("settings.members.status.expiredShort");
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-[12px]", tone)}>
       <span className={cn("h-1.5 w-1.5 rounded-full", dot)} aria-hidden />
-      <span className="font-medium capitalize">{status}</span>
+      <span className="font-medium">{label}</span>
       {when ? (
         <span className="text-[var(--color-muted)]">· {when}</span>
       ) : null}

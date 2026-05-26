@@ -301,9 +301,18 @@ async fn change_role(
 ) -> Result<Response, HttpError> {
     let role = live_role(&state, &principal).await?;
     require_admin(role)?;
-    // Granting or revoking Owner is owner-only — admins can only move
-    // members between Admin and Member.
-    if matches!(req.role, Role::Owner) && !matches!(role, Role::Owner) {
+    // Two owner-only seams:
+    //   1. Granting Owner — admins can't promote past their own rank.
+    //   2. Demoting an existing Owner to anything else — only another
+    //      Owner can revoke that grant.
+    // We collapse both into one pre-check + one DB read.
+    let target_role = state
+        .users
+        .membership(target_user_id, principal.active_org_id)
+        .await?
+        .ok_or(HttpError::NotFound)?;
+    let touches_owner = matches!(req.role, Role::Owner) || matches!(target_role, Role::Owner);
+    if touches_owner && !matches!(role, Role::Owner) {
         return Err(HttpError::Forbidden(
             "owner role required to grant or revoke owner",
         ));
@@ -326,10 +335,20 @@ async fn remove_member(
 ) -> Result<Response, HttpError> {
     let role = live_role(&state, &principal).await?;
     // Allow members to remove *themselves* (self-leave); for any
-    // other target the caller must be admin or owner. The last-owner
-    // guard fires inside the store.
+    // other target the caller must be admin or owner. Removing an
+    // owner additionally requires the caller to be an owner — an
+    // admin must not be able to evict a peer or superior. The
+    // last-owner guard fires inside the store.
     if target_user_id != principal.user_id {
         require_admin(role)?;
+        let target_role = state
+            .users
+            .membership(target_user_id, principal.active_org_id)
+            .await?
+            .ok_or(HttpError::NotFound)?;
+        if matches!(target_role, Role::Owner) && !matches!(role, Role::Owner) {
+            return Err(HttpError::Forbidden("owner role required to remove owner"));
+        }
     }
     state
         .orgs
