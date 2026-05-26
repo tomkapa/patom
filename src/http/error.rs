@@ -4,7 +4,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use thiserror::Error;
 
-use crate::agents::AgentStoreError;
+use crate::agents::{AgentStoreError, PromptVersionError};
 use crate::assets::AssetError;
 use crate::auth::AuthError;
 use crate::mcp::McpError;
@@ -45,6 +45,9 @@ pub enum HttpError {
 
     #[error("agent: {0}")]
     Agent(#[from] AgentStoreError),
+
+    #[error("prompt version: {0}")]
+    PromptVersion(#[from] PromptVersionError),
 
     #[error("prompt pipeline: {0}")]
     Prompt(#[from] PromptError),
@@ -121,6 +124,21 @@ impl IntoResponse for HttpError {
             Self::Agent(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "agent store error".into(),
+            ),
+            Self::PromptVersion(PromptVersionError::Parse(_)) => {
+                (StatusCode::BAD_REQUEST, self.to_string())
+            }
+            // Body matches `NotFound` above, but the variant set is
+            // intentionally split — adding a 4xx prompt-version mode
+            // later (e.g. ConflictedRestore) should only force the new
+            // arm, not the catch-all 500.
+            #[allow(clippy::match_same_arms)]
+            Self::PromptVersion(
+                PromptVersionError::VersionNotFound { .. } | PromptVersionError::AgentNotFound(_),
+            ) => (StatusCode::NOT_FOUND, "not found".into()),
+            Self::PromptVersion(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "prompt version error".into(),
             ),
             Self::Prompt(PromptError::RequestNotFound(_) | PromptError::SessionNotFound(_)) => {
                 (StatusCode::NOT_FOUND, "not found".into())

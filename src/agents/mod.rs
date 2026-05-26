@@ -33,6 +33,9 @@ pub use limits::{
 };
 pub use model_resolver::{ModelResolver, SharedModelResolver, StaticAgentModelResolver};
 pub use pg_store::PgAgentStore;
+pub use prompt_versions::{
+    PromptVersionError, PromptVersionId, PromptVersionNumber, PromptVersionRow,
+};
 pub use registry::{AgentFactory, Agents, AgentsError, CachedAgents, SharedAgents};
 pub use render::{AGENTS_TAG_CLOSE, AGENTS_TAG_OPEN, render_agents_block};
 pub use store::{AgentStore, AgentUpdate, NewAgent, SharedAgentStore};

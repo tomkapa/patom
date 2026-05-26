@@ -31,6 +31,7 @@ export function TokenSpendChart({
   promptEdits,
   loading,
   onBucketClick,
+  onMarkerClick,
 }: {
   buckets: MetricsBucket[];
   totals: MetricsTotals;
@@ -39,6 +40,9 @@ export function TokenSpendChart({
   loading: boolean;
   /** Click → filter the timeline below to this bucket. */
   onBucketClick?: (start: string) => void;
+  /** Click a `↑ v7 edited` dashed marker → open the prompt-diff modal
+   *  for that version (doc/logs_metrics_tab.md §5.2 + slice 3). */
+  onMarkerClick?: (version: number) => void;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
 
@@ -88,7 +92,16 @@ export function TokenSpendChart({
               {promptEdits.map((m) => {
                 const x = xForTime(m.created_at);
                 if (x == null) return null;
-                return <EditMarker key={m.version} x={x} version={m.version} />;
+                return (
+                  <EditMarker
+                    key={m.version}
+                    x={x}
+                    version={m.version}
+                    onClick={
+                      onMarkerClick ? () => onMarkerClick(m.version) : undefined
+                    }
+                  />
+                );
               })}
             </svg>
             <CaptionRow totals={totals} deltas={deltas} />
@@ -227,11 +240,25 @@ function BucketBar({
   );
 }
 
-function EditMarker({ x, version }: { x: number; version: number }) {
+function EditMarker({
+  x,
+  version,
+  onClick,
+}: {
+  x: number;
+  version: number;
+  onClick?: () => void;
+}) {
   const yTop = PADDING.top - 6;
   const yBottom = CHART_HEIGHT - PADDING.bottom;
+  const cursor = onClick ? "cursor-pointer" : undefined;
   return (
-    <g>
+    <g
+      className={cursor}
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      aria-label={onClick ? `Diff against v${version}` : undefined}
+    >
       <line
         x1={x}
         x2={x}

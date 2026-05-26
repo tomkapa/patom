@@ -305,6 +305,61 @@ alternative personas when requested. Always identify yourself as Atlas.`,
 
 const agentsById = new Map<string, AgentRow>(AGENTS.map((a) => [a.id, a]));
 
+// ─── Prompt versions mock store ─────────────────────────────────────
+// Mirrors `agent_prompt_versions` from migration 43 + doc/logs_metrics_tab.md
+// §4.1. We seed two versions for the default agent so the diff modal has
+// real differences to render side-by-side; restore appends a new row whose
+// version is `max+1` and copies the named snapshot — matching the
+// append-only contract of doc §4.5.
+type PromptVersionMock = {
+  id: string;
+  version: number;
+  system_prompt: string;
+  model: string | null;
+  edited_by: string | null;
+  created_at: string;
+};
+
+const PROMPT_VERSIONS: Map<string, PromptVersionMock[]> = new Map();
+
+const ATLAS_V6_PROMPT = `You are Atlas — a research assistant.
+- Cite every source with a URL or vendor metadata id.
+- Be terse. Skip preamble. Reply with the answer first.
+
+Render the security MCP server one read-every-doc retry then halt.`;
+
+const ATLAS_V7_PROMPT = `You are Atlas — a security-tuned research agent.
+- Cite every source with a URL or vendor metadata id.
+- When a tool errors, retry once with reduced scope before
+  surfacing the failure to the user.
+- Prefer the security MCP server over web search when both apply.
+- Always think step-by-step before calling tools.`;
+
+const DEFAULT_AGENT_ID = "aaaaaaaa-0000-0000-0000-000000000001";
+
+PROMPT_VERSIONS.set(DEFAULT_AGENT_ID, [
+  {
+    id: "11111111-aaaa-0000-0000-000000000007",
+    version: 7,
+    system_prompt: ATLAS_V7_PROMPT,
+    model: "claude-sonnet-4-6",
+    edited_by: USER_ID,
+    created_at: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
+  },
+  {
+    id: "11111111-aaaa-0000-0000-000000000006",
+    version: 6,
+    system_prompt: ATLAS_V6_PROMPT,
+    model: "claude-sonnet-4-6",
+    edited_by: USER_ID,
+    created_at: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString(),
+  },
+]);
+
+function promptVersionsFor(agentId: string): PromptVersionMock[] {
+  return PROMPT_VERSIONS.get(agentId) ?? [];
+}
+
 // ─── Memory mock store ──────────────────────────────────────────────
 type MemKind = "self" | "other" | "collaborator" | "procedure" | "open";
 type MemState = "core" | "validated" | "held" | "tentative";
@@ -957,6 +1012,46 @@ const server = Bun.serve({
       if (sub === "/turns" && method === "GET") {
         if (!a) return empty(404);
         return json(buildTurnsFixture(url.searchParams));
+      }
+
+      // ─── prompt versions (doc/logs_metrics_tab.md §4.1, §4.5) ──────
+      if (sub === "/prompt-versions" && method === "GET") {
+        if (!a) return empty(404);
+        return json({ items: promptVersionsFor(id) });
+      }
+      const restoreMatch = sub.match(
+        /^\/prompt-versions\/(\d+)\/restore$/,
+      );
+      if (restoreMatch && method === "POST") {
+        if (!a) return empty(404);
+        const requested = Number.parseInt(restoreMatch[1]!, 10);
+        const list = promptVersionsFor(id);
+        const snapshot = list.find((v) => v.version === requested);
+        if (!snapshot) return empty(404);
+        const nextVersion =
+          list.reduce((acc, v) => Math.max(acc, v.version), 0) + 1;
+        const minted: PromptVersionMock = {
+          id: `mock-restore-${crypto.randomUUID()}`,
+          version: nextVersion,
+          system_prompt: snapshot.system_prompt,
+          model: snapshot.model,
+          edited_by: USER_ID,
+          created_at: new Date().toISOString(),
+        };
+        PROMPT_VERSIONS.set(id, [minted, ...list]);
+        // Mirror onto the live agent — the FE invalidates `agents`
+        // after restore, so the next GET should reflect the snapshot.
+        agentsById.set(id, {
+          ...a,
+          system_prompt: snapshot.system_prompt,
+          model: snapshot.model,
+          updated_at: minted.created_at,
+        });
+        return json({
+          version: minted.version,
+          id: minted.id,
+          created_at: minted.created_at,
+        });
       }
 
       if (sub === "/tool-calls" && method === "GET") {

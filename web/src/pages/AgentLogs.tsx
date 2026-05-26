@@ -11,9 +11,12 @@ import { PageTabHeader } from "../components/molecules/PageTabHeader";
 import { ScopeStrip } from "../components/agentDetail/logs/ScopeStrip";
 import { TokenSpendChart } from "../components/agentDetail/logs/TokenSpendChart";
 import { TurnsTimeline } from "../components/agentDetail/logs/TurnsTimeline";
+import { PromptDiffModal } from "../components/agentDetail/logs/PromptDiffModal";
 import {
   useAgentMetricsTimeseries,
   useAgentTurns,
+  usePromptVersions,
+  useRestorePromptVersion,
 } from "../hooks/useAgentLogs";
 import { useAgent } from "../hooks/useAgents";
 import { useT } from "../i18n";
@@ -38,6 +41,7 @@ export function AgentLogs() {
   const [range, setRange] = useState<LogsTimeRange>("24h");
   const [kind, setKind] = useState<LogsKindFilter>("all");
   const [compare, setCompare] = useState<LogsCompareMode>("prev_window");
+  const [diffTarget, setDiffTarget] = useState<number | null>(null);
 
   const metrics = useAgentMetricsTimeseries(id ?? null, range, compare);
   const turns = useAgentTurns(id ?? null, range, kind);
@@ -110,6 +114,7 @@ export function AgentLogs() {
               }
               promptEdits={metrics.data?.prompt_edits ?? []}
               loading={metrics.isLoading}
+              onMarkerClick={(v) => setDiffTarget(v)}
             />
             <TurnsTimeline
               pages={allTurns}
@@ -117,10 +122,19 @@ export function AgentLogs() {
               hasNextPage={Boolean(turns.hasNextPage)}
               isFetchingNextPage={turns.isFetchingNextPage}
               onLoadMore={() => turns.fetchNextPage()}
+              onSeparatorClick={(v) => setDiffTarget(v)}
             />
           </div>
         </>
       )}
+      {id ? (
+        <PromptDiffModal
+          agentId={id}
+          targetVersion={diffTarget}
+          open={diffTarget != null}
+          onClose={() => setDiffTarget(null)}
+        />
+      ) : null}
     </AgentLayout>
   );
 }

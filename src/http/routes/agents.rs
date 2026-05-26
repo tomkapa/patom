@@ -26,12 +26,16 @@ use sqlx::types::Json as SqlxJson;
 use uuid::Uuid;
 
 use crate::agent_core::{MAX_TURN_LIST_PAGE_SIZE, MAX_TURNS_PER_TIMESERIES_RESPONSE};
-use crate::agents::prompt_versions::NewPromptVersion;
+use crate::agents::prompt_versions::{
+    NewPromptVersion, PromptVersionError, PromptVersionId, PromptVersionNumber, PromptVersionRow,
+};
 use crate::agents::{
     AgentDescription, AgentId, AgentName, AgentRecord, AgentSystemPrompt, AgentUpdate,
     AllowedMcpTools, NewAgent,
 };
-use crate::auth::{AuthError, Principal, VisibilityTable, visible_to};
+use crate::auth::{
+    AuthError, OrgId, Principal, UserId, VisibilityTable, run_privileged, visible_to,
+};
 use crate::mcp::McpServerId;
 use crate::provider::Model;
 use crate::tools::{DEFAULT_TOOL_CALLS_PAGE, MAX_TOOL_CALLS_PAGE, ToolCallRowId};
@@ -54,6 +58,14 @@ pub(super) fn router() -> Router<AppState> {
             get(get_agent_metrics_timeseries),
         )
         .route("/agents/{id}/turns", get(list_agent_turns))
+        .route(
+            "/agents/{id}/prompt-versions",
+            get(list_agent_prompt_versions),
+        )
+        .route(
+            "/agents/{id}/prompt-versions/{version}/restore",
+            post(restore_agent_prompt_version),
+        )
 }
 
 /// Wire shape returned on every agents endpoint. Mirrors the row plus
@@ -1000,4 +1012,231 @@ async fn list_agent_turns(
         .flatten();
 
     Ok(Json(TurnsListResponse { items, next_cursor }))
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Logs & Metrics tab — prompt-versions list + restore
+// (doc/logs_metrics_tab.md §4.1, §4.5)
+// ────────────────────────────────────────────────────────────────────────
+
+/// Hard cap on the prompt-versions list. Even pathological agents won't
+/// edit prompts thousands of times, but a bound keeps the response sized
+/// and avoids a runaway scan. CLAUDE.md §5.
+const PROMPT_VERSIONS_PAGE_CAP: i64 = 100;
+
+/// DB-shape row for `agent_prompt_versions`. Parsed into the domain
+/// [`PromptVersionRow`] via TryFrom at the boundary (CLAUDE.md §1).
+#[derive(Debug, sqlx::FromRow)]
+struct PromptVersionRowDb {
+    id: PromptVersionId,
+    agent_id: AgentId,
+    org_id: OrgId,
+    version: PromptVersionNumber,
+    system_prompt: String,
+    model: Option<String>,
+    edited_by: Option<UserId>,
+    created_at: DateTime<Utc>,
+}
+
+impl TryFrom<PromptVersionRowDb> for PromptVersionRow {
+    type Error = PromptVersionError;
+    fn try_from(r: PromptVersionRowDb) -> Result<Self, Self::Error> {
+        let parsed_prompt = AgentSystemPrompt::try_from(r.system_prompt)?;
+        let parsed_model = r
+            .model
+            .map(|m| Model::try_from(m.as_str()))
+            .transpose()
+            .map_err(|_| {
+                PromptVersionError::Parse(crate::types::ParseError::OutOfRange {
+                    field: "model",
+                    detail: "unknown model in agent_prompt_versions row",
+                })
+            })?;
+        Ok(Self {
+            id: r.id,
+            agent_id: r.agent_id,
+            org_id: r.org_id,
+            version: r.version,
+            system_prompt: parsed_prompt,
+            model: parsed_model,
+            edited_by: r.edited_by,
+            created_at: r.created_at,
+        })
+    }
+}
+
+/// Wire shape for one prompt-version row in the list endpoint. Keeps
+/// the route layer's external schema independent of the domain row.
+#[derive(Debug, Serialize)]
+struct PromptVersionWire {
+    id: PromptVersionId,
+    version: PromptVersionNumber,
+    system_prompt: String,
+    model: Option<&'static str>,
+    edited_by: Option<UserId>,
+    created_at: DateTime<Utc>,
+}
+
+impl From<PromptVersionRow> for PromptVersionWire {
+    fn from(r: PromptVersionRow) -> Self {
+        Self {
+            id: r.id,
+            version: r.version,
+            system_prompt: r.system_prompt.as_str().to_owned(),
+            model: r.model.map(Model::as_str),
+            edited_by: r.edited_by,
+            created_at: r.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PromptVersionsListResponse {
+    items: Vec<PromptVersionWire>,
+}
+
+#[derive(Debug, Serialize)]
+struct RestorePromptVersionResponse {
+    /// The newly minted version number that overwrites the agent. Always
+    /// `> source.version` because restore is append-only (doc §4.5).
+    version: PromptVersionNumber,
+    id: PromptVersionId,
+    created_at: DateTime<Utc>,
+}
+
+/// `GET /agents/:id/prompt-versions` — every history row for one agent,
+/// newest-first. Bounded by [`PROMPT_VERSIONS_PAGE_CAP`].
+async fn list_agent_prompt_versions(
+    State(state): State<AppState>,
+    principal: Principal,
+    Path(id): Path<Uuid>,
+) -> Result<Json<PromptVersionsListResponse>, HttpError> {
+    let agent_id = AgentId::from(id);
+    if !visible_to(&state.pool, &principal, VisibilityTable::Agents, id).await? {
+        return Err(HttpError::NotFound);
+    }
+
+    let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
+    let rows = sqlx::query_as::<_, PromptVersionRowDb>(
+        "SELECT id, agent_id, org_id, version, system_prompt, model, edited_by, created_at \
+         FROM agent_prompt_versions \
+         WHERE agent_id = $1 \
+         ORDER BY version DESC \
+         LIMIT $2",
+    )
+    .bind(agent_id)
+    .bind(PROMPT_VERSIONS_PAGE_CAP)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(AuthError::from)?;
+    tx.commit().await.map_err(AuthError::from)?;
+
+    let items = rows
+        .into_iter()
+        .map(|r| PromptVersionRow::try_from(r).map(PromptVersionWire::from))
+        .collect::<Result<Vec<_>, PromptVersionError>>()?;
+    Ok(Json(PromptVersionsListResponse { items }))
+}
+
+/// `POST /agents/:id/prompt-versions/:version/restore` — append-only
+/// restore (doc §4.5). One transaction: lock agent → snapshot target →
+/// next_version = max+1 → INSERT new row → UPDATE agents. History is
+/// never rewritten; reverting v7 → v6 produces a byte-identical v8.
+async fn restore_agent_prompt_version(
+    State(state): State<AppState>,
+    principal: Principal,
+    Path((id, version_raw)): Path<(Uuid, i32)>,
+) -> Result<Json<RestorePromptVersionResponse>, HttpError> {
+    let agent_id = AgentId::from(id);
+    let target_version = PromptVersionNumber::try_from(version_raw)
+        .map_err(|e| HttpError::BadRequest(e.to_string()))?;
+
+    if !visible_to(&state.pool, &principal, VisibilityTable::Agents, id).await? {
+        return Err(HttpError::NotFound);
+    }
+
+    let now = state.clock.now_utc();
+    let outcome = run_privileged(&state.pool, async |tx| {
+        restore_in_tx(tx, agent_id, target_version, principal.user_id, now).await
+    })
+    .await?;
+    Ok(Json(outcome))
+}
+
+async fn restore_in_tx(
+    tx: &mut crate::auth::PrivilegedTx<'_>,
+    agent_id: AgentId,
+    target_version: PromptVersionNumber,
+    acting_user: UserId,
+    now: DateTime<Utc>,
+) -> Result<RestorePromptVersionResponse, PromptVersionError> {
+    // Lock the parent agent so a concurrent PATCH bumper or restore
+    // serialises behind us.
+    let agent_org: Option<(OrgId,)> =
+        sqlx::query_as("SELECT org_id FROM agents WHERE id = $1 FOR UPDATE")
+            .bind(agent_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let (org_id,) = agent_org.ok_or(PromptVersionError::AgentNotFound(agent_id))?;
+
+    let snapshot: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT system_prompt, model FROM agent_prompt_versions \
+         WHERE agent_id = $1 AND version = $2",
+    )
+    .bind(agent_id)
+    .bind(target_version)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (snapshot_prompt, snapshot_model) =
+        snapshot.ok_or(PromptVersionError::VersionNotFound {
+            agent: agent_id,
+            version: target_version,
+        })?;
+
+    let max_version: Option<i32> =
+        sqlx::query_scalar("SELECT MAX(version) FROM agent_prompt_versions WHERE agent_id = $1")
+            .bind(agent_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let next_number = match max_version {
+        Some(n) => PromptVersionNumber::try_from(n.saturating_add(1))?,
+        None => PromptVersionNumber::FIRST,
+    };
+
+    let new_id = PromptVersionId::new();
+    sqlx::query(
+        "INSERT INTO agent_prompt_versions \
+         (id, agent_id, org_id, version, system_prompt, model, edited_by, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(new_id)
+    .bind(agent_id)
+    .bind(org_id)
+    .bind(next_number)
+    .bind(&snapshot_prompt)
+    .bind(snapshot_model.as_deref())
+    .bind(acting_user)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+
+    // Mirror onto the live `agents` row so workers pick up the change
+    // after the AGENT_PROMPT_CACHE_TTL (60s).
+    sqlx::query(
+        "UPDATE agents \
+         SET system_prompt = $2, model = $3, updated_at = $4 \
+         WHERE id = $1",
+    )
+    .bind(agent_id)
+    .bind(&snapshot_prompt)
+    .bind(snapshot_model.as_deref())
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(RestorePromptVersionResponse {
+        version: next_number,
+        id: new_id,
+        created_at: now,
+    })
 }
