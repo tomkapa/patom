@@ -24,12 +24,16 @@ export function TurnsTimeline({
   hasNextPage,
   isFetchingNextPage,
   onLoadMore,
+  onSeparatorClick,
 }: {
   pages: AgentTurnRow[];
   isLoading: boolean;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   onLoadMore: () => void;
+  /** Click on a `── prompt edited · v6 → v7 ──` separator opens the
+   *  prompt-diff modal for the newer version (slice 3 + doc §5.3). */
+  onSeparatorClick?: (newerVersion: number) => void;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>("started_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -110,7 +114,14 @@ export function TurnsTimeline({
       ) : (
         rows.map((r, i) =>
           r.type === "sep" ? (
-            <SeparatorRow key={`sep-${i}`} from={r.from} to={r.to} />
+            <SeparatorRow
+              key={`sep-${i}`}
+              from={r.from}
+              to={r.to}
+              onClick={
+                onSeparatorClick ? () => onSeparatorClick(r.to) : undefined
+              }
+            />
           ) : (
             <TurnRowView
               key={r.row.request_id}
@@ -224,12 +235,30 @@ function TurnRowView({
   );
 }
 
-function SeparatorRow({ from, to }: { from: number; to: number }) {
-  return (
-    <div className="flex items-center justify-center gap-2 border-b border-dashed border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
-      ── prompt edited · v{from} → v{to} ──
-    </div>
-  );
+function SeparatorRow({
+  from,
+  to,
+  onClick,
+}: {
+  from: number;
+  to: number;
+  onClick?: () => void;
+}) {
+  const content = <>── prompt edited · v{from} → v{to} ──</>;
+  const className =
+    "flex w-full items-center justify-center gap-2 border-b border-dashed border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]";
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`${className} cursor-pointer hover:text-[var(--color-ink)]`}
+      >
+        {content}
+      </button>
+    );
+  }
+  return <div className={className}>{content}</div>;
 }
 
 function sortRows(rows: AgentTurnRow[], key: SortKey, dir: SortDir): AgentTurnRow[] {

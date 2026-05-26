@@ -15,6 +15,8 @@ import type {
   MemoryRow,
   MetricsTimeseriesResponse,
   ModelEntry,
+  PromptVersionList,
+  RestorePromptVersionResponse,
   OAuthStartRequest,
   OAuthStartResponse,
   Role,
@@ -184,6 +186,23 @@ export const api = {
    *  the response is bounded — no follow-up pagination needed. */
   turnDetail: (requestId: string) =>
     request<TurnDetail>(`/turns/${requestId}`),
+
+  // ─── Agent prompt versions (doc/logs_metrics_tab.md §4.1, §4.5) ─────
+  /** Newest-first list of every (system_prompt, model) snapshot for one
+   *  agent. Capped at 100 server-side. The diff modal drives the picker
+   *  from this list. */
+  agentPromptVersions: (id: string) =>
+    request<PromptVersionList>(`/agents/${id}/prompt-versions`),
+
+  /** Append-only restore: server snapshots the named version into a new
+   *  row whose `version` is `max+1`, then mirrors onto the live agent.
+   *  Reverting v7→v6 returns v8 byte-identical to v6 — history is never
+   *  rewritten. */
+  restorePromptVersion: (id: string, version: number) =>
+    request<RestorePromptVersionResponse>(
+      `/agents/${id}/prompt-versions/${version}/restore`,
+      { method: "POST" },
+    ),
 
   // ─── Agent memory ────────────────────────────────────────────────────
   // All five routes are declared in `src/http/routes/memory.rs`. Every

@@ -16,7 +16,11 @@ crate::uuid_newtype! {
 /// Monotonic per-agent version counter, starting at 1. Wrapped so the
 /// invariant (`> 0`, fits the column's `INTEGER` width) is enforced at
 /// every boundary — schema CHECK is defence in depth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, sqlx::Type,
+)]
+#[serde(transparent)]
+#[sqlx(transparent)]
 pub struct PromptVersionNumber(i32);
 
 impl PromptVersionNumber {

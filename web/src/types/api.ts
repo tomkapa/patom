@@ -608,6 +608,21 @@ export type TurnPromptVersion = {
   created_at: string;
 };
 
+// ─── Prompt versions (doc/logs_metrics_tab.md §4.1, §4.5) ────────────
+/** One row in `agent_prompt_versions`. The diff modal renders these as
+ *  the left/right panes. `version` is monotonic per agent, `model` is
+ *  `null` when the historical version inherited the workspace default,
+ *  and `edited_by` is `null` for the v1 seed row that migration 43
+ *  minted for every existing agent. */
+export type PromptVersion = {
+  id: string;
+  version: number;
+  system_prompt: string;
+  model: string | null;
+  edited_by: string | null;
+  created_at: string;
+};
+
 /** Full payload for `GET /turns/{request_id}`. */
 export type TurnDetail = {
   turn: TurnMetrics;
@@ -615,4 +630,19 @@ export type TurnDetail = {
   tool_calls: TurnToolCall[];
   memory_writes: TurnMemoryEvent[];
   prompt_version: TurnPromptVersion;
+};
+
+export type PromptVersionList = {
+  items: PromptVersion[];
+};
+
+/** Response from `POST /agents/{id}/prompt-versions/{version}/restore`.
+ *  Append-only: the server snapshots the named historical version into a
+ *  fresh row whose number is `max+1`, so reverting v7→v6 returns v8. The
+ *  frontend invalidates `agents`, the prompt-versions list, the
+ *  `metrics/timeseries` query, and the `turns` query. */
+export type RestorePromptVersionResponse = {
+  version: number;
+  id: string;
+  created_at: string;
 };
