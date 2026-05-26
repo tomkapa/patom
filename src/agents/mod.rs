@@ -17,6 +17,7 @@ mod error;
 mod limits;
 mod model_resolver;
 mod pg_store;
+pub mod prompt_versions;
 mod registry;
 mod render;
 mod store;

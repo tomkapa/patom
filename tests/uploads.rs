@@ -120,6 +120,12 @@ impl UploadsHarness {
             responses,
             sessions,
             agents,
+            prompt_versions: Arc::new(
+                relay_rs::agents::prompt_versions::PgPromptVersionStore::new(
+                    pool.clone(),
+                    clock.clone(),
+                ),
+            ),
             dag,
             memory_store,
             mcp_store: mcp_store.clone(),

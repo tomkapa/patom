@@ -540,6 +540,103 @@ function buildToolCallsPage(
   return { items: page, next_cursor };
 }
 
+// ─── Logs & metrics fixtures ────────────────────────────────────────
+// Sized to match the pencil frame `NJOCg`: ~8 buckets, 4.2M token total,
+// p50 3.2s p95 9.1s, 3 failed, one prompt-edit marker labelled `v7`.
+
+function buildTimeseriesFixture() {
+  const now = Date.now();
+  const bucketMs = 3 * 60 * 60 * 1000; // 3-hour buckets across a 24h window
+  const buckets = [
+    { normal: 38, reflection: 6, resolution: 0, tokens: 480_000, p50: 2_800, p95: 6_200, failures: 0 },
+    { normal: 42, reflection: 8, resolution: 1, tokens: 520_000, p50: 3_000, p95: 6_800, failures: 0 },
+    { normal: 47, reflection: 5, resolution: 0, tokens: 590_000, p50: 3_200, p95: 7_400, failures: 1 },
+    { normal: 30, reflection: 4, resolution: 0, tokens: 390_000, p50: 2_600, p95: 5_900, failures: 0 },
+    { normal: 52, reflection: 9, resolution: 1, tokens: 640_000, p50: 3_400, p95: 9_100, failures: 1 },
+    { normal: 48, reflection: 7, resolution: 0, tokens: 560_000, p50: 3_300, p95: 8_400, failures: 0 },
+    { normal: 40, reflection: 6, resolution: 0, tokens: 470_000, p50: 3_100, p95: 7_700, failures: 0 },
+    { normal: 50, reflection: 10, resolution: 1, tokens: 600_000, p50: 3_500, p95: 9_500, failures: 1 },
+  ].map((b, i) => {
+    const start = new Date(now - (8 - i) * bucketMs).toISOString();
+    return {
+      start,
+      by_kind: { normal: b.normal, reflection: b.reflection, resolution: b.resolution },
+      latency_p50_ms: b.p50,
+      latency_p95_ms: b.p95,
+      failure_count: b.failures,
+      prompt_version_id: null as string | null,
+    };
+  });
+
+  // Prompt edit marker — straddle bucket 4-5 so the dashed line sits in
+  // the middle of the chart.
+  const editedAt = new Date(now - 4 * bucketMs - 30 * 60 * 1000).toISOString();
+  return {
+    bucket_label: "3h",
+    from: buckets[0]!.start,
+    to: new Date(now).toISOString(),
+    buckets,
+    totals: {
+      tokens: 4_250_000,
+      turns: 405,
+      latency_p50_ms: 3_200,
+      latency_p95_ms: 9_100,
+      failure_count: 3,
+    },
+    deltas_vs_compare: {
+      tokens: 460_000,
+      latency_p95_ms: 2_900,
+      failure_count: 3,
+    },
+    prompt_edits: [
+      { version: 7, created_at: editedAt, edited_by: USER_ID },
+    ],
+  };
+}
+
+function buildTurnsFixture(qs: URLSearchParams) {
+  const now = Date.now();
+  const kind = qs.get("kind");
+  const cursor = qs.get("cursor");
+  // Deterministic 24-row seed — first chunk (cursor=null) returns rows
+  // 0-19; second chunk returns 20-23.
+  const all = Array.from({ length: 24 }, (_, i) => {
+    const isReflection = i % 5 === 2;
+    const isFailure = i === 4 || i === 11;
+    const promptVersion = i < 8 ? 7 : 6;
+    const model = isReflection ? "claude-haiku-4-5" : "claude-opus-4-7";
+    return {
+      request_id: `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`,
+      started_at: new Date(now - i * 7 * 60 * 1000).toISOString(),
+      kind: (isReflection ? "reflection" : "normal") as "normal" | "reflection" | "resolution",
+      model,
+      provider: model.startsWith("claude") ? "anthropic" : "openai",
+      input_tokens: isReflection ? 10_200 : 7_800,
+      output_tokens: isReflection ? 2_100 : 1_300,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 4_000,
+      duration_ms: isFailure ? 28_000 : isReflection ? 1_100 : 3_400,
+      stop_reason: isFailure ? "length" : "end_turn",
+      history_count: 12 + (i % 6),
+      status: isFailure ? "failed" : "done",
+      failure_reason: isFailure ? "timeout" : null,
+      prompt_version: promptVersion,
+    };
+  });
+  const filtered = kind ? all.filter((r) => r.kind === kind) : all;
+  // `findIndex` returns -1 when the cursor is past the tail; guard so we
+  // serve an empty page instead of wrapping `Array.slice` to "last 20".
+  let start = 0;
+  if (cursor) {
+    const idx = filtered.findIndex((r) => r.started_at < cursor);
+    start = idx === -1 ? filtered.length : idx;
+  }
+  const page = filtered.slice(start, start + 20);
+  const next_cursor =
+    start + 20 < filtered.length ? page[page.length - 1]?.started_at ?? null : null;
+  return { items: page, next_cursor };
+}
+
 function maybeOAuthStart(id: string): Response {
   // Mock authorize_url just bounces to the fake callback success — gives
   // the FE a usable round-trip without a vendor. We also simulate the
@@ -744,6 +841,16 @@ const server = Bun.serve({
           }
         }
         return json({ removed: true });
+      }
+
+      // ─── logs & metrics ─────────────────────────────────────────
+      if (sub === "/metrics/timeseries" && method === "GET") {
+        if (!a) return empty(404);
+        return json(buildTimeseriesFixture());
+      }
+      if (sub === "/turns" && method === "GET") {
+        if (!a) return empty(404);
+        return json(buildTurnsFixture(url.searchParams));
       }
 
       if (sub === "/tool-calls" && method === "GET") {

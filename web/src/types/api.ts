@@ -448,3 +448,81 @@ export type MemoryEventsFilter = {
   source?: MutationSource;
   mutation?: MutationKind;
 };
+
+// ─── Agent logs & metrics (doc/logs_metrics_tab.md) ────────────────────
+
+/** Turn kind label — mirrors `RequestKind` in src/runtime/types.rs. */
+export type TurnKind = "normal" | "reflection" | "resolution";
+
+/** One bucket in the token-spend chart. Aggregated server-side; the FE
+ *  never recomputes counts or percentiles. */
+export type MetricsBucket = {
+  start: string;
+  by_kind: { normal: number; reflection: number; resolution: number };
+  latency_p50_ms: number;
+  latency_p95_ms: number;
+  failure_count: number;
+  prompt_version_id: string | null;
+};
+
+export type MetricsTotals = {
+  tokens: number;
+  turns: number;
+  latency_p50_ms: number;
+  latency_p95_ms: number;
+  failure_count: number;
+};
+
+export type MetricsDeltas = {
+  tokens: number | null;
+  latency_p95_ms: number | null;
+  failure_count: number | null;
+};
+
+export type PromptEditMarker = {
+  version: number;
+  created_at: string;
+  edited_by: string | null;
+};
+
+export type MetricsTimeseriesResponse = {
+  bucket_label: string;
+  from: string;
+  to: string;
+  buckets: MetricsBucket[];
+  totals: MetricsTotals;
+  deltas_vs_compare: MetricsDeltas;
+  prompt_edits: PromptEditMarker[];
+};
+
+export type AgentTurnRow = {
+  request_id: string;
+  started_at: string;
+  kind: TurnKind;
+  model: string;
+  provider: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number | null;
+  cache_read_tokens: number | null;
+  duration_ms: number;
+  stop_reason: string;
+  history_count: number;
+  status: string;
+  failure_reason: string | null;
+  prompt_version: number;
+};
+
+export type AgentTurnsList = {
+  items: AgentTurnRow[];
+  next_cursor: string | null;
+};
+
+/** UI window choices for the scope strip. */
+export type LogsTimeRange = "1h" | "24h" | "7d" | "30d";
+
+/** UI kind filter. `all` collapses to "no filter" at the API. */
+export type LogsKindFilter = TurnKind | "all";
+
+/** Compare-window mode. */
+export type LogsCompareMode = "prev_window" | "none";

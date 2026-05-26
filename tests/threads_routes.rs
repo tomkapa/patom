@@ -54,6 +54,9 @@ struct ThreadsHarness {
 }
 
 impl ThreadsHarness {
+    // Composition root for a single integration test harness: 100+ lines
+    // of wiring without branching, mirrors `app.rs::Collaborators::new`.
+    #[allow(clippy::too_many_lines)]
     async fn new() -> Self {
         let db = TestDb::fresh().await;
         let clock: SharedClock = SystemClock::shared();
@@ -100,6 +103,12 @@ impl ThreadsHarness {
             responses,
             sessions,
             agents: agent_store,
+            prompt_versions: std::sync::Arc::new(
+                relay_rs::agents::prompt_versions::PgPromptVersionStore::new(
+                    pool.clone(),
+                    clock.clone(),
+                ),
+            ),
             dag,
             memory_store,
             mcp_store,

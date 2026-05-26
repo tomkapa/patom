@@ -1,6 +1,7 @@
 import type {
   Agent,
   AgentToolCallList,
+  AgentTurnsList,
   CreateMcpServerRequest,
   CreateMemoryNoteRequest,
   CredentialInput,
@@ -11,6 +12,7 @@ import type {
   MemoryEvent,
   MemoryEventsFilter,
   MemoryRow,
+  MetricsTimeseriesResponse,
   ModelEntry,
   OAuthStartRequest,
   OAuthStartResponse,
@@ -133,6 +135,47 @@ export const api = {
     return request<AgentToolCallList>(
       `/agents/${id}/tool-calls${q ? `?${q}` : ""}`,
     );
+  },
+
+  // ─── Agent logs & metrics ────────────────────────────────────────────
+  // Declared in `src/http/routes/agents.rs`. Both paths are tenant-gated
+  // server-side; a 404 means "this agent isn't visible to your principal"
+  // (intentional, no cross-org leak).
+  agentMetricsTimeseries: (
+    id: string,
+    params: {
+      from?: string;
+      to?: string;
+      bucket?: "auto" | "5m" | "1h" | "1d";
+      compare?: "prev_window" | "none";
+    },
+  ) => {
+    const search = new URLSearchParams();
+    if (params.from) search.set("from", params.from);
+    if (params.to) search.set("to", params.to);
+    if (params.bucket) search.set("bucket", params.bucket);
+    if (params.compare) search.set("compare", params.compare);
+    const q = search.toString();
+    return request<MetricsTimeseriesResponse>(
+      `/agents/${id}/metrics/timeseries${q ? `?${q}` : ""}`,
+    );
+  },
+  agentTurns: (
+    id: string,
+    params: {
+      from?: string;
+      to?: string;
+      kind?: "normal" | "reflection" | "resolution" | "all";
+      cursor?: string;
+    },
+  ) => {
+    const search = new URLSearchParams();
+    if (params.from) search.set("from", params.from);
+    if (params.to) search.set("to", params.to);
+    if (params.kind && params.kind !== "all") search.set("kind", params.kind);
+    if (params.cursor) search.set("cursor", params.cursor);
+    const q = search.toString();
+    return request<AgentTurnsList>(`/agents/${id}/turns${q ? `?${q}` : ""}`);
   },
 
   // ─── Agent memory ────────────────────────────────────────────────────

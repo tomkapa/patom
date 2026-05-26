@@ -4,6 +4,7 @@ use std::sync::Arc;
 use sqlx::PgPool;
 
 use crate::agents::SharedAgentStore;
+use crate::agents::prompt_versions::SharedPromptVersionStore;
 use crate::assets::SharedAssetStore;
 use crate::auth::{
     GoogleOAuth, JwtSigner, SharedOrgLanguageResolver, SharedOrgRuleResolver, SharedUserStore,
@@ -34,6 +35,10 @@ pub struct AppState {
     pub responses: SharedResponseSource,
     pub sessions: SharedSessionStore,
     pub agents: SharedAgentStore,
+    /// Append-only `agent_prompt_versions` store. The `PATCH /agents/:id`
+    /// handler writes through here on every effective prompt/model edit so
+    /// the Logs & Metrics tab's per-version slicing has an audit anchor.
+    pub prompt_versions: SharedPromptVersionStore,
     /// DAG turn-budget handle. Threaded through state so `send_message`
     /// can `bump_or_fail` and the worker's quiescence trigger can query
     /// liveness without re-constructing the impl.
