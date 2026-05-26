@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AgentGeneral } from "./pages/AgentGeneral";
+import { AgentLogs } from "./pages/AgentLogs";
 import { AgentMemory } from "./pages/AgentMemory";
 import { AgentTools } from "./pages/AgentTools";
 import { AgentsIndex } from "./pages/AgentsIndex";
@@ -86,6 +87,14 @@ export function App() {
         element={
           <Protected>
             <AgentMemory />
+          </Protected>
+        }
+      />
+      <Route
+        path="/agents/:id/logs"
+        element={
+          <Protected>
+            <AgentLogs />
           </Protected>
         }
       />

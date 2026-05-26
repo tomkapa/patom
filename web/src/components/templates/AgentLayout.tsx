@@ -67,7 +67,7 @@ export function AgentLayout({
       id: "logs",
       label: t("agent.detail.nav.logs"),
       icon: BarChart3,
-      disabled: true,
+      to: "logs",
     },
   ];
 

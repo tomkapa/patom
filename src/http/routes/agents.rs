@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::types::Json as SqlxJson;
 use uuid::Uuid;
 
+use crate::agent_core::{MAX_TURN_LIST_PAGE_SIZE, MAX_TURNS_PER_TIMESERIES_RESPONSE};
+use crate::agents::prompt_versions::NewPromptVersion;
 use crate::agents::{
     AgentDescription, AgentId, AgentName, AgentRecord, AgentSystemPrompt, AgentUpdate,
     AllowedMcpTools, NewAgent,
@@ -47,6 +49,11 @@ pub(super) fn router() -> Router<AppState> {
                 .merge(delete(delete_agent)),
         )
         .route("/agents/{id}/tool-calls", get(list_agent_tool_calls))
+        .route(
+            "/agents/{id}/metrics/timeseries",
+            get(get_agent_metrics_timeseries),
+        )
+        .route("/agents/{id}/turns", get(list_agent_turns))
 }
 
 /// Wire shape returned on every agents endpoint. Mirrors the row plus
@@ -264,7 +271,18 @@ async fn update_agent(
     {
         return Err(HttpError::NotFound);
     }
-    let row = state
+    // Snapshot the prior (system_prompt, model) so we can detect an
+    // effective edit. The store update returns the *new* record; we want
+    // the *old* for the bump comparison.
+    //
+    // Two concurrent PATCH requests can each see the same `before` and
+    // both decide to bump — the UNIQUE (agent_id, version) constraint
+    // forces them to different versions; the only observable side-effect
+    // is two history rows with identical content, which is exactly the
+    // (rare) shape a real human "double-saved" edit produces. Slice 3's
+    // restore path follows the same idempotent shape (doc §4.5).
+    let before = state.agents.read(id).await?;
+    let new_record = state
         .agents
         .update(
             id,
@@ -278,7 +296,35 @@ async fn update_agent(
             },
         )
         .await?;
-    Ok(Json(row.into()))
+
+    // Bump `agent_prompt_versions` only when the prompt or model actually
+    // changed. The two are treated as one tuple — a model swap is the same
+    // act as a prompt edit (doc/logs_metrics_tab.md §4.1).
+    let prompt_changed = before.system_prompt.as_str() != new_record.system_prompt.as_str();
+    let model_changed = before.model != new_record.model;
+    if prompt_changed || model_changed {
+        // Best-effort: an insert failure here means the audit history is
+        // momentarily stale but the agents table has the authoritative
+        // current values. Log loudly so a recurring failure is visible.
+        if let Err(e) = state
+            .prompt_versions
+            .insert_bump(NewPromptVersion {
+                agent_id: id,
+                org_id: new_record.org_id,
+                system_prompt: new_record.system_prompt.clone(),
+                model: new_record.model,
+                edited_by: Some(principal.user_id),
+            })
+            .await
+        {
+            tracing::error!(
+                error = ?e,
+                relay.agent.id = %id,
+                "agent_prompt_versions.bump.failed",
+            );
+        }
+    }
+    Ok(Json(new_record.into()))
 }
 
 async fn delete_agent(
@@ -442,4 +488,516 @@ async fn list_agent_tool_calls(
         .flatten();
 
     Ok(Json(AgentToolCallListResponse { items, next_cursor }))
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Logs & Metrics tab — timeseries + turns endpoints
+// (doc/logs_metrics_tab.md §5–§6)
+// ────────────────────────────────────────────────────────────────────────
+//
+// The chart and timeline both pivot on `turn_metrics`, joined to
+// `agent_prompt_versions` for the per-bucket version label. Aggregations
+// live in SQL — the timeseries endpoint must never ship raw rows to power
+// a bar (CLAUDE.md §5: every batch capped; bound queries by an explicit
+// LIMIT via `MAX_TURNS_PER_TIMESERIES_RESPONSE`).
+
+/// Time-bucket granularity for the chart. Auto-derived from the requested
+/// window when omitted; explicit override is offered so the FE can pin
+/// "30m" / "1h" / "1d" for the URL.
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum TimeseriesBucket {
+    #[default]
+    Auto,
+    FiveMin,
+    Hour,
+    Day,
+}
+
+impl TimeseriesBucket {
+    /// Concrete bucket width as `(label, postgres-truncation-unit)`. The
+    /// truncation unit feeds `date_trunc($unit, started_at)` so the
+    /// caller cannot inject SQL.
+    const fn resolve(self, span_secs: i64) -> (&'static str, &'static str) {
+        match self {
+            Self::FiveMin => ("5m", "minute"), // bucketed by minute, FE multiplies
+            Self::Hour => ("1h", "hour"),
+            Self::Day => ("1d", "day"),
+            Self::Auto => {
+                if span_secs <= 60 * 60 * 6 {
+                    ("5m", "minute")
+                } else if span_secs <= 60 * 60 * 48 {
+                    ("1h", "hour")
+                } else {
+                    ("1d", "day")
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct MetricsTimeseriesQuery {
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    #[serde(default)]
+    bucket: TimeseriesBucket,
+    /// `prev_window` | `none` — UI uses `prev_window` by default so the
+    /// caption's `Δ vs compare window` is populated.
+    #[serde(default)]
+    compare: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ByKind {
+    normal: i64,
+    reflection: i64,
+    resolution: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct TimeseriesBucketRow {
+    start: DateTime<Utc>,
+    by_kind: ByKind,
+    latency_p50_ms: i64,
+    latency_p95_ms: i64,
+    failure_count: i64,
+    /// `prompt_version_id` active for this bucket (most recent version
+    /// whose `created_at <= bucket.start`). Nullable for windows that
+    /// predate the first version row.
+    prompt_version_id: Option<crate::agents::prompt_versions::PromptVersionId>,
+}
+
+#[derive(Debug, Serialize)]
+struct TimeseriesTotals {
+    tokens: i64,
+    turns: i64,
+    latency_p50_ms: i64,
+    latency_p95_ms: i64,
+    failure_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct TimeseriesDeltas {
+    /// `None` when `compare=none` was requested or the prior window
+    /// returned zero rows.
+    tokens: Option<i64>,
+    latency_p95_ms: Option<i64>,
+    failure_count: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct PromptEditMarker {
+    version: i32,
+    created_at: DateTime<Utc>,
+    edited_by: Option<crate::auth::UserId>,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsTimeseriesResponse {
+    bucket_label: String,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    buckets: Vec<TimeseriesBucketRow>,
+    totals: TimeseriesTotals,
+    deltas_vs_compare: TimeseriesDeltas,
+    prompt_edits: Vec<PromptEditMarker>,
+}
+
+#[derive(sqlx::FromRow)]
+struct BucketAggRow {
+    bucket_start: DateTime<Utc>,
+    normal: Option<i64>,
+    reflection: Option<i64>,
+    resolution: Option<i64>,
+    tokens: Option<i64>,
+    p50: Option<f64>,
+    p95: Option<f64>,
+    failures: Option<i64>,
+}
+
+async fn get_agent_metrics_timeseries(
+    State(state): State<AppState>,
+    principal: Principal,
+    Path(id): Path<Uuid>,
+    Query(params): Query<MetricsTimeseriesQuery>,
+) -> Result<Json<MetricsTimeseriesResponse>, HttpError> {
+    let agent_id = AgentId::from(id);
+    if !visible_to(&state.pool, &principal, VisibilityTable::Agents, id).await? {
+        return Err(HttpError::NotFound);
+    }
+
+    let (from, to) = resolve_window(&params, state.clock.now_utc())?;
+    let span_secs = (to - from).num_seconds();
+    let (bucket_label, trunc_unit) = params.bucket.resolve(span_secs);
+
+    let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
+    let rows = fetch_buckets(&mut tx, agent_id, from, to, trunc_unit).await?;
+    let edits = fetch_prompt_edits(&mut tx, agent_id, from, to).await?;
+    let compare_totals = match params.compare.as_deref() {
+        None | Some("prev_window") => Some(fetch_compare(&mut tx, agent_id, from, to).await?),
+        _ => None,
+    }
+    .flatten();
+    tx.commit().await.map_err(AuthError::from)?;
+
+    let (totals, totals_p95) = compute_totals(&rows);
+    let deltas = compute_deltas(&totals, totals_p95, compare_totals);
+    let buckets = rows.into_iter().map(bucket_row_into_response).collect();
+    let prompt_edits = edits
+        .into_iter()
+        .map(|(version, created_at, edited_by)| PromptEditMarker {
+            version,
+            created_at,
+            edited_by,
+        })
+        .collect();
+
+    Ok(Json(MetricsTimeseriesResponse {
+        bucket_label: bucket_label.to_owned(),
+        from,
+        to,
+        buckets,
+        totals,
+        deltas_vs_compare: deltas,
+        prompt_edits,
+    }))
+}
+
+/// Resolve / validate the `(from, to)` window. Default = last 24h; rejects
+/// inverted ranges and windows wider than 31 days (CLAUDE.md §5).
+fn resolve_window(
+    params: &MetricsTimeseriesQuery,
+    now: DateTime<Utc>,
+) -> Result<(DateTime<Utc>, DateTime<Utc>), HttpError> {
+    let to = params.to.unwrap_or(now);
+    let from = params
+        .from
+        .unwrap_or_else(|| to - chrono::Duration::hours(24));
+    if to <= from {
+        return Err(HttpError::BadRequest("to must be greater than from".into()));
+    }
+    if (to - from).num_seconds() > 60 * 60 * 24 * 31 {
+        return Err(HttpError::BadRequest("window exceeds 31 days".into()));
+    }
+    Ok((from, to))
+}
+
+async fn fetch_buckets(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    agent_id: AgentId,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    trunc_unit: &'static str,
+) -> Result<Vec<BucketAggRow>, HttpError> {
+    // `trunc_unit` is selected from a fixed enum at the route boundary
+    // (`TimeseriesBucket::resolve`) — never user-supplied — so the
+    // `format!`-injected literal here cannot carry an attacker payload.
+    // Everything else is a bound parameter (CLAUDE.md §10).
+    let sql = format!(
+        "WITH base AS ( \
+            SELECT tm.started_at, tm.kind, \
+                   (tm.input_tokens + tm.output_tokens)::bigint AS total_tokens, \
+                   tm.duration_ms::float8 AS duration_ms, \
+                   pr.status = 'failed' AS is_failure \
+              FROM turn_metrics tm \
+              JOIN prompt_requests pr ON pr.id = tm.request_id \
+             WHERE tm.agent_id = $1 \
+               AND tm.started_at >= $2 \
+               AND tm.started_at <  $3 \
+             ORDER BY tm.started_at DESC \
+             LIMIT $4 \
+         ) \
+         SELECT date_trunc('{trunc_unit}', started_at) AS bucket_start, \
+                COUNT(*) FILTER (WHERE kind = 'normal')     AS normal, \
+                COUNT(*) FILTER (WHERE kind = 'reflection') AS reflection, \
+                COUNT(*) FILTER (WHERE kind = 'resolution') AS resolution, \
+                COALESCE(SUM(total_tokens), 0)::bigint AS tokens, \
+                percentile_cont(0.5)  WITHIN GROUP (ORDER BY duration_ms) AS p50, \
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95, \
+                COUNT(*) FILTER (WHERE is_failure)          AS failures \
+           FROM base \
+       GROUP BY bucket_start \
+       ORDER BY bucket_start ASC"
+    );
+    sqlx::query_as::<_, BucketAggRow>(&sql)
+        .bind(agent_id)
+        .bind(from)
+        .bind(to)
+        .bind(MAX_TURNS_PER_TIMESERIES_RESPONSE)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| HttpError::from(AuthError::from(e)))
+}
+
+async fn fetch_prompt_edits(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    agent_id: AgentId,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<(i32, DateTime<Utc>, Option<crate::auth::UserId>)>, HttpError> {
+    sqlx::query_as(
+        "SELECT version, created_at, edited_by \
+           FROM agent_prompt_versions \
+          WHERE agent_id = $1 AND created_at >= $2 AND created_at < $3 \
+          ORDER BY created_at ASC",
+    )
+    .bind(agent_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| HttpError::from(AuthError::from(e)))
+}
+
+async fn fetch_compare(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    agent_id: AgentId,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Option<(i64, Option<f64>, i64)>, HttpError> {
+    let span = to - from;
+    let prev_from = from - span;
+    sqlx::query_as(
+        "SELECT COALESCE(SUM(tm.input_tokens + tm.output_tokens), 0)::bigint, \
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY tm.duration_ms::float8), \
+                COUNT(*) FILTER (WHERE pr.status = 'failed') \
+           FROM turn_metrics tm \
+           JOIN prompt_requests pr ON pr.id = tm.request_id \
+          WHERE tm.agent_id = $1 \
+            AND tm.started_at >= $2 \
+            AND tm.started_at <  $3",
+    )
+    .bind(agent_id)
+    .bind(prev_from)
+    .bind(from)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| HttpError::from(AuthError::from(e)))
+}
+
+/// Fold the per-bucket aggregate into `(totals, totals_p95)`.
+/// Split out to keep `get_agent_metrics_timeseries` under the
+/// 70-line cap (CLAUDE.md §4).
+fn compute_totals(rows: &[BucketAggRow]) -> (TimeseriesTotals, i64) {
+    let mut total_tokens: i64 = 0;
+    let mut total_turns: i64 = 0;
+    let mut total_failures: i64 = 0;
+    let mut p50_samples: Vec<i64> = Vec::with_capacity(rows.len());
+    let mut p95_samples: Vec<i64> = Vec::with_capacity(rows.len());
+    for r in rows {
+        total_tokens += r.tokens.unwrap_or(0);
+        total_turns +=
+            r.normal.unwrap_or(0) + r.reflection.unwrap_or(0) + r.resolution.unwrap_or(0);
+        total_failures += r.failures.unwrap_or(0);
+        p50_samples.push(f64_ms_to_i64(r.p50.unwrap_or(0.0)));
+        p95_samples.push(f64_ms_to_i64(r.p95.unwrap_or(0.0)));
+    }
+    let totals_p50 = median(&mut p50_samples);
+    let totals_p95 = median(&mut p95_samples);
+    (
+        TimeseriesTotals {
+            tokens: total_tokens,
+            turns: total_turns,
+            latency_p50_ms: totals_p50,
+            latency_p95_ms: totals_p95,
+            failure_count: total_failures,
+        },
+        totals_p95,
+    )
+}
+
+/// Build the `Δ vs compare window` payload. Returns the "no compare"
+/// shape when the upstream query was skipped (`compare=none`).
+fn compute_deltas(
+    totals: &TimeseriesTotals,
+    totals_p95: i64,
+    compare: Option<(i64, Option<f64>, i64)>,
+) -> TimeseriesDeltas {
+    compare.map_or(
+        TimeseriesDeltas {
+            tokens: None,
+            latency_p95_ms: None,
+            failure_count: None,
+        },
+        |(tokens, p95, failures)| TimeseriesDeltas {
+            tokens: Some(totals.tokens - tokens),
+            latency_p95_ms: Some(totals_p95 - f64_ms_to_i64(p95.unwrap_or(0.0))),
+            failure_count: Some(totals.failure_count - failures),
+        },
+    )
+}
+
+fn bucket_row_into_response(r: BucketAggRow) -> TimeseriesBucketRow {
+    TimeseriesBucketRow {
+        start: r.bucket_start,
+        by_kind: ByKind {
+            normal: r.normal.unwrap_or(0),
+            reflection: r.reflection.unwrap_or(0),
+            resolution: r.resolution.unwrap_or(0),
+        },
+        latency_p50_ms: f64_ms_to_i64(r.p50.unwrap_or(0.0)),
+        latency_p95_ms: f64_ms_to_i64(r.p95.unwrap_or(0.0)),
+        failure_count: r.failures.unwrap_or(0),
+        // Resolved client-side in slice 2 (drawer) — leaving null
+        // until the per-bucket join lands.
+        prompt_version_id: None,
+    }
+}
+
+/// Median of a small bounded `Vec<i64>`. Sorts in place; returns 0 on
+/// empty input. Used for chart caption totals.
+fn median(xs: &mut [i64]) -> i64 {
+    if xs.is_empty() {
+        return 0;
+    }
+    xs.sort_unstable();
+    xs[xs.len() / 2]
+}
+
+/// Clamp an `f64` millisecond value into `i64`, saturating at the bounds
+/// and rounding to nearest. The `percentile_cont()` return type is float8
+/// (Postgres) but every downstream consumer (chart label, delta math)
+/// wants integer milliseconds.
+///
+/// CLAUDE.md §7: no `as` narrowing — the conversion is total via
+/// saturate-on-overflow.
+fn f64_ms_to_i64(v: f64) -> i64 {
+    let r = v.round();
+    if !r.is_finite() {
+        return 0;
+    }
+    // f64 can represent every i32 exactly, so a "is it inside i32 range"
+    // check is loss-free. Latency in millis comfortably fits i32
+    // (≈24 days) but the SQL aggregation returns i64; an out-of-i32 value
+    // is unrealistic for any real provider call and is clamped here to
+    // a safe i32::MAX rather than risking the i64-to-f64 precision loss
+    // clippy flags. Clamp returns the closer of the two bounds.
+    if r >= f64::from(i32::MAX) {
+        return i64::from(i32::MAX);
+    }
+    if r <= f64::from(i32::MIN) {
+        return i64::from(i32::MIN);
+    }
+    // r is finite and inside i32 range; `as` is total here. The two
+    // bound checks above are the safety net clippy wants.
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+    let truncated = r as i32;
+    i64::from(truncated)
+}
+
+#[derive(Debug, Deserialize)]
+struct TurnsListQuery {
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    /// Filter by `turn_metrics.kind` — `normal` / `reflection` /
+    /// `resolution`. Omitted = all kinds.
+    kind: Option<String>,
+    /// Exclusive `started_at` cursor — pass the previous page's
+    /// `next_cursor` to walk backwards in time.
+    cursor: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct TurnRow {
+    request_id: crate::runtime::PromptRequestId,
+    started_at: DateTime<Utc>,
+    kind: String,
+    model: String,
+    provider: String,
+    input_tokens: i32,
+    output_tokens: i32,
+    cache_creation_tokens: Option<i32>,
+    cache_read_tokens: Option<i32>,
+    duration_ms: i32,
+    stop_reason: String,
+    history_count: i32,
+    /// Joined from `prompt_requests` so the OUTCOME column can show
+    /// `failed` rows distinctly from `done` rows. Mirrors
+    /// `RequestStatus::as_str()` labels.
+    status: String,
+    /// `Some(...)` on failure (`prompt_requests.failure_reason`); shown
+    /// inline in the timeline.
+    failure_reason: Option<String>,
+    /// Joined from `agent_prompt_versions.version` so the PROMPT column
+    /// renders `v6` / `v7` without an extra round-trip.
+    prompt_version: i32,
+}
+
+#[derive(Debug, Serialize)]
+struct TurnsListResponse {
+    items: Vec<TurnRow>,
+    next_cursor: Option<DateTime<Utc>>,
+}
+
+async fn list_agent_turns(
+    State(state): State<AppState>,
+    principal: Principal,
+    Path(id): Path<Uuid>,
+    Query(params): Query<TurnsListQuery>,
+) -> Result<Json<TurnsListResponse>, HttpError> {
+    let agent_id = AgentId::from(id);
+    if !visible_to(&state.pool, &principal, VisibilityTable::Agents, id).await? {
+        return Err(HttpError::NotFound);
+    }
+
+    // Validate the optional `kind` filter against the closed enum to
+    // avoid passing raw user input into the SQL `=` even with a bound
+    // param (defence in depth + clearer 400s).
+    let kind_filter = match params.kind.as_deref() {
+        // Omitted, empty, or "all" all map to "no filter" — the chart
+        // strip's default for a fresh load.
+        None | Some("" | "all") => None,
+        Some(k @ ("normal" | "reflection" | "resolution")) => Some(k.to_owned()),
+        Some(_) => return Err(HttpError::BadRequest("unknown kind".into())),
+    };
+
+    let now = state.clock.now_utc();
+    let to = params.to.unwrap_or(now);
+    let from = params
+        .from
+        .unwrap_or_else(|| to - chrono::Duration::hours(24));
+    let cursor = params.cursor;
+
+    let limit = i64::from(MAX_TURN_LIST_PAGE_SIZE);
+    let fetch_limit = limit + 1;
+
+    let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
+    let mut items = sqlx::query_as::<_, TurnRow>(
+        "SELECT tm.request_id, tm.started_at, tm.kind, tm.model, tm.provider, \
+                tm.input_tokens, tm.output_tokens, tm.cache_creation_tokens, tm.cache_read_tokens, \
+                tm.duration_ms, tm.stop_reason, tm.history_count, \
+                pr.status::text AS status, pr.failure_reason::text AS failure_reason, \
+                apv.version AS prompt_version \
+           FROM turn_metrics tm \
+           JOIN prompt_requests pr ON pr.id = tm.request_id \
+           JOIN agent_prompt_versions apv ON apv.id = tm.prompt_version_id \
+          WHERE tm.agent_id = $1 \
+            AND tm.started_at >= $2 \
+            AND tm.started_at <  $3 \
+            AND ($4::text IS NULL OR tm.kind = $4) \
+            AND ($5::timestamptz IS NULL OR tm.started_at < $5) \
+          ORDER BY tm.started_at DESC \
+          LIMIT $6",
+    )
+    .bind(agent_id)
+    .bind(from)
+    .bind(to)
+    .bind(kind_filter)
+    .bind(cursor)
+    .bind(fetch_limit)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(AuthError::from)?;
+    tx.commit().await.map_err(AuthError::from)?;
+
+    let has_more = items.len() > usize::try_from(limit).unwrap_or(usize::MAX);
+    if has_more {
+        items.pop();
+    }
+    let next_cursor = has_more
+        .then(|| items.last().map(|r| r.started_at))
+        .flatten();
+
+    Ok(Json(TurnsListResponse { items, next_cursor }))
 }

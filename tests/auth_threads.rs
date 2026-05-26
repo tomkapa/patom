@@ -96,6 +96,12 @@ impl AuthThreadsHarness {
             responses,
             sessions,
             agents: agents.clone(),
+            prompt_versions: std::sync::Arc::new(
+                relay_rs::agents::prompt_versions::PgPromptVersionStore::new(
+                    pool.clone(),
+                    clock.clone(),
+                ),
+            ),
             dag,
             memory_store,
             mcp_store,

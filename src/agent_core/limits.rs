@@ -24,6 +24,19 @@ pub const PROVIDER_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// (e.g. fetch is 20 s); this is the outer fence.
 pub const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Hard cap on the number of `turn_metrics` rows aggregated into one
+/// `/agents/:id/metrics/timeseries` response.
+///
+/// CLAUDE.md §5: every batch has a size cap. Sized for a 30-day window
+/// where an agent runs ~150 turns/day — leaves a healthy safety margin
+/// while keeping a single rollup query bounded.
+pub const MAX_TURNS_PER_TIMESERIES_RESPONSE: i64 = 5_000;
+
+/// Maximum page size for `/agents/:id/turns?cursor=…`. Matches the
+/// frontend's `useInfiniteQuery` page size; bounded so a misbehaving
+/// client can't ask for a megapage.
+pub const MAX_TURN_LIST_PAGE_SIZE: u16 = 50;
+
 /// Per-turn ceiling on the pre-turn `session_todos` read.
 ///
 /// CLAUDE.md §5: every I/O await is wrapped. This read is a PK lookup
