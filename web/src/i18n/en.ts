@@ -15,9 +15,11 @@ const en = {
   "signin.heading": "Sign in to Relay",
   "signin.subheading": "Continue with your Google account.",
   "signin.cta": "Continue with Google",
-  "signin.legal": "By continuing, you agree to the Terms of Service and the Privacy Policy.",
+  "signin.legal":
+    "By continuing, you agree to the Terms of Service and the Privacy Policy.",
   "signin.error.forbidden": "Access denied.",
-  "signin.error.oauth_down": "Sign-in is temporarily unavailable. Please try again.",
+  "signin.error.oauth_down":
+    "Sign-in is temporarily unavailable. Please try again.",
 
   "sidebar.brand": "Relay",
   "sidebar.channels": "Channels",
@@ -172,7 +174,8 @@ const en = {
   "connections.detail.status.never": "No successful calls yet",
   "connections.detail.status.createdBy": "Added by {email}",
   "connections.detail.status.noCreator": "Creator unknown",
-  "connections.detail.status.tokenExpires": "Token refreshes automatically · expires {value}",
+  "connections.detail.status.tokenExpires":
+    "Token refreshes automatically · expires {value}",
   "connections.detail.status.tokenStandard": "Credentials stored encrypted",
   "connections.detail.status.manageOn": "Manage on {name}",
   "connections.detail.tools.eyebrow": "02 · TOOLS EXPOSED",
@@ -294,8 +297,7 @@ const en = {
   "agent.detail.memory.filter.pinned.no": "Unpinned only",
   "agent.detail.memory.quota.eyebrow": "MEMORY QUOTA",
   "agent.detail.memory.quota.count": "{used} / {max}",
-  "agent.detail.memory.quota.caption":
-    "{pct}% used · eviction starts at 90%",
+  "agent.detail.memory.quota.caption": "{pct}% used · eviction starts at 90%",
   "agent.detail.memory.kind.self": "Self",
   "agent.detail.memory.kind.other": "Other",
   "agent.detail.memory.kind.collaborator": "Collaborator",
@@ -313,8 +315,7 @@ const en = {
   "agent.detail.memory.empty.body":
     "Agent-written and operator notes will appear here as the agent runs.",
   "agent.detail.memory.empty.filtered.title": "No memories match these filters",
-  "agent.detail.memory.empty.filtered.body":
-    "Clear a filter to see more rows.",
+  "agent.detail.memory.empty.filtered.body": "Clear a filter to see more rows.",
   "agent.detail.memory.loadError.title": "Couldn't load memory",
   "agent.detail.memory.loadError.body":
     "Something went wrong fetching memory rows. Try again in a moment.",
@@ -416,8 +417,7 @@ const en = {
   // Turns timeline
   "agent.detail.logs.turns.eyebrow": "TURNS · {count} IN WINDOW",
   "agent.detail.logs.turns.heading": "Per-turn audit",
-  "agent.detail.logs.turns.subtitle":
-    "Sort PROMPT to compare v6 vs v7 side by side.",
+  "agent.detail.logs.turns.subtitle": "",
   "agent.detail.logs.turns.failedOnly": "Failed only",
   "agent.detail.logs.turns.columns": "Columns",
   "agent.detail.logs.turns.loadMore": "Load more",
@@ -551,7 +551,7 @@ const en = {
   "settings.general.save": "Save",
   "settings.general.savedToast": "Workspace updated",
   "settings.general.cancel": "Cancel",
-  "settings.general.identity.title": "IDENTITY · 2 fields",
+  "settings.general.identity.title": "IDENTITY",
   "settings.general.identity.helper": "Name and URL slug",
   "settings.general.identity.name": "Name",
   "settings.general.identity.name.helper":
@@ -561,15 +561,14 @@ const en = {
     "URL identifier. Changing this breaks existing links.",
   "settings.general.identity.slug.invalid":
     "Lowercase letters, digits, and dashes only.",
-  "settings.general.identity.slug.taken":
-    "That slug is already taken.",
-  "settings.general.defaults.title": "DEFAULTS · 1 field",
+  "settings.general.identity.slug.taken": "That slug is already taken.",
+  "settings.general.defaults.title": "DEFAULTS",
   "settings.general.defaults.helper":
     "Applied to new agents created in this workspace.",
   "settings.general.defaults.language": "Default language",
   "settings.general.defaults.language.helper":
     "Used when an agent doesn't override it.",
-  "settings.general.danger.title": "DANGER ZONE · 2 actions",
+  "settings.general.danger.title": "DANGER ZONE",
   "settings.general.danger.helper": "Cannot be undone.",
   "settings.general.danger.leave.title": "Leave workspace",
   "settings.general.danger.leave.body":
@@ -620,8 +619,7 @@ const en = {
   "settings.members.invited": "Invited {when}",
   "settings.members.pagination.prev": "Prev",
   "settings.members.pagination.next": "Next",
-  "settings.members.pagination.range":
-    "{from} of {total} seats shown",
+  "settings.members.pagination.range": "{from} of {total} seats shown",
 
   // Integrations tab
   "settings.integrations.title": "Integrations",

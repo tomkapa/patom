@@ -78,7 +78,7 @@ export function MemoryFilterBar({
     <div className="flex flex-col gap-2 border-b border-[var(--color-line)] px-5 py-3">
       <label className="flex h-8 items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-card)] px-2.5">
         <Search
-          className="h-3.5 w-3.5 text-[var(--color-muted)]"
+          className="h-3.5 w-3.5 text-[var(--color-muted-foreground)]"
           strokeWidth={1.75}
         />
         <input
@@ -87,7 +87,7 @@ export function MemoryFilterBar({
           onChange={(e) => onChange({ ...filters, q: e.target.value })}
           placeholder={t("agent.detail.memory.search")}
           aria-label={t("agent.detail.memory.search")}
-          className="min-w-0 flex-1 bg-transparent text-[13px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted)]"
+          className="min-w-0 flex-1 bg-transparent text-[13px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted-foreground)]"
         />
       </label>
       <div className="flex flex-wrap items-center gap-1.5">

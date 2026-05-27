@@ -97,7 +97,7 @@ export function AllowlistRow({
               </span>
             ) : null}
           </div>
-          <div className="mt-0.5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+          <div className="mt-0.5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
             {tools.length === 0
               ? t("agent.detail.tools.row.empty")
               : summary}
@@ -113,7 +113,7 @@ export function AllowlistRow({
                 ? "agent.detail.tools.row.collapse"
                 : "agent.detail.tools.row.expand",
             )}
-            className="rounded p-1 text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+            className="rounded p-1 text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]"
           >
             {open ? (
               <ChevronUp className="h-4 w-4" strokeWidth={1.75} />
@@ -123,7 +123,7 @@ export function AllowlistRow({
           </button>
         ) : (
           <ChevronDown
-            className="h-4 w-4 text-[var(--color-muted-2)] opacity-40"
+            className="h-4 w-4 text-[var(--color-fg-muted)] opacity-40"
             strokeWidth={1.75}
             aria-hidden
           />
@@ -160,7 +160,7 @@ export function AllowlistRow({
                     "min-w-0 flex-1 font-[var(--font-mono)] text-[12px] font-semibold",
                     checked
                       ? "text-[var(--color-ink)]"
-                      : "text-[var(--color-muted)]",
+                      : "text-[var(--color-muted-foreground)]",
                   )}
                 >
                   {tool.remote_name}

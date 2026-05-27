@@ -18,7 +18,7 @@ export function Collapsible({
     <div className={cn("w-full", className)}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="group flex w-full cursor-pointer items-center gap-1.5 text-left text-[12px] font-medium tracking-tight text-[var(--color-muted)] transition-colors duration-150 ease-out hover:text-[var(--color-ink)]"
+        className="group flex w-full cursor-pointer items-center gap-1.5 text-left text-[12px] font-medium tracking-tight text-[var(--color-muted-foreground)] transition-colors duration-150 ease-out hover:text-[var(--color-ink)]"
         aria-expanded={open}
       >
         <ChevronRight

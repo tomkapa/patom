@@ -46,7 +46,7 @@ export function ToolsExposedCard({
           right={
             <label className="flex w-[220px] items-center gap-2 border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-1.5">
               <Search
-                className="h-3 w-3 shrink-0 text-[var(--color-muted)]"
+                className="h-3 w-3 shrink-0 text-[var(--color-muted-foreground)]"
                 strokeWidth={1.75}
                 aria-hidden
               />
@@ -55,7 +55,7 @@ export function ToolsExposedCard({
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 placeholder={t("connections.detail.tools.filterPlaceholder")}
-                className="w-full bg-transparent text-[12px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted)]"
+                className="w-full bg-transparent text-[12px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted-foreground)]"
                 aria-label={t("connections.detail.tools.filterAria")}
               />
             </label>
@@ -82,7 +82,7 @@ export function ToolsExposedCard({
       }
     >
       {visible.length === 0 ? (
-        <div className="px-5 py-8 text-center text-[12px] text-[var(--color-muted)]">
+        <div className="px-5 py-8 text-center text-[12px] text-[var(--color-muted-foreground)]">
           {t("connections.detail.tools.empty")}
         </div>
       ) : (

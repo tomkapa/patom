@@ -24,7 +24,7 @@ export const PrefixInput = forwardRef<HTMLInputElement, {
         className,
       )}
     >
-      <span className="inline-flex items-center border-r border-[var(--color-line)] bg-[var(--color-paper-2)] px-3 font-[var(--font-mono)] text-[12px] text-[var(--color-muted)]">
+      <span className="inline-flex items-center border-r border-[var(--color-line)] bg-[var(--color-paper-2)] px-3 font-[var(--font-mono)] text-[12px] text-[var(--color-muted-foreground)]">
         {prefix}
       </span>
       <input
@@ -32,7 +32,7 @@ export const PrefixInput = forwardRef<HTMLInputElement, {
         spellCheck={false}
         autoCorrect="off"
         autoCapitalize="off"
-        className="min-w-0 flex-1 bg-transparent px-3 py-2 font-[var(--font-mono)] text-[13px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted-2)]"
+        className="min-w-0 flex-1 bg-transparent px-3 py-2 font-[var(--font-mono)] text-[13px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-fg-muted)]"
         {...rest}
       />
     </div>

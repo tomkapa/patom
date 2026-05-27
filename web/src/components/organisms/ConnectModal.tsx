@@ -308,7 +308,7 @@ function ApiTokenBody({
             className="w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-2 font-[var(--font-mono)] text-[12.5px] text-[var(--color-ink)] outline-none focus:border-[var(--color-moss)]"
             autoComplete="off"
           />
-          <span className="text-[11px] text-[var(--color-muted)]">
+          <span className="text-[11px] text-[var(--color-muted-foreground)]">
             {t("connections.modal.token.note")}
           </span>
         </div>
@@ -440,7 +440,7 @@ function DiagRow({
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="text-[var(--color-muted)]">{label}</span>
+      <span className="text-[var(--color-muted-foreground)]">{label}</span>
       <span
         className={
           highlight ? "text-[var(--color-amber)]" : "text-[var(--color-ink)]"
@@ -536,7 +536,7 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
             inputMode="url"
             className="w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-2 font-[var(--font-mono)] text-[12.5px] text-[var(--color-moss-deep)] outline-none focus:border-[var(--color-moss)]"
           />
-          <span className="mt-1 block text-[11px] text-[var(--color-muted)]">
+          <span className="mt-1 block text-[11px] text-[var(--color-muted-foreground)]">
             {t("connections.modal.custom.urlHint")}
           </span>
         </Field>
@@ -625,7 +625,7 @@ function AuthTab({
         "flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] transition-colors " +
         (active
           ? "bg-[var(--color-ink)] text-white"
-          : "bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)]")
+          : "bg-[var(--color-card)] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]")
       }
     >
       <span

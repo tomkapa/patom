@@ -103,7 +103,7 @@ export function ScopeStrip({
           className="h-1.5 w-1.5 rounded-full bg-[var(--color-moss)]"
           aria-hidden
         />
-        <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+        <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
           {updatedAt
             ? t("agent.detail.logs.scope.updated", { n: secondsAgo(updatedAt) })
             : t("agent.detail.logs.scope.updating")}
@@ -151,7 +151,7 @@ function FilterPill({
           )}
         >
           <span className="flex flex-col items-start gap-0.5 leading-tight">
-            <span className="font-[var(--font-mono)] text-[9px] font-medium tracking-[0.12em] uppercase text-[var(--color-muted)]">
+            <span className="font-[var(--font-mono)] text-[9px] font-medium tracking-[0.12em] uppercase text-[var(--color-muted-foreground)]">
               {label}
             </span>
             <span
@@ -166,7 +166,7 @@ function FilterPill({
           <ChevronDown
             className={cn(
               "h-3 w-3",
-              active ? "text-[var(--color-moss)]" : "text-[var(--color-muted)]",
+              active ? "text-[var(--color-moss)]" : "text-[var(--color-muted-foreground)]",
             )}
             strokeWidth={1.75}
           />
@@ -206,7 +206,7 @@ function FilterPill({
 function BucketChip({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center gap-2 border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-1.5">
-      <span className="font-[var(--font-mono)] text-[9px] font-medium tracking-[0.12em] uppercase text-[var(--color-muted)]">
+      <span className="font-[var(--font-mono)] text-[9px] font-medium tracking-[0.12em] uppercase text-[var(--color-muted-foreground)]">
         {label}
       </span>
       <span className="font-[var(--font-body)] text-[13px] font-medium text-[var(--color-ink)]">

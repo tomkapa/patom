@@ -50,7 +50,7 @@ export function DangerZone({
               ? t("connections.detail.danger.disable.title")
               : t("connections.detail.danger.enable.title")}
           </span>
-          <p className="text-[12px] leading-snug text-[var(--color-muted)]">
+          <p className="text-[12px] leading-snug text-[var(--color-muted-foreground)]">
             {server.enabled
               ? t("connections.detail.danger.disable.body")
               : t("connections.detail.danger.enable.body")}
@@ -76,7 +76,7 @@ export function DangerZone({
             <span className="text-[13px] font-semibold text-[var(--color-ink)]">
               {t("connections.detail.danger.disconnect.title")}
             </span>
-            <p className="text-[12px] leading-snug text-[var(--color-muted)]">
+            <p className="text-[12px] leading-snug text-[var(--color-muted-foreground)]">
               {t("connections.detail.danger.disconnect.body")}
             </p>
             <div className="mt-1 bg-[var(--color-paper-2)] px-2.5 py-2">

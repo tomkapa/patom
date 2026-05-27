@@ -36,13 +36,13 @@ export function ReplyPill({
           ))}
       </span>
       {meta && (
-        <span className="font-[var(--font-mono)] text-[10.5px] text-[var(--color-muted)]">
+        <span className="font-[var(--font-mono)] text-[10.5px] text-[var(--color-muted-foreground)]">
           {meta}
         </span>
       )}
       <button
         onClick={onView}
-        className="ml-auto inline-flex items-center gap-1 font-[var(--font-mono)] text-[10.5px] font-medium text-[var(--color-muted)] hover:text-[var(--color-ink)] transition-colors"
+        className="ml-auto inline-flex items-center gap-1 font-[var(--font-mono)] text-[10.5px] font-medium text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)] transition-colors"
       >
         View thread <ArrowRight className="h-3 w-3" />
       </button>

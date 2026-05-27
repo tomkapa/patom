@@ -112,7 +112,7 @@ export function SettingsMembers() {
         <div className="flex flex-wrap items-center gap-3 border-b border-[var(--color-line)] pb-3">
           <div className="relative w-[260px]">
             <Search
-              className="absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-muted)]"
+              className="absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-muted-foreground)]"
               strokeWidth={1.75}
             />
             <input
@@ -145,7 +145,7 @@ export function SettingsMembers() {
           </div>
           <button
             type="button"
-            className="ml-auto inline-flex h-7 cursor-pointer items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-card)] px-2.5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+            className="ml-auto inline-flex h-7 cursor-pointer items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-card)] px-2.5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]"
             onClick={() => {
               // Mock-only: trigger download from current cached rows.
               // RFC-4180 escaping + formula-injection guard (Excel /
@@ -232,7 +232,7 @@ export function SettingsMembers() {
             )}
           </DataTableBody>
           <DataTableFooter>
-            <div className="flex items-center justify-between gap-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+            <div className="flex items-center justify-between gap-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
               <span>
                 {t("settings.members.pagination.range", {
                   from: rows.length,
@@ -316,7 +316,7 @@ function FilterTab({
         "inline-flex h-7 cursor-pointer items-center gap-1.5 border px-2.5 font-[var(--font-mono)] text-[11px] tracking-[0.02em] transition-colors",
         active
           ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-paper)]"
-          : "border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+          : "border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]",
       )}
     >
       {label}
@@ -341,7 +341,7 @@ const ROLE_STYLE: Record<
   },
   member: {
     icon: UserIcon,
-    className: "border-[var(--color-line-2)] text-[var(--color-muted)]",
+    className: "border-[var(--color-line-2)] text-[var(--color-muted-foreground)]",
     labelKey: "settings.members.role.member",
   },
 };
@@ -391,7 +391,7 @@ function StatusPill({ status, when }: { status: MemberStatus; when?: string }) {
       <span className={cn("h-1.5 w-1.5 rounded-full", dot)} aria-hidden />
       <span className="font-medium">{t(labelKey)}</span>
       {when ? (
-        <span className="text-[var(--color-muted)]">· {when}</span>
+        <span className="text-[var(--color-muted-foreground)]">· {when}</span>
       ) : null}
     </span>
   );
@@ -431,7 +431,7 @@ function MemberRowView({
             <div className="truncate text-[13px] font-medium text-[var(--color-ink)]">
               {name}
             </div>
-            <div className="truncate font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+            <div className="truncate font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
               {row.email}
             </div>
           </div>
@@ -467,7 +467,7 @@ function MemberRowView({
                 aria-haspopup="menu"
                 aria-expanded={open}
                 aria-label="Row actions"
-                className="inline-flex h-7 w-7 cursor-pointer items-center justify-center text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+                className="inline-flex h-7 w-7 cursor-pointer items-center justify-center text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]"
                 data-testid={`row-actions-${row.email}`}
               >
                 <MoreHorizontal className="h-4 w-4" strokeWidth={1.75} />

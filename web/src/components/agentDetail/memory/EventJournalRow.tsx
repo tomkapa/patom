@@ -28,7 +28,7 @@ const DIFF_LINE: Record<
 > = {
   add: { fill: "#F0FDF4", ink: "#14532D", prefix: "+" },
   remove: { fill: "#FEF2F2", ink: "#7F1D1D", prefix: "−" },
-  context: { fill: "var(--color-paper-2)", ink: "var(--color-muted)", prefix: " " },
+  context: { fill: "var(--color-paper-2)", ink: "var(--color-muted-foreground)", prefix: " " },
 };
 
 export function EventJournalRow({
@@ -79,7 +79,7 @@ export function EventJournalRow({
           </Link>
         ) : null}
         <span className="flex-1" />
-        <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted)]">
+        <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
           {longDate(event.created_at)} · {clockTime(event.created_at)}
         </span>
       </div>
@@ -103,7 +103,7 @@ export function EventJournalRow({
           onClick={onRevert}
           disabled={reverting}
           className={cn(
-            "flex items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-card)] px-2.5 py-1 text-[12px] text-[var(--color-muted)] transition-colors hover:text-[var(--color-ink)]",
+            "flex items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-card)] px-2.5 py-1 text-[12px] text-[var(--color-muted-foreground)] transition-colors hover:text-[var(--color-ink)]",
             reverting && "cursor-wait opacity-60",
           )}
         >

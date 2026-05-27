@@ -86,13 +86,13 @@ function SummaryRow({
         !last && "border-b border-[var(--color-line)]",
       )}
     >
-      <span className="text-[12px] text-[var(--color-muted)]">{label}</span>
+      <span className="text-[12px] text-[var(--color-muted-foreground)]">{label}</span>
       <span className="flex items-baseline gap-1">
         <span className="font-[var(--font-mono)] text-[16px] font-bold text-[var(--color-ink)]">
           {value}
         </span>
         {denominator ? (
-          <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-muted)]">
+          <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-muted-foreground)]">
             / {denominator}
           </span>
         ) : null}

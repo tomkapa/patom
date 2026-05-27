@@ -133,7 +133,7 @@ export function ModalHeader({
     <div className="flex items-start gap-3 border-b border-[var(--color-line)] px-5 pt-5 pb-4">
       {icon ? <div className="shrink-0 pt-0.5">{icon}</div> : null}
       <div className="min-w-0 flex-1">
-        <div className="font-[var(--font-mono)] text-[10px] tracking-[0.14em] text-[var(--color-muted)] uppercase">
+        <div className="font-[var(--font-mono)] text-[10px] tracking-[0.14em] text-[var(--color-muted-foreground)] uppercase">
           {eyebrow}
         </div>
         <div className="mt-1 font-[var(--font-display)] text-[18px] leading-tight font-semibold text-[var(--color-ink)]">
@@ -144,7 +144,7 @@ export function ModalHeader({
         type="button"
         aria-label={t("connections.modal.close")}
         onClick={onClose}
-        className="-mt-1 -mr-1 shrink-0 cursor-pointer p-1 text-[var(--color-muted)] transition-colors duration-150 ease-out hover:text-[var(--color-ink)]"
+        className="-mt-1 -mr-1 shrink-0 cursor-pointer p-1 text-[var(--color-muted-foreground)] transition-colors duration-150 ease-out hover:text-[var(--color-ink)]"
       >
         <X className="h-4 w-4" />
       </button>

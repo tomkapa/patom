@@ -143,7 +143,7 @@ export function WireMcpRequestCard({
               href={homepageUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="mt-0.5 inline-flex items-center gap-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+              className="mt-0.5 inline-flex items-center gap-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]"
             >
               {t("thread.wireRequest.learnMore")}
               <ExternalLink className="h-3 w-3" aria-hidden />

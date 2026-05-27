@@ -54,7 +54,7 @@ export function RadioCards<V extends string>({
               <Icon
                 className={cn(
                   "h-3.5 w-3.5",
-                  active ? "text-[var(--color-moss-deep)]" : "text-[var(--color-muted)]",
+                  active ? "text-[var(--color-moss-deep)]" : "text-[var(--color-muted-foreground)]",
                 )}
                 strokeWidth={1.75}
               />
@@ -66,7 +66,7 @@ export function RadioCards<V extends string>({
                 />
               ) : null}
             </div>
-            <div className="font-[var(--font-mono)] text-[10.5px] leading-tight text-[var(--color-muted)]">
+            <div className="font-[var(--font-mono)] text-[10.5px] leading-tight text-[var(--color-muted-foreground)]">
               {opt.description}
             </div>
           </button>

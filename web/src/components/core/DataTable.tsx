@@ -51,7 +51,7 @@ export function DataTableColumnHeader({
     <th
       scope="col"
       className={cn(
-        "px-4 py-2.5 font-[var(--font-mono)] text-[10.5px] font-semibold tracking-[0.14em] text-[var(--color-muted)] uppercase",
+        "px-4 py-2.5 font-[var(--font-mono)] text-[10.5px] font-semibold tracking-[0.14em] text-[var(--color-muted-foreground)] uppercase",
         align === "right" ? "text-right" : "text-left",
         className,
       )}
@@ -129,7 +129,7 @@ export function DataTableEmpty({
     <tr>
       <td
         colSpan={cols}
-        className="px-4 py-10 text-center text-[13px] text-[var(--color-muted)]"
+        className="px-4 py-10 text-center text-[13px] text-[var(--color-muted-foreground)]"
       >
         {children}
       </td>

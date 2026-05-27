@@ -87,7 +87,7 @@ export function ImageUploader({
           />
         ) : (
           (fallback ?? (
-            <span className="font-[var(--font-mono)] text-[10px] tracking-[0.1em] text-[var(--color-muted)] uppercase">
+            <span className="font-[var(--font-mono)] text-[10px] tracking-[0.1em] text-[var(--color-muted-foreground)] uppercase">
               none
             </span>
           ))
@@ -122,7 +122,7 @@ export function ImageUploader({
             <Upload className="h-3 w-3" />
             {currentUrl ? "Change" : "Upload"}
           </Button>
-          <span className="font-[var(--font-mono)] text-[10.5px] tracking-[0.08em] text-[var(--color-muted)] uppercase">
+          <span className="font-[var(--font-mono)] text-[10.5px] tracking-[0.08em] text-[var(--color-muted-foreground)] uppercase">
             {accept.replace(/image\//g, "").replace(/,/g, " ")} · {formatBytes(cap)}
           </span>
         </div>

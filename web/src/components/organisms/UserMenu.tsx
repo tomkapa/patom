@@ -92,7 +92,7 @@ export function UserMenu() {
             <div className="truncate text-[12px] font-semibold text-[var(--color-ink)]">
               {displayName}
             </div>
-            <div className="truncate font-[var(--font-mono)] text-[10.5px] text-[var(--color-muted)]">
+            <div className="truncate font-[var(--font-mono)] text-[10.5px] text-[var(--color-muted-foreground)]">
               {me.user.email}
             </div>
           </div>
@@ -103,7 +103,7 @@ export function UserMenu() {
               currentUrl={me.user.avatar_url}
               size={48}
               fallback={
-                <span className="font-mono text-[11px] font-bold tracking-tight text-[var(--color-muted)]">
+                <span className="font-mono text-[11px] font-bold tracking-tight text-[var(--color-muted-foreground)]">
                   {initials(displayName)}
                 </span>
               }
@@ -125,7 +125,7 @@ export function UserMenu() {
             <div className="border-b border-[var(--color-line)] px-3 py-2">
               <label
                 htmlFor="usermenu-language"
-                className="block font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.18em] text-[var(--color-muted)]"
+                className="block font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]"
               >
                 {t("usermenu.language.label")}
               </label>

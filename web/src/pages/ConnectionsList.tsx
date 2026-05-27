@@ -67,7 +67,7 @@ export function ConnectionsList() {
           <h1 className="font-[var(--font-display)] text-[32px] leading-tight font-bold text-[var(--color-ink)]">
             {t("connections.list.title")}
           </h1>
-          <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted)]">
+          <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted-foreground)]">
             {t("connections.list.subtitle")}
           </p>
         </div>
@@ -128,7 +128,7 @@ export function ConnectionsList() {
 
       <div className="min-h-0 flex-1 overflow-auto p-8">
         {isLoading ? (
-          <div className="flex h-32 items-center justify-center text-[var(--color-muted)]">
+          <div className="flex h-32 items-center justify-center text-[var(--color-muted-foreground)]">
             <Spinner size={16} />
           </div>
         ) : isEmpty ? (
@@ -147,7 +147,7 @@ export function ConnectionsList() {
         ) : (
           <div className="border border-[var(--color-line)] bg-[var(--color-card)]">
             <div
-              className="grid items-center gap-4 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5 font-[var(--font-mono)] text-[9px] tracking-[0.14em] text-[var(--color-muted)] uppercase"
+              className="grid items-center gap-4 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5 font-[var(--font-mono)] text-[9px] tracking-[0.14em] text-[var(--color-muted-foreground)] uppercase"
               style={{
                 gridTemplateColumns:
                   "88px minmax(0,1fr) 160px 56px 130px 56px 88px",
@@ -189,7 +189,7 @@ export function ConnectionsList() {
               />
             ))}
             {rows.length === 0 ? (
-              <div className="px-5 py-8 text-center text-[12px] text-[var(--color-muted)]">
+              <div className="px-5 py-8 text-center text-[12px] text-[var(--color-muted-foreground)]">
                 {t("connections.catalog.empty")}
               </div>
             ) : null}
@@ -258,7 +258,7 @@ function ConnectionRow({
           <div className="truncate font-semibold text-[var(--color-ink)] hover:text-[var(--color-moss-deep)] hover:underline">
             {displayName}
           </div>
-          <div className="truncate font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+          <div className="truncate font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
             {hostFromConfig}
           </div>
         </div>
@@ -305,7 +305,7 @@ function ConnectionRow({
           onClick={onRemove}
           aria-label={`${t("connections.row.remove")} ${server.catalog_id}`}
           title={t("connections.row.remove")}
-          className="flex h-[30px] w-[30px] items-center justify-center border border-[var(--color-line)] text-[var(--color-muted)] hover:border-[var(--color-rose)] hover:text-[var(--color-rose)]"
+          className="flex h-[30px] w-[30px] items-center justify-center border border-[var(--color-line)] text-[var(--color-muted-foreground)] hover:border-[var(--color-rose)] hover:text-[var(--color-rose)]"
         >
           <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
         </button>
@@ -337,7 +337,7 @@ function OwnerCell({ userId, createdAt }: { userId: string; createdAt: string })
       <Monogram name={name} tone="ink" size={22} />
       <div className="flex min-w-0 items-baseline gap-1.5 text-[13px] text-[var(--color-ink)]">
         <span className="truncate">{name}</span>
-        <span className="shrink-0 font-[var(--font-mono)] text-[10px] text-[var(--color-muted)]">
+        <span className="shrink-0 font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
           {timeAgo(createdAt)}
         </span>
       </div>

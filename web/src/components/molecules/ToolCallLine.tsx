@@ -24,10 +24,10 @@ export function ToolCallLine({
       <span className="shrink-0">{icon}</span>
       <span className="font-semibold whitespace-nowrap">{call.name}</span>
       {args && (
-        <span className="text-[var(--color-muted)] truncate flex-1">{args}</span>
+        <span className="text-[var(--color-muted-foreground)] truncate flex-1">{args}</span>
       )}
       {dur && (
-        <span className="ml-auto shrink-0 text-[var(--color-muted-2)]">
+        <span className="ml-auto shrink-0 text-[var(--color-fg-muted)]">
           {dur}
         </span>
       )}

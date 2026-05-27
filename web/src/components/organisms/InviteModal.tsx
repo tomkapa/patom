@@ -101,12 +101,12 @@ export function InviteModal({
         onClose={onClose}
       />
       <div className="px-5 py-4">
-        <p className="mb-4 text-[12.5px] text-[var(--color-muted)]">
+        <p className="mb-4 text-[12.5px] text-[var(--color-muted-foreground)]">
           {t("settings.invite.subtitle")}
         </p>
 
         <div className="mb-4">
-          <div className="mb-1.5 flex items-center justify-between font-[var(--font-mono)] text-[10.5px] tracking-[0.06em] text-[var(--color-muted)] uppercase">
+          <div className="mb-1.5 flex items-center justify-between font-[var(--font-mono)] text-[10.5px] tracking-[0.06em] text-[var(--color-muted-foreground)] uppercase">
             <span>{t("settings.invite.emails")}</span>
             <span>{t("settings.invite.emails.helper")}</span>
           </div>
@@ -118,7 +118,7 @@ export function InviteModal({
         </div>
 
         <div className="mb-4">
-          <div className="mb-1.5 font-[var(--font-mono)] text-[10.5px] tracking-[0.06em] text-[var(--color-muted)] uppercase">
+          <div className="mb-1.5 font-[var(--font-mono)] text-[10.5px] tracking-[0.06em] text-[var(--color-muted-foreground)] uppercase">
             {t("settings.invite.role")}
           </div>
           <RadioCards
@@ -134,7 +134,7 @@ export function InviteModal({
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
               <Link2
-                className="h-3.5 w-3.5 shrink-0 text-[var(--color-muted)]"
+                className="h-3.5 w-3.5 shrink-0 text-[var(--color-muted-foreground)]"
                 strokeWidth={1.75}
               />
               <div className="min-w-0 truncate font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]">
@@ -168,7 +168,7 @@ export function InviteModal({
                 : t("settings.invite.link.copy")}
             </button>
           </div>
-          <div className="mt-1 font-[var(--font-mono)] text-[10.5px] text-[var(--color-muted)]">
+          <div className="mt-1 font-[var(--font-mono)] text-[10.5px] text-[var(--color-muted-foreground)]">
             {t("settings.invite.link.helper")}
           </div>
         </div>
@@ -182,7 +182,7 @@ export function InviteModal({
       <ModalFooter
         left={
           <span
-            className="font-[var(--font-mono)] text-[11px] tracking-[0.04em] text-[var(--color-muted)]"
+            className="font-[var(--font-mono)] text-[11px] tracking-[0.04em] text-[var(--color-muted-foreground)]"
             data-testid="invite-counter"
           >
             {validChips.length === 1

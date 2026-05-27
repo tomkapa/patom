@@ -230,7 +230,7 @@ export function MentionInput({
         )}
       >
         {tokens.length === 0 ? (
-          <span className="text-[var(--color-muted-2)]">{placeholder}</span>
+          <span className="text-[var(--color-fg-muted)]">{placeholder}</span>
         ) : (
           tokens.map((t, i) =>
             t.kind === "text" ? (
@@ -241,7 +241,7 @@ export function MentionInput({
                 className={
                   t.active
                     ? "text-[var(--color-moss)]"
-                    : "text-[var(--color-muted-2)]"
+                    : "text-[var(--color-fg-muted)]"
                 }
               >
                 {t.text}
@@ -310,7 +310,7 @@ export function MentionInput({
               />
               <span className="font-[var(--font-mono)]">{a.name}</span>
               {a.is_default && (
-                <span className="ml-auto font-[var(--font-mono)] text-[9.5px] uppercase tracking-[0.14em] text-[var(--color-muted)]">
+                <span className="ml-auto font-[var(--font-mono)] text-[9.5px] uppercase tracking-[0.14em] text-[var(--color-muted-foreground)]">
                   default
                 </span>
               )}

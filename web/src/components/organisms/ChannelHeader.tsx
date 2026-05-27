@@ -16,7 +16,7 @@ export function ChannelHeader({
           {channel}
         </h1>
       </div>
-      <p className="mt-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+      <p className="mt-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
         <span className="text-[var(--color-ink)] font-semibold">
           {agents.length}
         </span>{" "}

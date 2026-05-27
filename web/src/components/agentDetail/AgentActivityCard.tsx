@@ -40,7 +40,7 @@ export function AgentActivityCard({
           eyebrow={
             <>
               {t("agent.detail.activity.eyebrow", { name: agentName })}
-              <span className="font-[var(--font-mono)] text-[10px] font-normal normal-case tracking-normal text-[var(--color-muted)]">
+              <span className="font-[var(--font-mono)] text-[10px] font-normal normal-case tracking-normal text-[var(--color-muted-foreground)]">
                 {t("agent.detail.activity.subtitle")}
               </span>
             </>
@@ -98,7 +98,7 @@ function ActivityBody({
   }
   if (items.length === 0) {
     return (
-      <div className="px-5 py-6 text-center text-[12px] text-[var(--color-muted)]">
+      <div className="px-5 py-6 text-center text-[12px] text-[var(--color-muted-foreground)]">
         {t("agent.detail.activity.empty")}
       </div>
     );
@@ -107,7 +107,7 @@ function ActivityBody({
   return (
     <>
       <div
-        className="grid items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5 font-[var(--font-mono)] text-[9px] tracking-[0.15em] uppercase text-[var(--color-muted)]"
+        className="grid items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5 font-[var(--font-mono)] text-[9px] tracking-[0.15em] uppercase text-[var(--color-muted-foreground)]"
         style={{ gridTemplateColumns: COL_WIDTHS }}
       >
         <span>{t("agent.detail.activity.col.time")}</span>
@@ -160,7 +160,7 @@ function ActivityRow({
       }`}
       style={{ gridTemplateColumns: COL_WIDTHS }}
     >
-      <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-muted)]">
+      <span className="font-[var(--font-mono)] text-[12px] text-[var(--color-muted-foreground)]">
         {timeAgo(row.started_at)}
       </span>
       <span className="flex items-center gap-2 min-w-0">

@@ -34,7 +34,7 @@ export function AllowlistCard({
           eyebrow={
             <>
               {t("agent.detail.tools.sectionEyebrow")}
-              <span className="font-[var(--font-mono)] text-[10px] font-normal normal-case tracking-normal text-[var(--color-muted)]">
+              <span className="font-[var(--font-mono)] text-[10px] font-normal normal-case tracking-normal text-[var(--color-muted-foreground)]">
                 {t("agent.detail.tools.sectionCount", {
                   enabled: String(enabledCount),
                   total: String(servers.length),
@@ -50,7 +50,7 @@ export function AllowlistCard({
           <Spinner size={16} />
         </div>
       ) : servers.length === 0 ? (
-        <div className="px-5 py-10 text-center text-[13px] text-[var(--color-muted)]">
+        <div className="px-5 py-10 text-center text-[13px] text-[var(--color-muted-foreground)]">
           {t("agent.detail.tools.empty")}
         </div>
       ) : (

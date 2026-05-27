@@ -23,7 +23,7 @@ export function StatusCard({ server }: { server: McpServer }) {
         <SectionHeader
           eyebrow={t("connections.detail.status.eyebrow")}
           right={
-            <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted)]">
+            <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
               {t("connections.detail.status.updated", { value: lastUpdated })}
             </span>
           }
@@ -44,7 +44,7 @@ export function StatusCard({ server }: { server: McpServer }) {
                   })
                 : t("connections.detail.status.noCreator")}
             </span>
-            <span className="truncate font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+            <span className="truncate font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
               {server.token_expires_at
                 ? t("connections.detail.status.tokenExpires", {
                     value: timeAgo(server.token_expires_at),

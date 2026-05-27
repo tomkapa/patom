@@ -79,13 +79,13 @@ export function AgentLayout({
         aria-label={t("agent.detail.nav.aria")}
       >
         <div className="border-b border-[var(--color-line)] px-5 pt-5 pb-4">
-          <div className="font-[var(--font-mono)] text-[10px] tracking-[0.15em] text-[var(--color-muted)] uppercase">
+          <div className="font-[var(--font-mono)] text-[10px] tracking-[0.15em] text-[var(--color-muted-foreground)] uppercase">
             {t("agent.detail.nav.eyebrow")}
           </div>
           <AgentSwitcher current={agent} />
         </div>
         <nav className="flex flex-col gap-0.5 p-2">
-          <div className="px-3 pt-2 pb-1 font-[var(--font-mono)] text-[10px] tracking-[0.15em] text-[var(--color-muted)] uppercase">
+          <div className="px-3 pt-2 pb-1 font-[var(--font-mono)] text-[10px] tracking-[0.15em] text-[var(--color-muted-foreground)] uppercase">
             {t("agent.detail.nav.section")}
           </div>
           {navItems.map((it) => {
@@ -96,8 +96,8 @@ export function AgentLayout({
               isActive
                 ? "bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
                 : it.disabled
-                  ? "cursor-not-allowed text-[var(--color-muted-2)] opacity-60"
-                  : "cursor-pointer text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+                  ? "cursor-not-allowed text-[var(--color-fg-muted)] opacity-60"
+                  : "cursor-pointer text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]",
             );
             const indicator = isActive ? (
               <motion.span
@@ -113,7 +113,7 @@ export function AgentLayout({
                   "h-4 w-4 shrink-0 transition-colors duration-150 ease-out",
                   isActive
                     ? "text-[var(--color-moss)]"
-                    : "text-[var(--color-muted-2)]",
+                    : "text-[var(--color-fg-muted)]",
                 )}
                 strokeWidth={1.75}
               />
@@ -198,7 +198,7 @@ function AgentSwitcher({ current }: { current: Agent | null }) {
             </div>
           </div>
           <ChevronsUpDown
-            className="h-4 w-4 shrink-0 text-[var(--color-muted)]"
+            className="h-4 w-4 shrink-0 text-[var(--color-muted-foreground)]"
             strokeWidth={1.75}
           />
         </button>
@@ -207,7 +207,7 @@ function AgentSwitcher({ current }: { current: Agent | null }) {
       {({ close }) => (
         <ul role="listbox" aria-label={t("agent.detail.switcher.aria")}>
           {agents.length === 0 ? (
-            <li className="px-3 py-2 text-[12.5px] text-[var(--color-muted)]">
+            <li className="px-3 py-2 text-[12.5px] text-[var(--color-muted-foreground)]">
               {t("agent.detail.switcher.empty")}
             </li>
           ) : (
@@ -249,7 +249,7 @@ export function AgentBreadcrumb({
   trail: { label: string; current?: boolean }[];
 }) {
   return (
-    <div className="flex items-center gap-2 px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+    <div className="flex items-center gap-2 px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
       {trail.map((step, i) => (
         <span key={`${step.label}-${i}`} className="flex items-center gap-2">
           <span

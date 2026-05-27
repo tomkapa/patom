@@ -82,7 +82,7 @@ export function SettingsLayout({
         aria-label="Workspace settings sidebar"
       >
         <div className="border-b border-[var(--color-line)] px-5 pt-5 pb-4">
-          <div className="font-[var(--font-mono)] text-[10px] tracking-[0.14em] text-[var(--color-muted)] uppercase">
+          <div className="font-[var(--font-mono)] text-[10px] tracking-[0.14em] text-[var(--color-muted-foreground)] uppercase">
             {workspaceLabel}
           </div>
           <div className="mt-1.5 font-[var(--font-display)] text-[18px] font-bold text-[var(--color-ink)]">
@@ -102,7 +102,7 @@ export function SettingsLayout({
                   "group relative flex items-center gap-2.5 px-3 py-2 text-left transition-colors duration-150 ease-out",
                   isActive
                     ? "bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
-                    : "cursor-pointer text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+                    : "cursor-pointer text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]",
                 )}
               >
                 {isActive ? (
@@ -118,7 +118,7 @@ export function SettingsLayout({
                     "h-4 w-4 shrink-0 transition-colors duration-150 ease-out",
                     isActive
                       ? "text-[var(--color-moss)]"
-                      : "text-[var(--color-muted-2)]",
+                      : "text-[var(--color-fg-muted)]",
                   )}
                   strokeWidth={1.75}
                 />
@@ -149,7 +149,7 @@ export function SettingsBreadcrumb({
   trail: { label: string; current?: boolean }[];
 }) {
   return (
-    <div className="flex items-center gap-2 px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+    <div className="flex items-center gap-2 px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
       {trail.map((step, i) => (
         <span key={`${step.label}-${i}`} className="flex items-center gap-2">
           <span
@@ -184,7 +184,7 @@ export function SettingsPageHeader({
         <h1 className="font-[var(--font-display)] text-[32px] leading-tight font-bold text-[var(--color-ink)]">
           {title}
         </h1>
-        <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted)]">
+        <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted-foreground)]">
           {subtitle}
         </p>
       </div>

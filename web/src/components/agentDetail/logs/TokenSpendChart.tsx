@@ -190,7 +190,7 @@ function YAxis({ yMax }: { yMax: number }) {
               y={y + 3}
               textAnchor="end"
               fontSize="9"
-              fill="var(--color-muted)"
+              fill="var(--color-muted-foreground)"
               fontFamily="var(--font-mono)"
             >
               {formatTokens(Math.round(yMax * t))}
@@ -354,14 +354,14 @@ function ChartHero({
   return (
     <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-8 py-4">
       <div className="flex flex-col gap-1.5">
-        <span className="font-[var(--font-mono)] text-[10px] font-medium tracking-[0.15em] uppercase text-[var(--color-muted)]">
+        <span className="font-[var(--font-mono)] text-[10px] font-medium tracking-[0.15em] uppercase text-[var(--color-muted-foreground)]">
           {t("agent.detail.logs.chart.eyebrow")}
         </span>
         <div className="flex items-baseline gap-3">
           <span className="font-[var(--font-display)] text-[32px] leading-none font-bold text-[var(--color-ink)]">
             {formatTokens(totals.tokens)}
           </span>
-          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
             {t("agent.detail.logs.chart.tokens")}
           </span>
           {renderDeltaPill(deltas.tokens)}
@@ -393,7 +393,7 @@ function LegendSwatch({ color, label }: { color: string; label: string }) {
         style={{ backgroundColor: color }}
         aria-hidden
       />
-      <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+      <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
         {label}
       </span>
     </span>
@@ -492,7 +492,7 @@ function Tooltip({
 
 function renderDeltaInline(d: number | null) {
   if (d == null) return null;
-  if (d === 0) return <span className="text-[var(--color-muted)]">▬ 0</span>;
+  if (d === 0) return <span className="text-[var(--color-muted-foreground)]">▬ 0</span>;
   const arrow = d > 0 ? "▲" : "▼";
   const tone = d > 0 ? "text-[var(--color-rose)]" : "text-[var(--color-moss)]";
   return (

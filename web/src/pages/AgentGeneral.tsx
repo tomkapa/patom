@@ -72,7 +72,7 @@ export function AgentGeneral() {
         ]}
       />
       {agentQuery.isLoading && !agentQuery.isError ? (
-        <div className="flex flex-1 items-center justify-center text-[var(--color-muted)]">
+        <div className="flex flex-1 items-center justify-center text-[var(--color-muted-foreground)]">
           <Spinner size={16} />
         </div>
       ) : !agent ? (
@@ -125,7 +125,7 @@ export function AgentGeneral() {
                 }}
                 footer={
                   <>
-                    <div className="flex items-center gap-5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+                    <div className="flex items-center gap-5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
                       <span>
                         {t("agent.detail.general.prompt.lines", {
                           n: stats.lines,
@@ -142,7 +142,7 @@ export function AgentGeneral() {
                         })}
                       </span>
                     </div>
-                    <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+                    <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
                       {t("agent.detail.general.prompt.fontHint")}
                     </span>
                   </>

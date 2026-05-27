@@ -1,39 +1,81 @@
 @import "tailwindcss";
 
-/* "Field journal terminal" — cream parchment + deep moss + mono everything.
- * Tokens mirror design.pen but warmed up for a paper-like surface.
+/* Forest-green brand palette on a shadcn/Neutral base.
+ * The spec's tokens are defined verbatim; legacy `--color-*` tokens
+ * (paper, ink, moss, line, rail, ...) are remapped onto the new palette
+ * so existing Tailwind utilities pick up the new colors automatically.
  */
 @theme {
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Funnel Sans", "Geist", ui-sans-serif, sans-serif;
   --font-mono: "IBM Plex Mono", "Geist Mono", ui-monospace, monospace;
 
-  /* Surfaces */
-  --color-paper: #faf7ee;
-  --color-paper-2: #f4efde;
-  --color-paper-3: #ebe5cf;
-  --color-card: #ffffff;
-  --color-rail: #1a2b1e;
-  --color-rail-2: #2d4d34;
+  /* ── Custom brand colors (design-specific) ─────────────────────── */
+  --color-accent-primary: #2d6b3f;
+  --color-accent-soft: #e8f0ea;
+  --color-border-primary: #1e3322;
+  --color-border-subtle: #e2e5e2;
+  --color-fg-primary: #1e3322;
+  --color-fg-secondary: #6b7b6b;
+  --color-fg-muted: #808a80;
+  --color-surface-primary: #ffffff;
+  --color-surface-secondary: #f4f5f5;
 
-  /* Ink */
-  --color-ink: #1a2b1e;
-  --color-ink-2: #2b4530;
-  --color-muted: #5d6a5d;
-  --color-muted-2: #8b9286;
+  /* ── Semantic UI (light) ───────────────────────────────────────── */
+  --color-background: #fafafa;
+  --color-foreground: #0a0a0a;
+  --color-primary: #171717;
+  --color-primary-foreground: #fafafa;
+  --color-secondary: #f5f5f5;
+  --color-secondary-foreground: #171717;
+  --color-muted: #f5f5f5;
+  --color-muted-foreground: #737373;
+  --color-accent: #f5f5f5;
+  --color-accent-foreground: #171717;
+  --color-destructive: #e7000b;
+  --color-border: #e5e5e5;
+  --color-input: #e5e5e5;
+  --color-ring: #a3a3a3;
+  --color-card: #fafafa;
+  --color-popover: #fafafa;
 
-  /* Lines */
-  --color-line: #d8d2bc;
-  --color-line-2: #c8c2a8;
-  --color-line-strong: #1a2b1e;
+  /* ── Sidebar (light) ───────────────────────────────────────────── */
+  --color-sidebar: #fafafa;
+  --color-sidebar-accent: #f4f4f4;
+  --color-sidebar-foreground: #09090b;
+  --color-sidebar-primary: #18181b;
+  --color-sidebar-border: #e4e4e7;
+  --color-sidebar-ring: #71717a;
 
-  /* Greens */
-  --color-moss: #2d6b3f;
-  --color-moss-deep: #1e4528;
-  --color-moss-soft: #d6e3cd;
-  --color-moss-tint: #e9efd9;
+  /* ── Accent theme variants (for --primary) ─────────────────────── */
+  --color-theme-default: #171717;
+  --color-theme-red: #dc2626;
+  --color-theme-rose: #e11d48;
+  --color-theme-orange: #ea580c;
+  --color-theme-green: #65a30d;
+  --color-theme-blue: #1d4ed8;
+  --color-theme-yellow: #facc15;
+  --color-theme-violet: #7c3aed;
 
-  /* Accents */
+  /* ── Legacy aliases — map old tokens onto the new palette ──────── */
+  --color-paper: #fafafa;            /* was cream parchment */
+  --color-paper-2: #f4f5f5;
+  --color-paper-3: #f5f5f5;
+  --color-rail: #18181b;             /* dark sidebar surface */
+  --color-rail-2: #2a2a30;
+
+  --color-ink: #0a0a0a;
+  --color-ink-2: #1e3322;            /* dark forest green */
+
+  --color-line: #e5e5e5;
+  --color-line-2: #e2e5e2;
+  --color-line-strong: #1e3322;
+
+  --color-moss: #2d6b3f;             /* accent-primary */
+  --color-moss-deep: #1e3322;
+  --color-moss-soft: #e8f0ea;        /* accent-soft */
+  --color-moss-tint: #e8f0ea;
+
   --color-amber: #b97a2b;
   --color-amber-soft: #f0e3c4;
   --color-rose: #b54848;
@@ -43,12 +85,43 @@
   --radius-md: 5px;
   --radius-lg: 8px;
 
-  /* Motion */
   --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --duration-fast: 120ms;
   --duration-base: 180ms;
   --duration-slow: 260ms;
+}
+
+/* ── Dark mode (opt-in via `.dark` on <html>) ───────────────────── */
+.dark {
+  --color-background: #0a0a0a;
+  --color-foreground: #fafafa;
+  --color-primary: #e5e5e5;
+  --color-primary-foreground: #171717;
+  --color-secondary: #262626;
+  --color-secondary-foreground: #fafafa;
+  --color-muted: #262626;
+  --color-muted-foreground: #a3a3a3;
+  --color-accent: #262626;
+  --color-accent-foreground: #fafafa;
+  --color-destructive: #ff666999;
+  --color-border: #ffffff1a;
+  --color-input: #ffffff1a;
+  --color-ring: #737373;
+  --color-card: #171717;
+  --color-popover: #171717;
+
+  --color-sidebar: #18181b;
+  --color-sidebar-accent: #2a2a30;
+  --color-sidebar-foreground: #fafafa;
+  --color-sidebar-primary: #1447e6;
+  --color-sidebar-border: #ffffff1a;
+  --color-sidebar-ring: #71717a;
+
+  --color-theme-default: #e5e5e5;
+  --color-theme-red: #ef4444;
+  --color-theme-rose: #f43f5e;
+  --color-theme-orange: #f97316;
 }
 
 * {
@@ -63,8 +136,8 @@ body,
 
 body {
   margin: 0;
-  background: var(--color-paper);
-  color: var(--color-ink);
+  background: var(--color-background);
+  color: var(--color-foreground);
   font-family: var(--font-sans);
   font-feature-settings:
     "ss01" on,
@@ -74,26 +147,26 @@ body {
 }
 
 ::selection {
-  background: var(--color-moss-soft);
-  color: var(--color-moss-deep);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-primary);
 }
 
 .scroll-thin {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-line-2) transparent;
+  scrollbar-color: var(--color-border-subtle) transparent;
 }
 .scroll-thin::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 .scroll-thin::-webkit-scrollbar-thumb {
-  background: var(--color-line-2);
+  background: var(--color-border-subtle);
   border-radius: 99px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 .scroll-thin::-webkit-scrollbar-thumb:hover {
-  background: var(--color-muted-2);
+  background: var(--color-fg-muted);
   background-clip: content-box;
   border: 2px solid transparent;
 }
@@ -122,15 +195,15 @@ body {
   display: inline-block;
   margin-left: 2px;
   animation: caret 1.05s steps(1) infinite;
-  color: var(--color-moss);
+  color: var(--color-accent-primary);
   font-weight: 500;
 }
 
 /* Subtle paper grain overlay. */
 .grain-paper {
   background-image:
-    radial-gradient(circle at 1px 1px, rgba(26, 43, 30, 0.035) 1px, transparent 0),
-    linear-gradient(180deg, transparent 0%, rgba(26, 43, 30, 0.012) 100%);
+    radial-gradient(circle at 1px 1px, rgba(30, 51, 34, 0.035) 1px, transparent 0),
+    linear-gradient(180deg, transparent 0%, rgba(30, 51, 34, 0.012) 100%);
   background-size:
     4px 4px,
     100% 100%;

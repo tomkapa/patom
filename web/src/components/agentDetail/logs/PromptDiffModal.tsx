@@ -326,14 +326,14 @@ export function PromptDiffModal({
       {/* Top bar */}
       <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-line)] px-7 py-5">
         <div className="flex flex-col gap-1.5">
-          <div className="font-[var(--font-mono)] text-[10px] tracking-[0.15em] text-[var(--color-muted)] uppercase">
+          <div className="font-[var(--font-mono)] text-[10px] tracking-[0.15em] text-[var(--color-muted-foreground)] uppercase">
             {t("agent.detail.logs.diff.eyebrow")}
           </div>
           <div className="flex items-center gap-3">
-            <span className="font-[var(--font-display)] text-[24px] font-semibold text-[var(--color-muted)]">
+            <span className="font-[var(--font-display)] text-[24px] font-semibold text-[var(--color-muted-foreground)]">
               v{leftVersion?.version ?? "—"}
             </span>
-            <ArrowRight className="h-[18px] w-[18px] text-[var(--color-muted)]" />
+            <ArrowRight className="h-[18px] w-[18px] text-[var(--color-muted-foreground)]" />
             <span className="border border-[var(--color-moss)] bg-[var(--color-moss-tint)] px-2.5 py-0.5 font-[var(--font-display)] text-[20px] font-semibold text-[var(--color-moss-deep)]">
               v{rightVersion?.version ?? "—"}
             </span>
@@ -465,7 +465,7 @@ export function PromptDiffModal({
           />
         </div>
         <div className="flex items-center gap-2">
-          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
             {totalChanges > 0
               ? t("agent.detail.logs.diff.toolbar.changesCount", {
                   shown: Math.min(changeIdx + 1, totalChanges),
@@ -478,7 +478,7 @@ export function PromptDiffModal({
             aria-label={t("agent.detail.logs.diff.toolbar.prev")}
             disabled={totalChanges === 0}
             onClick={() => setChangeIdx((i) => Math.max(0, i - 1))}
-            className="flex h-7 w-7 cursor-pointer items-center justify-center border border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex h-7 w-7 cursor-pointer items-center justify-center border border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             <ChevronUp className="h-3 w-3" />
           </button>
@@ -489,7 +489,7 @@ export function PromptDiffModal({
             onClick={() =>
               setChangeIdx((i) => Math.min(totalChanges - 1, i + 1))
             }
-            className="flex h-7 w-7 cursor-pointer items-center justify-center border border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex h-7 w-7 cursor-pointer items-center justify-center border border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             <ChevronDown className="h-3 w-3" />
           </button>
@@ -555,7 +555,7 @@ export function PromptDiffModal({
       {/* Footer */}
       <ModalFooter
         left={
-          <div className="flex items-center gap-3 text-[12px] text-[var(--color-muted)]">
+          <div className="flex items-center gap-3 text-[12px] text-[var(--color-muted-foreground)]">
             <Info className="h-3.5 w-3.5" />
             <span>
               {t("agent.detail.logs.diff.footer.info", {
@@ -636,7 +636,7 @@ function VersionPills({
         } else if (isLeft) {
           pillTone = "cursor-pointer border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]";
         } else {
-          pillTone = "cursor-pointer border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)]";
+          pillTone = "cursor-pointer border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]";
         }
         return (
           <button
@@ -684,7 +684,7 @@ function SinceStrip({
   const failuresDelta = deltas?.failure_count ?? null;
   return (
     <div className="flex shrink-0 items-center gap-6 border-b border-[var(--color-line)] bg-[var(--color-card)] px-7 py-4">
-      <span className="font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--color-muted)]">
+      <span className="font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--color-muted-foreground)]">
         {t("agent.detail.logs.diff.since.label", {
           right: rightVersion,
           left: leftVersion,
@@ -743,7 +743,7 @@ function SinceCell({
   const positive = delta != null && delta > 0;
   let tone: string;
   if (delta == null || delta === 0) {
-    tone = "border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)]";
+    tone = "border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted-foreground)]";
   } else if (positive) {
     tone = "border-[var(--color-rose)] bg-[var(--color-rose-soft)] text-[var(--color-rose)]";
   } else {
@@ -751,7 +751,7 @@ function SinceCell({
   }
   return (
     <div className="flex items-center gap-2.5">
-      <span className="font-[var(--font-body)] text-[12px] text-[var(--color-muted)]">
+      <span className="font-[var(--font-body)] text-[12px] text-[var(--color-muted-foreground)]">
         {label}
       </span>
       <span className="font-[var(--font-mono)] text-[14px] font-semibold text-[var(--color-ink)]">
@@ -798,13 +798,13 @@ function CompareAgainstDropdown({
           aria-expanded={open}
           className="flex cursor-pointer items-center gap-2 border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-1.5 font-[var(--font-body)] text-[12px] text-[var(--color-ink)] outline-none transition-colors duration-150 ease-out hover:bg-[var(--color-paper-2)] focus-visible:ring-1 focus-visible:ring-[var(--color-ink)]"
         >
-          <span className="font-[var(--font-mono)] text-[10px] tracking-[0.12em] uppercase text-[var(--color-muted)]">
+          <span className="font-[var(--font-mono)] text-[10px] tracking-[0.12em] uppercase text-[var(--color-muted-foreground)]">
             {t("agent.detail.logs.diff.compareAgainst.label")}
           </span>
           <span className="font-[var(--font-mono)] text-[12px] font-semibold text-[var(--color-ink)]">
             v{leftVersion ?? "—"}
           </span>
-          <ChevronDown className="h-3 w-3 text-[var(--color-muted)]" />
+          <ChevronDown className="h-3 w-3 text-[var(--color-muted-foreground)]" />
         </button>
       )}
     >
@@ -814,7 +814,7 @@ function CompareAgainstDropdown({
           aria-label={t("agent.detail.logs.diff.compareAgainst.aria")}
         >
           {candidates.length === 0 ? (
-            <li className="px-3 py-2 text-[12px] text-[var(--color-muted)]">
+            <li className="px-3 py-2 text-[12px] text-[var(--color-muted-foreground)]">
               {t("agent.detail.logs.diff.compareAgainst.empty")}
             </li>
           ) : (
@@ -867,7 +867,7 @@ function ToolbarButton({
         "cursor-pointer px-2.5 py-1.5 font-[var(--font-body)] text-[11px]",
         active
           ? "bg-[var(--color-ink)] text-[var(--color-paper)]"
-          : "bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+          : "bg-[var(--color-card)] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]",
       )}
     >
       {children}
@@ -950,7 +950,7 @@ function DiffSide({
           <div className="font-[var(--font-mono)] text-[12px] font-semibold text-[var(--color-ink)]">
             {title}
           </div>
-          <div className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted)]">
+          <div className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
             {subtitle}
           </div>
         </div>
@@ -959,7 +959,7 @@ function DiffSide({
             type="button"
             onClick={onCopy}
             aria-label={copyAriaLabel ?? title}
-            className="flex h-6 w-6 cursor-pointer items-center justify-center text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+            className="flex h-6 w-6 cursor-pointer items-center justify-center text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]"
           >
             <Copy className="h-3 w-3" />
           </button>
@@ -1028,7 +1028,7 @@ function DiffLine({
 
   return (
     <li className={cn("grid", background)} style={{ gridTemplateColumns: "48px 22px 1fr" }}>
-      <span className="border-r border-[var(--color-line)] bg-[var(--color-card)] py-1.5 text-center text-[10.5px] text-[var(--color-muted)]">
+      <span className="border-r border-[var(--color-line)] bg-[var(--color-card)] py-1.5 text-center text-[10.5px] text-[var(--color-muted-foreground)]">
         {lineNum ?? ""}
       </span>
       <span
@@ -1037,7 +1037,7 @@ function DiffLine({
           "py-1.5 text-center text-[10.5px]",
           marker === "-" && "text-[var(--color-rose)]",
           marker === "+" && "text-[var(--color-moss-deep)]",
-          marker === "" && "text-[var(--color-muted-2)]",
+          marker === "" && "text-[var(--color-fg-muted)]",
         )}
       >
         {marker}

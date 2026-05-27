@@ -28,7 +28,7 @@ export function OrgSwitcher() {
           className="flex w-full cursor-pointer items-center justify-between gap-2 text-left outline-none transition-colors duration-150 ease-out focus-visible:ring-1 focus-visible:ring-[var(--color-ink)] disabled:cursor-not-allowed"
         >
           <div className="min-w-0">
-            <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted)]">
+            <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
               Relay
             </div>
             <div className="mt-0.5 truncate font-[var(--font-display)] text-[18px] font-bold tracking-tight text-[var(--color-ink)]">
@@ -38,7 +38,7 @@ export function OrgSwitcher() {
           {switchOrg.isPending ? (
             <Spinner size={14} />
           ) : (
-            <ChevronDown className="h-4 w-4 shrink-0 text-[var(--color-muted)]" />
+            <ChevronDown className="h-4 w-4 shrink-0 text-[var(--color-muted-foreground)]" />
           )}
         </button>
       )}
@@ -72,7 +72,7 @@ export function OrgSwitcher() {
                     <div className="truncate text-[13px] font-semibold text-[var(--color-ink)]">
                       {org.name}
                     </div>
-                    <div className="font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.12em] text-[var(--color-muted)]">
+                    <div className="font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.12em] text-[var(--color-muted-foreground)]">
                       {org.role}
                     </div>
                   </div>

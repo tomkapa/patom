@@ -41,7 +41,7 @@ export function TurnDrawer({ requestId }: { requestId: string }) {
 function LoadingState() {
   const { t } = useT();
   return (
-    <div className="flex items-center gap-2 py-4 text-[12px] text-[var(--color-muted)]">
+    <div className="flex items-center gap-2 py-4 text-[12px] text-[var(--color-muted-foreground)]">
       <Spinner size={12} />
       <span>{t("agent.detail.logs.drawer.loading")}</span>
     </div>
@@ -113,7 +113,7 @@ function DrawerHeader({ detail }: { detail: TurnDetail }) {
 function HeaderChip({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-card)] px-2 py-1">
-      <span className="font-[var(--font-caption)] text-[9px] font-semibold tracking-[0.1em] text-[var(--color-muted)]">
+      <span className="font-[var(--font-caption)] text-[9px] font-semibold tracking-[0.1em] text-[var(--color-muted-foreground)]">
         {label}
       </span>
       <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-ink)]">
@@ -309,7 +309,7 @@ function PromptUsedSection({
       {/* <details> per CLAUDE.md guidance — collapsed by default so the
           drawer height stays manageable until the operator drills in. */}
       <details className="group">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-[12px] text-[var(--color-muted)] hover:text-[var(--color-ink)]">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-[12px] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]">
           <LinkIcon className="h-3 w-3" />
           <span>
             {t("agent.detail.logs.drawer.promptUsed.view")}
@@ -337,7 +337,7 @@ function DrawerCard({
   return (
     <section className="flex flex-col border border-[var(--color-line)] bg-[var(--color-card)]">
       <header className="flex items-center justify-between border-b border-[var(--color-line)] px-3.5 py-2.5">
-        <span className="font-[var(--font-caption)] text-[10px] font-semibold tracking-[0.12em] text-[var(--color-muted)]">
+        <span className="font-[var(--font-caption)] text-[10px] font-semibold tracking-[0.12em] text-[var(--color-muted-foreground)]">
           {eyebrow}
         </span>
       </header>
@@ -348,7 +348,7 @@ function DrawerCard({
 
 function EmptyHint({ text }: { text: string }) {
   return (
-    <div className="flex items-center gap-2 px-4 py-3 text-[12px] text-[var(--color-muted-2)]">
+    <div className="flex items-center gap-2 px-4 py-3 text-[12px] text-[var(--color-fg-muted)]">
       <Check className="h-3 w-3" />
       <span>{text}</span>
     </div>

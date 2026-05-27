@@ -50,7 +50,7 @@ export function ConnectionsLayout({
         aria-label="Connections sidebar"
       >
         <div className="border-b border-[var(--color-line)] px-5 pt-5 pb-4">
-          <div className="font-[var(--font-mono)] text-[10px] tracking-[0.14em] text-[var(--color-muted)] uppercase">
+          <div className="font-[var(--font-mono)] text-[10px] tracking-[0.14em] text-[var(--color-muted-foreground)] uppercase">
             {workspaceLabel}
           </div>
           <div className="mt-1.5 font-[var(--font-display)] text-[18px] font-bold text-[var(--color-ink)]">
@@ -71,7 +71,7 @@ export function ConnectionsLayout({
                   "group relative flex cursor-pointer items-center gap-2.5 px-3 py-2 text-left transition-colors duration-150 ease-out",
                   isActive
                     ? "bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
-                    : "text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+                    : "text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]",
                 )}
               >
                 {isActive ? (
@@ -87,7 +87,7 @@ export function ConnectionsLayout({
                     "h-4 w-4 shrink-0 transition-colors duration-150 ease-out",
                     isActive
                       ? "text-[var(--color-moss)]"
-                      : "text-[var(--color-muted-2)]",
+                      : "text-[var(--color-fg-muted)]",
                   )}
                   strokeWidth={1.75}
                 />
@@ -105,7 +105,7 @@ export function ConnectionsLayout({
                       "shrink-0 px-2 py-0.5 font-[var(--font-mono)] text-[10px]",
                       isActive
                         ? "bg-[var(--color-moss)] text-white"
-                        : "bg-[var(--color-line)] text-[var(--color-muted)]",
+                        : "bg-[var(--color-line)] text-[var(--color-muted-foreground)]",
                     )}
                   >
                     {it.badge}
@@ -130,7 +130,7 @@ export function ConnectionsBreadcrumb({
   trail: { label: string; current?: boolean }[];
 }) {
   return (
-    <div className="flex items-center gap-2 border-b border-transparent px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+    <div className="flex items-center gap-2 border-b border-transparent px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
       {trail.map((step, i) => (
         <span key={`${step.label}-${i}`} className="flex items-center gap-2">
           <span

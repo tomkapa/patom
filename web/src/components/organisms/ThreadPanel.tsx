@@ -135,7 +135,7 @@ export function ThreadPanel({
     >
       <header className="flex items-center justify-between gap-2 border-b border-[var(--color-line)] px-5 py-3">
         <div>
-          <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted)]">
+          <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
             Thread
           </div>
           <div className="mt-0.5 font-[var(--font-display)] text-[16px] font-bold text-[var(--color-ink)]">
@@ -162,7 +162,7 @@ export function ThreadPanel({
                 <span className="font-[var(--font-display)] text-[13.5px] font-bold text-[var(--color-ink)]">
                   {rootMessage.name}
                 </span>
-                <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-2)]">
+                <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
                   {clockTime(rootMessage.ts)}
                 </span>
               </div>
@@ -175,7 +175,7 @@ export function ThreadPanel({
 
         {/* Replies count bar */}
         <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-1.5">
-          <span className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted)]">
+          <span className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
             {bubbles.length} {bubbles.length === 1 ? "reply" : "replies"}
           </span>
           <Button variant="ghost" size="xs" iconOnly aria-label="Notifications">
@@ -185,7 +185,7 @@ export function ThreadPanel({
 
         <div className="flex flex-col">
           {bubbles.length === 0 && !showThinking && (
-            <p className="px-5 py-6 font-[var(--font-mono)] text-[12px] text-[var(--color-muted-2)]">
+            <p className="px-5 py-6 font-[var(--font-mono)] text-[12px] text-[var(--color-fg-muted)]">
               No replies yet.
             </p>
           )}
@@ -292,7 +292,7 @@ function HumanReplyCard({
           <span className="font-[var(--font-display)] text-[13px] font-bold text-[var(--color-ink)]">
             {name}
           </span>
-          <span className="ml-auto font-[var(--font-mono)] text-[11px] text-[var(--color-muted-2)]">
+          <span className="ml-auto font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
             {clockTime(bubble.ts)}
           </span>
         </header>
@@ -361,7 +361,7 @@ function AgentReplyCard({
         <span className="border border-[var(--color-moss)] px-1 font-[var(--font-mono)] text-[9.5px] font-bold uppercase tracking-[0.14em] text-[var(--color-moss)]">
           AGENT
         </span>
-        <span className="ml-auto font-[var(--font-mono)] text-[11px] text-[var(--color-muted-2)]">
+        <span className="ml-auto font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
           {clockTime(bubble.ts)}
         </span>
       </header>
@@ -390,7 +390,7 @@ function AgentReplyCard({
       {hasMeta && (
         <button
           onClick={() => setOpen((v) => !v)}
-          className="mt-2.5 flex w-full items-center gap-2 border border-[var(--color-line)] bg-[var(--color-paper-2)] px-2.5 py-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)] hover:text-[var(--color-ink)] transition-colors"
+          className="mt-2.5 flex w-full items-center gap-2 border border-[var(--color-line)] bg-[var(--color-paper-2)] px-2.5 py-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)] transition-colors"
         >
           {open ? (
             <ChevronDown className="h-3 w-3" />
@@ -465,7 +465,7 @@ function ThinkingCard() {
 function ThinkingIndicator() {
   return (
     <div
-      className="inline-flex items-center gap-1.5 font-[var(--font-mono)] text-[11.5px] text-[var(--color-muted)]"
+      className="inline-flex items-center gap-1.5 font-[var(--font-mono)] text-[11.5px] text-[var(--color-muted-foreground)]"
       aria-label="Agent is thinking"
     >
       <span className="flex gap-0.5">

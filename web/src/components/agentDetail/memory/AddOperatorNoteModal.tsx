@@ -100,7 +100,7 @@ export function AddOperatorNoteModal({
           <h2 className="font-[var(--font-display)] text-[20px] font-bold text-[var(--color-ink)]">
             {t("agent.detail.memory.modal.title")}
           </h2>
-          <p className="text-[13px] text-[var(--color-muted)]">
+          <p className="text-[13px] text-[var(--color-muted-foreground)]">
             {t("agent.detail.memory.modal.subtitle")}
           </p>
         </div>
@@ -108,7 +108,7 @@ export function AddOperatorNoteModal({
           type="button"
           aria-label={t("agent.detail.memory.modal.cancel")}
           onClick={close}
-          className="shrink-0 border border-[var(--color-line)] p-1.5 text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+          className="shrink-0 border border-[var(--color-line)] p-1.5 text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]"
         >
           <X className="h-3.5 w-3.5" strokeWidth={1.75} />
         </button>
@@ -139,7 +139,7 @@ export function AddOperatorNoteModal({
             <span className="text-[13px] font-medium text-[var(--color-ink)]">
               {t("agent.detail.memory.modal.contentLabel")}
             </span>
-            <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+            <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
               {t("agent.detail.memory.modal.contentMax")}
             </span>
           </div>
@@ -148,14 +148,14 @@ export function AddOperatorNoteModal({
             onChange={(e) => setContent(e.target.value)}
             placeholder={t("agent.detail.memory.modal.contentPlaceholder")}
             rows={6}
-            className="min-h-[132px] resize-y border border-[var(--color-line-strong)] bg-[var(--color-card)] px-3 py-2.5 text-[13px] leading-[1.6] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted)] focus:ring-1 focus:ring-[var(--color-ink)]"
+            className="min-h-[132px] resize-y border border-[var(--color-line-strong)] bg-[var(--color-card)] px-3 py-2.5 text-[13px] leading-[1.6] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted-foreground)] focus:ring-1 focus:ring-[var(--color-ink)]"
           />
           <div className="flex justify-end">
             <span
               className={
                 overLimit
                   ? "font-[var(--font-mono)] text-[11px] text-[var(--color-rose)]"
-                  : "font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]"
+                  : "font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]"
               }
             >
               {t("agent.detail.memory.modal.counter", {
@@ -171,7 +171,7 @@ export function AddOperatorNoteModal({
             <span className="text-[13px] font-medium text-[var(--color-ink)]">
               {t("agent.detail.memory.modal.pinLabel")}
             </span>
-            <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+            <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
               {t("agent.detail.memory.modal.pinCaption")}
             </span>
           </div>

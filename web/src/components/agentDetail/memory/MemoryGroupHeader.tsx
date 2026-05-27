@@ -28,18 +28,18 @@ export function MemoryGroupHeader({
       <span className="font-[var(--font-mono)] text-[11px] font-bold tracking-[0.1em] text-[var(--color-ink)]">
         {label}
       </span>
-      <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+      <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
         {count}
       </span>
       <span className="flex-1" />
       {open ? (
         <ChevronDown
-          className="h-3 w-3 text-[var(--color-muted)]"
+          className="h-3 w-3 text-[var(--color-muted-foreground)]"
           strokeWidth={1.75}
         />
       ) : (
         <ChevronRight
-          className="h-3 w-3 text-[var(--color-muted)]"
+          className="h-3 w-3 text-[var(--color-muted-foreground)]"
           strokeWidth={1.75}
         />
       )}

@@ -47,7 +47,7 @@ export function ModelPickerRow({
         <div className="text-[14px] font-medium text-[var(--color-ink)]">
           {label}
         </div>
-        <div className="max-w-[42ch] text-[13px] text-[var(--color-muted)]">
+        <div className="max-w-[42ch] text-[13px] text-[var(--color-muted-foreground)]">
           {caption}
         </div>
       </div>

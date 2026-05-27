@@ -65,7 +65,7 @@ export function EmailChipsInput({
   return (
     <div>
       {helperRight ? (
-        <div className="mb-1.5 flex items-center justify-end font-[var(--font-mono)] text-[10.5px] tracking-[0.06em] text-[var(--color-muted)] uppercase">
+        <div className="mb-1.5 flex items-center justify-end font-[var(--font-mono)] text-[10.5px] tracking-[0.06em] text-[var(--color-muted-foreground)] uppercase">
           {helperRight}
         </div>
       ) : null}
@@ -104,7 +104,7 @@ export function EmailChipsInput({
           onPaste={onPaste}
           onBlur={() => draft && commit(draft)}
           placeholder={chips.length === 0 ? placeholder : ""}
-          className="min-w-[12ch] flex-1 bg-transparent px-1 py-1 font-[var(--font-mono)] text-[12px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted-2)]"
+          className="min-w-[12ch] flex-1 bg-transparent px-1 py-1 font-[var(--font-mono)] text-[12px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-fg-muted)]"
         />
       </div>
     </div>

@@ -170,10 +170,10 @@ export function SettingsGeneral() {
         <SectionCard
           header={
             <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5">
-              <span className="font-[var(--font-mono)] text-[10.5px] tracking-[0.14em] text-[var(--color-muted)] uppercase">
+              <span className="font-[var(--font-mono)] text-[11px] font-bold tracking-[0.09em] text-[var(--color-muted-foreground)] uppercase">
                 {t("settings.general.identity.title")}
               </span>
-              <span className="font-[var(--font-mono)] text-[10.5px] tracking-[0.06em] text-[var(--color-muted-2)]">
+              <span className="text-[12px] text-[var(--color-fg-muted)]">
                 {t("settings.general.identity.helper")}
               </span>
             </div>
@@ -188,7 +188,7 @@ export function SettingsGeneral() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               maxLength={200}
-              className="w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-2 font-[var(--font-mono)] text-[13px] text-[var(--color-ink)] outline-none focus:ring-1 focus:ring-[var(--color-moss)]"
+              className="h-9 w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 text-[13px] text-[var(--color-ink)] outline-none focus:ring-1 focus:ring-[var(--color-moss)]"
               data-testid="settings-general-name"
             />
           </Field>
@@ -224,10 +224,10 @@ export function SettingsGeneral() {
         <SectionCard
           header={
             <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5">
-              <span className="font-[var(--font-mono)] text-[10.5px] tracking-[0.14em] text-[var(--color-muted)] uppercase">
+              <span className="font-[var(--font-mono)] text-[11px] font-bold tracking-[0.09em] text-[var(--color-muted-foreground)] uppercase">
                 {t("settings.general.defaults.title")}
               </span>
-              <span className="font-[var(--font-mono)] text-[10.5px] tracking-[0.06em] text-[var(--color-muted-2)]">
+              <span className="text-[12px] text-[var(--color-fg-muted)]">
                 {t("settings.general.defaults.helper")}
               </span>
             </div>
@@ -256,10 +256,10 @@ export function SettingsGeneral() {
           tone="danger"
           header={
             <div className="flex items-center justify-between border-b border-[var(--color-rose)] bg-[var(--color-rose-soft)]/40 px-5 py-2.5">
-              <span className="font-[var(--font-mono)] text-[10.5px] tracking-[0.14em] text-[var(--color-rose)] uppercase">
+              <span className="font-[var(--font-mono)] text-[11px] font-bold tracking-[0.09em] text-[var(--color-rose)] uppercase">
                 {t("settings.general.danger.title")}
               </span>
-              <span className="font-[var(--font-mono)] text-[10.5px] tracking-[0.06em] text-[var(--color-muted)]">
+              <span className="text-[12px] text-[var(--color-muted-foreground)]">
                 {t("settings.general.danger.helper")}
               </span>
             </div>
@@ -358,7 +358,7 @@ export function SettingsGeneral() {
             placeholder={t(
               "settings.general.danger.delete.confirm.placeholder",
             )}
-            className="w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-2 font-[var(--font-mono)] text-[13px] text-[var(--color-ink)] outline-none focus:ring-1 focus:ring-[var(--color-moss)]"
+            className="h-9 w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 font-[var(--font-mono)] text-[13px] text-[var(--color-ink)] outline-none focus:ring-1 focus:ring-[var(--color-moss)]"
           />
         </div>
         <ModalFooter>
@@ -394,13 +394,13 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[160px_1fr] gap-6">
+    <div className="grid grid-cols-[280px_1fr] gap-8">
       <div>
-        <div className="font-[var(--font-mono)] text-[11px] tracking-[0.04em] text-[var(--color-ink)]">
+        <div className="text-[13px] font-semibold text-[var(--color-ink)]">
           {label}
         </div>
         {helper ? (
-          <div className="mt-1 font-[var(--font-mono)] text-[10.5px] leading-snug text-[var(--color-muted)]">
+          <div className="mt-1 text-[12px] leading-snug text-[var(--color-muted-foreground)]">
             {helper}
           </div>
         ) : null}
@@ -434,7 +434,7 @@ function DangerRow({
         <div className="text-[13px] font-semibold text-[var(--color-ink)]">
           {title}
         </div>
-        <div className="mt-0.5 text-[12px] leading-snug text-[var(--color-muted)]">
+        <div className="mt-0.5 text-[12px] leading-snug text-[var(--color-muted-foreground)]">
           {body}
         </div>
       </div>
@@ -443,7 +443,7 @@ function DangerRow({
         onClick={onClick}
         disabled={disabled}
         data-testid={testId}
-        className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 border border-[var(--color-rose)] bg-transparent px-3 py-1.5 font-[var(--font-mono)] text-[11px] uppercase tracking-[0.06em] text-[var(--color-rose)] hover:bg-[var(--color-rose-soft)] disabled:cursor-not-allowed disabled:opacity-40"
+        className="inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 border border-[var(--color-rose)] bg-transparent px-3.5 text-[12px] font-medium text-[var(--color-rose)] hover:bg-[var(--color-rose-soft)] disabled:cursor-not-allowed disabled:opacity-40"
       >
         {cta}
       </button>

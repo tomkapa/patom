@@ -17,7 +17,7 @@ export function ToolCard({ tool }: { tool: DiscoveredTool }) {
         </span>
       </div>
       {tool.description ? (
-        <p className="line-clamp-2 text-[12px] leading-snug text-[var(--color-muted)]">
+        <p className="line-clamp-2 text-[12px] leading-snug text-[var(--color-muted-foreground)]">
           {tool.description}
         </p>
       ) : null}

@@ -28,7 +28,7 @@ export function SectionHeader({
           "inline-flex items-center gap-2 font-[var(--font-mono)] text-[11px] font-semibold tracking-[0.12em] uppercase",
           isDanger
             ? "text-[var(--color-rose)]"
-            : "text-[var(--color-muted)]",
+            : "text-[var(--color-muted-foreground)]",
         )}
       >
         {eyebrow}

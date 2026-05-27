@@ -116,7 +116,7 @@ export function Select<V extends string>({
           {options.length === 0 ? (
             <li
               className={cn(
-                "text-[12.5px] text-[var(--color-muted)]",
+                "text-[12.5px] text-[var(--color-muted-foreground)]",
                 isFilter ? "px-3 py-1.5" : "px-3 py-2",
               )}
             >
@@ -207,14 +207,14 @@ function FilterTrigger({
         "flex h-7 cursor-pointer items-center gap-1.5 border px-2.5 text-[12px] outline-none transition-colors duration-150 ease-out focus-visible:ring-1 focus-visible:ring-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50",
         active
           ? "border-[var(--color-moss)] bg-[var(--color-moss-tint)] text-[var(--color-moss-deep)]"
-          : "border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted)] hover:text-[var(--color-ink)]",
+          : "border-[var(--color-line)] bg-[var(--color-card)] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]",
       )}
     >
       {icon ? (
         <span
           className={cn(
             "shrink-0",
-            active ? "text-[var(--color-moss)]" : "text-[var(--color-muted-2)]",
+            active ? "text-[var(--color-moss)]" : "text-[var(--color-fg-muted)]",
           )}
         >
           {icon}
@@ -222,7 +222,7 @@ function FilterTrigger({
       ) : null}
       <span>{label}</span>
       <ChevronDown
-        className="h-3 w-3 text-[var(--color-muted)]"
+        className="h-3 w-3 text-[var(--color-muted-foreground)]"
         strokeWidth={1.75}
       />
     </button>
@@ -259,7 +259,7 @@ function DefaultRow<V extends string>({
           {option.label}
         </span>
         {option.caption ? (
-          <span className="block truncate font-[var(--font-mono)] text-[10.5px] tracking-[0.08em] text-[var(--color-muted)] uppercase">
+          <span className="block truncate font-[var(--font-mono)] text-[10.5px] tracking-[0.08em] text-[var(--color-muted-foreground)] uppercase">
             {option.caption}
           </span>
         ) : null}
@@ -316,7 +316,7 @@ function defaultTriggerContent<V extends string>({
         </span>
       </span>
       <ChevronsUpDown
-        className="h-3.5 w-3.5 shrink-0 text-[var(--color-muted-2)]"
+        className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-muted)]"
         strokeWidth={1.75}
       />
     </>

@@ -65,7 +65,7 @@ export const MessageBubble = memo(function MessageBubble({
               AGENT
             </span>
           )}
-          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-2)]">
+          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
             {clockTime(ts)}
           </span>
         </header>

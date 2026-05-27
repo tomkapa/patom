@@ -136,7 +136,7 @@ export function SettingsIntegrations() {
         <SectionHeader
           eyebrow={t("settings.integrations.available")}
           right={
-            <span className="font-[var(--font-body)] text-[12px] font-normal tracking-normal normal-case text-[var(--color-muted)]">
+            <span className="font-[var(--font-body)] text-[12px] font-normal tracking-normal normal-case text-[var(--color-muted-foreground)]">
               {t("settings.integrations.available.helper")}
             </span>
           }
@@ -197,7 +197,7 @@ export function SettingsIntegrations() {
               })}
               onClose={() => setPendingDisconnect(null)}
             />
-            <div className="px-5 py-4 text-[13px] text-[var(--color-muted)]">
+            <div className="px-5 py-4 text-[13px] text-[var(--color-muted-foreground)]">
               {t("settings.integrations.disconnect.confirm.body")}
             </div>
             <ModalFooter>
@@ -257,7 +257,7 @@ function SlackRow({
           <span className="font-[var(--font-display)] text-[18px] font-bold text-[var(--color-ink)]">
             {row.team_name || "Slack"}
           </span>
-          <div className="flex flex-wrap items-center gap-3 text-[12px] text-[var(--color-muted)]">
+          <div className="flex flex-wrap items-center gap-3 text-[12px] text-[var(--color-muted-foreground)]">
             <span className="font-[var(--font-mono)] text-[var(--color-ink)]">
               {row.team_id}
             </span>
@@ -268,7 +268,7 @@ function SlackRow({
               })}
             </span>
             <span aria-hidden className="h-2.5 w-px bg-[var(--color-line)]" />
-            <span className="font-[var(--font-mono)] text-[var(--color-muted-2)]">
+            <span className="font-[var(--font-mono)] text-[var(--color-fg-muted)]">
               {formatInstalledAt(row.installed_at)}
             </span>
           </div>
@@ -285,7 +285,7 @@ function SlackRow({
         </Button>
       </div>
       <div className="grid grid-cols-[140px_minmax(0,1fr)] gap-6 border-b border-[var(--color-line)] px-6 py-3.5">
-        <span className="font-[var(--font-mono)] text-[11px] tracking-[0.08em] text-[var(--color-muted)]">
+        <span className="font-[var(--font-mono)] text-[11px] tracking-[0.08em] text-[var(--color-muted-foreground)]">
           {t("settings.integrations.command.label")}
         </span>
         <div>
@@ -295,7 +295,7 @@ function SlackRow({
         </div>
       </div>
       <div className="grid grid-cols-[140px_minmax(0,1fr)] gap-6 px-6 py-3.5">
-        <span className="font-[var(--font-mono)] text-[11px] tracking-[0.08em] text-[var(--color-muted)]">
+        <span className="font-[var(--font-mono)] text-[11px] tracking-[0.08em] text-[var(--color-muted-foreground)]">
           {t("settings.integrations.scopes.label")}
         </span>
         <div className="flex flex-wrap gap-1.5">
@@ -344,19 +344,19 @@ function AvailableCard({
           <span className="font-[var(--font-display)] text-[16px] font-bold text-[var(--color-ink)]">
             {name}
           </span>
-          <span className="font-[var(--font-mono)] text-[10px] tracking-[0.1em] text-[var(--color-muted)]">
+          <span className="font-[var(--font-mono)] text-[10px] tracking-[0.1em] text-[var(--color-muted-foreground)]">
             {eyebrow}
           </span>
         </div>
       </header>
-      <p className="px-5 pb-4 text-[12px] leading-relaxed text-[var(--color-muted)]">
+      <p className="px-5 pb-4 text-[12px] leading-relaxed text-[var(--color-muted-foreground)]">
         {description}
       </p>
       <ul className="flex flex-col gap-1.5 border-y border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-3.5">
         {features.map((f) => (
           <li
             key={f}
-            className="flex items-center gap-2 text-[12px] text-[var(--color-muted)]"
+            className="flex items-center gap-2 text-[12px] text-[var(--color-muted-foreground)]"
           >
             <Circle className="h-3 w-3" strokeWidth={1.5} />
             {f}
@@ -364,7 +364,7 @@ function AvailableCard({
         ))}
       </ul>
       <div className="flex items-center justify-between px-5 py-3.5">
-        <span className="flex items-center gap-1.5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+        <span className="flex items-center gap-1.5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
           <Calendar className="h-3 w-3" strokeWidth={1.5} />
           {target}
         </span>

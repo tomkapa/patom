@@ -130,7 +130,7 @@ function ConnectingView({
         <h1 className="font-[var(--font-display)] text-[22px] font-semibold text-[var(--color-ink)]">
           {t("connections.callback.connecting.title", { name })}
         </h1>
-        <p className="text-[13.5px] text-[var(--color-muted)]">
+        <p className="text-[13.5px] text-[var(--color-muted-foreground)]">
           {t("connections.callback.connecting.body", { name })}
         </p>
       </div>
@@ -173,14 +173,14 @@ function AuthorizedView({
         <h1 className="font-[var(--font-display)] text-[22px] font-semibold text-[var(--color-ink)]">
           {t("connections.callback.authorized.title", { name })}
         </h1>
-        <div className="flex items-center gap-2 text-[13px] text-[var(--color-muted)]">
+        <div className="flex items-center gap-2 text-[13px] text-[var(--color-muted-foreground)]">
           <Spinner size={12} />
           <span>{t("connections.callback.authorized.discovering")}</span>
         </div>
       </div>
       <div className="flex w-full max-w-[420px] items-center gap-3 border border-[var(--color-line)] bg-[var(--color-paper-2)] px-4 py-3">
         <Check className="h-3.5 w-3.5 shrink-0 text-[var(--color-moss)]" strokeWidth={2} />
-        <p className="min-w-0 flex-1 text-[11.5px] text-[var(--color-muted)]">
+        <p className="min-w-0 flex-1 text-[11.5px] text-[var(--color-muted-foreground)]">
           {t("connections.callback.authorized.body", { count: toolsCount })}
         </p>
       </div>
@@ -247,7 +247,7 @@ function FailedView({
         <h1 className="font-[var(--font-display)] text-[22px] font-semibold text-[var(--color-ink)]">
           {t("connections.callback.failed.title")}
         </h1>
-        <p className="text-[13.5px] text-[var(--color-muted)]">{message}</p>
+        <p className="text-[13.5px] text-[var(--color-muted-foreground)]">{message}</p>
       </div>
       <dl className="flex w-full max-w-[480px] flex-col gap-1.5 border border-[var(--color-line)] bg-[var(--color-paper-2)] px-4 py-3 font-[var(--font-mono)] text-[11.5px]">
         <DiagItem label={t("connections.callback.failed.options")} value={url} />
@@ -304,7 +304,7 @@ function Eyebrow({
     <div
       className={cn(
         "font-[var(--font-mono)] text-[11px] tracking-[0.18em] uppercase",
-        tone === "rose" ? "text-[var(--color-rose)]" : "text-[var(--color-muted)]",
+        tone === "rose" ? "text-[var(--color-rose)]" : "text-[var(--color-muted-foreground)]",
       )}
     >
       {children}
@@ -323,7 +323,7 @@ function DiagItem({
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="text-[var(--color-muted)]">{label}</span>
+      <span className="text-[var(--color-muted-foreground)]">{label}</span>
       <span
         className={
           tone === "rose" ? "text-[var(--color-rose)]" : "text-[var(--color-ink)]"
@@ -366,7 +366,7 @@ function RelayTileView({ tile }: { tile: RelayTile }) {
         glyph={tile.glyph}
         className="border border-[var(--color-line)]"
       />
-      <span className="font-[var(--font-mono)] text-[10px] tracking-[0.16em] text-[var(--color-muted)] uppercase">
+      <span className="font-[var(--font-mono)] text-[10px] tracking-[0.16em] text-[var(--color-muted-foreground)] uppercase">
         {tile.label}
       </span>
     </div>
@@ -377,7 +377,7 @@ function VendorTileView({ tile }: { tile: VendorTile }) {
   return (
     <div className="flex flex-col items-center gap-2">
       <CatalogIcon name={tile.name} iconUrl={tile.iconUrl} size={68} />
-      <span className="font-[var(--font-mono)] text-[10px] tracking-[0.16em] text-[var(--color-muted)] uppercase">
+      <span className="font-[var(--font-mono)] text-[10px] tracking-[0.16em] text-[var(--color-muted-foreground)] uppercase">
         {tile.label}
       </span>
     </div>
@@ -425,7 +425,7 @@ function StepRow({ active }: { active: Step }) {
   const { t } = useT();
   const activeIdx = STEP_ORDER.indexOf(active);
   return (
-    <div className="flex items-center gap-5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+    <div className="flex items-center gap-5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
       {STEP_ORDER.map((id, idx) => {
         const done = idx < activeIdx;
         const current = idx === activeIdx;

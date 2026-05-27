@@ -551,7 +551,7 @@ const vi: TranslationTable = {
   "settings.general.save": "Lưu",
   "settings.general.savedToast": "Đã cập nhật workspace",
   "settings.general.cancel": "Huỷ",
-  "settings.general.identity.title": "DANH TÍNH · 2 trường",
+  "settings.general.identity.title": "DANH TÍNH",
   "settings.general.identity.helper": "Tên và slug URL",
   "settings.general.identity.name": "Tên",
   "settings.general.identity.name.helper":
@@ -563,13 +563,13 @@ const vi: TranslationTable = {
     "Chỉ chữ thường, số và dấu gạch ngang.",
   "settings.general.identity.slug.taken":
     "Slug này đã có người dùng.",
-  "settings.general.defaults.title": "MẶC ĐỊNH · 1 trường",
+  "settings.general.defaults.title": "MẶC ĐỊNH",
   "settings.general.defaults.helper":
     "Áp dụng cho agent mới tạo trong workspace.",
   "settings.general.defaults.language": "Ngôn ngữ mặc định",
   "settings.general.defaults.language.helper":
     "Dùng khi agent không tự ghi đè.",
-  "settings.general.danger.title": "VÙNG NGUY HIỂM · 2 hành động",
+  "settings.general.danger.title": "VÙNG NGUY HIỂM",
   "settings.general.danger.helper": "Không thể hoàn tác.",
   "settings.general.danger.leave.title": "Rời workspace",
   "settings.general.danger.leave.body":

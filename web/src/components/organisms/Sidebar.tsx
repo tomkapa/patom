@@ -47,14 +47,14 @@ export function Sidebar({
         {orgSwitcher ?? (
           <>
             <div className="min-w-0">
-              <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted)]">
+              <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
                 {t("sidebar.brand")}
               </div>
               <div className="mt-0.5 truncate font-[var(--font-display)] text-[18px] font-bold tracking-tight text-[var(--color-ink)]">
                 {workspace}
               </div>
             </div>
-            <ChevronDown className="h-4 w-4 shrink-0 text-[var(--color-muted)]" />
+            <ChevronDown className="h-4 w-4 shrink-0 text-[var(--color-muted-foreground)]" />
           </>
         )}
       </header>
@@ -62,10 +62,10 @@ export function Sidebar({
       {/* Search */}
       <div className="border-b border-[var(--color-line)] px-3 py-2.5">
         <div className="flex h-[34px] items-center gap-2 border border-[var(--color-line)] bg-[var(--color-card)] px-2.5">
-          <Search className="h-3.5 w-3.5 text-[var(--color-muted)]" />
+          <Search className="h-3.5 w-3.5 text-[var(--color-muted-foreground)]" />
           <input
             placeholder="Search workspace"
-            className="w-full bg-transparent font-[var(--font-mono)] text-[12px] outline-none placeholder:text-[var(--color-muted-2)]"
+            className="w-full bg-transparent font-[var(--font-mono)] text-[12px] outline-none placeholder:text-[var(--color-fg-muted)]"
           />
           <Kbd>⌘K</Kbd>
         </div>
@@ -82,12 +82,12 @@ export function Sidebar({
           {channels.map((c) => (
             <SidebarRow
               key={c.name}
-              icon={<c.icon className="h-3 w-3 text-[var(--color-muted)]" />}
+              icon={<c.icon className="h-3 w-3 text-[var(--color-muted-foreground)]" />}
               label={c.name}
               prefix="#"
               trailing={
                 c.count != null ? (
-                  <span className="bg-[var(--color-paper-3)] px-1 font-[var(--font-mono)] text-[10px] text-[var(--color-muted)]">
+                  <span className="bg-[var(--color-paper-3)] px-1 font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
                     {c.count}
                   </span>
                 ) : null
@@ -119,7 +119,7 @@ export function Sidebar({
                   <span className="inline-flex items-center gap-1.5">
                     <Bot className="h-3.5 w-3.5 text-[var(--color-moss)]" />
                     {count > 0 && (
-                      <span className="bg-[var(--color-paper-3)] px-1 font-[var(--font-mono)] text-[10px] text-[var(--color-muted)]">
+                      <span className="bg-[var(--color-paper-3)] px-1 font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
                         {count}
                       </span>
                     )}
@@ -132,7 +132,7 @@ export function Sidebar({
             );
           })}
           {agents.length === 0 && (
-            <p className="px-2 py-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-2)]">
+            <p className="px-2 py-1 font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
               {t("sidebar.empty_agents")}
             </p>
           )}
@@ -154,9 +154,9 @@ function Section({
   return (
     <div className="mt-2 mb-1 flex items-center gap-1.5 px-2 h-[24px]">
       {expandable && (
-        <ChevronDown className="h-3 w-3 text-[var(--color-muted-2)]" />
+        <ChevronDown className="h-3 w-3 text-[var(--color-fg-muted)]" />
       )}
-      <span className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-[var(--color-muted)]">
+      <span className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-[var(--color-muted-foreground)]">
         {title}
       </span>
       <span className="ml-auto">{action}</span>
@@ -203,7 +203,7 @@ function SidebarRow({
         active
           ? "bg-[var(--color-rail)] text-[var(--color-paper)] font-medium"
           : muted
-            ? "text-[var(--color-muted)] hover:bg-[var(--color-paper-2)] hover:text-[var(--color-ink)]"
+            ? "text-[var(--color-muted-foreground)] hover:bg-[var(--color-paper-2)] hover:text-[var(--color-ink)]"
             : "text-[var(--color-ink)] hover:bg-[var(--color-paper-2)]",
       )}
     >
@@ -215,7 +215,7 @@ function SidebarRow({
               "mr-0.5",
               active
                 ? "text-[var(--color-paper)]"
-                : "text-[var(--color-muted)]",
+                : "text-[var(--color-muted-foreground)]",
             )}
           >
             {prefix}

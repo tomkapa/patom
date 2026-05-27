@@ -46,7 +46,7 @@ export function DetailHeader({
             </h1>
             <StatusPill tone={tone} label={t(STATUS_KEY[tone])} />
           </div>
-          <p className="truncate text-[13px] text-[var(--color-muted)]">
+          <p className="truncate text-[13px] text-[var(--color-muted-foreground)]">
             {t("connections.detail.header.subtitle", {
               auth: authLabel,
               count: toolsCount,

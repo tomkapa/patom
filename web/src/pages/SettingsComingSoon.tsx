@@ -32,11 +32,11 @@ export function SettingsComingSoon({ kind }: { kind: ComingSoonKind }) {
         ]}
       />
       <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
-        <Construction className="h-8 w-8 text-[var(--color-muted)]" strokeWidth={1.5} />
+        <Construction className="h-8 w-8 text-[var(--color-muted-foreground)]" strokeWidth={1.5} />
         <h1 className="font-[var(--font-display)] text-[22px] font-bold text-[var(--color-ink)]">
           {t(labelKey)}
         </h1>
-        <p className="max-w-[420px] text-[13px] text-[var(--color-muted)]">
+        <p className="max-w-[420px] text-[13px] text-[var(--color-muted-foreground)]">
           {t("settings.comingSoon.body")}
         </p>
       </div>

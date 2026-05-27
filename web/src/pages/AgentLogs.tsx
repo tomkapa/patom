@@ -72,7 +72,7 @@ export function AgentLogs() {
         ]}
       />
       {agentQuery.isLoading && !agentQuery.isError ? (
-        <div className="flex flex-1 items-center justify-center text-[var(--color-muted)]">
+        <div className="flex flex-1 items-center justify-center text-[var(--color-muted-foreground)]">
           <Spinner size={16} />
         </div>
       ) : !agent ? (

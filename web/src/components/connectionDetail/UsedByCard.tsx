@@ -47,7 +47,7 @@ export function UsedByCard({ serverId }: { serverId: string }) {
       }
     >
       {agents.length === 0 ? (
-        <div className="px-5 py-6 text-center text-[12px] text-[var(--color-muted)]">
+        <div className="px-5 py-6 text-center text-[12px] text-[var(--color-muted-foreground)]">
           {t("connections.detail.usedBy.empty")}
         </div>
       ) : (
@@ -64,7 +64,7 @@ export function UsedByCard({ serverId }: { serverId: string }) {
                   {agent.name}
                 </span>
                 <ChevronRight
-                  className="h-3.5 w-3.5 shrink-0 text-[var(--color-muted)]"
+                  className="h-3.5 w-3.5 shrink-0 text-[var(--color-muted-foreground)]"
                   strokeWidth={1.75}
                   aria-hidden
                 />

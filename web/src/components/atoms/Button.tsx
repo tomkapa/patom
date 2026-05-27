@@ -21,7 +21,7 @@ const VARIANT: Record<Variant, string> = {
     "bg-[var(--color-ink)] text-[var(--color-paper)] border border-[var(--color-ink)] hover:bg-[var(--color-ink-2)] disabled:opacity-50",
   moss: "bg-[var(--color-moss)] text-white border border-[var(--color-moss)] hover:bg-[var(--color-moss-deep)] disabled:cursor-not-allowed disabled:opacity-40",
   ghost:
-    "bg-transparent text-[var(--color-muted)] border border-transparent hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-2)] disabled:opacity-40",
+    "bg-transparent text-[var(--color-muted-foreground)] border border-transparent hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-2)] disabled:opacity-40",
   danger:
     "bg-transparent text-[var(--color-rose)] border border-transparent hover:bg-[var(--color-rose-soft)] disabled:opacity-50",
 };

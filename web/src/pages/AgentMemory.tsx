@@ -84,7 +84,7 @@ export function AgentMemory() {
         ]}
       />
       {agentQuery.isLoading && !agentQuery.isError ? (
-        <div className="flex flex-1 items-center justify-center text-[var(--color-muted)]">
+        <div className="flex flex-1 items-center justify-center text-[var(--color-muted-foreground)]">
           <Spinner size={16} />
         </div>
       ) : !agent ? (
@@ -126,7 +126,7 @@ export function AgentMemory() {
               <MemoryQuotaBar used={rows.length} />
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {memoryQuery.isLoading && rows.length === 0 ? (
-                  <div className="flex items-center justify-center p-6 text-[var(--color-muted)]">
+                  <div className="flex items-center justify-center p-6 text-[var(--color-muted-foreground)]">
                     <Spinner size={14} />
                   </div>
                 ) : memoryQuery.isError ? (

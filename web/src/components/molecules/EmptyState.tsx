@@ -30,7 +30,7 @@ export function EmptyState({
         {title}
       </h3>
       {description && (
-        <p className="max-w-[36ch] text-[13px] leading-[1.5] text-[var(--color-muted)]">
+        <p className="max-w-[36ch] text-[13px] leading-[1.5] text-[var(--color-muted-foreground)]">
           {description}
         </p>
       )}

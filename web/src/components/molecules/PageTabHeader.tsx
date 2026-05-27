@@ -27,7 +27,7 @@ export function PageTabHeader({
           {title}
         </h1>
         {subtitle ? (
-          <p className="mt-1 max-w-[68ch] text-[14px] text-[var(--color-muted)]">
+          <p className="mt-1 max-w-[68ch] text-[14px] text-[var(--color-muted-foreground)]">
             {subtitle}
           </p>
         ) : null}

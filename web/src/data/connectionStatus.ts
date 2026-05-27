@@ -25,7 +25,7 @@ export const STATUS_COLOR: Record<StatusTone, string> = {
   ok: "var(--color-moss)",
   reconnect: "var(--color-amber)",
   error: "var(--color-rose)",
-  pending: "var(--color-muted-2)",
+  pending: "var(--color-fg-muted)",
 };
 
 /** Background tint per tone (used by the status pill background fill). */

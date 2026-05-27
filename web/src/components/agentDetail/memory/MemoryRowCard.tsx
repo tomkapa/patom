@@ -53,19 +53,19 @@ export function MemoryRowCard({
             "inline-flex items-center gap-1 border px-1.5 py-[2px] font-[var(--font-mono)] text-[10px] font-semibold transition-colors",
             row.pinned
               ? "border-[#FED7AA] bg-[#FFF7ED] text-[#EA580C]"
-              : "border-transparent text-[var(--color-muted-2)] hover:text-[var(--color-ink)]",
+              : "border-transparent text-[var(--color-fg-muted)] hover:text-[var(--color-ink)]",
             pinPending && "cursor-wait opacity-60",
           )}
         >
           <Pin className="h-2.5 w-2.5" strokeWidth={2} />
           <span>{t("agent.detail.memory.row.pinned")}</span>
         </button>
-        <span className="text-[var(--color-muted-2)]">·</span>
-        <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+        <span className="text-[var(--color-fg-muted)]">·</span>
+        <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
           {timeAgo(row.created_at)}
         </span>
-        <span className="text-[var(--color-muted-2)]">·</span>
-        <span className="inline-flex items-center gap-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+        <span className="text-[var(--color-fg-muted)]">·</span>
+        <span className="inline-flex items-center gap-1 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
           <Eye className="h-2.5 w-2.5" strokeWidth={1.75} />
           {t("agent.detail.memory.row.access", { n: row.access_count })}
         </span>

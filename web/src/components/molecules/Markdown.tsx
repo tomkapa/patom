@@ -44,7 +44,7 @@ const components: Components = {
     </h3>
   ),
   blockquote: ({ children }) => (
-    <blockquote className="my-1 border-l-2 border-[var(--color-moss)]/40 pl-3 text-[var(--color-muted)]">
+    <blockquote className="my-1 border-l-2 border-[var(--color-moss)]/40 pl-3 text-[var(--color-muted-foreground)]">
       {children}
     </blockquote>
   ),

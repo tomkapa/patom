@@ -37,7 +37,7 @@ export function MetaCell({
 }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <div className="font-[var(--font-mono)] text-[10px] tracking-[0.12em] text-[var(--color-muted)] uppercase">
+      <div className="font-[var(--font-mono)] text-[10px] tracking-[0.12em] text-[var(--color-muted-foreground)] uppercase">
         {label}
       </div>
       <div

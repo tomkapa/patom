@@ -30,7 +30,7 @@ export function KpiTile({
         className,
       )}
     >
-      <span className="font-[var(--font-mono)] text-[10px] tracking-[0.15em] uppercase text-[var(--color-muted)]">
+      <span className="font-[var(--font-mono)] text-[10px] tracking-[0.15em] uppercase text-[var(--color-muted-foreground)]">
         {label}
       </span>
       <div className="flex items-baseline gap-2">

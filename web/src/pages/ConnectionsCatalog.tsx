@@ -47,26 +47,26 @@ export function ConnectionsCatalog() {
           <h1 className="font-[var(--font-display)] text-[32px] leading-tight font-bold text-[var(--color-ink)]">
             {t("connections.catalog.title")}
           </h1>
-          <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted)]">
+          <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted-foreground)]">
             {t("connections.catalog.subtitle")}
           </p>
         </div>
         <label className="flex shrink-0 items-center gap-2 border border-[var(--color-line)] bg-[var(--color-card)] px-3.5 py-2.5">
-          <Search className="h-3.5 w-3.5 text-[var(--color-muted)]" strokeWidth={1.75} />
+          <Search className="h-3.5 w-3.5 text-[var(--color-muted-foreground)]" strokeWidth={1.75} />
           <input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t("connections.catalog.search")}
             aria-label={t("connections.catalog.search")}
-            className="w-[220px] bg-transparent text-[13px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted)]"
+            className="w-[220px] bg-transparent text-[13px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted-foreground)]"
           />
         </label>
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto px-8 pt-6 pb-10">
         {catalog.isLoading ? (
-          <div className="flex items-center justify-center py-10 text-[var(--color-muted)]">
+          <div className="flex items-center justify-center py-10 text-[var(--color-muted-foreground)]">
             <Spinner />
           </div>
         ) : (
@@ -97,12 +97,12 @@ export function ConnectionsCatalog() {
               <div className="font-[var(--font-display)] text-[18px] font-bold text-[var(--color-ink)]">
                 {t("connections.catalog.custom.title")}
               </div>
-              <p className="text-[13px] leading-[1.4] text-[var(--color-muted)]">
+              <p className="text-[13px] leading-[1.4] text-[var(--color-muted-foreground)]">
                 {t("connections.catalog.custom.blurb")}
               </p>
             </button>
             {filtered.length === 0 && query.trim() ? (
-              <p className="col-span-4 py-10 text-center text-[13px] text-[var(--color-muted)]">
+              <p className="col-span-4 py-10 text-center text-[13px] text-[var(--color-muted-foreground)]">
                 {t("connections.catalog.empty")}
               </p>
             ) : null}
@@ -150,7 +150,7 @@ function CatalogTileButton({
             "font-[var(--font-mono)] text-[10px] uppercase",
             row.wired
               ? "text-[var(--color-moss-deep)]"
-              : "text-[var(--color-muted)]",
+              : "text-[var(--color-muted-foreground)]",
           )}
         >
           {row.wired ? t("connections.catalog.added") : ""}
@@ -159,7 +159,7 @@ function CatalogTileButton({
       <div className="font-[var(--font-display)] text-[18px] font-bold text-[var(--color-ink)]">
         {row.display_name}
       </div>
-      <p className="text-[13px] leading-[1.4] text-[var(--color-muted)]">
+      <p className="text-[13px] leading-[1.4] text-[var(--color-muted-foreground)]">
         {row.description}
       </p>
     </button>

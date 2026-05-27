@@ -185,7 +185,7 @@ export function TurnsTimeline({
       }
     >
       <div
-        className="grid items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-8 py-2.5 font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--color-muted)]"
+        className="grid items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-8 py-2.5 font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--color-muted-foreground)]"
         style={{ gridTemplateColumns: gridTemplate }}
       >
         {visibleColumnDefs.map((col) => (
@@ -273,14 +273,14 @@ function TimelineHeader({
   return (
     <div className="flex flex-wrap items-end justify-between gap-3 border-b border-[var(--color-line)] bg-[var(--color-card)] px-8 py-4">
       <div className="flex flex-col gap-1">
-        <span className="font-[var(--font-mono)] text-[10px] font-medium tracking-[0.15em] uppercase text-[var(--color-muted)]">
+        <span className="font-[var(--font-mono)] text-[10px] font-medium tracking-[0.15em] uppercase text-[var(--color-muted-foreground)]">
           {t("agent.detail.logs.turns.eyebrow", { count: totalInWindow })}
         </span>
         <div className="flex items-baseline gap-3">
           <h2 className="font-[var(--font-display)] text-[18px] font-semibold text-[var(--color-ink)]">
             {t("agent.detail.logs.turns.heading")}
           </h2>
-          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
             {t("agent.detail.logs.turns.subtitle")}
           </span>
         </div>
@@ -331,7 +331,7 @@ function HeaderPillButton({
       <span
         className={cn(
           "shrink-0",
-          active ? "text-[var(--color-moss)]" : "text-[var(--color-muted-2)]",
+          active ? "text-[var(--color-moss)]" : "text-[var(--color-fg-muted)]",
         )}
       >
         {icon}
@@ -365,7 +365,7 @@ function ColumnsDropdown({
           aria-expanded={open}
           className="flex cursor-pointer items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-1.5 font-[var(--font-body)] text-[12px] font-medium text-[var(--color-ink)] outline-none transition-colors duration-150 ease-out hover:bg-[var(--color-paper-2)] focus-visible:ring-1 focus-visible:ring-[var(--color-ink)]"
         >
-          <Columns3 className="h-3 w-3 text-[var(--color-muted-2)]" />
+          <Columns3 className="h-3 w-3 text-[var(--color-fg-muted)]" />
           <span>{t("agent.detail.logs.turns.columns")}</span>
         </button>
       )}
@@ -373,10 +373,10 @@ function ColumnsDropdown({
       {() => (
         <div className="flex flex-col">
           <div className="flex flex-col gap-1 border-b border-[var(--color-line)] px-4 py-3">
-            <span className="font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--color-muted)]">
+            <span className="font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--color-muted-foreground)]">
               {t("agent.detail.logs.columns.eyebrow")}
             </span>
-            <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted)]">
+            <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
               {t("agent.detail.logs.columns.caption")}
             </span>
           </div>
@@ -405,13 +405,13 @@ function ColumnsDropdown({
                         "flex-1 font-[var(--font-body)] font-medium",
                         checked
                           ? "text-[var(--color-ink)]"
-                          : "text-[var(--color-muted)]",
+                          : "text-[var(--color-muted-foreground)]",
                       )}
                     >
                       {t(col.labelKey)}
                     </span>
                     {col.locked ? (
-                      <Lock className="h-3 w-3 text-[var(--color-muted)]" />
+                      <Lock className="h-3 w-3 text-[var(--color-muted-foreground)]" />
                     ) : null}
                   </button>
                 </li>
@@ -427,7 +427,7 @@ function ColumnsDropdown({
               <RotateCcw className="h-3 w-3" />
               {t("agent.detail.logs.columns.reset")}
             </button>
-            <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted)]">
+            <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
               {t("agent.detail.logs.columns.counter", {
                 shown: shownCount,
                 total,
@@ -488,7 +488,7 @@ function HeaderCell({
         <ArrowDownNarrowWide className="h-3 w-3 text-[var(--color-ink)]" />
       );
   } else if (sortable) {
-    icon = <ChevronsUpDown className="h-3 w-3 text-[var(--color-muted-2)]" />;
+    icon = <ChevronsUpDown className="h-3 w-3 text-[var(--color-fg-muted)]" />;
   }
   const className = cn(
     "flex items-center gap-1 text-left",
@@ -545,7 +545,7 @@ function TurnRowView({
         {visibleColumnDefs.map((col) => (
           <RowCell key={col.id} col={col} row={row} />
         ))}
-        <span className="text-[var(--color-muted)]" aria-hidden>
+        <span className="text-[var(--color-muted-foreground)]" aria-hidden>
           {open ? "▾" : "▸"}
         </span>
       </button>
@@ -585,7 +585,7 @@ function RowCell({ col, row }: { col: ColumnDef; row: AgentTurnRow }) {
   switch (col.id) {
     case "time":
       return (
-        <span className={cn(baseCls, "text-[var(--color-muted)]")}>
+        <span className={cn(baseCls, "text-[var(--color-muted-foreground)]")}>
           {formatTime(row.started_at)}
         </span>
       );
@@ -659,7 +659,7 @@ function RowCell({ col, row }: { col: ColumnDef; row: AgentTurnRow }) {
     case "request_id":
       return (
         <span
-          className={cn(baseCls, "truncate text-[var(--color-muted)]")}
+          className={cn(baseCls, "truncate text-[var(--color-muted-foreground)]")}
           title={row.request_id}
         >
           {row.request_id.slice(0, 8)}…

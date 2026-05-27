@@ -99,7 +99,7 @@ export function EventJournalPanel({
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loading && events.length === 0 ? (
-          <div className="flex items-center justify-center p-6 text-[var(--color-muted)]">
+          <div className="flex items-center justify-center p-6 text-[var(--color-muted-foreground)]">
             <Spinner size={14} />
           </div>
         ) : error ? (
@@ -115,7 +115,7 @@ export function EventJournalPanel({
             />
           </div>
         ) : events.length === 0 ? (
-          <div className="px-5 py-6 text-[13px] text-[var(--color-muted)]">
+          <div className="px-5 py-6 text-[13px] text-[var(--color-muted-foreground)]">
             {t("agent.detail.memory.journal.empty")}
           </div>
         ) : (
@@ -150,7 +150,7 @@ function LegendRow<V extends string>({
 }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted)]">
+      <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
         {label}
       </span>
       {values.map((v) => {

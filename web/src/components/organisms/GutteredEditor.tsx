@@ -82,7 +82,7 @@ export function GutteredEditor({
         <div
           ref={gutterRef}
           aria-hidden="true"
-          className="scroll-thin shrink-0 overflow-hidden border-r border-[var(--color-line)] bg-[var(--color-paper-2)] px-2 py-5 pl-4 text-right font-[var(--font-mono)] text-[13px] whitespace-pre text-[var(--color-muted-2)] tabular-nums select-none"
+          className="scroll-thin shrink-0 overflow-hidden border-r border-[var(--color-line)] bg-[var(--color-paper-2)] px-2 py-5 pl-4 text-right font-[var(--font-mono)] text-[13px] whitespace-pre text-[var(--color-fg-muted)] tabular-nums select-none"
           style={{ lineHeight: 1.7, width: 52 }}
         >
           {gutterContent}
@@ -95,7 +95,7 @@ export function GutteredEditor({
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           spellCheck={false}
-          className="scroll-thin min-h-0 flex-1 resize-none bg-transparent px-6 py-5 font-[var(--font-mono)] text-[13px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-muted-2)]"
+          className="scroll-thin min-h-0 flex-1 resize-none bg-transparent px-6 py-5 font-[var(--font-mono)] text-[13px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-fg-muted)]"
           style={{ lineHeight: 1.7 }}
         />
       </div>

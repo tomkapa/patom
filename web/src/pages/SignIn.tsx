@@ -75,7 +75,7 @@ export function SignIn() {
             aria-hidden="true"
             className="ml-2 h-px flex-1 bg-[var(--color-rail-2)]"
           />
-          <span className="font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.24em] text-[var(--color-muted-2)]">
+          <span className="font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.24em] text-[var(--color-fg-muted)]">
             v1.0
           </span>
         </header>
@@ -102,7 +102,7 @@ export function SignIn() {
           <h1 className="font-[var(--font-display)] text-[36px] font-bold leading-[1.1] tracking-tight text-[var(--color-ink)]">
             {t("signin.heading")}
           </h1>
-          <p className="mt-3 text-[13px] leading-[1.55] text-[var(--color-muted)]">
+          <p className="mt-3 text-[13px] leading-[1.55] text-[var(--color-muted-foreground)]">
             {t("signin.subheading")}
           </p>
 
@@ -126,7 +126,7 @@ export function SignIn() {
             {t("signin.cta")}
           </Button>
 
-          <p className="mt-8 text-[11px] leading-[1.6] text-[var(--color-muted-2)]">
+          <p className="mt-8 text-[11px] leading-[1.6] text-[var(--color-fg-muted)]">
             {t("signin.legal")}
           </p>
         </div>
