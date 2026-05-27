@@ -31,6 +31,10 @@ const en = {
   "usermenu.language.en": "English",
   "usermenu.language.vi": "Tiếng Việt",
   "usermenu.language.error": "Could not change language. Please try again.",
+  "usermenu.theme.label": "Theme",
+  "usermenu.theme.system": "System",
+  "usermenu.theme.light": "Light",
+  "usermenu.theme.dark": "Dark",
 
   "button.loading": "Loading",
   "time.justNow": "just now",

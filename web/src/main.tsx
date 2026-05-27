@@ -8,6 +8,10 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { QueryClient } from "@tanstack/query-core";
 import { BrowserRouter } from "react-router-dom";
 import { App } from "./App";
+import { applyTheme, getStoredTheme } from "./lib/theme";
+
+// Apply persisted theme before first paint to avoid a light→dark flash.
+applyTheme(getStoredTheme());
 
 const queryClient = new QueryClient();
 

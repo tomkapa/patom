@@ -27,6 +27,10 @@ const vi: TranslationTable = {
   "usermenu.language.en": "English",
   "usermenu.language.vi": "Tiếng Việt",
   "usermenu.language.error": "Không thể đổi ngôn ngữ. Vui lòng thử lại.",
+  "usermenu.theme.label": "Giao diện",
+  "usermenu.theme.system": "Theo hệ thống",
+  "usermenu.theme.light": "Sáng",
+  "usermenu.theme.dark": "Tối",
 
   "button.loading": "Đang tải",
   "time.justNow": "vừa xong",

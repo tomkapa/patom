@@ -6,17 +6,25 @@ import { useT } from "../../i18n";
 import type { TranslationKey } from "../../i18n/en";
 import { api } from "../../lib/api";
 import { initials } from "../../lib/utils";
+import { getStoredTheme, setTheme, type ThemePref } from "../../lib/theme";
 import type { Language } from "../../types/api";
 import { Dropdown } from "../molecules/Dropdown";
 import { ImageUploader } from "../molecules/ImageUploader";
+import { Select, type SelectOption } from "../molecules/Select";
 
 // Exhaustive list of selectable languages. Adding a `Language` variant
 // without extending this array is a TypeScript error at the `label` key
 // (it's typed `TranslationKey`, and `usermenu.language.<new>` won't
 // exist in the en/vi tables until the translation is added).
-const LANGUAGE_OPTIONS: { value: Language; label: TranslationKey }[] = [
+const LANGUAGE_KEYS: { value: Language; label: TranslationKey }[] = [
   { value: "en", label: "usermenu.language.en" },
   { value: "vi", label: "usermenu.language.vi" },
+];
+
+const THEME_KEYS: { value: ThemePref; label: TranslationKey }[] = [
+  { value: "system", label: "usermenu.theme.system" },
+  { value: "light", label: "usermenu.theme.light" },
+  { value: "dark", label: "usermenu.theme.dark" },
 ];
 
 export function UserMenu() {
@@ -25,8 +33,15 @@ export function UserMenu() {
   const { t, language } = useT();
   const [langError, setLangError] = useState<string | null>(null);
   const [langPending, setLangPending] = useState(false);
+  const [theme, setThemeState] = useState<ThemePref>(() => getStoredTheme());
 
   if (!me) return null;
+
+  const onChangeTheme = (next: ThemePref) => {
+    if (next === theme) return;
+    setThemeState(next);
+    setTheme(next);
+  };
 
   // Backend authority: only owner/admin can switch. The select is hidden
   // for plain members. Server enforces the same check; this is UX only.
@@ -58,6 +73,13 @@ export function UserMenu() {
   };
 
   const displayName = me.user.display_name ?? me.user.email;
+
+  const languageOptions: SelectOption<Language>[] = LANGUAGE_KEYS.map(
+    ({ value, label }) => ({ value, label: t(label) }),
+  );
+  const themeOptions: SelectOption<ThemePref>[] = THEME_KEYS.map(
+    ({ value, label }) => ({ value, label: t(label) }),
+  );
 
   return (
     <Dropdown
@@ -123,25 +145,16 @@ export function UserMenu() {
 
           {canSwitchLanguage ? (
             <div className="border-b border-[var(--color-line)] px-3 py-2">
-              <label
-                htmlFor="usermenu-language"
-                className="block font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]"
-              >
+              <div className="mb-1 font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
                 {t("usermenu.language.label")}
-              </label>
-              <select
-                id="usermenu-language"
+              </div>
+              <Select<Language>
                 value={language}
+                options={languageOptions}
+                onChange={onChangeLanguage}
+                ariaLabel={t("usermenu.language.label")}
                 disabled={langPending}
-                onChange={(e) => onChangeLanguage(e.target.value as Language)}
-                className="mt-1 w-full border border-[var(--color-line)] bg-[var(--color-paper)] px-2 py-1 text-[12px] text-[var(--color-ink)] focus:outline-none focus:ring-1 focus:ring-[var(--color-ink)] disabled:opacity-50"
-              >
-                {LANGUAGE_OPTIONS.map(({ value, label }) => (
-                  <option key={value} value={value}>
-                    {t(label)}
-                  </option>
-                ))}
-              </select>
+              />
               {langError ? (
                 <p className="mt-1 text-[10.5px] text-[var(--color-rose)]">
                   {langError}
@@ -149,6 +162,18 @@ export function UserMenu() {
               ) : null}
             </div>
           ) : null}
+
+          <div className="border-b border-[var(--color-line)] px-3 py-2">
+            <div className="mb-1 font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
+              {t("usermenu.theme.label")}
+            </div>
+            <Select<ThemePref>
+              value={theme}
+              options={themeOptions}
+              onChange={onChangeTheme}
+              ariaLabel={t("usermenu.theme.label")}
+            />
+          </div>
 
           <button
             type="button"

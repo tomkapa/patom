@@ -92,36 +92,100 @@
   --duration-slow: 260ms;
 }
 
-/* ── Dark mode (opt-in via `.dark` on <html>) ───────────────────── */
+/* ── Dark mode (opt-in via `.dark` on <html>) ─────────────────────
+ *
+ * Linear-style dark palette. The role-based design tokens
+ * (`--color-surface-*`, `--color-fg-*`, `--color-accent-primary`,
+ * `--color-border-*`) shift values, and the shadcn semantic + legacy
+ * aliases below are remapped onto the same roles so every utility in
+ * the app picks up the dark theme without code changes.
+ */
 .dark {
-  --color-background: #0a0a0a;
-  --color-foreground: #fafafa;
-  --color-primary: #e5e5e5;
-  --color-primary-foreground: #171717;
-  --color-secondary: #262626;
-  --color-secondary-foreground: #fafafa;
-  --color-muted: #262626;
-  --color-muted-foreground: #a3a3a3;
-  --color-accent: #262626;
-  --color-accent-foreground: #fafafa;
-  --color-destructive: #ff666999;
-  --color-border: #ffffff1a;
-  --color-input: #ffffff1a;
-  --color-ring: #737373;
-  --color-card: #171717;
-  --color-popover: #171717;
+  /* ── Custom brand colors (design tokens, role-based) ───────────── */
+  --color-accent-primary: #5e6ad2;
+  --color-accent-soft: #1e1f35;
+  --color-border-primary: #2a2e33;
+  --color-border-subtle: #24282c;
+  --color-fg-primary: #f7f8f8;
+  --color-fg-secondary: #d0d6e0;
+  --color-fg-muted: #8a8f98;
+  --color-surface-primary: #0f1011;
+  --color-surface-secondary: #131516;
 
-  --color-sidebar: #18181b;
-  --color-sidebar-accent: #2a2a30;
-  --color-sidebar-foreground: #fafafa;
-  --color-sidebar-primary: #1447e6;
-  --color-sidebar-border: #ffffff1a;
-  --color-sidebar-ring: #71717a;
+  /* Extended dark-only tokens — surfaces beyond the light palette's
+   * two-tier model, and a secondary accent for links / breadcrumbs. */
+  --color-surface-deep: #08090a;
+  --color-surface-accent: #1e1f35;
+  --color-accent-secondary: #8b5cf6;
+  --color-error-bg: #1f1010;
+  --color-error-border: #f85149;
 
-  --color-theme-default: #e5e5e5;
-  --color-theme-red: #ef4444;
-  --color-theme-rose: #f43f5e;
+  /* ── Semantic UI ───────────────────────────────────────────────── */
+  --color-background: #0f1011;       /* surface-primary  */
+  --color-foreground: #f7f8f8;       /* fg-primary       */
+  --color-primary: #f7f8f8;
+  --color-primary-foreground: #0f1011;
+  --color-secondary: #131516;
+  --color-secondary-foreground: #f7f8f8;
+  --color-muted: #131516;
+  --color-muted-foreground: #8a8f98;  /* fg-muted        */
+  --color-accent: #1e1f35;            /* surface-accent  */
+  --color-accent-foreground: #f7f8f8;
+  --color-destructive: #eb5757;
+  --color-border: #2a2e33;
+  --color-input: #2a2e33;
+  --color-ring: #5e6ad2;              /* accent          */
+  --color-card: #131516;              /* elevated        */
+  --color-popover: #131516;
+
+  /* ── Sidebar ───────────────────────────────────────────────────── */
+  --color-sidebar: #131516;
+  --color-sidebar-accent: #1e1f35;
+  --color-sidebar-foreground: #f7f8f8;
+  --color-sidebar-primary: #5e6ad2;
+  --color-sidebar-border: #2a2e33;
+  --color-sidebar-ring: #5e6ad2;
+
+  /* ── Accent theme variants (--primary swatches) ────────────────── */
+  --color-theme-default: #f7f8f8;
+  --color-theme-red: #eb5757;
+  --color-theme-rose: #eb5757;
   --color-theme-orange: #f97316;
+
+  /* ── Legacy aliases — remap onto the same roles ────────────────── *
+   * paper  → surface-primary / secondary (content backgrounds)
+   * rail   → surface-deep      (deepest bg / sidebar rail)
+   * ink    → fg-primary / fg-secondary
+   * line   → border / border-subtle
+   * moss   → accent             (was the forest-green primary)
+   * rose   → error-text / error-bg
+   */
+  --color-paper: #0f1011;
+  --color-paper-2: #131516;
+  --color-paper-3: #131516;
+  --color-rail: #08090a;
+  --color-rail-2: #131516;
+
+  --color-ink: #f7f8f8;
+  --color-ink-2: #d0d6e0;
+
+  /* Hairline dividers use translucent white so they read consistently
+   * over any dark surface tier (rail `#08090a`, body `#0f1011`,
+   * elevated `#131516`). Component outlines and panel separators stay
+   * solid at `--color-line-strong` / `--color-border` (`#2a2e33`). */
+  --color-line: #ffffff15;
+  --color-line-2: #ffffff15;
+  --color-line-strong: #2a2e33;
+
+  --color-moss: #5e6ad2;
+  --color-moss-deep: #8b5cf6;
+  --color-moss-soft: #1e1f35;
+  --color-moss-tint: #1e1f35;
+
+  --color-amber: #d9a35a;
+  --color-amber-soft: #2a1f10;
+  --color-rose: #eb5757;
+  --color-rose-soft: #1f1010;
 }
 
 * {
