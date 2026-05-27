@@ -26,16 +26,22 @@ import { Banner } from "../components/molecules/Banner";
 import { EmptyState } from "../components/molecules/EmptyState";
 import { Modal, ModalFooter, ModalHeader } from "../components/molecules/Modal";
 import { api } from "../lib/api";
+import { useAuthStore } from "../stores/authStore";
 import type { SlackWorkspaceSummary } from "../types/api";
 import { useT } from "../i18n";
 
-const SLACK_KEY = ["slack-workspaces"] as const;
+/** Cache is scoped per active org: a switch must not reveal a previous
+ *  tenant's installs to react-query consumers before the next refetch. */
+const slackKey = (orgId: string | null | undefined) =>
+  ["slack-workspaces", orgId ?? "unknown-org"] as const;
 
 export function SettingsIntegrations() {
   const { t } = useT();
   const qc = useQueryClient();
+  const activeOrgId = useAuthStore((s) => s.me?.active_org_id);
+  const queryKey = slackKey(activeOrgId);
   const installs = useQuery({
-    queryKey: SLACK_KEY,
+    queryKey,
     queryFn: api.slackWorkspaces,
     staleTime: 30_000,
   });
@@ -53,7 +59,7 @@ export function SettingsIntegrations() {
   const disconnectMut = useMutation({
     mutationFn: (teamId: string) => api.slackDisconnect(teamId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: SLACK_KEY });
+      qc.invalidateQueries({ queryKey });
     },
   });
 
