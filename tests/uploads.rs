@@ -427,6 +427,16 @@ async fn workspace_avatar_upload_svg_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn workspace_avatar_upload_503_when_assets_unconfigured() {
+    let h = UploadsHarness::without_assets().await;
+    let app = router(h.state.clone());
+    let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
+    let req = upload_request("/api/uploads/workspace-avatar", &h.primary, body);
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn workspace_avatar_upload_oversize_returns_413() {
     let (h, store) = UploadsHarness::with_assets().await;
     let app = router(h.state.clone());
