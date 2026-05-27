@@ -72,11 +72,11 @@ impl SessionStore for PgSessionStore {
         skip_all,
         name = "session.resolve_or_create",
         fields(
-            relay.dag.root = %root_request_id,
-            relay.parent.session.id = parent_session_id.map(tracing::field::display),
-            relay.org.id = %org_id,
-            relay.session.id = tracing::field::Empty,
-            relay.session.created = tracing::field::Empty,
+            patom.dag.root = %root_request_id,
+            patom.parent.session.id = parent_session_id.map(tracing::field::display),
+            patom.org.id = %org_id,
+            patom.session.id = tracing::field::Empty,
+            patom.session.created = tracing::field::Empty,
         ),
     )]
     async fn resolve_or_create_for_pair(
@@ -114,12 +114,12 @@ impl SessionStore for PgSessionStore {
         skip_all,
         name = "session.resolve_or_create_for_user",
         fields(
-            relay.dag.root = %root_request_id,
-            relay.parent.session.id = parent_session_id.map(tracing::field::display),
-            relay.org.id = %caller.org_id,
-            relay.user.id = %caller.user_id,
-            relay.session.id = tracing::field::Empty,
-            relay.session.created = tracing::field::Empty,
+            patom.dag.root = %root_request_id,
+            patom.parent.session.id = parent_session_id.map(tracing::field::display),
+            patom.org.id = %caller.org_id,
+            patom.user.id = %caller.user_id,
+            patom.session.id = tracing::field::Empty,
+            patom.session.created = tracing::field::Empty,
         ),
     )]
     async fn resolve_or_create_for_pair_for_user(
@@ -158,9 +158,9 @@ impl SessionStore for PgSessionStore {
         skip_all,
         name = "session.append",
         fields(
-            relay.session.id = %id,
-            relay.message.kind = chat_message_kind(&message),
-            relay.message.blocks = chat_message_block_count(&message),
+            patom.session.id = %id,
+            patom.message.kind = chat_message_kind(&message),
+            patom.message.blocks = chat_message_block_count(&message),
         ),
     )]
     async fn append(
@@ -181,10 +181,10 @@ impl SessionStore for PgSessionStore {
         skip_all,
         name = "session.append_for_user",
         fields(
-            relay.session.id = %id,
-            relay.user.id = %acting_user_id,
-            relay.message.kind = chat_message_kind(&message),
-            relay.message.blocks = chat_message_block_count(&message),
+            patom.session.id = %id,
+            patom.user.id = %acting_user_id,
+            patom.message.kind = chat_message_kind(&message),
+            patom.message.blocks = chat_message_block_count(&message),
         ),
     )]
     async fn append_for_user(
@@ -206,8 +206,8 @@ impl SessionStore for PgSessionStore {
         skip_all,
         name = "session.append_system_nudge",
         fields(
-            relay.session.id = %id,
-            relay.bytes = note.len(),
+            patom.session.id = %id,
+            patom.bytes = note.len(),
         ),
     )]
     async fn append_system_nudge(
@@ -241,9 +241,9 @@ impl SessionStore for PgSessionStore {
         skip_all,
         name = "session.append_system_nudge_for_user",
         fields(
-            relay.session.id = %id,
-            relay.user.id = %acting_user_id,
-            relay.bytes = note.len(),
+            patom.session.id = %id,
+            patom.user.id = %acting_user_id,
+            patom.bytes = note.len(),
         ),
     )]
     async fn append_system_nudge_for_user(
@@ -277,9 +277,9 @@ impl SessionStore for PgSessionStore {
         skip_all,
         name = "session.snapshot",
         fields(
-            relay.session.id = %id,
-            relay.viewer = %viewer,
-            relay.history.count = tracing::field::Empty,
+            patom.session.id = %id,
+            patom.viewer = %viewer,
+            patom.history.count = tracing::field::Empty,
         ),
     )]
     async fn snapshot(
@@ -320,7 +320,7 @@ impl SessionStore for PgSessionStore {
             .await?
             .ok_or(SessionError::NotFound(id))?;
 
-        tracing::Span::current().record("relay.history.count", rows.len());
+        tracing::Span::current().record("patom.history.count", rows.len());
         let mut out = Vec::with_capacity(rows.len());
         for (sender_kind, sender_agent_id, receiver_kind, receiver_agent_id, body) in rows {
             let sender = MessageSender::from_kind_id(sender_kind, sender_agent_id)
@@ -339,11 +339,11 @@ impl SessionStore for PgSessionStore {
         skip_all,
         name = "session.snapshot_window",
         fields(
-            relay.session.id = %id,
-            relay.viewer = %viewer,
-            relay.window.limit = limit,
-            relay.window.before_seq = before_seq.map(tracing::field::display),
-            relay.history.count = tracing::field::Empty,
+            patom.session.id = %id,
+            patom.viewer = %viewer,
+            patom.window.limit = limit,
+            patom.window.before_seq = before_seq.map(tracing::field::display),
+            patom.history.count = tracing::field::Empty,
         ),
     )]
     async fn snapshot_window(
@@ -396,7 +396,7 @@ impl SessionStore for PgSessionStore {
             .ok_or(SessionError::NotFound(id))?;
         rows.reverse();
 
-        tracing::Span::current().record("relay.history.count", rows.len());
+        tracing::Span::current().record("patom.history.count", rows.len());
         let mut out = Vec::with_capacity(rows.len());
         for (seq, sender_kind, sender_agent_id, receiver_kind, receiver_agent_id, body) in rows {
             let sender = MessageSender::from_kind_id(sender_kind, sender_agent_id)
@@ -417,7 +417,7 @@ impl SessionStore for PgSessionStore {
     #[tracing::instrument(
         skip_all,
         name = "session.participants",
-        fields(relay.session.id = %id),
+        fields(patom.session.id = %id),
     )]
     async fn participants(
         &self,
@@ -451,7 +451,7 @@ impl SessionStore for PgSessionStore {
     #[tracing::instrument(
         skip_all,
         name = "session.parent",
-        fields(relay.session.id = %id),
+        fields(patom.session.id = %id),
     )]
     async fn parent(&self, id: SessionId) -> Result<Option<SessionId>, SessionError> {
         let row =
@@ -477,9 +477,9 @@ impl SessionStore for PgSessionStore {
         skip_all,
         name = "session.parent_history_for_viewer",
         fields(
-            relay.session.id = %id,
-            relay.viewer = %viewer,
-            relay.history.count = tracing::field::Empty,
+            patom.session.id = %id,
+            patom.viewer = %viewer,
+            patom.history.count = tracing::field::Empty,
         ),
     )]
     async fn parent_history_for_viewer(
@@ -521,7 +521,7 @@ impl SessionStore for PgSessionStore {
         })
         .await?;
 
-        tracing::Span::current().record("relay.history.count", rows.len());
+        tracing::Span::current().record("patom.history.count", rows.len());
         let mut out = Vec::with_capacity(rows.len());
         for (sender_kind, sender_agent_id, receiver_kind, receiver_agent_id, body) in rows {
             let sender = MessageSender::from_kind_id(sender_kind, sender_agent_id)
@@ -539,7 +539,7 @@ impl SessionStore for PgSessionStore {
     #[tracing::instrument(
         skip_all,
         name = "session.root_request_id",
-        fields(relay.session.id = %id),
+        fields(patom.session.id = %id),
     )]
     async fn root_request_id(&self, id: SessionId) -> Result<PromptRequestId, SessionError> {
         let row =
@@ -559,7 +559,7 @@ impl SessionStore for PgSessionStore {
     #[tracing::instrument(
         skip_all,
         name = "session.tenancy",
-        fields(relay.session.id = %id),
+        fields(patom.session.id = %id),
     )]
     async fn tenancy(&self, id: SessionId) -> Result<SessionTenancy, SessionError> {
         let row = run_privileged::<Option<(OrgId, UserId)>, SessionError>(&self.pool, async |tx| {
@@ -581,7 +581,7 @@ impl SessionStore for PgSessionStore {
     #[tracing::instrument(
         skip_all,
         name = "session.delete",
-        fields(relay.session.id = %id),
+        fields(patom.session.id = %id),
     )]
     async fn delete(&self, id: SessionId) -> Result<(), SessionError> {
         let rows_affected = run_privileged::<u64, SessionError>(&self.pool, async |tx| {
@@ -654,8 +654,8 @@ async fn resolve_or_create_for_pair_inner(
     .map_err(map_agent_fk)?;
 
     let span = tracing::Span::current();
-    span.record("relay.session.id", tracing::field::display(id));
-    span.record("relay.session.created", inserted);
+    span.record("patom.session.id", tracing::field::display(id));
+    span.record("patom.session.created", inserted);
     Ok(id)
 }
 
@@ -870,7 +870,7 @@ fn invariant_to_backend(e: ParticipantDecodeError) -> SessionError {
     SessionError::Backend(format!("schema invariant: {e}"))
 }
 
-/// Low-cardinality label for the `relay.message.kind` span attribute.
+/// Low-cardinality label for the `patom.message.kind` span attribute.
 fn chat_message_kind(message: &ChatMessage) -> &'static str {
     match message {
         ChatMessage::User(_) => "user",

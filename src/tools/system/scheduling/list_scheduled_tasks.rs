@@ -108,7 +108,7 @@ impl Tool for ListScheduledTasksTool {
     #[tracing::instrument(
         skip_all,
         name = "tool.list_scheduled_tasks",
-        fields(relay.from.viewer = %ctx.viewer),
+        fields(patom.from.viewer = %ctx.viewer),
     )]
     async fn execute(&self, _input: Value, ctx: &ToolCallContext) -> Result<String, ToolError> {
         let owner = ctx.viewer.agent_id().ok_or_else(|| {
@@ -121,7 +121,7 @@ impl Tool for ListScheduledTasksTool {
         // misrouted call against a cross-org agent returns an empty list
         // rather than that agent's actual schedule.
         let tenancy = self.sessions.tenancy(ctx.session_id).await.map_err(|e| {
-            warn!(error = %e, relay.session.id = %ctx.session_id,
+            warn!(error = %e, patom.session.id = %ctx.session_id,
                 "list_scheduled_tasks.session_lookup_failed");
             ToolError::Backend(format!("list_scheduled_tasks: session lookup: {e}"))
         })?;
@@ -139,7 +139,7 @@ impl Tool for ListScheduledTasksTool {
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| {
-                warn!(error = %e, relay.agent.id = %owner,
+                warn!(error = %e, patom.agent.id = %owner,
                             "list_scheduled_tasks.visibility_check_failed");
                 ToolError::Backend(format!("list_scheduled_tasks: visibility: {e}"))
             })?;
@@ -149,7 +149,7 @@ impl Tool for ListScheduledTasksTool {
         }
 
         let rows = self.store.list_for_agent(owner).await.map_err(|e| {
-            warn!(error = %e, relay.agent.id = %owner, "list_scheduled_tasks.failed");
+            warn!(error = %e, patom.agent.id = %owner, "list_scheduled_tasks.failed");
             ToolError::Backend(format!("list_scheduled_tasks: {e}"))
         })?;
         let out = Output {

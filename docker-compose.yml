@@ -1,20 +1,20 @@
 services:
   postgres:
     image: pgvector/pgvector:pg17
-    container_name: relay-postgres
+    container_name: patom-postgres
     environment:
-      POSTGRES_USER: relay
-      POSTGRES_PASSWORD: relay
-      POSTGRES_DB: relay
+      POSTGRES_USER: patom
+      POSTGRES_PASSWORD: patom
+      POSTGRES_DB: patom
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U relay -d relay"]
+      test: ["CMD-SHELL", "pg_isready -U patom -d patom"]
       interval: 2s
       timeout: 2s
       retries: 30
     volumes:
-      - relay_pg_data:/var/lib/postgresql/data
+      - patom_pg_data:/var/lib/postgresql/data
 
 volumes:
-  relay_pg_data:
+  patom_pg_data:

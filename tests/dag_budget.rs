@@ -9,13 +9,13 @@
 
 use std::sync::Arc;
 
-use relay_rs::clock::SystemClock;
-use relay_rs::runtime::queue::PromptQueue as _;
-use relay_rs::runtime::{
+use patom_rs::clock::SystemClock;
+use patom_rs::runtime::queue::PromptQueue as _;
+use patom_rs::runtime::{
     DagBudget, IdempotencyKey, NewPromptRequest, PgDagBudget, PgPromptQueue, PromptError,
     PromptRequestId,
 };
-use relay_rs::types::{Participant, Prompt};
+use patom_rs::types::{Participant, Prompt};
 
 mod common;
 use common::pg::TestDb;
@@ -38,7 +38,7 @@ async fn seed_dag(db: &TestDb) -> PromptRequestId {
                 .expect("key"),
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            kind_payload: relay_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue");

@@ -9,7 +9,7 @@
 
 mod common;
 
-use relay_rs::auth::{AuthError, OrgId, UserId, run_as_user, run_privileged};
+use patom_rs::auth::{AuthError, OrgId, UserId, run_as_user, run_privileged};
 use sqlx::Row as _;
 use uuid::Uuid;
 
@@ -50,7 +50,7 @@ async fn run_as_user_commits_on_ok_and_pins_app_user_id() {
         assert_eq!(tx.acting_user(), user);
 
         // Writes that don't touch RLS-bound tables succeed under
-        // `relay_app`. `organizations` is granted to the role; the
+        // `patom_app`. `organizations` is granted to the role; the
         // INSERT lets us verify post-commit visibility below.
         sqlx::query(
             "INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at) \

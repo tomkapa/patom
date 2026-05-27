@@ -15,13 +15,13 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use relay_rs::clock::SystemClock;
-use relay_rs::crypto::OrgEncryptor;
-use relay_rs::mcp::oauth::{
+use patom_rs::clock::SystemClock;
+use patom_rs::crypto::OrgEncryptor;
+use patom_rs::mcp::oauth::{
     ClientProvenance, McpOAuthClientStore as _, NewOAuthClient, OAuthRefresher,
     PgMcpOAuthClientStore, RefresherDeps,
 };
-use relay_rs::mcp::{
+use patom_rs::mcp::{
     ConnectionStatus, CredentialPayload, McpCatalogId, McpCredentialStore, McpCredentialWrite,
     McpHttpUrl, McpServerCreate, McpServerStore, McpTransport, OAuth2Payload, PgMcpCredentialStore,
     PgMcpServerStore,
@@ -59,14 +59,14 @@ async fn refresh_failure_with_no_refresh_token_flips_status() {
     let _client = client_store
         .upsert(NewOAuthClient {
             issuer: "https://issuer.example".into(),
-            client_id: relay_rs::mcp::oauth::OAuthClientId::try_from("client".to_owned())
+            client_id: patom_rs::mcp::oauth::OAuthClientId::try_from("client".to_owned())
                 .expect("valid"),
             client_secret: None,
             authorization_endpoint: "https://issuer.example/auth".into(),
             token_endpoint: "http://127.0.0.1:1/token".into(), // unreachable
-            token_endpoint_auth_method: relay_rs::mcp::oauth::TokenAuthMethod::None,
+            token_endpoint_auth_method: patom_rs::mcp::oauth::TokenAuthMethod::None,
             scope: None,
-            provenance: relay_rs::mcp::oauth::ClientProvenance::Dcr {
+            provenance: patom_rs::mcp::oauth::ClientProvenance::Dcr {
                 org_id: db.default_org_id,
                 registration_client_uri: None,
                 registration_access_token: None,
@@ -100,7 +100,7 @@ async fn refresh_failure_with_no_refresh_token_flips_status() {
         .expect("seed credential");
 
     // Spawn the refresher; first tick should pick the row up.
-    let flow = relay_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new()).expect("flow");
+    let flow = patom_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new()).expect("flow");
     let (refresher, _cache) = OAuthRefresher::spawn(RefresherDeps {
         pool: db.pool.clone(),
         clock: clock.clone(),
@@ -184,14 +184,14 @@ async fn refresh_resolves_shared_client_when_no_org_scoped_row_exists() {
     client_store
         .upsert(NewOAuthClient {
             issuer: issuer.clone(),
-            client_id: relay_rs::mcp::oauth::OAuthClientId::try_from("shared-client".to_owned())
+            client_id: patom_rs::mcp::oauth::OAuthClientId::try_from("shared-client".to_owned())
                 .expect("valid"),
             client_secret: Some(
-                relay_rs::types::SecretString::try_from("shared-secret".to_owned()).expect("valid"),
+                patom_rs::types::SecretString::try_from("shared-secret".to_owned()).expect("valid"),
             ),
             authorization_endpoint: "https://accounts.example/auth".into(),
             token_endpoint: token_url.clone(),
-            token_endpoint_auth_method: relay_rs::mcp::oauth::TokenAuthMethod::ClientSecretPost,
+            token_endpoint_auth_method: patom_rs::mcp::oauth::TokenAuthMethod::ClientSecretPost,
             scope: None,
             provenance: ClientProvenance::Shared,
         })
@@ -222,7 +222,7 @@ async fn refresh_resolves_shared_client_when_no_org_scoped_row_exists() {
         .await
         .expect("seed credential");
 
-    let flow = relay_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new()).expect("flow");
+    let flow = patom_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new()).expect("flow");
     let (refresher, _cache) = OAuthRefresher::spawn(RefresherDeps {
         pool: db.pool.clone(),
         clock: clock.clone(),

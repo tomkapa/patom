@@ -267,12 +267,12 @@ impl SendMessageTool {
             .map_err(|e| match e {
                 AgentStoreError::NameNotFound(_) => {
                     set_outcome("unknown_agent");
-                    warn!(relay.agent.name = %name, "send_message.unknown_agent");
+                    warn!(patom.agent.name = %name, "send_message.unknown_agent");
                     ToolError::InvalidInput(format!("send_message: unknown agent name {name}"))
                 }
                 err => {
                     set_outcome("backend_error");
-                    warn!(error = %err, relay.agent.name = %name, "send_message.agent_lookup_failed");
+                    warn!(error = %err, patom.agent.name = %name, "send_message.agent_lookup_failed");
                     ToolError::Backend(format!("send_message: agent lookup: {err}"))
                 }
             })?;
@@ -320,7 +320,7 @@ impl SendMessageTool {
             })
     }
 
-    // One span per call. `relay.send_message.outcome` is recorded on
+    // One span per call. `patom.send_message.outcome` is recorded on
     // every exit path so dashboards can `GROUP BY` it without joining
     // through events. The receiver kind / id and DAG root are known
     // before validation; receiver_session lands once the resolve hits.
@@ -328,11 +328,11 @@ impl SendMessageTool {
         skip_all,
         name = "tool.send_message",
         fields(
-            relay.dag.root = %ctx.root_request_id,
-            relay.session.id = %ctx.session_id,
-            relay.from.viewer = %ctx.viewer,
-            relay.send_message.outcome = tracing::field::Empty,
-            relay.receiver.session.id = tracing::field::Empty,
+            patom.dag.root = %ctx.root_request_id,
+            patom.session.id = %ctx.session_id,
+            patom.from.viewer = %ctx.viewer,
+            patom.send_message.outcome = tracing::field::Empty,
+            patom.receiver.session.id = tracing::field::Empty,
         ),
     )]
     #[allow(clippy::too_many_lines)] // straight-line dispatch with branches per receiver kind / error
@@ -374,7 +374,7 @@ impl SendMessageTool {
                 ToolError::Backend(format!("send_message: session resolve failed: {e}"))
             })?;
         tracing::Span::current().record(
-            "relay.receiver.session.id",
+            "patom.receiver.session.id",
             tracing::field::display(receiver_session),
         );
 
@@ -433,14 +433,14 @@ impl SendMessageTool {
         {
             Ok(bumped) => {
                 debug!(
-                    relay.dag.turns_used = bumped.turns_used,
-                    relay.dag.turns_cap = bumped.turns_cap,
+                    patom.dag.turns_used = bumped.turns_used,
+                    patom.dag.turns_cap = bumped.turns_cap,
                     "send_message.dag.bump",
                 );
             }
             Err(e @ PromptError::DagBudgetExceeded { .. }) => {
                 set_outcome("dag_exceeded");
-                warn!(error = %e, relay.dag.root = %ctx.root_request_id, "send_message.dag.exceeded");
+                warn!(error = %e, patom.dag.root = %ctx.root_request_id, "send_message.dag.exceeded");
                 // Surface the rejection as a terminal failure on the root
                 // request's stream so the SSE client learns the DAG hit its
                 // loop budget without waiting for quiescence to drain. Best
@@ -462,7 +462,7 @@ impl SendMessageTool {
             }
             Err(e) => {
                 set_outcome("dag_failed");
-                warn!(error = %e, relay.dag.root = %ctx.root_request_id, "send_message.dag.failed");
+                warn!(error = %e, patom.dag.root = %ctx.root_request_id, "send_message.dag.failed");
                 return Err(ToolError::Backend(format!(
                     "send_message: dag bump failed: {e}"
                 )));
@@ -525,8 +525,8 @@ impl SendMessageTool {
             set_outcome("publish_failed");
             warn!(
                 error = %e,
-                relay.request.id = %ctx.request_id,
-                relay.dag.root = %ctx.root_request_id,
+                patom.request.id = %ctx.request_id,
+                patom.dag.root = %ctx.root_request_id,
                 "send_message.publish.error",
             );
             return Err(ToolError::Backend(format!(
@@ -535,7 +535,7 @@ impl SendMessageTool {
         }
         set_outcome("human_delivered");
         info!(
-            relay.from.agent.id = %from,
+            patom.from.agent.id = %from,
             text.preview = %preview(content),
             "send_message.delivered_to_human",
         );
@@ -592,9 +592,9 @@ impl SendMessageTool {
 
         set_outcome("agent_delivered");
         info!(
-            relay.request.id = %outcome.request_id(),
-            relay.from.agent.id = %from,
-            relay.to.agent.id = %receiver_agent_id,
+            patom.request.id = %outcome.request_id(),
+            patom.from.agent.id = %from,
+            patom.to.agent.id = %receiver_agent_id,
             text.preview = %preview_str,
             "send_message.delivered",
         );
@@ -607,16 +607,16 @@ impl SendMessageTool {
     }
 }
 
-/// Record the `relay.send_message.outcome` field on the enclosing
+/// Record the `patom.send_message.outcome` field on the enclosing
 /// `tool.send_message` span. Each decision point in [`SendMessageTool::handle_inner`]
 /// labels its branch before returning so dashboards can `GROUP BY
-/// relay.send_message.outcome` without joining through events. Variants:
+/// patom.send_message.outcome` without joining through events. Variants:
 /// `agent_delivered`, `human_delivered`, `dag_exceeded`, `dag_failed`,
 /// `unknown_agent`, `invalid_input`, `backend_error`,
 /// `session_resolve_failed`, `opening_note_failed`, `append_failed`,
 /// `publish_failed`, `enqueue_failed`.
 fn set_outcome(label: &'static str) {
-    tracing::Span::current().record("relay.send_message.outcome", label);
+    tracing::Span::current().record("patom.send_message.outcome", label);
 }
 
 #[async_trait]

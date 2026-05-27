@@ -53,7 +53,7 @@ impl R2AssetStore {
             settings.secret_access_key.expose(),
             None,
             None,
-            "relay-r2-static",
+            "patom-r2-static",
         );
         let sdk_config = aws_config::SdkConfig::builder()
             .behavior_version(BehaviorVersion::latest())
@@ -95,9 +95,9 @@ impl AssetStore for R2AssetStore {
         name = "assets.put",
         skip(self, bytes),
         fields(
-            relay.asset.bytes = bytes.len(),
-            relay.asset.content_type = content_type.as_mime(),
-            relay.asset.key = %key,
+            patom.asset.bytes = bytes.len(),
+            patom.asset.content_type = content_type.as_mime(),
+            patom.asset.key = %key,
         )
     )]
     async fn put(
@@ -132,7 +132,7 @@ impl AssetStore for R2AssetStore {
         self.build_public_url(&key)
     }
 
-    #[instrument(name = "assets.delete", skip(self), fields(relay.asset.key = %key))]
+    #[instrument(name = "assets.delete", skip(self), fields(patom.asset.key = %key))]
     async fn delete(&self, key: ObjectKey) -> Result<(), AssetError> {
         let del = self
             .client

@@ -3,9 +3,9 @@
 //! Layered key model:
 //!
 //! ```text
-//!   RELAY_MASTER_KEK (32 bytes, env)
+//!   PATOM_MASTER_KEK (32 bytes, env)
 //!         │
-//!         │  HKDF-SHA256 (salt = org_id.as_bytes(), info = b"relay-mcp-cred-v1")
+//!         │  HKDF-SHA256 (salt = org_id.as_bytes(), info = b"patom-mcp-cred-v1")
 //!         ▼
 //!   per-org KEK (32 bytes, cached in process memory, Zeroized on drop)
 //!         │
@@ -16,7 +16,7 @@
 //!
 //! `key_version` is stamped on every record so a future master-KEK rotation
 //! can carry the old key alongside the new one and re-encrypt rows lazily.
-//! v1 is "the master KEK in `RELAY_MASTER_KEK`"; future versions add more
+//! v1 is "the master KEK in `PATOM_MASTER_KEK`"; future versions add more
 //! entries to the [`Versions`] map.
 //!
 //! Threat model. The DB-only attacker who reads `mcp_server_credentials` rows
@@ -62,9 +62,9 @@ pub const CURRENT_KEY_VERSION: i16 = 1;
 
 /// HKDF info parameter for per-org KEK derivation. Bound to v1 of the key
 /// schedule; if the derivation rule changes (e.g. add a tenant-tier byte) we
-/// rotate to `relay-mcp-cred-v2` so old rows cannot accidentally decrypt
+/// rotate to `patom-mcp-cred-v2` so old rows cannot accidentally decrypt
 /// under a new schedule.
-const KEK_INFO: &[u8] = b"relay-mcp-cred-v1";
+const KEK_INFO: &[u8] = b"patom-mcp-cred-v1";
 
 /// One sealed record. Encoded inline into BYTEA columns or split into
 /// `(ciphertext, nonce, key_version)` triples depending on the table.

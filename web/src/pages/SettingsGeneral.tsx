@@ -197,7 +197,7 @@ export function SettingsGeneral() {
             helper={t("settings.general.identity.slug.helper")}
           >
             <PrefixInput
-              prefix="relay.app/"
+              prefix="patom.app/"
               value={slug}
               onChange={(e) => {
                 const v = e.target.value;

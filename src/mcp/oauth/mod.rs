@@ -5,7 +5,7 @@
 //!      server: probe `/.well-known/oauth-protected-resource` (RFC 9728),
 //!      follow `authorization_servers[0]` and fetch
 //!      `/.well-known/oauth-authorization-server` (RFC 8414).
-//!   2. **Dynamic Client Registration** — register Relay as an OAuth
+//!   2. **Dynamic Client Registration** — register Patom as an OAuth
 //!      client against the discovered AS via RFC 7591, store the
 //!      resulting `client_id` and encrypted `client_secret` per
 //!      `(org_id, issuer)` so subsequent flows reuse them.

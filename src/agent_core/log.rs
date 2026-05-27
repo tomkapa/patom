@@ -1,7 +1,7 @@
 //! Per-turn DEBUG logging of assistant blocks and tool results.
 //!
 //! Mirrors what the SSE observer streams. Demoted off the default INFO
-//! console — investigate with `RUST_LOG=relay_rs=debug`.
+//! console — investigate with `RUST_LOG=patom_rs=debug`.
 
 use tracing::{debug, info};
 
@@ -25,8 +25,8 @@ pub(super) fn assistant_block(turn: u32, block: &AssistantContent) {
         AssistantContent::ToolCall(call) => debug!(
             turn,
             kind = "tool_call",
-            relay.tool = %call.name,
-            relay.tool.call_id = call.id.as_str(),
+            patom.tool = %call.name,
+            patom.tool.call_id = call.id.as_str(),
             input.preview = %preview(&call.input.to_string()),
             "agent.turn.assistant",
         ),
@@ -39,14 +39,14 @@ pub(super) fn tool_result(turn: u32, result: &ToolResult) {
     if result.is_error {
         info!(
             turn,
-            relay.tool.call_id = result.call_id.as_str(),
+            patom.tool.call_id = result.call_id.as_str(),
             output.preview = %preview(&result.output),
             "agent.turn.tool_result.err",
         );
     } else {
         debug!(
             turn,
-            relay.tool.call_id = result.call_id.as_str(),
+            patom.tool.call_id = result.call_id.as_str(),
             output.preview = %preview(&result.output),
             "agent.turn.tool_result.ok",
         );

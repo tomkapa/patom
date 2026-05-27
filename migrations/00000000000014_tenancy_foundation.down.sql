@@ -19,8 +19,8 @@ DROP TABLE IF EXISTS user_identities;
 DROP TABLE IF EXISTS users;
 
 -- Drop the RLS role last. `DROP OWNED` removes any per-schema default
--- privileges that still reference `relay_app`; `DROP ROLE` then
--- removes the role itself. `relay_app` is database-wide (NOT
+-- privileges that still reference `patom_app`; `DROP ROLE` then
+-- removes the role itself. `patom_app` is database-wide (NOT
 -- per-schema), so this only runs once even though every schema-pinned
 -- test re-runs the migration set.
 --
@@ -31,18 +31,18 @@ DROP TABLE IF EXISTS users;
 DO $$
 DECLARE s text := current_schema();
 BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'relay_app') THEN
-        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE ALL ON TABLES FROM relay_app', s);
-        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE ALL ON FUNCTIONS FROM relay_app', s);
-        EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM relay_app', s);
-        EXECUTE format('REVOKE ALL ON ALL FUNCTIONS IN SCHEMA %I FROM relay_app', s);
-        EXECUTE format('REVOKE USAGE ON SCHEMA %I FROM relay_app', s);
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'patom_app') THEN
+        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE ALL ON TABLES FROM patom_app', s);
+        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE ALL ON FUNCTIONS FROM patom_app', s);
+        EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM patom_app', s);
+        EXECUTE format('REVOKE ALL ON ALL FUNCTIONS IN SCHEMA %I FROM patom_app', s);
+        EXECUTE format('REVOKE USAGE ON SCHEMA %I FROM patom_app', s);
         -- DROP OWNED clears default-privileges and any grants in *this*
-        -- schema that still mention relay_app, satisfying DROP ROLE's
+        -- schema that still mention patom_app, satisfying DROP ROLE's
         -- "no dependent objects" precondition.
         BEGIN
-            EXECUTE 'DROP OWNED BY relay_app';
-            EXECUTE 'DROP ROLE relay_app';
+            EXECUTE 'DROP OWNED BY patom_app';
+            EXECUTE 'DROP ROLE patom_app';
         EXCEPTION
             WHEN dependent_objects_still_exist THEN
                 -- Other test schemas still reference the role; the last

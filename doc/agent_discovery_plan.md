@@ -1,6 +1,6 @@
 # Agent Discovery & Network
 
-How agents find each other in a relay-rs deployment, and how the
+How agents find each other in a patom-rs deployment, and how the
 collaborator network grows. Companion to [`memory.md`](./memory.md) and
 [`pitch_demo.md`](./pitch_demo.md).
 
@@ -298,7 +298,7 @@ This commits us to:
 ### Name uniqueness scope
 
 Globally unique on `lower(name)`. Tenants are not yet a concept in
-relay-rs; when they land, uniqueness becomes tenant-scoped in the same
+patom-rs; when they land, uniqueness becomes tenant-scoped in the same
 migration that introduces the tenant boundary. Not a problem to solve
 twice.
 

@@ -47,18 +47,18 @@ impl Mailer for LogMailer {
         // emit only at DEBUG per CLAUDE.md §2 so production exporters
         // can strip them. INFO carries only the non-identifying shape
         // (which org, what role, which host the link points at). All
-        // custom attributes sit under the `relay.*` namespace.
-        let base = mail.web_base_url.unwrap_or("https://relay.app");
+        // custom attributes sit under the `patom.*` namespace.
+        let base = mail.web_base_url.unwrap_or("https://patom.app");
         tracing::info!(
             event = "org.invite.sent",
-            relay.org.slug = %mail.org_slug,
-            relay.invite.role = %mail.role.as_str(),
-            relay.invite.accept_url_host = %base,
+            patom.org.slug = %mail.org_slug,
+            patom.invite.role = %mail.role.as_str(),
+            patom.invite.accept_url_host = %base,
         );
         tracing::debug!(
             event = "org.invite.sent.token",
-            relay.invite.recipient = %mail.to,
-            relay.invite.token = mail.token.as_str(),
+            patom.invite.recipient = %mail.to,
+            patom.invite.token = mail.token.as_str(),
         );
     }
 }

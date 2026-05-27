@@ -14,7 +14,7 @@ pub const MAX_MCP_SERVERS: usize = 32;
 pub const MAX_TOOLS_PER_SERVER: usize = 64;
 
 /// Length cap on a remote MCP tool name (the name the server publishes
-/// before relay prefixes it with `mcp_<alias>_`).
+/// before patom prefixes it with `mcp_<alias>_`).
 ///
 /// Set to the `ToolName` cap so it can never exceed what `prefixed_name`
 /// would tolerate even if alias-prefix overhead were zero. The runtime

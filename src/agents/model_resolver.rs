@@ -61,10 +61,10 @@ impl ModelResolver for StaticAgentModelResolver {
                 // routable) and log loudly so operators can fix it.
                 tracing::warn!(
                     event = "agent.model.degraded",
-                    relay.agent.id = %record.id,
-                    relay.model.pinned = %m,
-                    relay.provider.missing = m.provider().as_str(),
-                    relay.model.fallback = %self.default,
+                    patom.agent.id = %record.id,
+                    patom.model.pinned = %m,
+                    patom.provider.missing = m.provider().as_str(),
+                    patom.model.fallback = %self.default,
                     "pinned model's provider not configured; falling back to workspace default"
                 );
                 self.default

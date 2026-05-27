@@ -23,14 +23,14 @@ use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use chrono_tz::Asia::Bangkok;
-use relay_rs::agents::{
+use patom_rs::agents::{
     AgentDescription, AgentId, AgentName, AgentSystemPrompt, AllowedMcpTools, NewAgent,
     SharedAgentStore,
 };
-use relay_rs::auth::{OrgId, UserId, begin_privileged};
-use relay_rs::clock::SystemClock;
-use relay_rs::runtime::{PgPromptQueue, SharedPromptQueue};
-use relay_rs::scheduling::{
+use patom_rs::auth::{OrgId, UserId, begin_privileged};
+use patom_rs::clock::SystemClock;
+use patom_rs::runtime::{PgPromptQueue, SharedPromptQueue};
+use patom_rs::scheduling::{
     NewScheduledTask, PgScheduledTaskStore, ScheduleSpec, ScheduledPrompt, ScheduledTaskId,
     ScheduledTaskName, ScheduledTaskScheduler, SharedScheduledTaskStore, TimeOfDay, Timezone,
     Weekdays,
@@ -45,7 +45,7 @@ struct AuthSchedHarness {
     agents: SharedAgentStore,
     store: SharedScheduledTaskStore,
     queue: SharedPromptQueue,
-    clock: relay_rs::clock::SharedClock,
+    clock: patom_rs::clock::SharedClock,
 }
 
 impl AuthSchedHarness {

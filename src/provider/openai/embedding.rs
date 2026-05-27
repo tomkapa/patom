@@ -79,9 +79,9 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
         name = "provider.openai.embed",
         skip_all,
         fields(
-            relay.embedding.provider = "openai-embedding",
-            relay.embedding.model = %self.model,
-            relay.embedding.batch_size = texts.len(),
+            patom.embedding.provider = "openai-embedding",
+            patom.embedding.model = %self.model,
+            patom.embedding.batch_size = texts.len(),
         ),
     )]
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ProviderError> {

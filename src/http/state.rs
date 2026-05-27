@@ -65,8 +65,8 @@ pub struct AppState {
     pub mcp_oauth_pending: SharedMcpOAuthPendingStore,
     /// HTTP client bundle that drives discovery / DCR / token exchange.
     pub mcp_oauth_flow: OAuthFlowClient,
-    /// Public-facing base URL Relay tells vendors to redirect back to.
-    /// E.g. `https://relay.example/mcp-oauth/callback` is built by
+    /// Public-facing base URL Patom tells vendors to redirect back to.
+    /// E.g. `https://patom.example/mcp-oauth/callback` is built by
     /// appending the canonical path to this base.
     pub oauth_redirect_base: std::sync::Arc<str>,
     /// Origin of the SPA (e.g. `http://localhost:5173` in dev). When
@@ -119,13 +119,13 @@ pub struct AppState {
     pub rule_resolver: SharedOrgRuleResolver,
     /// SPA dist path the `ServeDir` fallback reads from.
     pub web_dist: PathBuf,
-    /// Slack adapter wiring — `Some` when `RELAY_SLACK_*` env vars are
+    /// Slack adapter wiring — `Some` when `PATOM_SLACK_*` env vars are
     /// configured, `None` otherwise. Public webhook + OAuth handlers
     /// 404 cleanly when this is `None`, so deployments without Slack
     /// stay first-class.
     pub slack: Option<SlackAppState>,
     /// Object-storage seam for user avatars and MCP catalog icons.
-    /// `Some` when `RELAY_R2_*` env vars are configured; `None` makes
+    /// `Some` when `PATOM_R2_*` env vars are configured; `None` makes
     /// the upload routes 503 with "asset storage not configured".
     pub assets: Option<SharedAssetStore>,
     /// Workspace-settings store. Reads/writes `organizations`,

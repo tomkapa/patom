@@ -283,7 +283,7 @@ async fn create_in_tx(
     let now = store.now();
     let schedule_json = serde_json::to_value(&payload.schedule)?;
     let owner = payload.owner_agent_id;
-    let cap_label = format!("relay:sched_cap:{owner}");
+    let cap_label = format!("patom:sched_cap:{owner}");
 
     // Per-agent advisory lock — pg_advisory_xact_lock serializes
     // concurrent create-for-same-owner transactions so the count +

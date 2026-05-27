@@ -1,6 +1,6 @@
 # Pitch demo — Northstar Studio
 
-A B2B demo scenario for relay-rs targeting mid-market customers (10–100
+A B2B demo scenario for patom-rs targeting mid-market customers (10–100
 employees). The goal is to showcase **per-agent memory + per-agent tools
 + autonomous wake-ups + multi-agent collaboration** in a setting any
 prospective buyer recognises: a small digital agency running client
@@ -92,7 +92,7 @@ beat uses the built-in web tools — no MCP needed.
   reasoning about procurement cycles.
 - **Handoffs are explicit briefings, addressed by role.** Real org
   behaviour: the AE doesn't dump their brain into the strategist —
-  they write a handoff note. In relay-rs this is
+  they write a handoff note. In patom-rs this is
   `send_message {kind:"agent", name:"brand-strategist"}` with
   structured context; the receiving agent decides what's worth
   remembering and writes its own memory. The `Collaborator` memory kind
@@ -471,7 +471,7 @@ the public artefact.
 
 ### 4.6 Built-in tools cover research
 
-`web_fetch` and `web_search` are built into relay-rs and available to
+`web_fetch` and `web_search` are built into patom-rs and available to
 every agent without MCP wiring. The brand-strategist's "go look at
 Acme's existing site" beat in scenario 02, and any competitive research
 during the strategy brief, use these. No external fetch MCP needed.

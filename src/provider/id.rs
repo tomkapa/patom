@@ -1,4 +1,4 @@
-//! Closed enum of LLM providers Relay can talk to.
+//! Closed enum of LLM providers Patom can talk to.
 //!
 //! Used as the routing key inside [`crate::provider::ProviderRegistry`] and as
 //! the `provider` discriminator on the per-agent [`Model`](super::catalog::Model)
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::ParseError;
 
 /// Low-cardinality, stable identifier for a provider. Persisted as the catalog
-/// discriminator and used in tracing fields (`relay.provider`).
+/// discriminator and used in tracing fields (`patom.provider`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderId {

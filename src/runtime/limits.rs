@@ -131,4 +131,4 @@ pub const THREAD_PREVIEW_MAX_CHARS: u32 = 280;
 /// The response hub publishes here on every chunk insert; the fan-in
 /// subscriber attaches once per process. Single shared name; the JSON
 /// payload carries `(request_id, root_request_id, chunk_seq)`.
-pub const THREAD_NOTIFY_CHANNEL: &str = "relay_thread_chunk";
+pub const THREAD_NOTIFY_CHANNEL: &str = "patom_thread_chunk";

@@ -130,8 +130,8 @@ impl MemorySectionLoader {
                     Err(e) => {
                         warn!(
                             error = %e,
-                            relay.session.id = %session,
-                            relay.agent.id = %agent,
+                            patom.session.id = %session,
+                            patom.agent.id = %agent,
                             "memory.contextual.snapshot.error"
                         );
                         None
@@ -231,7 +231,7 @@ async fn retrieve_contextual(
     let query = match embed_one(embeddings, text).await {
         Ok(v) => v,
         Err(e) => {
-            warn!(error = %e, relay.agent.id = %agent, "memory.contextual.embed.error");
+            warn!(error = %e, patom.agent.id = %agent, "memory.contextual.embed.error");
             return Vec::new();
         }
     };
@@ -254,7 +254,7 @@ async fn retrieve_contextual(
     {
         Ok(scored) => scored.into_iter().map(|s| s.row).collect(),
         Err(e) => {
-            warn!(error = %e, relay.agent.id = %agent, "memory.contextual.search.error");
+            warn!(error = %e, patom.agent.id = %agent, "memory.contextual.search.error");
             Vec::new()
         }
     }

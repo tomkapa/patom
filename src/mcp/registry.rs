@@ -322,8 +322,8 @@ impl McpRegistryInner {
         // — a misconfigured deploy or a DB hand-edit shouldn't blow the budget here.
         if rows.len() > self.server_cap {
             warn!(
-                relay.mcp.rows = rows.len(),
-                relay.mcp.cap = self.server_cap,
+                patom.mcp.rows = rows.len(),
+                patom.mcp.cap = self.server_cap,
                 "mcp.refresh.cap_exceeded",
             );
         }
@@ -403,8 +403,8 @@ impl McpRegistryInner {
             Ok(t) => t,
             Err(e) => {
                 warn!(
-                    relay.mcp.server.id = %id,
-                    relay.mcp.server.catalog_id = %catalog_id,
+                    patom.mcp.server.id = %id,
+                    patom.mcp.server.catalog_id = %catalog_id,
                     error = %e,
                     "mcp.refresh.list_tools_failed",
                 );
@@ -469,8 +469,8 @@ impl McpRegistryInner {
                 // is unexpected (master KEK rotation gone wrong, or
                 // schema drift) and an operator needs to see it.
                 error!(
-                    relay.mcp.server.id = %id,
-                    relay.mcp.server.catalog_id = %catalog_id,
+                    patom.mcp.server.id = %id,
+                    patom.mcp.server.catalog_id = %catalog_id,
                     error = ?e,
                     "mcp.refresh.credential_load_failed",
                 );
@@ -524,8 +524,8 @@ impl McpRegistryInner {
             Ok(c) => Some(Arc::new(c)),
             Err(e) => {
                 warn!(
-                    relay.mcp.server.id = %id,
-                    relay.mcp.server.catalog_id = %catalog_id,
+                    patom.mcp.server.id = %id,
+                    patom.mcp.server.catalog_id = %catalog_id,
                     error = %e,
                     "mcp.refresh.connect_failed",
                 );
@@ -562,8 +562,8 @@ fn ingest_tools(
             Ok(n) => n,
             Err(e) => {
                 warn!(
-                    relay.mcp.server.catalog_id = %catalog_id,
-                    relay.mcp.tool.remote = %remote.name,
+                    patom.mcp.server.catalog_id = %catalog_id,
+                    patom.mcp.tool.remote = %remote.name,
                     error = %e,
                     "mcp.tool.name_too_long",
                 );
@@ -575,7 +575,7 @@ fn ingest_tools(
             // or duplicated remote name); skip the duplicate so registry building stays
             // total. Operators see the survivor in `discovered_tools`.
             warn!(
-                relay.tool = %prefixed,
+                patom.tool = %prefixed,
                 "mcp.tool.duplicate_skipped",
             );
             continue;
@@ -597,8 +597,8 @@ fn ingest_tools(
             Ok(n) => n,
             Err(e) => {
                 warn!(
-                    relay.mcp.server.catalog_id = %catalog_id,
-                    relay.mcp.tool.remote = %remote.name,
+                    patom.mcp.server.catalog_id = %catalog_id,
+                    patom.mcp.tool.remote = %remote.name,
                     error = %e,
                     "mcp.tool.remote_name_invalid",
                 );

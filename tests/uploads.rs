@@ -15,19 +15,19 @@
 
 use std::sync::Arc;
 
-use relay_rs::assets::{InMemoryAssetStore, SharedAssetStore};
-use relay_rs::auth::OrgId;
-use relay_rs::clock::SystemClock;
-use relay_rs::http::{AppState, router};
-use relay_rs::mcp::{
+use patom_rs::assets::{InMemoryAssetStore, SharedAssetStore};
+use patom_rs::auth::OrgId;
+use patom_rs::clock::SystemClock;
+use patom_rs::http::{AppState, router};
+use patom_rs::mcp::{
     McpRefresher, McpRegistry, PgMcpCatalogStore, PgMcpServerStore, SharedMcpCatalogStore,
     SharedMcpServerStore,
 };
-use relay_rs::runtime::{
+use patom_rs::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
     SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream,
 };
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -36,7 +36,7 @@ mod common;
 use common::auth::{SeededPrincipal, seed_principal};
 use common::pg::TestDb;
 
-const BOUNDARY: &str = "----relay-test-boundary";
+const BOUNDARY: &str = "----patom-test-boundary";
 
 /// Test helper — encode one multipart field carrying an image body.
 fn build_multipart(content_type: &str, body: &[u8]) -> Vec<u8> {
@@ -100,8 +100,8 @@ impl UploadsHarness {
                 .await
                 .expect("spawn thread stream");
 
-        let memory_store: relay_rs::memory::SharedMemoryStore =
-            Arc::new(relay_rs::memory::PgMemoryStore::new(
+        let memory_store: patom_rs::memory::SharedMemoryStore =
+            Arc::new(patom_rs::memory::PgMemoryStore::new(
                 pool.clone(),
                 clock.clone(),
                 common::embedding::FakeEmbeddingProvider::shared(),
@@ -125,22 +125,22 @@ impl UploadsHarness {
             mcp_store: mcp_store.clone(),
             mcp_catalog: mcp_catalog.clone(),
             mcp_refresh,
-            mcp_credentials: Arc::new(relay_rs::mcp::PgMcpCredentialStore::new(
+            mcp_credentials: Arc::new(patom_rs::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
                 clock.clone(),
-                Arc::new(relay_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
             )),
-            mcp_test_rate: relay_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
-            mcp_oauth_clients: Arc::new(relay_rs::mcp::oauth::PgMcpOAuthClientStore::new(
+            mcp_test_rate: patom_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
+            mcp_oauth_clients: Arc::new(patom_rs::mcp::oauth::PgMcpOAuthClientStore::new(
                 pool.clone(),
                 clock.clone(),
-                Arc::new(relay_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
             )),
-            mcp_oauth_pending: Arc::new(relay_rs::mcp::oauth::PgMcpOAuthPendingStore::new(
+            mcp_oauth_pending: Arc::new(patom_rs::mcp::oauth::PgMcpOAuthPendingStore::new(
                 pool.clone(),
                 clock.clone(),
             )),
-            mcp_oauth_flow: relay_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new())
+            mcp_oauth_flow: patom_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new())
                 .expect("oauth http"),
             oauth_redirect_base: Arc::from("http://localhost:8080"),
             web_base_url: None,
@@ -151,15 +151,15 @@ impl UploadsHarness {
             users,
             clock: clock.clone(),
             cookie_secure: false,
-            memberships: Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
+            memberships: Arc::new(patom_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
             rule_resolver: common::rule::empty_resolver(),
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets,
-            orgs: std::sync::Arc::new(relay_rs::orgs::PgOrgStore::new(pool.clone())),
-            mailer: std::sync::Arc::new(relay_rs::orgs::LogMailer),
+            orgs: std::sync::Arc::new(patom_rs::orgs::PgOrgStore::new(pool.clone())),
+            mailer: std::sync::Arc::new(patom_rs::orgs::LogMailer),
         };
 
         Self {

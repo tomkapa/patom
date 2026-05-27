@@ -1078,7 +1078,7 @@ impl TryFrom<PromptVersionRowDb> for PromptVersionRow {
 ///
 /// `edited_by_email` is the display label the diff modal renders for
 /// the "Edited by" meta cell — surfaced via a second-round privileged
-/// `users` lookup (migration 14 REVOKEs that table from `relay_app`,
+/// `users` lookup (migration 14 REVOKEs that table from `patom_app`,
 /// so the tenant-scoped query can't JOIN it). `None` for the v1 seed
 /// row or when the user has since been deleted.
 #[derive(Debug, Serialize)]
@@ -1150,7 +1150,7 @@ async fn list_agent_prompt_versions(
         .map(|r| PromptVersionRow::try_from(r).map(PromptVersionWire::from))
         .collect::<Result<Vec<_>, PromptVersionError>>()?;
 
-    // Identity tables are REVOKED from `relay_app` (migration 14), so
+    // Identity tables are REVOKED from `patom_app` (migration 14), so
     // the email enrichment runs as a second round-trip through the
     // privileged user store after the tenant tx commits — same pattern
     // as `list_mcp_servers` (src/http/routes/mcp.rs).

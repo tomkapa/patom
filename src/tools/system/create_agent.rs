@@ -155,9 +155,9 @@ impl CreateAgentTool {
         skip_all,
         name = "tool.create_agent",
         fields(
-            relay.from.viewer = %ctx.viewer,
-            relay.create_agent.outcome = tracing::field::Empty,
-            relay.create_agent.id = tracing::field::Empty,
+            patom.from.viewer = %ctx.viewer,
+            patom.create_agent.outcome = tracing::field::Empty,
+            patom.create_agent.id = tracing::field::Empty,
         ),
     )]
     async fn handle(&self, input: Input, ctx: &ToolCallContext) -> Result<Output, ToolError> {
@@ -231,11 +231,11 @@ impl CreateAgentTool {
         };
 
         tracing::Span::current()
-            .record("relay.create_agent.id", tracing::field::display(record.id));
+            .record("patom.create_agent.id", tracing::field::display(record.id));
         set_outcome(Outcome::Created);
         info!(
-            relay.agent.id = %record.id,
-            relay.agent.name = %record.name,
+            patom.agent.id = %record.id,
+            patom.agent.name = %record.name,
             "create_agent.created",
         );
         Ok(Output {
@@ -293,5 +293,5 @@ impl Outcome {
 }
 
 fn set_outcome(outcome: Outcome) {
-    tracing::Span::current().record("relay.create_agent.outcome", outcome.as_str());
+    tracing::Span::current().record("patom.create_agent.outcome", outcome.as_str());
 }

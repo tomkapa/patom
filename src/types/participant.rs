@@ -154,7 +154,7 @@ impl fmt::Display for Participant {
 crate::str_enum! {
     /// Tag-only side of [`Participant`]. The single source of truth for the
     /// `*_kind` column `CHECK` constraint, the JSON `kind` discriminator on
-    /// [`Participant`], and any future tracing attribute (`relay.participant.kind`).
+    /// [`Participant`], and any future tracing attribute (`patom.participant.kind`).
     pub enum ParticipantKind {
         Human  => "human",
         Agent  => "agent",

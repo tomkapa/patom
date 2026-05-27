@@ -16,16 +16,16 @@ use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use chrono_tz::Asia::Bangkok;
-use relay_rs::clock::{SharedClock, SystemClock};
-use relay_rs::runtime::{
+use patom_rs::clock::{SharedClock, SystemClock};
+use patom_rs::runtime::{
     IdempotencyKey, NewPromptRequest, PgPromptQueue, RequestKind, RequestStatus, SharedPromptQueue,
 };
-use relay_rs::scheduling::{
+use patom_rs::scheduling::{
     NewScheduledTask, PgScheduledTaskStore, ScheduleSpec, ScheduledPrompt, ScheduledTaskId,
     ScheduledTaskName, ScheduledTaskScheduler, ScheduledTaskState, SharedScheduledTaskStore,
     TimeOfDay, Timezone, Weekdays,
 };
-use relay_rs::types::{Participant, Prompt};
+use patom_rs::types::{Participant, Prompt};
 
 mod common;
 use common::pg::TestDb;

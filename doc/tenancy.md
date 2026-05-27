@@ -1,6 +1,6 @@
 # Tenancy — orgs, users, Google OAuth, Postgres RLS
 
-How relay-rs answers "whose row is this?" at every layer. Read top to
+How patom-rs answers "whose row is this?" at every layer. Read top to
 bottom on first contact; later edits should keep the prose terse and
 mechanism-first. The shipped code in `src/auth/`,
 `migrations/00000000000014–00000000000019_*.sql`, and the
@@ -40,7 +40,7 @@ migrations/
   00000000000014_tenancy_foundation.up.sql
     └─ users, user_identities, organizations, org_members,
        oauth_login_states; app_current_user_id() + app_user_is_member()
-       helpers; relay_app NOLOGIN role; mcp_servers retrofit
+       helpers; patom_app NOLOGIN role; mcp_servers retrofit
        (org_id NOT NULL, UNIQUE(org_id, alias), FORCE RLS, policy).
   00000000000015_agents_tenancy.up.sql
     └─ agents.org_id, per-org default + name uniqueness, RLS.
@@ -97,12 +97,12 @@ CREATE POLICY <tbl>_org_isolation ON <tbl>
     WITH CHECK (app_user_is_member(org_id));
 ```
 
-`FORCE` is non-negotiable: without it the table owner role (`relay` in
+`FORCE` is non-negotiable: without it the table owner role (`patom` in
 dev/tests, which is a superuser) bypasses every policy. Even with
 FORCE, Postgres superusers bypass RLS — so the app runs queries as
-`relay_app` (created in migration 14, `NOLOGIN`, no superuser bit).
+`patom_app` (created in migration 14, `NOLOGIN`, no superuser bit).
 The `auth::begin_as_user(pool, user_id)` helper does
-`SET LOCAL ROLE relay_app` after setting `app.user_id`. Privileged
+`SET LOCAL ROLE patom_app` after setting `app.user_id`. Privileged
 infrastructure paths (queue claim, scheduler scans) use
 `auth::begin_privileged` which `SET LOCAL row_security = off` (only
 works because the connection role *is* the owner — production should
@@ -169,7 +169,7 @@ task1.md:80 calls out).
 ## 4. Sign-in flow (Google OAuth Authorization Code + PKCE)
 
 ```text
-       Browser                    relay-rs                     Google
+       Browser                    patom-rs                     Google
           │                          │                            │
           │ GET /auth/google/login   │                            │
           │ ?return_to=/dashboard    │                            │
@@ -211,7 +211,7 @@ task1.md:80 calls out).
           │                          │ mint JWT(sub=user, org=…)  │
           │                          │                            │
           │ 302 to <return_to>       │                            │
-          │ Set-Cookie: relay_session=<jwt>;                       │
+          │ Set-Cookie: patom_session=<jwt>;                       │
           │   HttpOnly; SameSite=Lax; Secure?                      │
           │ ◀────────────────────────│                            │
 ```
@@ -266,7 +266,7 @@ cookie, deadlocking sign-in.
 
 ### `require_principal` middleware
 
-Reads `relay_session` cookie via `axum_extra::extract::CookieJar`,
+Reads `patom_session` cookie via `axum_extra::extract::CookieJar`,
 verifies the JWT, looks up the user's membership of the `org` claim
 (via `UserStore::membership`), inserts a `Principal` into the request's
 extensions, calls `next`. Failures collapse to
@@ -299,7 +299,7 @@ async fn list_mcp_servers(
 ### Cookie attributes
 
 `HttpOnly; Path=/; SameSite=Lax; Max-Age=604800` and `Secure` when
-`RELAY_COOKIE_SECURE=true`. `SameSite=Lax` blocks cross-site GETs
+`PATOM_COOKIE_SECURE=true`. `SameSite=Lax` blocks cross-site GETs
 (except top-level navigations — the OAuth callback works) but **does
 not** block same-site POSTs from a malicious page on the same eTLD+1.
 See §10 follow-ups about CSRF on `POST /auth/switch-org` and
@@ -313,7 +313,7 @@ The claim itself runs `begin_privileged` (cross-tenant scan). After
 claim, each worker-side mutation calls a `_for_user(user_id, …)` store
 variant that opens `auth::begin_as_user(pool, claim.created_by_user_id)`
 internally — so the write runs under `app.user_id = original human` +
-`relay_app` role. RLS fires. A worker can only write into the session
+`patom_app` role. RLS fires. A worker can only write into the session
 it was claim-bound to.
 
 The design decision worth remembering: we considered threading a single
@@ -496,7 +496,7 @@ options for v1:
   non-HttpOnly cookie; SPA echoes it in an `X-CSRF-Token` header;
   middleware compares.
 - **Origin/Referer check:** middleware rejects POSTs whose `Origin`
-  header is unset or doesn't match `RELAY_PUBLIC_ORIGIN`. Simpler, no
+  header is unset or doesn't match `PATOM_PUBLIC_ORIGIN`. Simpler, no
   client change.
 
 Pick before opening the SPA to public deploy. Origin-check is the
@@ -517,7 +517,7 @@ but should be revisited before public deploy.
 
 1. **Operator docs in README + a real-Google smoke test.** This file
    covers the *why*; README should have the operator "how" (where to
-   register a Google client, how to generate `RELAY_JWT_SECRET`, what
+   register a Google client, how to generate `PATOM_JWT_SECRET`, what
    to set for `GOOGLE_REDIRECT_URL` in dev vs prod).
 2. **CSRF for POST endpoints** (§10.6 above).
 3. **Integration tests for `/me`, `/auth/logout`, `/auth/switch-org`.**
@@ -527,7 +527,7 @@ but should be revisited before public deploy.
 4. **Tighten worker reads to `_for_user`.** Writes are RLS-enforced;
    reads still privileged. The cascade through the memory loader +
    agent name cache + parent_history is the work.
-5. **Server-side JWT revocation.** v1 = rotate `RELAY_JWT_SECRET` to
+5. **Server-side JWT revocation.** v1 = rotate `PATOM_JWT_SECRET` to
    invalidate everyone. v2 = a `revoked_jwts(jti, expires_at)` table
    checked in `require_principal`.
 6. **Sliding-window session refresh.** v1 = hard 7-day TTL → user
@@ -537,7 +537,7 @@ but should be revisited before public deploy.
    CHECK widens when they land. The store API
    (`upsert_from_google` → `upsert_from_oauth(provider, profile)`) is
    the seam to genericise.
-8. **Dedicated `relay_scheduler` BYPASSRLS role for production.** v1
+8. **Dedicated `patom_scheduler` BYPASSRLS role for production.** v1
    runs the scheduler as the table owner with `row_security` toggled
    per tx. Production with role separation should add a `BYPASSRLS`
    role for the scheduler-only paths.

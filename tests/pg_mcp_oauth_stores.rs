@@ -10,17 +10,17 @@
 
 use std::sync::Arc;
 
-use relay_rs::clock::SystemClock;
-use relay_rs::crypto::OrgEncryptor;
-use relay_rs::mcp::oauth::{
+use patom_rs::clock::SystemClock;
+use patom_rs::crypto::OrgEncryptor;
+use patom_rs::mcp::oauth::{
     ClientProvenance, McpOAuthClientStore, McpOAuthPendingStore, NewOAuthClient, OAuthClientId,
     PendingAuthorizationWrite, PgMcpOAuthClientStore, PgMcpOAuthPendingStore, TokenAuthMethod,
 };
-use relay_rs::mcp::{
+use patom_rs::mcp::{
     ConnectionStatus, McpCatalogId, McpHttpUrl, McpServerCreate, McpServerStore, McpTransport,
     PgMcpServerStore,
 };
-use relay_rs::types::SecretString;
+use patom_rs::types::SecretString;
 
 mod common;
 use common::pg::TestDb;
@@ -50,7 +50,7 @@ fn client_fixture(
     }
 }
 
-fn dcr_provenance(org_id: relay_rs::auth::OrgId) -> ClientProvenance {
+fn dcr_provenance(org_id: patom_rs::auth::OrgId) -> ClientProvenance {
     ClientProvenance::Dcr {
         org_id,
         registration_client_uri: None,
@@ -113,7 +113,7 @@ async fn oauth_client_dcr_upsert_is_idempotent_per_issuer() {
     assert_eq!(first.client_id.as_str(), "first-id");
 }
 
-async fn seed_server(db: &TestDb) -> relay_rs::mcp::McpServerId {
+async fn seed_server(db: &TestDb) -> patom_rs::mcp::McpServerId {
     let server_store = PgMcpServerStore::new(db.pool.clone(), SystemClock::shared());
     let row = server_store
         .create(McpServerCreate {
@@ -411,11 +411,11 @@ async fn shared_row_select_visible_to_org_member_under_rls() {
         .await
         .expect("seed shared");
 
-    // Run a SELECT under the org member's role (relay_app + app.user_id GUC).
+    // Run a SELECT under the org member's role (patom_app + app.user_id GUC).
     // The mcp_oauth_clients_select policy must admit `org_id IS NULL`
     // for any authenticated principal.
     let visible: i64 =
-        relay_rs::auth::run_as_user::<i64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
+        patom_rs::auth::run_as_user::<i64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
             let row: (i64,) = sqlx::query_as(
                 "SELECT count(*) FROM mcp_oauth_clients \
                  WHERE org_id IS NULL AND issuer = $1",
@@ -448,7 +448,7 @@ async fn shared_row_writes_blocked_by_rls_for_org_member() {
     // `org_id IS NOT NULL` so the shared row cannot be mutated by an
     // org member, only by the migration / seeder path (run_privileged).
     let updated: u64 =
-        relay_rs::auth::run_as_user::<u64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
+        patom_rs::auth::run_as_user::<u64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
             let res = sqlx::query(
                 "UPDATE mcp_oauth_clients SET client_id = 'tamper' \
                  WHERE org_id IS NULL AND issuer = $1",
@@ -464,7 +464,7 @@ async fn shared_row_writes_blocked_by_rls_for_org_member() {
 
     // DELETE likewise must affect zero rows.
     let deleted: u64 =
-        relay_rs::auth::run_as_user::<u64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
+        patom_rs::auth::run_as_user::<u64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
             let res =
                 sqlx::query("DELETE FROM mcp_oauth_clients WHERE org_id IS NULL AND issuer = $1")
                     .bind(issuer)
@@ -477,7 +477,7 @@ async fn shared_row_writes_blocked_by_rls_for_org_member() {
     assert_eq!(deleted, 0, "org member must not DELETE shared rows");
 
     // The row is still there.
-    let still: i64 = relay_rs::auth::run_privileged::<i64, sqlx::Error>(&db.pool, async |tx| {
+    let still: i64 = patom_rs::auth::run_privileged::<i64, sqlx::Error>(&db.pool, async |tx| {
         let row: (i64,) =
             sqlx::query_as("SELECT count(*) FROM mcp_oauth_clients WHERE org_id IS NULL")
                 .fetch_one(&mut **tx)

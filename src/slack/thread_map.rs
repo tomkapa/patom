@@ -1,11 +1,11 @@
-//! Slack-thread ↔ Relay-session bridge — `slack_threads` table.
+//! Slack-thread ↔ Patom-session bridge — `slack_threads` table.
 //!
 //! Two lookups, both privileged (no Principal — events arrive
 //! workspace-keyed):
 //! - `lookup_by_thread` for the inbound path: given a Slack
 //!   `(team, channel, thread_ts)` triple, find an existing session or
 //!   return `None` (caller starts a fresh session).
-//! - `lookup_by_session` for the outbound stream pump: given a Relay
+//! - `lookup_by_session` for the outbound stream pump: given a Patom
 //!   `session_id`, find which Slack thread (if any) this session is
 //!   bound to. One row per session — the DAG may carry multiple
 //!   `(agent, human)` sessions, each pinned to its own Slack thread.
@@ -29,7 +29,7 @@ use crate::session::SessionId;
 use super::error::SlackError;
 use super::types::{SlackChannelId, SlackTeamId, SlackThreadTs};
 
-/// Existing Slack-thread → Relay-session mapping.
+/// Existing Slack-thread → Patom-session mapping.
 #[derive(Debug, Clone, Copy)]
 pub struct ThreadMapping {
     pub org_id: OrgId,

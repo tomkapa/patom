@@ -149,7 +149,7 @@ export function SettingsIntegrations() {
             eyebrow="BYTEDANCE SUITE"
             description="Native bot for Feishu / Lark groups. Slash commands plus interactive cards backed by Lark Open Platform."
             features={[
-              "/relay slash commands",
+              "/patom slash commands",
               "Group chat installation",
               "Open Platform OAuth",
               "Multi-tenant support",
@@ -290,7 +290,7 @@ function SlackRow({
         </span>
         <div>
           <Kbd className="h-auto px-2.5 py-1 text-[13px] font-medium text-[var(--color-ink)]">
-            /relay
+            /patom
           </Kbd>
         </div>
       </div>

@@ -42,7 +42,7 @@ import { useAuthStore } from "../stores/authStore";
 
 // Wire-protocol constants — keep in sync with src/auth/limits.rs
 // (`CSRF_COOKIE_NAME`, `CSRF_HEADER_NAME`).
-const CSRF_COOKIE = "relay_csrf";
+const CSRF_COOKIE = "patom_csrf";
 const CSRF_HEADER = "X-CSRF-Token";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 

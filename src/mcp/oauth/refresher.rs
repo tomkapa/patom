@@ -40,7 +40,7 @@ use super::store::SharedMcpOAuthClientStore;
 const OAUTH_REFRESH_TICK: Duration = Duration::from_secs(60);
 
 /// Refresh tokens that expire within this window. Wide enough to absorb
-/// one missed tick + clock skew between Relay and the AS.
+/// one missed tick + clock skew between Patom and the AS.
 pub const OAUTH_REFRESH_SKEW: Duration = Duration::from_secs(120);
 
 /// Per-tick cap on the number of refreshes; protects against an
@@ -208,7 +208,7 @@ async fn run_one_tick(
             Ok(p) => p,
             Err(e) => {
                 warn!(
-                    relay.mcp.server.id = %row.server_id,
+                    patom.mcp.server.id = %row.server_id,
                     error = %e,
                     "mcp.oauth.refresh.decode_failed",
                 );
@@ -221,7 +221,7 @@ async fn run_one_tick(
         due += 1;
         if let Err(e) = refresh_one(deps, cache, row.server_id, row.org_id, &payload, now).await {
             warn!(
-                relay.mcp.server.id = %row.server_id,
+                patom.mcp.server.id = %row.server_id,
                 error = %e,
                 "mcp.oauth.refresh.failed",
             );
@@ -302,8 +302,8 @@ async fn refresh_one(
                 .await
                 .map_err(OAuthError::Mcp)?;
             tracing::info!(
-                relay.mcp.server.id = %server_id,
-                relay.mcp.oauth.refresh.decision = "refreshed",
+                patom.mcp.server.id = %server_id,
+                patom.mcp.oauth.refresh.decision = "refreshed",
                 "mcp.oauth.refresh.ok",
             );
             Ok(())
@@ -337,8 +337,8 @@ async fn mark_reconnect_required(
     })
     .await?;
     tracing::warn!(
-        relay.mcp.server.id = %server_id,
-        relay.mcp.oauth.refresh.decision = "revoked",
+        patom.mcp.server.id = %server_id,
+        patom.mcp.oauth.refresh.decision = "revoked",
         reason,
         "mcp.oauth.refresh.reconnect_required",
     );

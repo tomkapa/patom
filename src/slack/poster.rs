@@ -75,7 +75,7 @@ impl PostBody {
 ///
 /// `thread_ts` is `Some(_)` for the common case — an agent reply that
 /// must thread under the user's originating message. It is `None`
-/// only for the `/relay` slash command's synthetic prompt mirror,
+/// only for the `/patom` slash command's synthetic prompt mirror,
 /// which lands as a top-level channel post to become the thread root
 /// itself. Slack's `chat.postMessage` API omits the `thread_ts` field
 /// from the wire body in that case.

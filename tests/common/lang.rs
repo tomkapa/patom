@@ -12,11 +12,11 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use relay_rs::agents::AgentId;
-use relay_rs::auth::{
+use patom_rs::agents::AgentId;
+use patom_rs::auth::{
     Language, LanguageResolverError, OrgLanguageResolver, SharedOrgLanguageResolver,
 };
-use relay_rs::prompts::Prompts;
+use patom_rs::prompts::Prompts;
 
 #[derive(Debug)]
 pub struct StaticOrgLanguageResolver {

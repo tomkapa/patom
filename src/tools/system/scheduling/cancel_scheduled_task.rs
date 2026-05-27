@@ -91,7 +91,7 @@ impl Tool for CancelScheduledTaskTool {
     #[tracing::instrument(
         skip_all,
         name = "tool.cancel_scheduled_task",
-        fields(relay.from.viewer = %ctx.viewer),
+        fields(patom.from.viewer = %ctx.viewer),
     )]
     async fn execute(&self, input: Value, ctx: &ToolCallContext) -> Result<String, ToolError> {
         let parsed: Input = serde_json::from_value(input)?;
@@ -108,7 +108,7 @@ impl Tool for CancelScheduledTaskTool {
         // here and fold into `NotFound` exactly like the cross-owner
         // case.
         let tenancy = self.sessions.tenancy(ctx.session_id).await.map_err(|e| {
-            warn!(error = %e, relay.session.id = %ctx.session_id,
+            warn!(error = %e, patom.session.id = %ctx.session_id,
                 "cancel_scheduled_task.session_lookup_failed");
             ToolError::Backend(format!("cancel_scheduled_task: session lookup: {e}"))
         })?;
@@ -131,7 +131,7 @@ impl Tool for CancelScheduledTaskTool {
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
-            warn!(error = %e, relay.scheduled_task.id = %parsed.task_id,
+            warn!(error = %e, patom.scheduled_task.id = %parsed.task_id,
                 "cancel_scheduled_task.visibility_check_failed");
             ToolError::Backend(format!("cancel_scheduled_task: visibility: {e}"))
         })?;
@@ -150,8 +150,8 @@ impl Tool for CancelScheduledTaskTool {
         {
             Ok(()) => {
                 info!(
-                    relay.scheduled_task.id = %parsed.task_id,
-                    relay.agent.id = %owner,
+                    patom.scheduled_task.id = %parsed.task_id,
+                    patom.agent.id = %owner,
                     "cancel_scheduled_task.cancelled",
                 );
                 Ok(serde_json::to_string(&Output {
@@ -165,7 +165,7 @@ impl Tool for CancelScheduledTaskTool {
                 parsed.task_id
             ))),
             Err(e) => {
-                warn!(error = %e, relay.scheduled_task.id = %parsed.task_id,
+                warn!(error = %e, patom.scheduled_task.id = %parsed.task_id,
                     "cancel_scheduled_task.failed");
                 Err(ToolError::Backend(format!("cancel_scheduled_task: {e}")))
             }

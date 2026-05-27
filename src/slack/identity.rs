@@ -1,4 +1,4 @@
-//! Slack-user ↔ Relay-user link — `slack_identities` table.
+//! Slack-user ↔ Patom-user link — `slack_identities` table.
 //!
 //! Phase 1 ships with no per-user linking: `lookup` falls back to the
 //! workspace's `installed_by_user_id` whenever there's no explicit
@@ -18,7 +18,7 @@ use crate::clock::SharedClock;
 use super::error::SlackError;
 use super::types::{SlackTeamId, SlackUserId};
 
-/// Resolved Relay-side identity for an inbound Slack event.
+/// Resolved Patom-side identity for an inbound Slack event.
 #[derive(Debug, Clone, Copy)]
 pub struct LinkedIdentity {
     pub user_id: UserId,
@@ -37,7 +37,7 @@ pub trait SlackIdentityStore: fmt::Debug + Send + Sync {
         slack_user_id: &SlackUserId,
     ) -> Result<Option<LinkedIdentity>, SlackError>;
 
-    /// Establish the link from a signed-in Relay user to a Slack user
+    /// Establish the link from a signed-in Patom user to a Slack user
     /// id. Used by the Phase 2 linking flow (issue #41).
     async fn link(
         &self,

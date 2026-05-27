@@ -3,7 +3,7 @@
 //! Surface (Phase 1):
 //! - `POST /slack/events` — public webhook; verifies HMAC, acks `200` in
 //!   <3s, hands off to the bridge worker via a bounded mpsc.
-//! - `POST /slack/commands` — public; receives `/relay` slash command
+//! - `POST /slack/commands` — public; receives `/patom` slash command
 //!   invocations and opens the agent-picker modal via `views.open`.
 //! - `POST /slack/interactions` — public; receives modal
 //!   `view_submission`, enqueues the prompt, and binds the thread.

@@ -55,9 +55,9 @@ opaque rejection on every `tools/call`, same success on `tools/list`.
 - **Stale grant cache.** Revoked the grant on
   `myaccount.google.com/permissions` and re-granted — same outcome.
 - **MCP `initialize` handshake.** Skipping `initialize` from the
-  curl tests didn't change the rejection; the relay's `rmcp` client
+  curl tests didn't change the rejection; the patom's `rmcp` client
   does the handshake correctly and gets the same rejection.
-- **Token transport bug in relay.** A live test of Anthropic's
+- **Token transport bug in patom.** A live test of Anthropic's
   first-party Gmail MCP integration in the same Claude Code session
   succeeded against the same `gmailmcp.googleapis.com/mcp/v1` URL,
   returning real Gmail labels. Confirmed the endpoint accepts
@@ -83,7 +83,7 @@ registration.
 
 ## Solution
 
-We do not depend on the gateway. Relay forwards the user's bearer
+We do not depend on the gateway. Patom forwards the user's bearer
 to a **self-hosted MCP server** that calls Google's GA APIs
 (`gmail.googleapis.com`, `calendar.googleapis.com`) directly. The
 GA APIs are not in preview and accept our existing token (we
@@ -110,28 +110,28 @@ evidence of malware against the actual repo.
 ### Architecture
 
 ```
-Browser ─┬─→ Relay (OAuth start) ─→ accounts.google.com (consent)
+Browser ─┬─→ Patom (OAuth start) ─→ accounts.google.com (consent)
          ↓
-         Relay (callback, stores bearer in mcp_oauth_credentials)
+         Patom (callback, stores bearer in mcp_oauth_credentials)
          ↓
-Agent ──→ Relay MCP client ──→ Cloudflare tunnel ──→ Sidecar
+Agent ──→ Patom MCP client ──→ Cloudflare tunnel ──→ Sidecar
                                                        ↓
                                                        gmail.googleapis.com
                                                        calendar.googleapis.com
 ```
 
-Bearer flow: relay reads from `mcp_oauth_credentials`, attaches
+Bearer flow: patom reads from `mcp_oauth_credentials`, attaches
 `Authorization: Bearer …` on every MCP request
 ([src/mcp/client.rs:149](../src/mcp/client.rs)). The sidecar trusts
 it (because `EXTERNAL_OAUTH21_PROVIDER=true`) and forwards. No code
-change in relay required to switch.
+change in patom required to switch.
 
 ### UX after the swap
 
 End-user experience is identical to the gateway path:
 
 1. Org owner opens **Connections → Gmail** → clicks Connect.
-2. Browser hits Google's consent screen, branded "Relay", showing
+2. Browser hits Google's consent screen, branded "Patom", showing
    only the Gmail scopes.
 3. Allow → redirects back → connection card flips to **Connected**.
 4. Separate Connect on Calendar repeats the flow with the Calendar
@@ -143,7 +143,7 @@ End-user experience is identical to the gateway path:
 
 ### Two sidecar instances vs one
 
-Relay's catalog model is one MCP server URL per integration. Two
+Patom's catalog model is one MCP server URL per integration. Two
 ways to honour that with `taylorwilsdon`:
 
 - **Recommended (clean):** Two sidecar containers, each with

@@ -12,17 +12,17 @@
 
 use std::sync::Arc;
 
-use relay_rs::agents::{AgentName, AgentSystemPrompt, NewAgent, SharedAgentStore};
-use relay_rs::clock::{SharedClock, SystemClock};
-use relay_rs::http::{AppState, router};
-use relay_rs::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
-use relay_rs::runtime::{
+use patom_rs::agents::{AgentName, AgentSystemPrompt, NewAgent, SharedAgentStore};
+use patom_rs::clock::{SharedClock, SystemClock};
+use patom_rs::http::{AppState, router};
+use patom_rs::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
+use patom_rs::runtime::{
     IdempotencyKey, NewPromptRequest, PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream,
     SharedDagBudget, SharedLeaseManager, SharedPromptQueue, SharedResponseSink,
     SharedResponseSource, SharedThreadStream,
 };
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
-use relay_rs::types::{Participant, Prompt};
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::types::{Participant, Prompt};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -65,8 +65,8 @@ impl PromptsHarness {
 
         let mcp_store: SharedMcpServerStore =
             Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
-        let mcp_catalog: relay_rs::mcp::SharedMcpCatalogStore =
-            Arc::new(relay_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
+        let mcp_catalog: patom_rs::mcp::SharedMcpCatalogStore =
+            Arc::new(patom_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
         let mcp_registry = McpRegistry::new(mcp_store.clone(), clock.clone());
         let (refresher, mcp_refresh) = McpRefresher::spawn(mcp_registry);
 
@@ -75,8 +75,8 @@ impl PromptsHarness {
                 .await
                 .expect("spawn thread stream");
 
-        let memory_store: relay_rs::memory::SharedMemoryStore =
-            Arc::new(relay_rs::memory::PgMemoryStore::new(
+        let memory_store: patom_rs::memory::SharedMemoryStore =
+            Arc::new(patom_rs::memory::PgMemoryStore::new(
                 pool.clone(),
                 clock.clone(),
                 common::embedding::FakeEmbeddingProvider::shared(),
@@ -101,23 +101,23 @@ impl PromptsHarness {
             mcp_store,
             mcp_catalog,
             mcp_refresh,
-            mcp_credentials: std::sync::Arc::new(relay_rs::mcp::PgMcpCredentialStore::new(
+            mcp_credentials: std::sync::Arc::new(patom_rs::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
                 clock.clone(),
-                std::sync::Arc::new(relay_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                std::sync::Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
             )),
-            mcp_test_rate: relay_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
+            mcp_test_rate: patom_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
             mcp_oauth_clients: std::sync::Arc::new(
-                relay_rs::mcp::oauth::PgMcpOAuthClientStore::new(
+                patom_rs::mcp::oauth::PgMcpOAuthClientStore::new(
                     pool.clone(),
                     clock.clone(),
-                    std::sync::Arc::new(relay_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                    std::sync::Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
                 ),
             ),
             mcp_oauth_pending: std::sync::Arc::new(
-                relay_rs::mcp::oauth::PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()),
+                patom_rs::mcp::oauth::PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()),
             ),
-            mcp_oauth_flow: relay_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new())
+            mcp_oauth_flow: patom_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new())
                 .expect("oauth http"),
             oauth_redirect_base: std::sync::Arc::from("http://localhost:8080"),
             web_base_url: None,
@@ -128,15 +128,15 @@ impl PromptsHarness {
             users,
             clock: clock.clone(),
             cookie_secure: false,
-            memberships: std::sync::Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
+            memberships: std::sync::Arc::new(patom_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
             rule_resolver: common::rule::empty_resolver(),
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets: None,
-            orgs: std::sync::Arc::new(relay_rs::orgs::PgOrgStore::new(pool.clone())),
-            mailer: std::sync::Arc::new(relay_rs::orgs::LogMailer),
+            orgs: std::sync::Arc::new(patom_rs::orgs::PgOrgStore::new(pool.clone())),
+            mailer: std::sync::Arc::new(patom_rs::orgs::LogMailer),
         };
 
         Self {
@@ -149,16 +149,16 @@ impl PromptsHarness {
         }
     }
 
-    async fn create_agent(&self, name: &str) -> relay_rs::agents::AgentId {
+    async fn create_agent(&self, name: &str) -> patom_rs::agents::AgentId {
         self.agents
             .create(NewAgent {
                 org_id: self.db.default_org_id,
                 name: AgentName::try_from(name).expect("name"),
                 system_prompt: AgentSystemPrompt::try_from("test prompt").expect("prompt"),
-                description: relay_rs::agents::AgentDescription::try_from("test agent")
+                description: patom_rs::agents::AgentDescription::try_from("test agent")
                     .expect("desc"),
                 is_default: false,
-                allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::empty(),
+                allowed_mcp_tools: patom_rs::agents::AllowedMcpTools::empty(),
                 model: None,
                 edited_by: None,
             })
@@ -183,7 +183,7 @@ async fn post_json(
                 .header("content-type", "application/json")
                 .header("cookie", cookie)
                 .header(
-                    relay_rs::auth::limits::CSRF_HEADER_NAME,
+                    patom_rs::auth::limits::CSRF_HEADER_NAME,
                     common::auth::TEST_CSRF_TOKEN,
                 )
                 .body(axum::body::Body::from(body.to_string()))
@@ -226,7 +226,7 @@ async fn followup_with_session_id_routes_to_session_agent() {
             idempotency_key: IdempotencyKey::try_from("k-root").expect("key"),
             org_id: h.db.default_org_id,
             created_by_user_id: h.db.default_user_id,
-            kind_payload: relay_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue root");

@@ -204,14 +204,14 @@ impl Worker {
     async fn run(self) {
         loop {
             if self.shutdown.is_cancelled() {
-                debug!(relay.worker.id = %self.id, "worker.shutdown");
+                debug!(patom.worker.id = %self.id, "worker.shutdown");
                 return;
             }
             match self.queue.claim_next_session(self.id).await {
                 Ok(Some(claim)) => self.handle_claim(claim).await,
                 Ok(None) => self.idle().await,
                 Err(e) => {
-                    warn!(relay.worker.id = %self.id, error = %e, "worker.claim.error");
+                    warn!(patom.worker.id = %self.id, error = %e, "worker.claim.error");
                     self.idle().await;
                 }
             }
@@ -231,11 +231,11 @@ impl Worker {
         // for tasks spawned outside an open root.
         let span = tracing::info_span!(
             "worker.handle_claim",
-            relay.worker.id = %self.id,
-            relay.session.id = %claim.session,
-            relay.agent.id = %claim.receiver_agent_id,
-            relay.batch_size = claim.prompts.len(),
-            relay.turn_seq = claim.lease.turn_seq().get(),
+            patom.worker.id = %self.id,
+            patom.session.id = %claim.session,
+            patom.agent.id = %claim.receiver_agent_id,
+            patom.batch_size = claim.prompts.len(),
+            patom.turn_seq = claim.lease.turn_seq().get(),
         );
         // Stitch onto the producer's trace so an agent-chain conversation
         // shows up as one connected waterfall.
@@ -267,7 +267,7 @@ impl Worker {
             Err(e) => {
                 warn!(
                     error = %e,
-                    relay.agent.id = %claim.receiver_agent_id,
+                    patom.agent.id = %claim.receiver_agent_id,
                     "worker.agent.resolve.error",
                 );
                 let reason = FailureReason::Unrecoverable(format!("agent resolve: {e}"));
@@ -361,20 +361,20 @@ impl Worker {
                 }
                 self.post_turn_for_kind(claim, &reply).await;
                 info!(
-                    relay.session.id = %claim.session,
-                    relay.agent.id = %claim.receiver_agent_id,
-                    relay.request.kind = claim.kind_payload.kind().as_str(),
-                    relay.send_message.calls = reply.send_message_calls(),
+                    patom.session.id = %claim.session,
+                    patom.agent.id = %claim.receiver_agent_id,
+                    patom.request.kind = claim.kind_payload.kind().as_str(),
+                    patom.send_message.calls = reply.send_message_calls(),
                     "worker.background.ok",
                 );
             }
             Ok(Err(e)) => {
-                warn!(error = %e, relay.request.kind = claim.kind_payload.kind().as_str(), "worker.background.error");
+                warn!(error = %e, patom.request.kind = claim.kind_payload.kind().as_str(), "worker.background.error");
                 self.finalise(receipt, FailureReason::Provider(e.to_string()))
                     .await;
             }
             Err(_elapsed) => {
-                warn!(relay.session.id = %claim.session, relay.request.kind = claim.kind_payload.kind().as_str(), "worker.background.timeout");
+                warn!(patom.session.id = %claim.session, patom.request.kind = claim.kind_payload.kind().as_str(), "worker.background.timeout");
                 self.finalise(receipt, FailureReason::Timeout).await;
             }
         }
@@ -462,12 +462,12 @@ impl Worker {
                     )
                     .await
                 {
-                    warn!(error = %e, relay.contradiction.id = %target, "worker.resolution.close.error");
+                    warn!(error = %e, patom.contradiction.id = %target, "worker.resolution.close.error");
                 }
             }
             Ok(_) => {}
             Err(e) => {
-                warn!(error = %e, relay.contradiction.id = %target, "worker.resolution.read.error");
+                warn!(error = %e, patom.contradiction.id = %target, "worker.resolution.read.error");
             }
         }
     }
@@ -563,8 +563,8 @@ impl Worker {
                 Ok(Ok(reply)) if reply.send_message_calls() == 0 => {
                     if retries >= MAX_PINGPONG_RETRIES {
                         warn!(
-                            relay.session.id = %claim.session,
-                            relay.pingpong.retries = retries,
+                            patom.session.id = %claim.session,
+                            patom.pingpong.retries = retries,
                             text.preview = %preview(reply.final_text()),
                             "worker.turn.no_egress.exceeded",
                         );
@@ -575,8 +575,8 @@ impl Worker {
                     }
                     retries += 1;
                     info!(
-                        relay.session.id = %claim.session,
-                        relay.pingpong.retries = retries,
+                        patom.session.id = %claim.session,
+                        patom.pingpong.retries = retries,
                         text.preview = %preview(reply.final_text()),
                         "worker.turn.no_egress.retried",
                     );
@@ -600,7 +600,7 @@ impl Worker {
                     return;
                 }
                 Err(_elapsed) => {
-                    warn!(relay.session.id = %claim.session, "worker.turn.timeout");
+                    warn!(patom.session.id = %claim.session, "worker.turn.timeout");
                     self.publish_failure(receipt, &FailureReason::Timeout).await;
                     self.finalise(receipt, FailureReason::Timeout).await;
                     return;
@@ -688,9 +688,9 @@ impl Worker {
 
     async fn handle_success(&self, receipt: &ClaimReceipt, reply: AgentReply) {
         info!(
-            relay.session.id = %receipt.lease().session(),
+            patom.session.id = %receipt.lease().session(),
             bytes = reply.final_text().len(),
-            relay.send_message.calls = reply.send_message_calls(),
+            patom.send_message.calls = reply.send_message_calls(),
             text.preview = %preview(reply.final_text()),
             "worker.turn.ok",
         );
@@ -721,7 +721,7 @@ impl Worker {
             | AgentError::EmptyReply) => FailureReason::Provider(e.to_string()),
         };
         warn!(
-            relay.session.id = %receipt.lease().session(),
+            patom.session.id = %receipt.lease().session(),
             reason = reason.label(),
             detail = %reason,
             "worker.turn.error",
@@ -770,7 +770,7 @@ impl Worker {
         let root = match self.sessions.root_request_id(session).await {
             Ok(r) => r,
             Err(e) => {
-                warn!(error = %e, relay.session.id = %session, "worker.quiescence.root_lookup.error");
+                warn!(error = %e, patom.session.id = %session, "worker.quiescence.root_lookup.error");
                 return;
             }
         };
@@ -790,20 +790,20 @@ impl Worker {
                     {
                         // Synthetic ids that never opened a stream (test
                         // harness) surface as NotFound; benign no-op.
-                        debug!(error = %e, relay.request.id = %id, "worker.quiescence.publish.skipped");
+                        debug!(error = %e, patom.request.id = %id, "worker.quiescence.publish.skipped");
                         continue;
                     }
                     if let Err(e) = self.sink.close_for_user(user_id, *id).await {
-                        debug!(error = %e, relay.request.id = %id, "worker.quiescence.close.skipped");
+                        debug!(error = %e, patom.request.id = %id, "worker.quiescence.close.skipped");
                     }
                 }
-                info!(relay.dag.root = %root, "worker.quiescence.done");
+                info!(patom.dag.root = %root, "worker.quiescence.done");
             }
             Ok(false) => {
-                debug!(relay.dag.root = %root, "worker.quiescence.live");
+                debug!(patom.dag.root = %root, "worker.quiescence.live");
             }
             Err(e) => {
-                warn!(error = %e, relay.dag.root = %root, "worker.quiescence.query.error");
+                warn!(error = %e, patom.dag.root = %root, "worker.quiescence.query.error");
             }
         }
     }
@@ -854,7 +854,7 @@ impl Worker {
                             .find(|v| v.cancellation_requested || v.status.is_terminal())
                         {
                             debug!(
-                                relay.request.id = %view.request_id,
+                                patom.request.id = %view.request_id,
                                 "worker.cancel_watcher.fire",
                             );
                             cancel.cancel();

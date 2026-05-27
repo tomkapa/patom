@@ -96,7 +96,7 @@ impl Agent {
             .await?;
 
         let tool_calls = response.tool_calls();
-        tracing::Span::current().record("relay.tool_calls.count", tool_calls.len());
+        tracing::Span::current().record("patom.tool_calls.count", tool_calls.len());
         if tool_calls.is_empty() {
             let text = response.text();
             if text.is_empty() {
@@ -180,9 +180,9 @@ impl Agent {
             OutputTokens::try_from(response.usage.output_tokens),
         ) else {
             tracing::error!(
-                relay.request.id = %request_id,
-                relay.tokens.input = response.usage.input_tokens,
-                relay.tokens.output = response.usage.output_tokens,
+                patom.request.id = %request_id,
+                patom.tokens.input = response.usage.input_tokens,
+                patom.tokens.output = response.usage.output_tokens,
                 "turn_metrics.skip.token_overflow: provider reported counts that don't fit i32",
             );
             return;
@@ -215,7 +215,7 @@ impl Agent {
         if let Err(e) = binding.store.record(row).await {
             tracing::error!(
                 error = ?e,
-                relay.request.id = %request_id,
+                patom.request.id = %request_id,
                 "turn_metrics.record.failed",
             );
         }
@@ -262,14 +262,14 @@ impl Agent {
         skip_all,
         name = "session.context.build",
         fields(
-            relay.session.id = %session,
-            relay.viewer = %viewer,
-            relay.viewer.kind = viewer_kind(viewer),
-            relay.history.count = tracing::field::Empty,
-            relay.parent_session.included = tracing::field::Empty,
-            relay.parent_session.history.count = tracing::field::Empty,
-            relay.system_prompt.bytes = tracing::field::Empty,
-            relay.messages.count = tracing::field::Empty,
+            patom.session.id = %session,
+            patom.viewer = %viewer,
+            patom.viewer.kind = viewer_kind(viewer),
+            patom.history.count = tracing::field::Empty,
+            patom.parent_session.included = tracing::field::Empty,
+            patom.parent_session.history.count = tracing::field::Empty,
+            patom.system_prompt.bytes = tracing::field::Empty,
+            patom.messages.count = tracing::field::Empty,
         ),
     )]
     async fn build_chat_request(
@@ -285,7 +285,7 @@ impl Agent {
             !own.is_empty(),
             "session must contain at least the user prompt"
         );
-        span.record("relay.history.count", own.len());
+        span.record("patom.history.count", own.len());
 
         // Prepend the immediate parent session's history when the viewer
         // participates in the parent — i.e. the agent's own conversation
@@ -297,8 +297,8 @@ impl Agent {
             .sessions()
             .parent_history_for_viewer(session, viewer)
             .await?;
-        span.record("relay.parent_session.included", !parent.is_empty());
-        span.record("relay.parent_session.history.count", parent.len());
+        span.record("patom.parent_session.included", !parent.is_empty());
+        span.record("patom.parent_session.history.count", parent.len());
 
         let mut messages: Vec<ChatMessage> = Vec::with_capacity(parent.len() + own.len());
         messages.extend(parent);
@@ -331,8 +331,8 @@ impl Agent {
         } else {
             std::sync::Arc::from(format!("{memory_system}\n{todos_block}").as_str())
         };
-        span.record("relay.system_prompt.bytes", system.len());
-        span.record("relay.messages.count", messages.len());
+        span.record("patom.system_prompt.bytes", system.len());
+        span.record("patom.messages.count", messages.len());
 
         let tools = self.tools().specs_for(kind);
         Ok(ChatRequest {
@@ -444,7 +444,7 @@ impl Agent {
         if let Err(e) = store.record(row).await {
             tracing::error!(
                 error = ?e,
-                relay.tool = %call.name,
+                patom.tool = %call.name,
                 "tool_calls.record.failed",
             );
         }
@@ -493,8 +493,8 @@ impl Agent {
             gen_ai.operation.name = "execute_tool",
             gen_ai.tool.name = %call.name,
             gen_ai.tool.call.id = %call.id.as_str(),
-            relay.tool = %call.name,
-            relay.session.id = %tool_ctx.session_id.as_uuid(),
+            patom.tool = %call.name,
+            patom.session.id = %tool_ctx.session_id.as_uuid(),
         ),
     )]
     async fn run_one_tool(
@@ -507,7 +507,7 @@ impl Agent {
     ) -> ToolResult {
         let id = call.id.clone();
         let Some(tool) = tool else {
-            warn!(relay.tool = %call.name, "tool.unknown");
+            warn!(patom.tool = %call.name, "tool.unknown");
             return error_result(
                 id,
                 format!(
@@ -529,7 +529,7 @@ impl Agent {
             Ok(Ok(output)) => {
                 if output.len() > TOOL_RESULT_MAX_BYTES {
                     warn!(
-                        relay.tool = %call.name,
+                        patom.tool = %call.name,
                         bytes = output.len(),
                         cap = TOOL_RESULT_MAX_BYTES,
                         "tool.result.too_large",
@@ -544,7 +544,7 @@ impl Agent {
                         ),
                     );
                 }
-                debug!(relay.tool = %call.name, bytes = output.len(), "tool.result.ok");
+                debug!(patom.tool = %call.name, bytes = output.len(), "tool.result.ok");
                 ToolResult {
                     call_id: id,
                     output,
@@ -552,11 +552,11 @@ impl Agent {
                 }
             }
             Ok(Err(e)) => {
-                warn!(relay.tool = %call.name, error = %e, "tool.result.err");
+                warn!(patom.tool = %call.name, error = %e, "tool.result.err");
                 error_result(id, e.to_string())
             }
             Err(_) => {
-                warn!(relay.tool = %call.name, "tool.timeout");
+                warn!(patom.tool = %call.name, "tool.timeout");
                 error_result(id, format!("tool `{}` timed out", call.name))
             }
         }

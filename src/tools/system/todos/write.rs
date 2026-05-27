@@ -142,9 +142,9 @@ impl Tool for TodoWriteTool {
         // span. Low-cardinality name, dynamic values on fields.
         let span = info_span!(
             "tool.todo_write",
-            relay.session.id = %ctx.session_id,
-            relay.request.id = %ctx.request_id,
-            relay.todo.count = tracing::field::Empty,
+            patom.session.id = %ctx.session_id,
+            patom.request.id = %ctx.request_id,
+            patom.todo.count = tracing::field::Empty,
         );
         async move {
             let parsed: Input = serde_json::from_value(input).map_err(|e| {
@@ -160,7 +160,7 @@ impl Tool for TodoWriteTool {
                 ToolError::InvalidInput(e.to_string())
             })?;
             let count = list.len();
-            tracing::Span::current().record("relay.todo.count", count);
+            tracing::Span::current().record("patom.todo.count", count);
             let stored = self
                 .deps
                 .store
@@ -177,7 +177,7 @@ impl Tool for TodoWriteTool {
                     store_to_tool_err(e)
                 })?;
 
-            debug!(event = "todo_write.ok", relay.todo.count = count);
+            debug!(event = "todo_write.ok", patom.todo.count = count);
 
             let out = Output {
                 items: stored,

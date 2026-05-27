@@ -19,7 +19,7 @@ use super::super::url::{FetchUrl, UrlError, check_host};
 /// matches `text/html`, and `application/xhtml+xml` covers the rare strict case.
 const HTML_MIME_PREFIXES: [&str; 2] = ["text/html", "application/xhtml+xml"];
 
-const FETCH_USER_AGENT: &str = concat!("relay-rs/", env!("CARGO_PKG_VERSION"));
+const FETCH_USER_AGENT: &str = concat!("patom-rs/", env!("CARGO_PKG_VERSION"));
 const FETCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Fetch the body of a single HTTPS URL.
@@ -105,7 +105,7 @@ impl Tool for WebFetchTool {
         true
     }
 
-    #[instrument(name = "tool.web_fetch", skip_all, fields(relay.tool = "web_fetch"))]
+    #[instrument(name = "tool.web_fetch", skip_all, fields(patom.tool = "web_fetch"))]
     async fn execute(&self, input: Value, _ctx: &ToolCallContext) -> Result<String, ToolError> {
         let Input { url } = serde_json::from_value(input)
             .map_err(|e| ToolError::InvalidInput(format!("web_fetch: {e}")))?;

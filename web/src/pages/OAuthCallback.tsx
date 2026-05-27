@@ -18,7 +18,7 @@ type View = "connecting" | "authorized" | "failed";
 type DiagramState = "pending" | "ok" | "error";
 type Step = "redirected" | "awaiting" | "discover";
 
-const RELAY_TILE = { bg: "#FAF7EE", fg: "#1A2B1E", glyph: "R", label: "Relay" } as const;
+const PATOM_TILE = { bg: "#FAF7EE", fg: "#1A2B1E", glyph: "R", label: "Patom" } as const;
 
 const WATCHDOG_MS = 30_000;
 const AUTO_REDIRECT_MS = 3_200;
@@ -278,7 +278,7 @@ function FailedView({
   );
 }
 
-type RelayTile = { bg: string; fg: string; glyph: string; label: string };
+type PatomTile = { bg: string; fg: string; glyph: string; label: string };
 
 type VendorTile = {
   label: "Vendor";
@@ -344,7 +344,7 @@ function Diagram({
 }) {
   return (
     <div className="flex items-center gap-5">
-      <RelayTileView tile={RELAY_TILE} />
+      <PatomTileView tile={PATOM_TILE} />
       <div className="flex w-[120px] items-center">
         <div className="h-px flex-1 bg-[var(--color-line)]" />
         <Hub state={state} />
@@ -355,7 +355,7 @@ function Diagram({
   );
 }
 
-function RelayTileView({ tile }: { tile: RelayTile }) {
+function PatomTileView({ tile }: { tile: PatomTile }) {
   return (
     <div className="flex flex-col items-center gap-2">
       <Monogram

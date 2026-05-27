@@ -48,7 +48,7 @@ export function InviteModal({
   const canSend = validChips.length > 0 && !invite.isPending;
 
   const shareLink = latestToken
-    ? `relay.app/i/${orgSlug}/${latestToken}`
+    ? `patom.app/i/${orgSlug}/${latestToken}`
     : null;
 
   const onSend = async () => {
@@ -138,7 +138,7 @@ export function InviteModal({
                 strokeWidth={1.75}
               />
               <div className="min-w-0 truncate font-[var(--font-mono)] text-[12px] text-[var(--color-ink)]">
-                {shareLink ?? `relay.app/i/${orgSlug}/…`}
+                {shareLink ?? `patom.app/i/${orgSlug}/…`}
               </div>
             </div>
             <button

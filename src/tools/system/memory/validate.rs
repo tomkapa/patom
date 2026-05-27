@@ -148,10 +148,10 @@ impl Tool for MemoryValidateTool {
             .map_err(store_to_tool_err)?;
 
         debug!(
-            relay.session.id = %ctx.session_id,
-            relay.agent.id = %agent,
-            relay.memory.id = %row.id,
-            relay.memory.state = row.state.as_str(),
+            patom.session.id = %ctx.session_id,
+            patom.agent.id = %agent,
+            patom.memory.id = %row.id,
+            patom.memory.state = row.state.as_str(),
             "memory_validate.ok",
         );
 

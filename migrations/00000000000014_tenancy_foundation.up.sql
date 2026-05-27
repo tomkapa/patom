@@ -81,7 +81,7 @@ $$;
 
 -- SECURITY DEFINER so the membership read runs with the function
 -- owner's privileges (the table owner) regardless of the calling role.
--- This is what lets us REVOKE access to `org_members` from `relay_app`
+-- This is what lets us REVOKE access to `org_members` from `patom_app`
 -- below — the RLS policy still evaluates correctly because the helper
 -- isn't subject to the caller's grants. STABLE keeps the planner able
 -- to fold repeated calls within a query.
@@ -96,7 +96,7 @@ $$;
 -- Lock the function's search_path to the schema it was created in so
 -- a search-path attack can't redirect `org_members` to a different
 -- table. Dynamic SQL because per-test schema-pinned setups create
--- the function in a `relay_test_*` schema, not `public`.
+-- the function in a `patom_test_*` schema, not `public`.
 DO $$
 DECLARE s text := current_schema();
 BEGIN
@@ -107,19 +107,19 @@ $$;
 -- ───────────────────────────────────────────────────────────────────────────
 -- RLS-enforcing role.
 --
--- The default app role (`relay` in dev / tests) is a superuser, and
+-- The default app role (`patom` in dev / tests) is a superuser, and
 -- Postgres superusers bypass RLS unconditionally — even with
 -- FORCE ROW LEVEL SECURITY. To make tenant-scoped requests actually
 -- subject to policies we drop privileges per-transaction via
--- `SET LOCAL ROLE relay_app` inside `auth::begin_as`. Granting CRUD on
+-- `SET LOCAL ROLE patom_app` inside `auth::begin_as`. Granting CRUD on
 -- the relevant tables to this role lets the queries succeed; the policy
 -- then provides the isolation.
 -- ───────────────────────────────────────────────────────────────────────────
 
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'relay_app') THEN
-        CREATE ROLE relay_app NOLOGIN;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'patom_app') THEN
+        CREATE ROLE patom_app NOLOGIN;
     END IF;
 END
 $$;
@@ -130,8 +130,8 @@ $$;
 -- hard-coding `public`).
 --
 -- The identity tables (`users`, `user_identities`, `org_members`,
--- `oauth_login_states`) are then explicitly REVOKEd from `relay_app`
--- so a tenant-scoped tx (which always runs as `relay_app`) cannot
+-- `oauth_login_states`) are then explicitly REVOKEd from `patom_app`
+-- so a tenant-scoped tx (which always runs as `patom_app`) cannot
 -- read or write the auth surface — including PKCE verifier rows. The
 -- `auth::PgUserStore` reaches these tables through `begin_privileged`
 -- (table owner, RLS off) instead. Future identity tables get the
@@ -139,15 +139,15 @@ $$;
 DO $$
 DECLARE s text := current_schema();
 BEGIN
-    EXECUTE format('GRANT USAGE ON SCHEMA %I TO relay_app', s);
-    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO relay_app', s);
-    EXECUTE format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %I TO relay_app', s);
-    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO relay_app', s);
-    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT EXECUTE ON FUNCTIONS TO relay_app', s);
-    EXECUTE format('REVOKE ALL ON TABLE %I.users FROM relay_app', s);
-    EXECUTE format('REVOKE ALL ON TABLE %I.user_identities FROM relay_app', s);
-    EXECUTE format('REVOKE ALL ON TABLE %I.org_members FROM relay_app', s);
-    EXECUTE format('REVOKE ALL ON TABLE %I.oauth_login_states FROM relay_app', s);
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO patom_app', s);
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO patom_app', s);
+    EXECUTE format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %I TO patom_app', s);
+    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO patom_app', s);
+    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT EXECUTE ON FUNCTIONS TO patom_app', s);
+    EXECUTE format('REVOKE ALL ON TABLE %I.users FROM patom_app', s);
+    EXECUTE format('REVOKE ALL ON TABLE %I.user_identities FROM patom_app', s);
+    EXECUTE format('REVOKE ALL ON TABLE %I.org_members FROM patom_app', s);
+    EXECUTE format('REVOKE ALL ON TABLE %I.oauth_login_states FROM patom_app', s);
 END
 $$;
 
@@ -156,9 +156,9 @@ $$;
 -- the `citext` type from citext). Without this, an `INSERT` whose
 -- parameter list references `$N::vector` fails at parse time with
 -- "type vector does not exist" when the connection's role is
--- `relay_app`. The grant is global to the role, not per-schema, so
+-- `patom_app`. The grant is global to the role, not per-schema, so
 -- it survives across the test-DB's many schemas.
-GRANT USAGE ON SCHEMA public TO relay_app;
+GRANT USAGE ON SCHEMA public TO patom_app;
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- mcp_servers: full org_id retrofit + RLS as the end-to-end probe.

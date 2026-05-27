@@ -6,7 +6,7 @@
 //! Desktop's Gmail connector — one OAuth client owned by the platform
 //! operator, reused across every tenant — collapses the per-tenant
 //! "register a Google Cloud project" UX wart into zero clicks for end
-//! users. Relay borrows the pattern.
+//! users. Patom borrows the pattern.
 //!
 //! Concretely: at boot, [`seed_shared_clients`] reads
 //! [`AuthSettings`][crate::config::AuthSettings] for any provider whose
@@ -127,7 +127,7 @@ pub async fn seed_shared_clients(store: &SharedMcpOAuthClientStore, auth: &AuthS
         match upsert_one(store, spec).await {
             Ok(()) => {
                 tracing::info!(
-                    relay.oauth.shared.issuer = %issuer,
+                    patom.oauth.shared.issuer = %issuer,
                     event = "mcp.oauth.shared.seeded",
                 );
             }
@@ -138,7 +138,7 @@ pub async fn seed_shared_clients(store: &SharedMcpOAuthClientStore, auth: &AuthS
                 // structured-Debug error field still matches the
                 // CLAUDE.md §2 telemetry contract.
                 tracing::warn!(
-                    relay.oauth.shared.issuer = %issuer,
+                    patom.oauth.shared.issuer = %issuer,
                     error = ?e,
                     event = "mcp.oauth.shared.seed_failed",
                 );
@@ -146,7 +146,7 @@ pub async fn seed_shared_clients(store: &SharedMcpOAuthClientStore, auth: &AuthS
         }
     }
     tracing::debug!(
-        relay.oauth.shared.specs = count,
+        patom.oauth.shared.specs = count,
         "shared-client seeder finished"
     );
 }

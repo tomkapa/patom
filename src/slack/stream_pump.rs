@@ -89,7 +89,7 @@ pub struct AttachRequest {
     pub thread_ts: SlackThreadTs,
     /// The Slack user who originated this thread. Threaded into any
     /// Connect-button URL minted for `WireMcpRequest` chunks so the
-    /// `GET /slack/mcp/connect` handler can resolve the relay user
+    /// `GET /slack/mcp/connect` handler can resolve the patom user
     /// the credential should write under.
     pub slack_user_id: SlackUserId,
     /// The session this pump is bound to. Threaded into the Connect
@@ -145,7 +145,7 @@ pub struct PumpDeps {
     /// Connect button URLs. Shared with `oauth.rs`'s state-token
     /// signing — same secret, same TTL.
     pub signing_secret: SecretString,
-    /// Public-facing relay base URL (no trailing slash) the Connect
+    /// Public-facing patom base URL (no trailing slash) the Connect
     /// button URL is built against. Same value as `oauth_redirect_base`
     /// on `AppState`.
     pub connect_url_base: Arc<str>,
@@ -202,7 +202,7 @@ async fn supervisor(
                 let live_for_task = Arc::clone(&live);
                 let span = info_span!(
                     "slack.stream_pump",
-                    relay.dag.root = %root,
+                    patom.dag.root = %root,
                     slack.team = %req.team_id,
                     slack.channel = %req.channel_id,
                 );
@@ -398,7 +398,7 @@ async fn dispatch_post(
         Err(e) => {
             warn!(
                 error = ?e,
-                relay.session.id = %session_id,
+                patom.session.id = %session_id,
                 event = "slack.stream_pump.lookup_failed",
             );
             return;
@@ -438,7 +438,7 @@ async fn dispatch_post(
     // bind the session to the returned `ts`.
     if *minted_threads >= MAX_SLACK_THREADS_PER_DAG_ROOT {
         warn!(
-            relay.session.id = %session_id,
+            patom.session.id = %session_id,
             slack.minted = *minted_threads,
             event = "slack.stream_pump.mint_capped",
         );
@@ -462,7 +462,7 @@ async fn dispatch_post(
         Err(e) => {
             warn!(
                 error = ?e,
-                relay.session.id = %session_id,
+                patom.session.id = %session_id,
                 event = "slack.stream_pump.mint_post_failed",
             );
             return;
@@ -474,7 +474,7 @@ async fn dispatch_post(
         Err(e) => {
             warn!(
                 error = ?e,
-                relay.session.id = %session_id,
+                patom.session.id = %session_id,
                 event = "slack.stream_pump.mint_anchor_invalid",
             );
             return;
@@ -494,7 +494,7 @@ async fn dispatch_post(
     {
         warn!(
             error = ?e,
-            relay.session.id = %session_id,
+            patom.session.id = %session_id,
             event = "slack.stream_pump.bind_failed",
         );
         return;
@@ -555,7 +555,7 @@ fn payload_for_post(chunk: &ResponseChunk, connect_url: Option<&str>) -> Option<
             let blocks =
                 build_connection_request_card(reason, display_name, *auth_kind, connect_url);
             Some(PostBody::Blocks {
-                fallback_text: format!("Relay agent requested {display_name} connection"),
+                fallback_text: format!("Patom agent requested {display_name} connection"),
                 blocks,
             })
         }
@@ -574,7 +574,7 @@ fn payload_for_post(chunk: &ResponseChunk, connect_url: Option<&str>) -> Option<
 /// Mint a signed `GET /slack/mcp/connect?token=...` URL for the
 /// Connect button. The token binds the catalog being wired, the Slack
 /// thread context (so the OAuth callback can post the "✓ Connected"
-/// ping back), and the relay session + originating agent (so the
+/// ping back), and the patom session + originating agent (so the
 /// universal auto-continue can resume the right agent loop).
 fn build_connect_url(
     deps: &PumpDeps,
@@ -741,7 +741,7 @@ mod tests {
         };
         let body = payload_for_post(
             &chunk,
-            Some("https://relay.example/slack/mcp/connect?token=abc"),
+            Some("https://patom.example/slack/mcp/connect?token=abc"),
         )
         .expect("some");
         match body {
@@ -767,7 +767,7 @@ mod tests {
             auth_kind: McpAuthKind::StaticHeaders,
             homepage_url: None,
         };
-        let body = payload_for_post(&chunk, Some("https://relay.example/x")).expect("some");
+        let body = payload_for_post(&chunk, Some("https://patom.example/x")).expect("some");
         if let PostBody::Blocks { blocks, .. } = body {
             assert_eq!(blocks[1]["type"], "context");
         } else {

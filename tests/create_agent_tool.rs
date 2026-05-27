@@ -8,14 +8,14 @@
 
 #![allow(clippy::expect_used)]
 
-use relay_rs::agents::{AgentName, AllowedMcpTools, SharedAgentStore, ToolScope};
-use relay_rs::clock::SystemClock;
-use relay_rs::mcp::McpCatalogId;
-use relay_rs::runtime::{PromptRequestId, RequestKindPayload};
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
-use relay_rs::tools::system::CreateAgentTool;
-use relay_rs::tools::{Tool, ToolCallContext, ToolError};
-use relay_rs::types::Participant;
+use patom_rs::agents::{AgentName, AllowedMcpTools, SharedAgentStore, ToolScope};
+use patom_rs::clock::SystemClock;
+use patom_rs::mcp::McpCatalogId;
+use patom_rs::runtime::{PromptRequestId, RequestKindPayload};
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::tools::system::CreateAgentTool;
+use patom_rs::tools::{Tool, ToolCallContext, ToolError};
+use patom_rs::types::Participant;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -27,8 +27,8 @@ struct Fixture {
     tool: CreateAgentTool,
     agents: SharedAgentStore,
     ctx: ToolCallContext,
-    viewer_agent_id: relay_rs::agents::AgentId,
-    org_id: relay_rs::auth::OrgId,
+    viewer_agent_id: patom_rs::agents::AgentId,
+    org_id: patom_rs::auth::OrgId,
 }
 
 async fn fixture(db: &TestDb) -> Fixture {

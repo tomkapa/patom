@@ -15,7 +15,7 @@ use super::error::ProviderError;
 ///   agent layer wraps every call in `tokio::time::timeout`).
 #[async_trait]
 pub trait LlmProvider: fmt::Debug + Send + Sync {
-    /// Identifier used in tracing fields (`relay.provider`). Low-cardinality, stable.
+    /// Identifier used in tracing fields (`patom.provider`). Low-cardinality, stable.
     fn name(&self) -> &'static str;
 
     async fn send(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError>;

@@ -2,7 +2,7 @@
 //!
 //! Flow:
 //! 1. After authentication (OAuth callback, `/me`, `/auth/switch-org`)
-//!    the response sets a non-HttpOnly `relay_csrf` cookie carrying a
+//!    the response sets a non-HttpOnly `patom_csrf` cookie carrying a
 //!    fresh random token.
 //! 2. The SPA reads the cookie via `document.cookie` and echoes the
 //!    value in the `X-CSRF-Token` header on every state-changing
@@ -55,7 +55,7 @@ pub(super) fn mint_csrf_token() -> String {
     CsrfToken::new_random().secret().clone()
 }
 
-/// Build the `relay_csrf` cookie. `secure` mirrors the same flag used
+/// Build the `patom_csrf` cookie. `secure` mirrors the same flag used
 /// for the session cookie; `ttl_secs` keeps the CSRF cookie aligned
 /// with the session JWT so they expire together. NOT HttpOnly — the
 /// SPA must read this value via `document.cookie`.

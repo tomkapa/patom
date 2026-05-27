@@ -53,12 +53,12 @@ impl ToolCallStore for PgToolCallStore {
         skip_all,
         name = "tool_calls.record",
         fields(
-            relay.session.id = %row.session_id,
-            relay.agent.id = %row.agent_id,
-            relay.tool = %row.tool_name,
-            relay.mcp.server.id = row.mcp_server_id.map(tracing::field::display),
-            relay.tool.is_error = row.is_error,
-            relay.tool.duration_ms = tracing::field::Empty,
+            patom.session.id = %row.session_id,
+            patom.agent.id = %row.agent_id,
+            patom.tool = %row.tool_name,
+            patom.mcp.server.id = row.mcp_server_id.map(tracing::field::display),
+            patom.tool.is_error = row.is_error,
+            patom.tool.duration_ms = tracing::field::Empty,
         ),
     )]
     async fn record(&self, row: ToolCallRow) -> Result<(), ToolCallStoreError> {
@@ -69,7 +69,7 @@ impl ToolCallStore for PgToolCallStore {
             "tool_calls invariant: error_message set on a successful row"
         );
         let duration_ms = saturating_duration_ms(row.duration.as_millis())?;
-        tracing::Span::current().record("relay.tool.duration_ms", duration_ms);
+        tracing::Span::current().record("patom.tool.duration_ms", duration_ms);
 
         let created_at = self.clock.now_utc();
         let error_message = row.error_message.as_deref();

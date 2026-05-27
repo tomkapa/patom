@@ -397,7 +397,7 @@ async fn fetch_prompt_version(
     .await?;
     row.ok_or_else(|| {
         tracing::error!(
-            relay.prompt_version.id = %prompt_version_id,
+            patom.prompt_version.id = %prompt_version_id,
             "turn_detail.prompt_version.missing: turn_metrics row references an \
              unresolvable agent_prompt_versions parent",
         );

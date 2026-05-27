@@ -86,7 +86,7 @@ pub type PendingAuthorization = super::store::PendingAuthorization;
     name = "mcp.oauth.dcr",
     skip_all,
     fields(
-        relay.mcp.oauth.issuer = %as_metadata.issuer,
+        patom.mcp.oauth.issuer = %as_metadata.issuer,
     ),
 )]
 pub async fn register_dynamic_client(
@@ -125,7 +125,7 @@ pub async fn register_dynamic_client(
     };
 
     let body = DcrRequest {
-        client_name: "Relay",
+        client_name: "Patom",
         redirect_uris: vec![redirect_uri.to_owned()],
         grant_types: vec!["authorization_code".into(), "refresh_token".into()],
         response_types: vec!["code".into()],
@@ -260,7 +260,7 @@ pub fn build_authorize_url(
     name = "mcp.oauth.exchange",
     skip_all,
     fields(
-        relay.mcp.oauth.issuer = %client.issuer,
+        patom.mcp.oauth.issuer = %client.issuer,
     ),
 )]
 pub async fn exchange_code(
@@ -346,7 +346,7 @@ pub enum RefreshOutcome {
     name = "mcp.oauth.refresh",
     skip_all,
     fields(
-        relay.mcp.oauth.issuer = %client.issuer,
+        patom.mcp.oauth.issuer = %client.issuer,
     ),
 )]
 pub async fn refresh_oauth_token(
@@ -427,7 +427,7 @@ mod tests {
         let extras: &[(&str, &str)] = &[("access_type", "offline"), ("prompt", "consent")];
         let start = build_authorize_url(
             &client("https://accounts.google.com"),
-            "https://relay.test/cb",
+            "https://patom.test/cb",
             Some("openid"),
             extras,
         )
@@ -446,7 +446,7 @@ mod tests {
     fn empty_extras_produce_no_extra_params() {
         let start = build_authorize_url(
             &client("https://mcp.notion.com"),
-            "https://relay.test/cb",
+            "https://patom.test/cb",
             None,
             &[],
         )

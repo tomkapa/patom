@@ -68,7 +68,7 @@ use crate::tools::system::{
 };
 use crate::tools::{ToolBox, ToolRegistry};
 
-const HTTP_USER_AGENT: &str = concat!("relay-rs/", env!("CARGO_PKG_VERSION"));
+const HTTP_USER_AGENT: &str = concat!("patom-rs/", env!("CARGO_PKG_VERSION"));
 const HTTP_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -255,7 +255,7 @@ impl Collaborators {
         let mcp_catalog: SharedMcpCatalogStore = Arc::new(PgMcpCatalogStore::new(pool.clone()));
         let encryptor = Arc::new(
             OrgEncryptor::from_settings(&settings.auth.master_kek)
-                .map_err(|e| AppError::Misconfigured(format!("RELAY_MASTER_KEK: {e}")))?,
+                .map_err(|e| AppError::Misconfigured(format!("PATOM_MASTER_KEK: {e}")))?,
         );
         let mcp_credentials: SharedMcpCredentialStore = Arc::new(PgMcpCredentialStore::new(
             pool.clone(),
@@ -403,12 +403,12 @@ impl AgentFactoryPieces {
         let toolbox = ToolBox::new(self.builtin_tools.clone(), dynamic);
         let model = self.model_resolver.resolve(record, self.providers.as_ref());
         // Routed-provider attribution lands as a structured event so dashboards
-        // can break down per-agent model selection over time. `relay.model.source`
+        // can break down per-agent model selection over time. `patom.model.source`
         // is `"agent"` only when the resolved model matches the row's pin —
         // otherwise the resolver degraded a missing-provider pin back to the
         // default, and we want dashboards to see that as `"default"` so
         // degraded routing is visible, not hidden under the original pin
-        // (CLAUDE.md §2; `relay.*` prefix for custom attributes).
+        // (CLAUDE.md §2; `patom.*` prefix for custom attributes).
         let source = if record.model == Some(model) {
             "agent"
         } else {
@@ -416,10 +416,10 @@ impl AgentFactoryPieces {
         };
         tracing::info!(
             event = "agent.model.resolved",
-            relay.agent.id = %record.id,
-            relay.provider = model.provider().as_str(),
-            relay.model = %model,
-            relay.model.source = source,
+            patom.agent.id = %record.id,
+            patom.provider = model.provider().as_str(),
+            patom.model = %model,
+            patom.model.source = source,
         );
         AgentBuilder::new(
             self.providers.clone(),
@@ -713,7 +713,7 @@ pub async fn build_server(
     // Seed shared (platform-owned) MCP OAuth clients. Reuses the
     // Login-with-Google credentials above so any user clicking
     // "Connect Gmail" hits Google's consent screen with the same
-    // "Relay" brand, no per-tenant Google Cloud project required.
+    // "Patom" brand, no per-tenant Google Cloud project required.
     // Per-spec failures are logged WARN and the loop continues — boot
     // is not blocked on a misconfigured shared client.
     crate::mcp::oauth::seed_shared_clients(&pieces.mcp_oauth_clients, &settings.auth).await;
@@ -733,7 +733,7 @@ pub async fn build_server(
     });
 
     // Slack adapter — built only when the operator has set the three
-    // `RELAY_SLACK_*` env vars. We construct the stores, mint the
+    // `PATOM_SLACK_*` env vars. We construct the stores, mint the
     // outbound poster, spawn the stream-pump supervisor and the
     // inbound bridge worker, then expose all of it via
     // `AppState::slack`. Without the env vars, every Slack route 404s

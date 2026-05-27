@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`relay_rs::agents::PgAgentStore`]: idempotent
+//! Trait-contract tests for [`patom_rs::agents::PgAgentStore`]: idempotent
 //! seeding, default lookup, missing-agent error, and read round-trip.
 
 #![allow(clippy::expect_used)]
@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use std::collections::BTreeMap;
 
-use relay_rs::agents::{
+use patom_rs::agents::{
     AgentDescription, AgentId, AgentName, AgentStore, AgentStoreError, AgentSystemPrompt,
     AgentUpdate, AllowedMcpTools, DefaultAgentSeed, NewAgent, PgAgentStore,
 };
-use relay_rs::clock::SystemClock;
-use relay_rs::mcp::McpCatalogId;
-use relay_rs::session::PgSessionStore;
+use patom_rs::clock::SystemClock;
+use patom_rs::mcp::McpCatalogId;
+use patom_rs::session::PgSessionStore;
 
 mod common;
 use common::pg::{TestDb, agent_store, human_to_agent_session};
@@ -293,7 +293,7 @@ async fn create_default_allowed_mcp_tools_is_empty() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn create_with_explicit_allowed_mcp_tools_round_trips() {
-    use relay_rs::agents::ToolScope;
+    use patom_rs::agents::ToolScope;
     let db = TestDb::fresh().await;
     let store = store(&db);
 
@@ -331,7 +331,7 @@ async fn create_with_explicit_allowed_mcp_tools_round_trips() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_replaces_allowed_mcp_tools() {
-    use relay_rs::agents::ToolScope;
+    use patom_rs::agents::ToolScope;
     let db = TestDb::fresh().await;
     let store = store(&db);
 
@@ -441,7 +441,7 @@ async fn list_for_org_returns_alphabetised_pairs_scoped_to_org() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn list_for_org_excludes_other_orgs() {
-    use relay_rs::auth::OrgId;
+    use patom_rs::auth::OrgId;
     let db = TestDb::fresh().await;
     let store = store(&db);
 

@@ -40,7 +40,7 @@ pub struct ResumeCtx {
 /// Posted into the originating thread after the callback succeeds.
 /// Slack-only — never populated for the web flow. Independent of
 /// [`ResumeCtx`]: a Slack-initiated flow populates both; a manual
-/// Slack-side wiring (hypothetical future "/relay connect notion"
+/// Slack-side wiring (hypothetical future "/patom connect notion"
 /// command without an active thread) might populate this alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlackPingCtx {
@@ -127,7 +127,7 @@ pub enum ClientProvenance {
     /// Never carries `registration_*` fields by construction.
     Operator { org_id: OrgId },
     /// Platform-operator-provisioned client, shared across every tenant
-    /// of this Relay deployment. Persists with `org_id IS NULL`. Used
+    /// of this Patom deployment. Persists with `org_id IS NULL`. Used
     /// for vendors that don't support DCR (Google, Microsoft 365 — same
     /// model Anthropic uses for Claude Desktop's Gmail connector).
     /// Written exclusively by the boot-time seeder; never overwritten

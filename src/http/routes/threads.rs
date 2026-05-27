@@ -142,7 +142,7 @@ WHERE ($2::timestamptz IS NULL
 ORDER BY last_activity_at DESC
 LIMIT $3";
 
-#[tracing::instrument(skip_all, name = "thread.list", fields(relay.thread.list.size = tracing::field::Empty))]
+#[tracing::instrument(skip_all, name = "thread.list", fields(patom.thread.list.size = tracing::field::Empty))]
 async fn list_threads(
     State(state): State<AppState>,
     principal: Principal,
@@ -173,7 +173,7 @@ async fn list_threads(
         .map_err(AuthError::from)?;
     tx.commit().await.map_err(AuthError::from)?;
 
-    tracing::Span::current().record("relay.thread.list.size", rows.len());
+    tracing::Span::current().record("patom.thread.list.size", rows.len());
     Ok(Json(rows.into_iter().map(thread_row_to_summary).collect()))
 }
 
@@ -259,8 +259,8 @@ const THREAD_HISTORY_SQL: &str = "SELECT sm.session_id, sm.seq,
     skip_all,
     name = "thread.history",
     fields(
-        relay.dag.root = %root,
-        relay.thread.history.size = tracing::field::Empty,
+        patom.dag.root = %root,
+        patom.thread.history.size = tracing::field::Empty,
     ),
 )]
 async fn thread_messages(
@@ -303,7 +303,7 @@ async fn thread_messages(
         .map_err(AuthError::from)?;
     tx.commit().await.map_err(AuthError::from)?;
 
-    tracing::Span::current().record("relay.thread.history.size", rows.len());
+    tracing::Span::current().record("patom.thread.history.size", rows.len());
     Ok(Json(rows.into_iter().map(history_row_to_message).collect()))
 }
 

@@ -93,10 +93,10 @@ impl DagBudget for PgDagBudget {
         skip_all,
         name = "dag.bump",
         fields(
-            relay.dag.root = %root,
-            relay.dag.bump.outcome = tracing::field::Empty,
-            relay.dag.turns_used = tracing::field::Empty,
-            relay.dag.turns_cap = tracing::field::Empty,
+            patom.dag.root = %root,
+            patom.dag.bump.outcome = tracing::field::Empty,
+            patom.dag.turns_used = tracing::field::Empty,
+            patom.dag.turns_cap = tracing::field::Empty,
         ),
     )]
     async fn bump_or_fail(&self, root: PromptRequestId) -> Result<BudgetBumped, PromptError> {
@@ -108,10 +108,10 @@ impl DagBudget for PgDagBudget {
         skip_all,
         name = "dag.bump",
         fields(
-            relay.dag.root = %root,
-            relay.dag.bump.outcome = tracing::field::Empty,
-            relay.dag.turns_used = tracing::field::Empty,
-            relay.dag.turns_cap = tracing::field::Empty,
+            patom.dag.root = %root,
+            patom.dag.bump.outcome = tracing::field::Empty,
+            patom.dag.turns_used = tracing::field::Empty,
+            patom.dag.turns_cap = tracing::field::Empty,
         ),
     )]
     async fn bump_or_fail_for_user(
@@ -127,8 +127,8 @@ impl DagBudget for PgDagBudget {
         skip_all,
         name = "dag.quiescent_check",
         fields(
-            relay.dag.root = %root,
-            relay.dag.quiescent = tracing::field::Empty,
+            patom.dag.root = %root,
+            patom.dag.quiescent = tracing::field::Empty,
         ),
     )]
     async fn quiescent(&self, root: PromptRequestId) -> Result<bool, PromptError> {
@@ -148,7 +148,7 @@ impl DagBudget for PgDagBudget {
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
-        tracing::Span::current().record("relay.dag.quiescent", !live);
+        tracing::Span::current().record("patom.dag.quiescent", !live);
         Ok(!live)
     }
 }
@@ -179,9 +179,9 @@ async fn bump_or_fail_in_tx(
             turns_used: u32_or_invariant(used, "turns_used"),
             turns_cap: u32_or_invariant(cap, "turns_cap"),
         };
-        span.record("relay.dag.bump.outcome", "ok");
-        span.record("relay.dag.turns_used", bumped.turns_used);
-        span.record("relay.dag.turns_cap", bumped.turns_cap);
+        span.record("patom.dag.bump.outcome", "ok");
+        span.record("patom.dag.turns_used", bumped.turns_used);
+        span.record("patom.dag.turns_cap", bumped.turns_cap);
         return Ok(bumped);
     }
 
@@ -199,16 +199,16 @@ async fn bump_or_fail_in_tx(
     if let Some((used, cap)) = exists {
         let used = u32_or_invariant(used, "turns_used");
         let cap = u32_or_invariant(cap, "turns_cap");
-        span.record("relay.dag.bump.outcome", "exceeded");
-        span.record("relay.dag.turns_used", used);
-        span.record("relay.dag.turns_cap", cap);
+        span.record("patom.dag.bump.outcome", "exceeded");
+        span.record("patom.dag.turns_used", used);
+        span.record("patom.dag.turns_cap", cap);
         Err(PromptError::DagBudgetExceeded {
             root,
             turns_used: used,
             turns_cap: cap,
         })
     } else {
-        span.record("relay.dag.bump.outcome", "not_found");
+        span.record("patom.dag.bump.outcome", "not_found");
         Err(PromptError::DagNotFound(root))
     }
 }

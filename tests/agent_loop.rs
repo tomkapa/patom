@@ -12,18 +12,18 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use relay_rs::agent_core::AgentBuilder;
-use relay_rs::clock::SystemClock;
-use relay_rs::hook::HookChain;
-use relay_rs::memory::{SharedMemory, StaticMemory};
-use relay_rs::provider::{
+use patom_rs::agent_core::AgentBuilder;
+use patom_rs::clock::SystemClock;
+use patom_rs::hook::HookChain;
+use patom_rs::memory::{SharedMemory, StaticMemory};
+use patom_rs::provider::{
     AssistantContent, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError, ProviderId,
     ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, ToolCall, ToolCallId,
 };
-use relay_rs::runtime::PromptRequestId;
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
-use relay_rs::tools::{SharedTool, Tool, ToolCallContext, ToolError, ToolRegistry};
-use relay_rs::types::{Participant, Prompt, ToolName};
+use patom_rs::runtime::PromptRequestId;
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::tools::{SharedTool, Tool, ToolCallContext, ToolError, ToolRegistry};
+use patom_rs::types::{Participant, Prompt, ToolName};
 
 mod common;
 use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
@@ -31,7 +31,7 @@ use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
 /// Create a fresh human-to-default-agent session and a stub `prompt_requests`
 /// row bound to it. Returns both ids — `agent.reply` needs the request_id and
 /// `session_messages.request_id` FK-references it on every append.
-async fn fresh_session(db: &TestDb) -> (relay_rs::session::SessionId, PromptRequestId) {
+async fn fresh_session(db: &TestDb) -> (patom_rs::session::SessionId, PromptRequestId) {
     let store = PgSessionStore::new(db.pool.clone(), SystemClock::shared());
     let session = human_to_agent_session(
         &store,
@@ -152,7 +152,7 @@ fn tool_call_response(name: &str, id: &str) -> ChatResponse {
     }
 }
 
-fn build(db: &TestDb, provider: Arc<ScriptedProvider>, tools: Vec<SharedTool>) -> relay_rs::Agent {
+fn build(db: &TestDb, provider: Arc<ScriptedProvider>, tools: Vec<SharedTool>) -> patom_rs::Agent {
     build_with_model(
         db,
         provider,
@@ -166,7 +166,7 @@ fn build_with_model(
     provider: Arc<ScriptedProvider>,
     tools: Vec<SharedTool>,
     model: Model,
-) -> relay_rs::Agent {
+) -> patom_rs::Agent {
     let provider: SharedProvider = provider;
     let clock = SystemClock::shared();
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(db.pool.clone(), clock));
@@ -204,8 +204,8 @@ async fn returns_text_when_no_tool_call() {
             Participant::agent(db.default_agent_id),
             vec![prompt],
             request_id,
-            relay_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
-            relay_rs::runtime::RequestKindPayload::Normal {},
+            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
@@ -234,8 +234,8 @@ async fn runs_tool_then_returns_text() {
             Participant::agent(db.default_agent_id),
             vec![prompt],
             request_id,
-            relay_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
-            relay_rs::runtime::RequestKindPayload::Normal {},
+            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
@@ -264,8 +264,8 @@ async fn unknown_tool_does_not_loop_forever() {
             Participant::agent(db.default_agent_id),
             vec![prompt],
             request_id,
-            relay_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
-            relay_rs::runtime::RequestKindPayload::Normal {},
+            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
@@ -295,14 +295,14 @@ async fn cancellation_short_circuits() {
             Participant::agent(db.default_agent_id),
             vec![prompt],
             request_id,
-            relay_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
-            relay_rs::runtime::RequestKindPayload::Normal {},
+            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::runtime::RequestKindPayload::Normal {},
             cancel,
             None,
         )
         .await
         .expect_err("cancelled");
-    matches!(err, relay_rs::AgentError::Cancelled);
+    matches!(err, patom_rs::AgentError::Cancelled);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -323,8 +323,8 @@ async fn provider_specs_match_registered_tools() {
             Participant::agent(db.default_agent_id),
             vec![prompt],
             request_id,
-            relay_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
-            relay_rs::runtime::RequestKindPayload::Normal {},
+            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
@@ -358,8 +358,8 @@ async fn agent_carries_its_model_into_the_provider_call() {
             Participant::agent(db.default_agent_id),
             vec![prompt],
             request_id,
-            relay_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
-            relay_rs::runtime::RequestKindPayload::Normal {},
+            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
@@ -412,8 +412,8 @@ async fn registry_routes_model_to_its_catalog_provider() {
             Participant::agent(db.default_agent_id),
             vec![prompt],
             request_id,
-            relay_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
-            relay_rs::runtime::RequestKindPayload::Normal {},
+            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )

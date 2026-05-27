@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! pg_response.publish(req)  ──INSERT──►  prompt_response_chunks
-//!                            └─NOTIFY──►  relay_thread_chunk    ┐
+//!                            └─NOTIFY──►  patom_thread_chunk    ┐
 //!                                                                ▼
 //!                                             PgThreadStream::run_loop
 //!                                              ├─ fetch chunk by (req,seq)
@@ -96,7 +96,7 @@ pub enum ThreadStreamEvent {
 }
 
 /// Wire shape of the JSON payload published by [`super::pg_response::PgResponseHub`]
-/// on `LISTEN relay_thread_chunk`. Built from the `prompt_requests` row at
+/// on `LISTEN patom_thread_chunk`. Built from the `prompt_requests` row at
 /// publish time so the listener can route by `root_request_id` without an
 /// extra query. `chunk_seq` rides as a JSON number (Postgres BIGINT
 /// values up to 2^53 are safe in JSON; chunk sequences never approach that
@@ -244,7 +244,7 @@ impl PgThreadStream {
     #[tracing::instrument(
         skip(self),
         name = "thread.stream.subscribe",
-        fields(relay.dag.root = %root),
+        fields(patom.dag.root = %root),
     )]
     pub fn subscribe(&self, root: PromptRequestId) -> ThreadStream {
         let rx = {
@@ -284,7 +284,7 @@ pub type ThreadStream =
 #[tracing::instrument(
     skip_all,
     name = "thread.notify.fan_in",
-    fields(relay.thread.notify.channel = THREAD_NOTIFY_CHANNEL),
+    fields(patom.thread.notify.channel = THREAD_NOTIFY_CHANNEL),
 )]
 async fn run_listener(
     mut listener: PgListener,
@@ -343,8 +343,8 @@ async fn handle_notification(pool: &PgPool, table: &Arc<Mutex<SlotTable>>, raw: 
     };
     let Some(sender) = sender else {
         debug!(
-            relay.dag.root = %root,
-            relay.request.id = %payload.request_id,
+            patom.dag.root = %root,
+            patom.request.id = %payload.request_id,
             "thread.notify.dropped_no_subscribers",
         );
         return;

@@ -97,7 +97,7 @@ pub fn build_connection_request_card(
                 "elements": [{
                     "type": "mrkdwn",
                     "text": format!(
-                        "_Finish wiring *{display_name}* in the Relay web UI._"
+                        "_Finish wiring *{display_name}* in the Patom web UI._"
                     ),
                 }],
             }));
@@ -132,7 +132,7 @@ mod tests {
             "I want to draft a recruiting brief in Notion before the kickoff.",
             "Notion",
             McpAuthKind::OAuth2,
-            Some("https://relay.example/slack/mcp/connect?token=abc"),
+            Some("https://patom.example/slack/mcp/connect?token=abc"),
         );
         let blocks = v.as_array().expect("blocks array");
         assert_eq!(blocks.len(), 2, "oauth2 card has section + actions");
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(btn["text"]["text"], "Connect Notion");
         assert_eq!(
             btn["url"],
-            "https://relay.example/slack/mcp/connect?token=abc"
+            "https://patom.example/slack/mcp/connect?token=abc"
         );
         assert!(
             btn.get("action_id").is_none(),
@@ -182,7 +182,7 @@ mod tests {
             .as_str()
             .expect("hint text");
         assert!(hint.contains("Linear"));
-        assert!(hint.contains("Relay web UI"));
+        assert!(hint.contains("Patom web UI"));
     }
 
     #[test]
@@ -193,7 +193,7 @@ mod tests {
             McpAuthKind::None,
             // Even if a url is supplied for a None-auth kind we render the hint —
             // there is no consent flow to drive the user into.
-            Some("https://relay.example/slack/mcp/connect?token=xyz"),
+            Some("https://patom.example/slack/mcp/connect?token=xyz"),
         );
         let blocks = v.as_array().expect("blocks");
         assert_eq!(blocks[1]["type"], "context");
@@ -220,7 +220,7 @@ mod tests {
             &long,
             "Notion",
             McpAuthKind::OAuth2,
-            Some("https://relay.example/x"),
+            Some("https://patom.example/x"),
         );
         let rendered = v[0]["text"]["text"].as_str().expect("text string");
         assert_eq!(rendered.chars().count(), SLACK_CONNECTION_REASON_MAX_CHARS);
@@ -233,7 +233,7 @@ mod tests {
             "short",
             "Notion",
             McpAuthKind::OAuth2,
-            Some("https://relay.example/x"),
+            Some("https://patom.example/x"),
         );
         assert_eq!(v[0]["text"]["text"], "short");
     }
@@ -246,7 +246,7 @@ mod tests {
             &s,
             "Notion",
             McpAuthKind::OAuth2,
-            Some("https://relay.example/x"),
+            Some("https://patom.example/x"),
         );
         let rendered = v[0]["text"]["text"].as_str().expect("text string");
         // Must still be valid UTF-8 and char-counted to the cap.
@@ -260,7 +260,7 @@ mod tests {
             reason,
             "Notion",
             McpAuthKind::OAuth2,
-            Some("https://relay.example/x"),
+            Some("https://patom.example/x"),
         );
         // The whole structure must round-trip through serde.
         let s = serde_json::to_string(&v).expect("serialise");

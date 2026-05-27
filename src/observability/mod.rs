@@ -28,13 +28,13 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 const DEFAULT_CONSOLE_FILTER: &str =
-    "relay_rs=info,claudius=warn,opentelemetry=info,opentelemetry_sdk=info,opentelemetry_otlp=info";
+    "patom_rs=info,claudius=warn,opentelemetry=info,opentelemetry_sdk=info,opentelemetry_otlp=info";
 
 // EnvFilter directives match crate names, not prefixes — `sqlx=warn` does not
 // catch the `sqlx_core` crate, so list both. Same reason `hyper_util` is listed
 // alongside `hyper`. `opentelemetry*=info` keeps SDK self-diagnostics (auth
 // failures, dropped batches) visible so a misconfigured exporter shows up.
-const DEFAULT_GLOBAL_FILTER: &str = "info,relay_rs=debug,claudius=warn,sqlx=warn,sqlx_core=warn,hyper=warn,hyper_util=warn,h2=warn,rustls=warn,reqwest=warn,tower=warn";
+const DEFAULT_GLOBAL_FILTER: &str = "info,patom_rs=debug,claudius=warn,sqlx=warn,sqlx_core=warn,hyper=warn,hyper_util=warn,h2=warn,rustls=warn,reqwest=warn,tower=warn";
 
 /// Flush guard returned from [`init`]. Drop shuts the OTLP provider down so
 /// buffered spans flush. Bind in `main`.

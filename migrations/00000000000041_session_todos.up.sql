@@ -3,7 +3,7 @@
 -- JSONB column keyed by `session_id` is the natural shape: no per-item
 -- ordering column, no per-item DELETE/INSERT churn on every overwrite.
 --
--- Scoping: per-session (the closest Relay analogue to a Claude Code
+-- Scoping: per-session (the closest Patom analogue to a Claude Code
 -- conversation). A new session starts with a clean list; the same
 -- session's list survives across turns and re-runs of the same
 -- `prompt_request` lineage, because the row is keyed on `session_id`.

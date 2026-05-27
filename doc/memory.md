@@ -4,7 +4,7 @@
 
 ### 1.1 Purpose
 
-Each agent in Relay has its own private memory that persists across sessions. Memory is the agent's distilled understanding of its own role, the peers and humans it works with, and the procedures it has learned — extracted from past conversations and held in a bounded, typed, journaled store.
+Each agent in Patom has its own private memory that persists across sessions. Memory is the agent's distilled understanding of its own role, the peers and humans it works with, and the procedures it has learned — extracted from past conversations and held in a bounded, typed, journaled store.
 
 Memory is the *summary* of experience, not the experience itself. Raw conversation logs continue to live in the messages table; memory holds only what the agent has decided is worth carrying forward.
 

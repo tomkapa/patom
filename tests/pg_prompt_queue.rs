@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`relay_rs::runtime::PgPromptQueue`]: idempotent
+//! Trait-contract tests for [`patom_rs::runtime::PgPromptQueue`]: idempotent
 //! enqueue, claim-and-drain, lease fencing, orphan recovery, attempts cap → poison,
 //! pending cap. Each test uses a fresh schema; lease-expiry tests use a `TestClock`
 //! so they don't burn wall-clock seconds.
@@ -8,16 +8,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use relay_rs::agents::AgentId;
-use relay_rs::auth::{OrgId, UserId};
-use relay_rs::clock::{SharedClock, TestClock};
-use relay_rs::runtime::queue::PromptQueue as _;
-use relay_rs::runtime::{
+use patom_rs::agents::AgentId;
+use patom_rs::auth::{OrgId, UserId};
+use patom_rs::clock::{SharedClock, TestClock};
+use patom_rs::runtime::queue::PromptQueue as _;
+use patom_rs::runtime::{
     IdempotencyKey, LeaseManager as _, LeaseTiming, NewPromptRequest, PgPromptQueue, PromptError,
     PromptRequestId, RequestStatus, WorkerId,
 };
-use relay_rs::session::{PgSessionStore, SessionId};
-use relay_rs::types::{Participant, Prompt};
+use patom_rs::session::{PgSessionStore, SessionId};
+use patom_rs::types::{Participant, Prompt};
 
 mod common;
 use common::pg::{TestDb, human_to_agent_session};
@@ -80,7 +80,7 @@ fn req(
         idempotency_key: IdempotencyKey::try_from(key).expect("k"),
         org_id,
         created_by_user_id: user_id,
-        kind_payload: relay_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
     }
 }
 
@@ -350,7 +350,7 @@ async fn release_clears_lease_so_others_can_claim() {
     q.release(&claim.lease).await.expect("release");
 
     let session_store =
-        PgSessionStore::new(db.pool.clone(), relay_rs::clock::SystemClock::shared());
+        PgSessionStore::new(db.pool.clone(), patom_rs::clock::SystemClock::shared());
     let s2 = human_to_agent_session(
         &session_store,
         db.default_agent_id,

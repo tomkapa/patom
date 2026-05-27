@@ -10,18 +10,18 @@
 
 use std::sync::Arc;
 
-use relay_rs::auth::OrgId;
-use relay_rs::clock::SystemClock;
-use relay_rs::http::{AppState, router};
-use relay_rs::mcp::{
+use patom_rs::auth::OrgId;
+use patom_rs::clock::SystemClock;
+use patom_rs::http::{AppState, router};
+use patom_rs::mcp::{
     ConnectionStatus, McpCatalogId, McpHttpUrl, McpRefresher, McpRegistry, McpServerCreate,
     McpTransport, PgMcpServerStore, SharedMcpServerStore,
 };
-use relay_rs::runtime::{
+use patom_rs::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
     SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream,
 };
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -69,8 +69,8 @@ impl AuthMcpHarness {
                 .await
                 .expect("spawn thread stream");
 
-        let memory_store: relay_rs::memory::SharedMemoryStore =
-            Arc::new(relay_rs::memory::PgMemoryStore::new(
+        let memory_store: patom_rs::memory::SharedMemoryStore =
+            Arc::new(patom_rs::memory::PgMemoryStore::new(
                 pool.clone(),
                 clock.clone(),
                 common::embedding::FakeEmbeddingProvider::shared(),
@@ -81,8 +81,8 @@ impl AuthMcpHarness {
         let users = common::auth::user_store(pool.clone());
         let primary = seed_principal(&pool, &jwt).await;
 
-        let mcp_catalog: relay_rs::mcp::SharedMcpCatalogStore =
-            Arc::new(relay_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
+        let mcp_catalog: patom_rs::mcp::SharedMcpCatalogStore =
+            Arc::new(patom_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
 
         let state = AppState {
             queue,
@@ -95,23 +95,23 @@ impl AuthMcpHarness {
             mcp_store: mcp_store.clone(),
             mcp_catalog,
             mcp_refresh,
-            mcp_credentials: std::sync::Arc::new(relay_rs::mcp::PgMcpCredentialStore::new(
+            mcp_credentials: std::sync::Arc::new(patom_rs::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
                 clock.clone(),
-                std::sync::Arc::new(relay_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                std::sync::Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
             )),
-            mcp_test_rate: relay_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
+            mcp_test_rate: patom_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
             mcp_oauth_clients: std::sync::Arc::new(
-                relay_rs::mcp::oauth::PgMcpOAuthClientStore::new(
+                patom_rs::mcp::oauth::PgMcpOAuthClientStore::new(
                     pool.clone(),
                     clock.clone(),
-                    std::sync::Arc::new(relay_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                    std::sync::Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
                 ),
             ),
             mcp_oauth_pending: std::sync::Arc::new(
-                relay_rs::mcp::oauth::PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()),
+                patom_rs::mcp::oauth::PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()),
             ),
-            mcp_oauth_flow: relay_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new())
+            mcp_oauth_flow: patom_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new())
                 .expect("oauth http"),
             oauth_redirect_base: std::sync::Arc::from("http://localhost:8080"),
             web_base_url: None,
@@ -122,15 +122,15 @@ impl AuthMcpHarness {
             users,
             clock: clock.clone(),
             cookie_secure: false,
-            memberships: std::sync::Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
+            memberships: std::sync::Arc::new(patom_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
             rule_resolver: common::rule::empty_resolver(),
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets: None,
-            orgs: std::sync::Arc::new(relay_rs::orgs::PgOrgStore::new(pool.clone())),
-            mailer: std::sync::Arc::new(relay_rs::orgs::LogMailer),
+            orgs: std::sync::Arc::new(patom_rs::orgs::PgOrgStore::new(pool.clone())),
+            mailer: std::sync::Arc::new(patom_rs::orgs::LogMailer),
         };
 
         Self {
@@ -145,7 +145,7 @@ impl AuthMcpHarness {
     async fn seed_mcp(
         &self,
         org: OrgId,
-        created_by_user_id: relay_rs::auth::UserId,
+        created_by_user_id: patom_rs::auth::UserId,
         catalog_id_str: &str,
     ) {
         // Each unique test catalog id needs a matching `mcp_catalog` row
@@ -225,7 +225,7 @@ async fn authenticated_new_user_sees_empty_list() {
 #[tokio::test(flavor = "multi_thread")]
 async fn list_mcp_servers_surfaces_creator_email() {
     // Regression: the tenant-scoped tx for `list_mcp_servers` runs as
-    // `relay_app`, and migration 14 REVOKEs ALL on `users` from that role.
+    // `patom_app`, and migration 14 REVOKEs ALL on `users` from that role.
     // An earlier change tried to LEFT JOIN onto `users` from inside the
     // tenant-scoped SELECT, which raised "permission denied for table users"
     // and surfaced to the client as a 500 "auth error". Enrichment must

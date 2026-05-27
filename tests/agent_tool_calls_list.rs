@@ -10,21 +10,21 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use relay_rs::agents::{AgentId, SharedAgentStore};
-use relay_rs::auth::{OrgId, UserId};
-use relay_rs::clock::{SharedClock, SystemClock};
-use relay_rs::http::{AppState, router};
-use relay_rs::mcp::{
+use patom_rs::agents::{AgentId, SharedAgentStore};
+use patom_rs::auth::{OrgId, UserId};
+use patom_rs::clock::{SharedClock, SystemClock};
+use patom_rs::http::{AppState, router};
+use patom_rs::mcp::{
     ConnectionStatus, McpCatalogId, McpHttpUrl, McpRefresher, McpRegistry, McpServerCreate,
     McpServerId, McpTransport, PgMcpServerStore, SharedMcpServerStore,
 };
-use relay_rs::runtime::{
+use patom_rs::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, PromptRequestId, SharedDagBudget,
     SharedLeaseManager, SharedPromptQueue, SharedResponseSink, SharedResponseSource,
     SharedThreadStream,
 };
-use relay_rs::session::{PgSessionStore, SessionId, SharedSessionStore};
-use relay_rs::tools::ToolCallRowId;
+use patom_rs::session::{PgSessionStore, SessionId, SharedSessionStore};
+use patom_rs::tools::ToolCallRowId;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -65,8 +65,8 @@ impl Harness {
 
         let mcp_store: SharedMcpServerStore =
             Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
-        let mcp_catalog: relay_rs::mcp::SharedMcpCatalogStore =
-            Arc::new(relay_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
+        let mcp_catalog: patom_rs::mcp::SharedMcpCatalogStore =
+            Arc::new(patom_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
         let mcp_registry = McpRegistry::new(mcp_store.clone(), clock.clone());
         let (refresher, mcp_refresh) = McpRefresher::spawn(mcp_registry);
 
@@ -75,8 +75,8 @@ impl Harness {
                 .await
                 .expect("spawn thread stream");
 
-        let memory_store: relay_rs::memory::SharedMemoryStore =
-            Arc::new(relay_rs::memory::PgMemoryStore::new(
+        let memory_store: patom_rs::memory::SharedMemoryStore =
+            Arc::new(patom_rs::memory::PgMemoryStore::new(
                 pool.clone(),
                 clock.clone(),
                 common::embedding::FakeEmbeddingProvider::shared(),
@@ -96,22 +96,22 @@ impl Harness {
             mcp_store: mcp_store.clone(),
             mcp_catalog,
             mcp_refresh,
-            mcp_credentials: Arc::new(relay_rs::mcp::PgMcpCredentialStore::new(
+            mcp_credentials: Arc::new(patom_rs::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
                 clock.clone(),
-                Arc::new(relay_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
             )),
-            mcp_test_rate: relay_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
-            mcp_oauth_clients: Arc::new(relay_rs::mcp::oauth::PgMcpOAuthClientStore::new(
+            mcp_test_rate: patom_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
+            mcp_oauth_clients: Arc::new(patom_rs::mcp::oauth::PgMcpOAuthClientStore::new(
                 pool.clone(),
                 clock.clone(),
-                Arc::new(relay_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
             )),
-            mcp_oauth_pending: Arc::new(relay_rs::mcp::oauth::PgMcpOAuthPendingStore::new(
+            mcp_oauth_pending: Arc::new(patom_rs::mcp::oauth::PgMcpOAuthPendingStore::new(
                 pool.clone(),
                 clock.clone(),
             )),
-            mcp_oauth_flow: relay_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new())
+            mcp_oauth_flow: patom_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new())
                 .expect("oauth http"),
             oauth_redirect_base: Arc::from("http://localhost:8080"),
             web_base_url: None,
@@ -122,15 +122,15 @@ impl Harness {
             users,
             clock: clock.clone(),
             cookie_secure: false,
-            memberships: Arc::new(relay_rs::http::MembershipCache::new(clock.clone())),
+            memberships: Arc::new(patom_rs::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
             rule_resolver: common::rule::empty_resolver(),
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets: None,
-            orgs: std::sync::Arc::new(relay_rs::orgs::PgOrgStore::new(pool.clone())),
-            mailer: std::sync::Arc::new(relay_rs::orgs::LogMailer),
+            orgs: std::sync::Arc::new(patom_rs::orgs::PgOrgStore::new(pool.clone())),
+            mailer: std::sync::Arc::new(patom_rs::orgs::LogMailer),
         };
 
         Self {
@@ -417,14 +417,14 @@ async fn excludes_calls_from_other_agents() {
 
     let other_agent = h
         .agents
-        .create(relay_rs::agents::NewAgent {
+        .create(patom_rs::agents::NewAgent {
             org_id: h.db.default_org_id,
-            name: relay_rs::agents::AgentName::try_from("Bob").expect("name"),
-            system_prompt: relay_rs::agents::AgentSystemPrompt::try_from("you are bob")
+            name: patom_rs::agents::AgentName::try_from("Bob").expect("name"),
+            system_prompt: patom_rs::agents::AgentSystemPrompt::try_from("you are bob")
                 .expect("prompt"),
-            description: relay_rs::agents::AgentDescription::try_from("a helper").expect("desc"),
+            description: patom_rs::agents::AgentDescription::try_from("a helper").expect("desc"),
             is_default: false,
-            allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::default(),
+            allowed_mcp_tools: patom_rs::agents::AllowedMcpTools::default(),
             model: None,
             edited_by: None,
         })
@@ -573,14 +573,14 @@ async fn cross_org_agent_returns_404() {
     let foreign = seed_principal(&h.state.pool, &h.state.jwt).await;
     let foreign_agent = h
         .agents
-        .create(relay_rs::agents::NewAgent {
+        .create(patom_rs::agents::NewAgent {
             org_id: foreign.org_id,
-            name: relay_rs::agents::AgentName::try_from("Eve").expect("name"),
-            system_prompt: relay_rs::agents::AgentSystemPrompt::try_from("you are eve")
+            name: patom_rs::agents::AgentName::try_from("Eve").expect("name"),
+            system_prompt: patom_rs::agents::AgentSystemPrompt::try_from("you are eve")
                 .expect("prompt"),
-            description: relay_rs::agents::AgentDescription::try_from("eavesdrop").expect("desc"),
+            description: patom_rs::agents::AgentDescription::try_from("eavesdrop").expect("desc"),
             is_default: false,
-            allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::default(),
+            allowed_mcp_tools: patom_rs::agents::AllowedMcpTools::default(),
             model: None,
             edited_by: None,
         })

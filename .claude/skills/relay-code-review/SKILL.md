@@ -1,17 +1,17 @@
 ---
-name: relay-code-review
-description: Review uncommitted code changes in the Relay (relay-rs) project against the project's CLAUDE.md conventions, apply confident fixes in place, escalate ambiguous decisions to the human, and produce a final markdown report. Trigger whenever the user invokes /review-relay, asks to "review my changes / working tree / diff", asks for a "CLAUDE.md compliance check", or otherwise wants a pre-commit / pre-PR review of in-progress Relay code. Use proactively whenever the user signals they are about to commit or push Relay changes and wants them checked first.
+name: patom-code-review
+description: Review uncommitted code changes in the Patom (patom-rs) project against the project's CLAUDE.md conventions, apply confident fixes in place, escalate ambiguous decisions to the human, and produce a final markdown report. Trigger whenever the user invokes /review-patom, asks to "review my changes / working tree / diff", asks for a "CLAUDE.md compliance check", or otherwise wants a pre-commit / pre-PR review of in-progress Patom code. Use proactively whenever the user signals they are about to commit or push Patom changes and wants them checked first.
 ---
 
-# relay-code-review
+# patom-code-review
 
-Review the **uncommitted working-tree changes** in the Relay (`relay-rs`) repo against the project's binding engineering rules in `CLAUDE.md`, apply confident fixes directly, escalate the rest, and produce a single markdown report at the end.
+Review the **uncommitted working-tree changes** in the Patom (`patom-rs`) repo against the project's binding engineering rules in `CLAUDE.md`, apply confident fixes directly, escalate the rest, and produce a single markdown report at the end.
 
 This skill is opinionated and scoped to **this project**. It is not a general-purpose code reviewer — its job is to be the second pair of eyes that catches the things `CLAUDE.md` says are review-blocking before they reach a PR.
 
 ## Why this exists
 
-Relay's `CLAUDE.md` is binding, not advisory. Several rules in it are explicit "review-blocking" — bare `String` for an ID, `unwrap()` in non-test code, SQL string concatenation, recursion, `println!`, missing newtypes, untyped errors crossing module boundaries. These are easy to miss while writing a feature and easy to spot on a focused second pass. The goal here is to do that pass *before* the diff lands in a PR, fix what can be safely fixed, and surface the rest with enough context that the human can decide in seconds.
+Patom's `CLAUDE.md` is binding, not advisory. Several rules in it are explicit "review-blocking" — bare `String` for an ID, `unwrap()` in non-test code, SQL string concatenation, recursion, `println!`, missing newtypes, untyped errors crossing module boundaries. These are easy to miss while writing a feature and easy to spot on a focused second pass. The goal here is to do that pass *before* the diff lands in a PR, fix what can be safely fixed, and surface the rest with enough context that the human can decide in seconds.
 
 The skill should also resist the temptation to over-mechanize. A finding like "this function is 71 lines, the cap is 70" is real but cheap to ignore; a finding like "this new `parse_agent_id` looks like the existing `AgentId::try_from` and probably should be consolidated" needs human judgement. Aim for the latter.
 
@@ -57,7 +57,7 @@ For each changed Rust file, walk through the CLAUDE.md sections and check for vi
 
 **§2 tracing + OpenTelemetry**
 - `println!`, `eprintln!`, `dbg!`, or the `log` crate anywhere outside `#[cfg(debug_assertions)]`.
-- Span names with interpolated values, or attribute keys not under `relay.*`.
+- Span names with interpolated values, or attribute keys not under `patom.*`.
 - Errors logged via `tracing::error!` without `error = ?e`, or status set separately from the event.
 - `span.in_scope` straddling an `await`.
 
@@ -147,7 +147,7 @@ Be biased toward **ESCALATE** when uncertain. A wrong auto-fix is worse than a f
 Emit a single markdown report directly in the chat (no file written). Use this structure:
 
 ```
-## Relay code review — <branch>
+## Patom code review — <branch>
 
 **Scope**: <N> files, <X> insertions / <Y> deletions in working tree
 **Auto-fixes applied**: <count>
@@ -187,7 +187,7 @@ Adapt the template to what the diff actually contains. Sections with nothing to 
 
 ## Operating notes
 
-- **Always re-read `CLAUDE.md` first.** It's the rubric. Even if you reviewed Relay yesterday — read it again now.
+- **Always re-read `CLAUDE.md` first.** It's the rubric. Even if you reviewed Patom yesterday — read it again now.
 - **Prefer evidence over assertion.** Every finding cites `file:line` and the CLAUDE.md section number. "This looks wrong" without a citation is not a finding.
 - **Don't refactor the world.** The CLAUDE.md rule "one logical change per PR" applies to you too. If the diff is about MCP OAuth, don't reformat the Slack module on the way through.
 - **Respect the pre-launch posture.** This project follows a no-backcompat policy pre-launch; do not suggest "add an `Option` shim for backward compatibility" style fixes (see [[feedback_no_backcompat]]).

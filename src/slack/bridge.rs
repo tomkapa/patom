@@ -1,4 +1,4 @@
-//! Inbound bridge: Slack `app_mention` event → Relay prompt enqueue.
+//! Inbound bridge: Slack `app_mention` event → Patom prompt enqueue.
 //!
 //! One single-consumer worker. The webhook handler hands events here via a
 //! bounded mpsc and ack's Slack in <3 s; this worker does the slow path
@@ -223,7 +223,7 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
     .await
 }
 
-/// Slack user → Relay user. Phase 1 falls back to the workspace
+/// Slack user → Patom user. Phase 1 falls back to the workspace
 /// installer when no explicit `slack_identities` row exists.
 async fn resolve_user_id(
     deps: &BridgeDeps,
@@ -315,8 +315,8 @@ async fn enqueue_and_bind(
             })
             .await;
         info!(
-            relay.session.id = %session.as_uuid(),
-            relay.request.id = %request_id.as_uuid(),
+            patom.session.id = %session.as_uuid(),
+            patom.request.id = %request_id.as_uuid(),
             event = "slack.bridge.enqueued",
         );
     }
@@ -362,7 +362,7 @@ async fn resolve_mention_or_default(
             Ok(record) => return Ok(record.id),
             Err(crate::agents::AgentStoreError::NameNotFound(_)) => {
                 warn!(
-                    relay.agent.name = %name_raw,
+                    patom.agent.name = %name_raw,
                     event = "slack.bridge.agent_not_found_falling_back_to_default",
                 );
             }
@@ -373,7 +373,7 @@ async fn resolve_mention_or_default(
 }
 
 /// Strip the bot mention from the text and return the user's
-/// remaining prompt content. If the message is just `@RelayBot` with
+/// remaining prompt content. If the message is just `@PatomBot` with
 /// no follow-up, send an empty prompt — the prompt newtype rejects
 /// empties so the caller will error out with a parse error and the
 /// webhook handler logs + drops.
@@ -382,7 +382,7 @@ fn strip_for_prompt(event: &InboundEvent, bot: &SlackUserId) -> String {
     parsed.stripped
 }
 
-/// Routing payload for a `/relay` slash command submission. Constructed
+/// Routing payload for a `/patom` slash command submission. Constructed
 /// by the interactions handler after validating the `view_submission`
 /// envelope; the bridge takes it from here.
 #[derive(Debug, Clone)]
@@ -523,9 +523,9 @@ pub async fn enqueue_from_slash(
         })
         .await;
     info!(
-        relay.session.id = %session.as_uuid(),
-        relay.request.id = %request_id.as_uuid(),
-        relay.slack.source = "slash",
+        patom.session.id = %session.as_uuid(),
+        patom.request.id = %request_id.as_uuid(),
+        patom.slack.source = "slash",
         event = "slack.bridge.enqueued",
     );
     Ok(())

@@ -2,7 +2,7 @@
 //!
 //! Two public routes:
 //!
-//! 1. `POST /slack/commands` — Slack POSTs every `/relay` invocation
+//! 1. `POST /slack/commands` — Slack POSTs every `/patom` invocation
 //!    here. Form-encoded body, no `payload=` wrapper. Handler verifies
 //!    the HMAC, looks up the tenant by `team_id`, fetches the agent
 //!    roster, and opens a Block Kit modal via `views.open` using the
@@ -50,11 +50,11 @@ use super::modal::{
 };
 use super::types::{SlackBotToken, SlackChannelId, SlackTeamId, SlackUserId};
 
-/// Command literal Slack sends in `command` for the `/relay`
+/// Command literal Slack sends in `command` for the `/patom`
 /// invocation. Must match the value registered in the Slack app
 /// manifest; a mismatch surfaces as 404 so a misconfigured DNS or
 /// shared URL does not 500 on us.
-const SLASH_COMMAND: &str = "/relay";
+const SLASH_COMMAND: &str = "/patom";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -71,8 +71,8 @@ pub fn router() -> Router<AppState> {
     name = "slack.commands.handle",
     skip_all,
     fields(
-        relay.slack.team = tracing::field::Empty,
-        relay.tenant.id = tracing::field::Empty,
+        patom.slack.team = tracing::field::Empty,
+        patom.tenant.id = tracing::field::Empty,
     ),
 )]
 async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
@@ -100,7 +100,7 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
             return StatusCode::BAD_REQUEST.into_response();
         }
     };
-    tracing::Span::current().record("relay.slack.team", tracing::field::display(&team_id));
+    tracing::Span::current().record("patom.slack.team", tracing::field::display(&team_id));
     let channel_id = match SlackChannelId::try_from(parsed.channel_id.as_str()) {
         Ok(c) => c,
         Err(e) => {
@@ -121,13 +121,13 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
         Err(e) => {
             warn!(error = ?e, event = "slack.commands.unknown_workspace");
             return ephemeral_message(
-                "This Slack workspace is not connected to Relay. \
-                 Ask an admin to install Relay first.",
+                "This Slack workspace is not connected to Patom. \
+                 Ask an admin to install Patom first.",
             );
         }
     };
     tracing::Span::current().record(
-        "relay.tenant.id",
+        "patom.tenant.id",
         tracing::field::display(workspace.org_id.as_uuid()),
     );
 
@@ -163,12 +163,12 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
     {
         warn!(error = ?e, event = "slack.commands.views_open_failed");
         return ephemeral_message(
-            "Couldn't open the Relay composer. Check your Slack app permissions, then try again.",
+            "Couldn't open the Patom composer. Check your Slack app permissions, then try again.",
         );
     }
     info!(
-        relay.tenant.id = %workspace.org_id.as_uuid(),
-        relay.slack.team = %team_id,
+        patom.tenant.id = %workspace.org_id.as_uuid(),
+        patom.slack.team = %team_id,
         agents = agents.len(),
         event = "slack.commands.modal_opened",
     );
@@ -307,7 +307,7 @@ async fn handle_view_submission(state: State<AppState>, view: ViewSubmission) ->
         // detail in logs; the user gets a non-actionable retry hint.
         return validation_errors_response(vec![(
             PROMPT_BLOCK_ID,
-            "Couldn't send to Relay. Please try again.".to_owned(),
+            "Couldn't send to Patom. Please try again.".to_owned(),
         )]);
     }
     info!(event = "slack.interactions.view_submitted");
@@ -350,7 +350,7 @@ fn build_submit(view: &ViewSubmission) -> Result<SlashCommandSubmit, Vec<(&'stat
         warn!(event = "slack.interactions.private_metadata_decode_failed");
         return Err(vec![(
             PROMPT_BLOCK_ID,
-            "Internal routing payload was malformed. Re-run /relay.".to_owned(),
+            "Internal routing payload was malformed. Re-run /patom.".to_owned(),
         )]);
     };
     let team_id = SlackTeamId::try_from(routing.team_id.as_str())
@@ -561,11 +561,11 @@ mod tests {
     #[test]
     fn slash_payload_extracts_required_fields() {
         let body = Bytes::from(
-            "command=%2Frelay&team_id=T123&channel_id=C456&user_id=U789&\
+            "command=%2Fpatom&team_id=T123&channel_id=C456&user_id=U789&\
              user_name=tomkapa&text=hello&trigger_id=ABC.123",
         );
         let p = SlashPayload::from_form(&body).expect("parse");
-        assert_eq!(p.command, "/relay");
+        assert_eq!(p.command, "/patom");
         assert_eq!(p.team_id, "T123");
         assert_eq!(p.channel_id, "C456");
         assert_eq!(p.user_id, "U789");
@@ -577,14 +577,14 @@ mod tests {
     fn slash_payload_rejects_missing_trigger_id() {
         // Without trigger_id we cannot open a modal — fail fast.
         let body = Bytes::from(
-            "command=%2Frelay&team_id=T123&channel_id=C456&user_id=U789&user_name=tomkapa",
+            "command=%2Fpatom&team_id=T123&channel_id=C456&user_id=U789&user_name=tomkapa",
         );
         assert!(SlashPayload::from_form(&body).is_err());
     }
 
     #[test]
     fn slash_payload_rejects_missing_fields() {
-        let body = Bytes::from("command=%2Frelay&team_id=T123");
+        let body = Bytes::from("command=%2Fpatom&team_id=T123");
         assert!(SlashPayload::from_form(&body).is_err());
     }
 

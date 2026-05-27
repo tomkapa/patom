@@ -1,7 +1,7 @@
-//! Block Kit JSON builder for the `/relay` compose modal.
+//! Block Kit JSON builder for the `/patom` compose modal.
 //!
 //! The modal is the entry point for tenant-scoped agent selection: a
-//! user invokes `/relay`, Slack POSTs the slash command to
+//! user invokes `/patom`, Slack POSTs the slash command to
 //! [`super::interactions`], the handler resolves the tenant's roster
 //! and builds the JSON returned here. Slack opens the modal client-side
 //! and POSTs the user's selection back as `view_submission`.
@@ -19,7 +19,7 @@ use super::limits::{MAX_AGENTS_IN_PICKER, SLACK_SLASH_PROMPT_MAX_CHARS};
 
 /// Stable identifier Slack echoes back in the `view_submission`
 /// envelope. Must match the dispatcher branch in [`super::interactions`].
-pub const COMPOSE_CALLBACK_ID: &str = "relay_compose";
+pub const COMPOSE_CALLBACK_ID: &str = "patom_compose";
 
 /// `block_id` on the agent select block. The submit handler reads
 /// `view.state.values["agent"]["pick"].selected_option.value`.
@@ -31,7 +31,7 @@ pub const PROMPT_BLOCK_ID: &str = "prompt";
 /// `action_id` on the prompt text input element.
 pub const PROMPT_ACTION_ID: &str = "text";
 
-/// Build the modal that the `/relay` slash command returns inline.
+/// Build the modal that the `/patom` slash command returns inline.
 ///
 /// `agents` is the tenant's full roster as returned by
 /// [`crate::agents::AgentStore::list_for_org`]; it is truncated here to
@@ -97,7 +97,7 @@ pub fn build_compose_modal(agents: &[(AgentId, AgentName)], private_metadata: &s
                 "type": "mrkdwn",
                 "text": format!(
                     "Showing the first {MAX_AGENTS_IN_PICKER} agents. \
-                     Don't see yours? Mention `@RelayBot <agent-name>` instead."
+                     Don't see yours? Mention `@PatomBot <agent-name>` instead."
                 ),
             }],
         }));
@@ -107,7 +107,7 @@ pub fn build_compose_modal(agents: &[(AgentId, AgentName)], private_metadata: &s
         "type": "modal",
         "callback_id": COMPOSE_CALLBACK_ID,
         "private_metadata": private_metadata,
-        "title": { "type": "plain_text", "text": "Relay" },
+        "title": { "type": "plain_text", "text": "Patom" },
         "submit": { "type": "plain_text", "text": "Send" },
         "close": { "type": "plain_text", "text": "Cancel" },
         "blocks": blocks,
@@ -119,15 +119,15 @@ fn empty_state_modal(private_metadata: &str) -> Value {
         "type": "modal",
         "callback_id": COMPOSE_CALLBACK_ID,
         "private_metadata": private_metadata,
-        "title": { "type": "plain_text", "text": "Relay" },
+        "title": { "type": "plain_text", "text": "Patom" },
         "close": { "type": "plain_text", "text": "Close" },
         "blocks": [{
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": "*No agents are configured for this workspace yet.* \
-                         Ask your administrator to create one in Relay, \
-                         then re-run `/relay`.",
+                         Ask your administrator to create one in Patom, \
+                         then re-run `/patom`.",
             },
         }],
     })

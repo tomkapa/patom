@@ -1,18 +1,18 @@
 //! Stable, low-cardinality labels recorded on agent.* spans so dashboards
-//! can `GROUP BY relay.outcome` instead of grepping log strings.
+//! can `GROUP BY patom.outcome` instead of grepping log strings.
 
 use crate::types::{AgentReply, Participant};
 
 use super::error::AgentError;
 
 /// Label for `agent.reply` / `agent.resume` outcomes. Recorded as
-/// `relay.outcome` on the enclosing span.
+/// `patom.outcome` on the enclosing span.
 pub(super) fn record_reply(result: &Result<AgentReply, AgentError>) {
     let label = match result {
         Ok(_) => "complete",
         Err(e) => error_label(e),
     };
-    tracing::Span::current().record("relay.outcome", label);
+    tracing::Span::current().record("patom.outcome", label);
 }
 
 /// Label for one `agent.turn` outcome. Variants stay disjoint from
@@ -24,7 +24,7 @@ pub(super) fn record_turn(span: &tracing::Span, outcome: &Result<Option<String>,
         Ok(None) => "tool_calls",
         Err(e) => error_label(e),
     };
-    span.record("relay.turn.outcome", label);
+    span.record("patom.turn.outcome", label);
 }
 
 fn error_label(err: &AgentError) -> &'static str {

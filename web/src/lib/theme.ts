@@ -4,7 +4,7 @@
 
 export type ThemePref = "system" | "light" | "dark";
 
-const STORAGE_KEY = "relay.theme";
+const STORAGE_KEY = "patom.theme";
 const VALID: readonly ThemePref[] = ["system", "light", "dark"] as const;
 
 function isThemePref(v: unknown): v is ThemePref {

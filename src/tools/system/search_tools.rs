@@ -185,7 +185,7 @@ impl Tool for SearchToolsTool {
     #[instrument(
         name = "tool.search_tools",
         skip_all,
-        fields(relay.org.id = %ctx.org_id),
+        fields(patom.org.id = %ctx.org_id),
         err,
     )]
     async fn execute(&self, input: Value, ctx: &ToolCallContext) -> Result<String, ToolError> {

@@ -264,7 +264,7 @@ fn parse_event(value: Value) -> Option<(InboundSource, AppMentionEvent)> {
                 return None;
             }
             // Only react to thread replies; top-level channel chatter
-            // is not a Relay surface.
+            // is not a Patom surface.
             value.get("thread_ts").and_then(Value::as_str)?;
             let m: AppMentionEvent = serde_json::from_value(value).ok()?;
             Some((InboundSource::ThreadMessage, m))
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn parse_message_drops_top_level_chatter() {
-        // No thread_ts → not a Relay surface, drop.
+        // No thread_ts → not a Patom surface, drop.
         let v = msg(json!({}));
         assert!(parse_event(v).is_none());
     }

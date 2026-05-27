@@ -1,4 +1,4 @@
-//! Catalog of LLM models Relay knows how to route.
+//! Catalog of LLM models Patom knows how to route.
 //!
 //! Parse-don't-validate per CLAUDE.md §1: holding a [`Model`] proves the value
 //! is one of the entries in [`MODEL_CATALOG`] and that its provider is known.
@@ -24,7 +24,7 @@ pub struct CatalogEntry {
     pub provider: ProviderId,
 }
 
-/// Every model Relay accepts on the chat path. Linear scan is fine — the slice
+/// Every model Patom accepts on the chat path. Linear scan is fine — the slice
 /// is bounded by the source file. Adding a new model = one row here.
 ///
 /// Test-only sentinel models (`test-model`, `test-model-openai`) live in

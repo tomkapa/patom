@@ -277,23 +277,23 @@ impl SchedulerInner {
             match super::librarian::run_librarian_sweep(self.store.as_ref(), agent, now).await {
                 Ok(report) => {
                     info!(
-                        relay.agent.id = %agent,
-                        relay.librarian.deduped = report.deduped,
-                        relay.librarian.matured = report.matured,
-                        relay.librarian.demoted = report.demoted,
-                        relay.librarian.evicted = report.evicted,
-                        relay.librarian.contradictions = report.contradictions_flagged,
+                        patom.agent.id = %agent,
+                        patom.librarian.deduped = report.deduped,
+                        patom.librarian.matured = report.matured,
+                        patom.librarian.demoted = report.demoted,
+                        patom.librarian.evicted = report.evicted,
+                        patom.librarian.contradictions = report.contradictions_flagged,
                         "librarian.sweep.ok",
                     );
                 }
                 Err(e) => {
-                    warn!(error = %e, relay.agent.id = %agent, "librarian.sweep.error");
+                    warn!(error = %e, patom.agent.id = %agent, "librarian.sweep.error");
                     continue;
                 }
             }
 
             if let Err(e) = self.enqueue_resolutions(agent, org_id, owner_user_id).await {
-                warn!(error = %e, relay.agent.id = %agent, "librarian.enqueue.error");
+                warn!(error = %e, patom.agent.id = %agent, "librarian.enqueue.error");
             }
         }
         Ok(())
@@ -369,9 +369,9 @@ impl SchedulerInner {
             match self.queue.enqueue(req).await {
                 Ok(outcome) => {
                     debug!(
-                        relay.agent.id = %agent,
-                        relay.contradiction.id = %ev.id,
-                        relay.request.id = %outcome.request_id(),
+                        patom.agent.id = %agent,
+                        patom.contradiction.id = %ev.id,
+                        patom.request.id = %outcome.request_id(),
                         "librarian.enqueue.resolution",
                     );
                 }

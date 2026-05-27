@@ -116,10 +116,10 @@ impl Tool for MemoryWriteTool {
             .map_err(store_to_tool_err)?;
 
         debug!(
-            relay.session.id = %ctx.session_id,
-            relay.agent.id = %agent,
-            relay.memory.id = %outcome.memory_id,
-            relay.memory.kind = parsed.kind.as_str(),
+            patom.session.id = %ctx.session_id,
+            patom.agent.id = %agent,
+            patom.memory.id = %outcome.memory_id,
+            patom.memory.kind = parsed.kind.as_str(),
             "memory_write.ok",
         );
 

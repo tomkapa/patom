@@ -1,16 +1,16 @@
-//! Trait-contract tests for [`relay_rs::session::PgSessionStore`]. Each test owns its
+//! Trait-contract tests for [`patom_rs::session::PgSessionStore`]. Each test owns its
 //! own schema via `TestDb::fresh` so they can run in parallel.
 
 #![allow(clippy::expect_used)]
 
 use std::sync::Arc;
 
-use relay_rs::agents::AgentId;
-use relay_rs::clock::SystemClock;
-use relay_rs::provider::{ChatMessage, UserContent};
-use relay_rs::runtime::PromptRequestId;
-use relay_rs::session::{PgSessionStore, SessionError, SessionId, SessionStore};
-use relay_rs::types::{MessageSender, Participant};
+use patom_rs::agents::AgentId;
+use patom_rs::clock::SystemClock;
+use patom_rs::provider::{ChatMessage, UserContent};
+use patom_rs::runtime::PromptRequestId;
+use patom_rs::session::{PgSessionStore, SessionError, SessionId, SessionStore};
+use patom_rs::types::{MessageSender, Participant};
 
 mod common;
 use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
@@ -236,7 +236,7 @@ async fn snapshot_renders_messages_from_viewer_perspective() {
             id,
             MessageSender::from_participant(agent),
             Participant::Human,
-            ChatMessage::Assistant(vec![relay_rs::provider::AssistantContent::Text(
+            ChatMessage::Assistant(vec![patom_rs::provider::AssistantContent::Text(
                 "pong".into(),
             )]),
             req,

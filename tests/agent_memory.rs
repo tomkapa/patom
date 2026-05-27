@@ -1,4 +1,4 @@
-//! Behaviour tests for [`relay_rs::memory::AgentMemory`] + the underlying
+//! Behaviour tests for [`patom_rs::memory::AgentMemory`] + the underlying
 //! caches and composer (doc/memory.md §1.3).
 //!
 //! Proves the assembled `system` prompt has the expected
@@ -12,19 +12,19 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use relay_rs::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
-use relay_rs::auth::OrganizationRule;
-use relay_rs::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
-use relay_rs::clock::{SharedClock, SystemClock, TestClock};
-use relay_rs::memory::{
+use patom_rs::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
+use patom_rs::auth::OrganizationRule;
+use patom_rs::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
+use patom_rs::clock::{SharedClock, SystemClock, TestClock};
+use patom_rs::memory::{
     AgentMemory, CORE_TAG_CLOSE, CORE_TAG_OPEN, DATE_TAG_CLOSE, DATE_TAG_OPEN, MEMORY_TAG_CLOSE,
     MEMORY_TAG_OPEN, Memory, MemoryContent, MemoryHandle, MemoryKind, MemoryMutation,
     MemorySectionLoader, MemoryState, MutationSource, ORG_RULE_TAG_CLOSE, ORG_RULE_TAG_OPEN,
     PgMemoryStore, ROLE_TAG_CLOSE, ROLE_TAG_OPEN, SessionMemoryCache, SharedMemoryStore,
 };
-use relay_rs::prompts::Prompts;
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
-use relay_rs::types::Participant;
+use patom_rs::prompts::Prompts;
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::types::Participant;
 
 mod common;
 use common::lang::StaticOrgLanguageResolver;
@@ -105,7 +105,7 @@ async fn assembles_core_then_role_in_order() {
         .system_prompt(
             session,
             viewer,
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");
@@ -159,7 +159,7 @@ async fn date_section_sits_between_role_and_memory() {
         .system_prompt(
             session,
             Participant::agent(agent_id),
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");
@@ -208,7 +208,7 @@ async fn empty_memory_skips_memory_section() {
         .system_prompt(
             session,
             Participant::agent(db.default_agent_id),
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");
@@ -250,7 +250,7 @@ async fn renders_memory_section_after_role() {
         .system_prompt(
             session,
             Participant::agent(agent_id),
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");
@@ -293,7 +293,7 @@ async fn frozen_during_session_returns_identical_prompt() {
         .system_prompt(
             session,
             viewer,
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("first");
@@ -315,7 +315,7 @@ async fn frozen_during_session_returns_identical_prompt() {
         .system_prompt(
             session,
             viewer,
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("second");
@@ -364,7 +364,7 @@ async fn resolve_handle_round_trips_to_memory_id() {
         .system_prompt(
             session,
             Participant::agent(agent_id),
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("compose");
@@ -375,7 +375,7 @@ async fn resolve_handle_round_trips_to_memory_id() {
         .resolve_handle(
             session,
             agent_id,
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
             handle,
         )
         .await
@@ -388,7 +388,7 @@ async fn resolve_handle_round_trips_to_memory_id() {
         .resolve_handle(
             session,
             agent_id,
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
             stranger,
         )
         .await
@@ -456,7 +456,7 @@ async fn org_rule_block_sits_between_core_and_role() {
         .system_prompt(
             session,
             viewer,
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");
@@ -496,7 +496,7 @@ async fn org_rule_block_omitted_when_unset() {
         .system_prompt(
             session,
             viewer,
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");

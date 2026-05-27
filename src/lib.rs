@@ -1,4 +1,4 @@
-//! Relay-rs — provider-agnostic, hookable agent runtime.
+//! Patom-rs — provider-agnostic, hookable agent runtime.
 //!
 //! The seams (`provider`, `session`, `memory`, `hook`, `tools`) are the public surface.
 //! `Agent` orchestrates them; nothing else does. Adding a new backend on any seam means

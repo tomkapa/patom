@@ -10,9 +10,9 @@
 // `index.ts` panics if they drift.
 
 const en = {
-  "signin.brand": "Relay",
+  "signin.brand": "Patom",
   "signin.tagline": "The operator console for multi-agent sessions.",
-  "signin.heading": "Sign in to Relay",
+  "signin.heading": "Sign in to Patom",
   "signin.subheading": "Continue with your Google account.",
   "signin.cta": "Continue with Google",
   "signin.legal":
@@ -21,7 +21,7 @@ const en = {
   "signin.error.oauth_down":
     "Sign-in is temporarily unavailable. Please try again.",
 
-  "sidebar.brand": "Relay",
+  "sidebar.brand": "Patom",
   "sidebar.channels": "Channels",
   "sidebar.dms": "Direct Messages",
   "sidebar.empty_agents": "No agents registered.",
@@ -115,7 +115,7 @@ const en = {
   "connections.modal.custom.namePlaceholder": "internal-search",
   "connections.modal.custom.urlLabel": "MCP server URL",
   "connections.modal.custom.urlHint":
-    "URL must be reachable from Relay workers.",
+    "URL must be reachable from Patom workers.",
   "connections.modal.custom.authLabel": "Authentication",
   "connections.modal.custom.authNone": "None",
   "connections.modal.custom.authToken": "API token",
@@ -216,7 +216,7 @@ const en = {
   "connections.detail.danger.enable.cta": "Enable",
   "connections.detail.danger.disconnect.title": "Disconnect",
   "connections.detail.danger.disconnect.body":
-    "Agents lose access to this connection's tools. This also revokes Relay's credentials locally.",
+    "Agents lose access to this connection's tools. This also revokes Patom's credentials locally.",
   "connections.detail.danger.disconnect.ack": "I understand the consequences",
   "connections.detail.danger.disconnect.cta": "Disconnect",
   "connections.detail.notFound.title": "Connection not found",
@@ -628,22 +628,22 @@ const en = {
   // Integrations tab
   "settings.integrations.title": "Integrations",
   "settings.integrations.subtitle":
-    "Connect Relay to your team's chat platforms. Workspace admins manage installations, scopes, and default channels.",
+    "Connect Patom to your team's chat platforms. Workspace admins manage installations, scopes, and default channels.",
   "settings.integrations.connected": "CONNECTED",
   "settings.integrations.available": "AVAILABLE",
   "settings.integrations.available.helper":
-    "Thread-based chat platforms Relay can connect to. Roadmap rolls out monthly.",
+    "Thread-based chat platforms Patom can connect to. Roadmap rolls out monthly.",
   "settings.integrations.connect": "Connect Slack",
   "settings.integrations.connecting": "Opening Slack…",
   "settings.integrations.disconnect": "Disconnect",
   "settings.integrations.disconnect.confirm.title": "Disconnect {team}?",
   "settings.integrations.disconnect.confirm.body":
-    "Relay will stop receiving events and the /relay slash command will no longer work in this Slack workspace. Threads bound to Relay agents are unlinked.",
+    "Patom will stop receiving events and the /patom slash command will no longer work in this Slack workspace. Threads bound to Patom agents are unlinked.",
   "settings.integrations.disconnect.cancel": "Cancel",
   "settings.integrations.disconnect.confirmCta": "Disconnect",
   "settings.integrations.empty.title": "No integrations yet",
   "settings.integrations.empty.body":
-    "Connect Slack to invoke /relay and chat with your agents directly in threads.",
+    "Connect Slack to invoke /patom and chat with your agents directly in threads.",
   "settings.integrations.installedBy": "Installed by {who}",
   "settings.integrations.command.label": "COMMAND",
   "settings.integrations.scopes.label": "SCOPES",

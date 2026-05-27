@@ -1,6 +1,6 @@
-# CLAUDE.md — Relay engineering rules
+# CLAUDE.md — Patom engineering rules
 
-How we write Rust for Relay. Binding, not advisory. Read `SPEC.md` for the data model and pipeline before non-trivial changes.
+How we write Rust for Patom. Binding, not advisory. Read `SPEC.md` for the data model and pipeline before non-trivial changes.
 
 Priorities, in order: **correctness, safety, clarity, performance**.
 Lineage: TigerBeetle TIGER_STYLE + NASA Power of Ten.
@@ -74,13 +74,13 @@ Spans, events, and logs go through `tracing` bridged to OTel via `tracing-opente
 **Spans.**
 - Every externally-triggered unit of work opens a span via `#[tracing::instrument]` or `info_span!`.
 - Names are stable and low-cardinality (`session.turn`, `hook.evaluate`). Dynamic values go on fields, never in the name.
-- Custom attributes use `relay.*`: `relay.agent.id`, `relay.session.id`, `relay.tenant.id`, `relay.chain.id`, `relay.depth`, `relay.hook.decision`.
+- Custom attributes use `patom.*`: `patom.agent.id`, `patom.session.id`, `patom.tenant.id`, `patom.chain.id`, `patom.depth`, `patom.hook.decision`.
 - On error: emit a `tracing::error!` event with `error = ?e` inside the span; the OTel bridge sets span status to ERROR. Don't drop the error and set status separately — both come from the one event.
 - Spans end on every path. Either `#[instrument]` (RAII) or `let _g = span.enter()` bound to a scope guard. Never `span.in_scope` straddling an `await`.
 
 **Logs.**
 - Severity ∈ `TRACE | DEBUG | INFO | WARN | ERROR`. `ERROR` = user-visible failure. The Rust analogue of `FATAL` is `panic!` — process cannot continue.
-- Structured only: `info!(event = "session.turn.started", relay.session.id = %sid, depth = depth.get())`. Never interpolate values into the message string.
+- Structured only: `info!(event = "session.turn.started", patom.session.id = %sid, depth = depth.get())`. Never interpolate values into the message string.
 - PII is `DEBUG`-only and stripped by production exporters.
 - HTTP entry uses `tower_http::trace::TraceLayer` so every axum request opens a root span automatically.
 

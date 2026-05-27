@@ -9,13 +9,13 @@
 
 use std::sync::Arc;
 
-use relay_rs::clock::SystemClock;
-use relay_rs::runtime::queue::PromptQueue as _;
-use relay_rs::runtime::{
+use patom_rs::clock::SystemClock;
+use patom_rs::runtime::queue::PromptQueue as _;
+use patom_rs::runtime::{
     DagBudget, IdempotencyKey, NewPromptRequest, PgDagBudget, PgPromptQueue, PromptRequestId,
     WorkerId,
 };
-use relay_rs::types::{Participant, Prompt};
+use patom_rs::types::{Participant, Prompt};
 
 mod common;
 use common::pg::TestDb;
@@ -26,9 +26,9 @@ fn queue(db: &TestDb) -> Arc<PgPromptQueue> {
 
 async fn enqueue_root(
     q: &Arc<PgPromptQueue>,
-    agent_id: relay_rs::agents::AgentId,
-    org_id: relay_rs::auth::OrgId,
-    user_id: relay_rs::auth::UserId,
+    agent_id: patom_rs::agents::AgentId,
+    org_id: patom_rs::auth::OrgId,
+    user_id: patom_rs::auth::UserId,
 ) -> PromptRequestId {
     q.enqueue(NewPromptRequest {
         session: None,
@@ -40,7 +40,7 @@ async fn enqueue_root(
             .expect("key"),
         org_id,
         created_by_user_id: user_id,
-        kind_payload: relay_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
     })
     .await
     .expect("enqueue")
@@ -160,7 +160,7 @@ async fn second_pending_row_still_blocks_quiescence() {
         idempotency_key: IdempotencyKey::try_from("second").expect("key"),
         org_id: db.default_org_id,
         created_by_user_id: db.default_user_id,
-        kind_payload: relay_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
     })
     .await
     .expect("second enqueue");

@@ -182,7 +182,7 @@ export function ChatView() {
       rail={<MenuRail />}
       sidebar={
         <Sidebar
-          workspace={activeOrg?.name ?? "Relay"}
+          workspace={activeOrg?.name ?? "Patom"}
           threads={threads}
           agents={agents}
           selectedChannel={selectedAgentId ? "" : CHANNEL}

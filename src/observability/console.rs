@@ -1,7 +1,7 @@
 //! Console formatter: `<ts> <LEVEL> <fields…>`, no parent-span chain.
 //!
 //! Events that need a span handle (session id, agent id, …) carry it as an
-//! explicit `relay.*` field. The OTel layer keeps the span tree for backend
+//! explicit `patom.*` field. The OTel layer keeps the span tree for backend
 //! queries; the console is for humans tailing stderr.
 
 use std::fmt;

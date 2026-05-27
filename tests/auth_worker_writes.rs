@@ -20,15 +20,15 @@
 
 use std::sync::Arc;
 
-use relay_rs::agents::{
+use patom_rs::agents::{
     AgentDescription, AgentName, AgentSystemPrompt, DefaultAgentSeed, PgAgentStore,
 };
-use relay_rs::auth::{OrgId, UserId};
-use relay_rs::clock::SystemClock;
-use relay_rs::provider::ChatMessage;
-use relay_rs::runtime::PromptRequestId;
-use relay_rs::session::{PgSessionStore, SessionId, SessionStore};
-use relay_rs::types::{MessageSender, Participant};
+use patom_rs::auth::{OrgId, UserId};
+use patom_rs::clock::SystemClock;
+use patom_rs::provider::ChatMessage;
+use patom_rs::runtime::PromptRequestId;
+use patom_rs::session::{PgSessionStore, SessionId, SessionStore};
+use patom_rs::types::{MessageSender, Participant};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -39,7 +39,7 @@ use common::pg::TestDb;
 /// default agent for it. Returns `(org_id, user_id, agent_id)`. The
 /// schema is the same one `TestDb::fresh` minted; we just splice in
 /// another tenant alongside the seeded one.
-async fn seed_second_org(pool: &PgPool) -> (OrgId, UserId, relay_rs::agents::AgentId) {
+async fn seed_second_org(pool: &PgPool) -> (OrgId, UserId, patom_rs::agents::AgentId) {
     let now = chrono::Utc::now();
     let org_id = OrgId::new();
     let user_id = UserId::new();
@@ -118,7 +118,7 @@ async fn seed_session_in_org_a(
             session,
             MessageSender::Human,
             Participant::agent(db.default_agent_id),
-            ChatMessage::User(vec![relay_rs::provider::UserContent::Text(
+            ChatMessage::User(vec![patom_rs::provider::UserContent::Text(
                 "seed".to_string(),
             )]),
             request_id,
@@ -157,7 +157,7 @@ async fn worker_write_to_foreign_org_session_fails_under_rls() {
             session,
             MessageSender::Human,
             Participant::agent(db.default_agent_id),
-            ChatMessage::User(vec![relay_rs::provider::UserContent::Text(
+            ChatMessage::User(vec![patom_rs::provider::UserContent::Text(
                 "foreign".to_string(),
             )]),
             request_id,
@@ -190,7 +190,7 @@ async fn worker_write_under_correct_user_succeeds() {
             session,
             MessageSender::Human,
             Participant::agent(db.default_agent_id),
-            ChatMessage::User(vec![relay_rs::provider::UserContent::Text(
+            ChatMessage::User(vec![patom_rs::provider::UserContent::Text(
                 "legit".to_string(),
             )]),
             request_id,

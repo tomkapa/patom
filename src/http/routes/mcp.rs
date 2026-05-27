@@ -536,7 +536,7 @@ async fn list_mcp_servers(
     // surfaces only the `kind` label — never the ciphertext — so the
     // response can render `has_credentials` without an extra round-trip.
     //
-    // Identity tables (`users`) are intentionally REVOKED from `relay_app`
+    // Identity tables (`users`) are intentionally REVOKED from `patom_app`
     // (migration 14), so the creator-email enrichment runs as a second
     // round-trip through the privileged `users` store after the tx commits.
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
@@ -589,7 +589,7 @@ async fn read_mcp_server(
     .map_err(AuthError::from)?;
     tx.commit().await.map_err(AuthError::from)?;
     let mut row = row.ok_or(HttpError::NotFound)?;
-    // Identity tables (`users`) are REVOKED from `relay_app` (migration
+    // Identity tables (`users`) are REVOKED from `patom_app` (migration
     // 14), so the email lookup runs through the privileged user store
     // outside the tenant-scoped tx above.
     let emails = state
@@ -890,8 +890,8 @@ async fn test_connect_mcp_server(
 
     let span = tracing::info_span!(
         "mcp.test_connect",
-        relay.user.id = %principal.user_id,
-        relay.org.id = %principal.active_org_id,
+        patom.user.id = %principal.user_id,
+        patom.org.id = %principal.active_org_id,
     );
     let _guard = span.enter();
 
@@ -940,8 +940,8 @@ async fn test_connect_mcp_server(
         .collect();
 
     tracing::info!(
-        relay.mcp.url = %url.as_str(),
-        relay.mcp.discovered = discovered.len(),
+        patom.mcp.url = %url.as_str(),
+        patom.mcp.discovered = discovered.len(),
         "mcp.test_connect.ok"
     );
     Ok(Json(TestConnectResponse::Ok {
@@ -993,7 +993,7 @@ struct McpServerRowForList {
     credentials_kind: Option<String>,
     /// Stitched in by the handler after the tenant-scoped tx commits —
     /// the SELECT does not return this column (identity tables are
-    /// revoked from `relay_app`).
+    /// revoked from `patom_app`).
     #[sqlx(default)]
     creator_email: Option<String>,
     /// Surfaced only on the per-server read path, by decrypting the
@@ -1488,8 +1488,8 @@ async fn do_auto_continue(
     .await
     {
         Ok(_) => tracing::info!(
-            relay.session.id = %resume.session_id.as_uuid(),
-            relay.agent.id = %resume.agent_id.as_uuid(),
+            patom.session.id = %resume.session_id.as_uuid(),
+            patom.agent.id = %resume.agent_id.as_uuid(),
             event = "mcp.oauth.callback.auto_continue_submitted",
         ),
         Err(e) => tracing::warn!(
@@ -1545,7 +1545,7 @@ async fn do_slack_ping(state: &AppState, pending: &PendingAuthorization, display
             channel: channel_id,
             thread_ts: Some(thread_ts),
             body: crate::slack::poster::PostBody::Text(format!("✓ Connected — {display_name}")),
-            username: "Relay".to_owned(),
+            username: "Patom".to_owned(),
             icon_url: None,
         })
         .await
@@ -1758,7 +1758,7 @@ async fn consume_pending_for_redirect(state: &AppState, raw_state: Option<&str>)
 /// (relative path, ≤2048 bytes); otherwise `/`. A `status=ok` marker is
 /// appended so the FE polling loop terminates immediately on first nav.
 ///
-/// When `web_base` is `Some(origin)` (set via `RELAY_WEB_BASE_URL` for
+/// When `web_base` is `Some(origin)` (set via `PATOM_WEB_BASE_URL` for
 /// cross-origin dev where FE and BE live on different ports), the origin
 /// is prepended so the browser lands on the FE host. The path itself
 /// stays relative via `sanitize_return_to`, preserving open-redirect
@@ -1986,9 +1986,9 @@ async fn put_oauth_client(
         .await
         .map_err(map_oauth_err)?;
     tracing::info!(
-        relay.org.id = %principal.active_org_id,
-        relay.oauth.issuer = %stored.issuer,
-        relay.mcp.server.id = %server_id,
+        patom.org.id = %principal.active_org_id,
+        patom.oauth.issuer = %stored.issuer,
+        patom.mcp.server.id = %server_id,
         event = "mcp.oauth.client.operator_set",
     );
     Ok(Json(OAuthClientResponse {
@@ -2097,7 +2097,7 @@ fn authorize_extras_borrowed(extras: Option<&OAuthAuthorizeExtras>) -> Vec<(&str
 //
 // Public no-cookie route. The Block Kit connection-request card's
 // `Connect <Provider>` button points here with a `connect_link`-signed
-// token. We verify the token, resolve the Slack user → relay user via
+// token. We verify the token, resolve the Slack user → patom user via
 // the workspace installer fallback (same identity model as
 // `app_mention`), idempotently install the catalog entry as an
 // `mcp_servers` row, mint PKCE + state, persist the pending row
@@ -2171,7 +2171,7 @@ async fn handle_slack_connect_inner(
     let slack = state
         .slack
         .as_ref()
-        .ok_or("Slack integration is not enabled on this Relay deployment.")?;
+        .ok_or("Slack integration is not enabled on this Patom deployment.")?;
     let token = token.ok_or("Missing token.")?;
 
     let now = slack.clock.now_unix_secs();
@@ -2199,9 +2199,9 @@ async fn handle_slack_connect_inner(
         .await?;
 
     tracing::info!(
-        relay.mcp.catalog_id = %claims.catalog_id,
-        relay.org.id = %org_id.as_uuid(),
-        relay.user.id = %user_id.as_uuid(),
+        patom.mcp.catalog_id = %claims.catalog_id,
+        patom.org.id = %org_id.as_uuid(),
+        patom.user.id = %user_id.as_uuid(),
         event = "slack.connect.redirect",
     );
     Ok(start.authorize_url.to_string())

@@ -114,15 +114,15 @@ impl SchedulerInner {
             if let Err(e) = self.enqueue_reflection(&c).await {
                 warn!(
                     error = %e,
-                    relay.agent.id = %c.agent_id,
-                    relay.session.id = %c.session_id,
+                    patom.agent.id = %c.agent_id,
+                    patom.session.id = %c.session_id,
                     "reflection_scheduler.enqueue.error",
                 );
             } else {
                 info!(
-                    relay.agent.id = %c.agent_id,
-                    relay.session.id = %c.session_id,
-                    relay.reflection.up_to_turn_id = %c.last_turn_id,
+                    patom.agent.id = %c.agent_id,
+                    patom.session.id = %c.session_id,
+                    patom.reflection.up_to_turn_id = %c.last_turn_id,
                     "reflection_scheduler.enqueued",
                 );
             }
@@ -284,7 +284,7 @@ impl SchedulerInner {
         };
         let outcome = self.queue.enqueue(req).await?;
         debug!(
-            relay.request.id = %outcome.request_id(),
+            patom.request.id = %outcome.request_id(),
             "reflection_scheduler.enqueued.row",
         );
         Ok(())

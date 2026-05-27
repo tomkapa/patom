@@ -3,7 +3,7 @@ import type { InputHTMLAttributes, ReactNode } from "react";
 import { cn } from "../../lib/utils";
 
 /**
- * Text input with a left-side prefix label, e.g. `relay.app/`. Matches
+ * Text input with a left-side prefix label, e.g. `patom.app/`. Matches
  * the design's slug field on the General tab.
  */
 export const PrefixInput = forwardRef<HTMLInputElement, {

@@ -13,26 +13,26 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use relay_rs::clock::{SharedClock, SystemClock};
-use relay_rs::memory::ReflectionScheduler;
-use relay_rs::runtime::{
+use patom_rs::clock::{SharedClock, SystemClock};
+use patom_rs::memory::ReflectionScheduler;
+use patom_rs::runtime::{
     IdempotencyKey, NewPromptRequest, PgPromptQueue, PromptRequestId, RequestKind,
     RequestKindPayload, SharedPromptQueue, WorkerId,
 };
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
-use relay_rs::types::{Participant, Prompt};
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::types::{Participant, Prompt};
 
 mod common;
 use common::pg::{TestDb, human_to_agent_session};
 
 async fn enqueue_reflection_row(
     queue: &SharedPromptQueue,
-    session: relay_rs::session::SessionId,
-    agent_id: relay_rs::agents::AgentId,
+    session: patom_rs::session::SessionId,
+    agent_id: patom_rs::agents::AgentId,
     up_to: PromptRequestId,
     key: &str,
-    org_id: relay_rs::auth::OrgId,
-    user_id: relay_rs::auth::UserId,
+    org_id: patom_rs::auth::OrgId,
+    user_id: patom_rs::auth::UserId,
 ) -> PromptRequestId {
     let req = NewPromptRequest {
         session: Some(session),

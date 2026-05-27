@@ -1,23 +1,23 @@
 // Vietnamese string table. Mirrors `en.ts` key-for-key.
 //
 // Translation notes:
-// - Brand "Relay" stays English (product name).
+// - Brand "Patom" stays English (product name).
 // - "Sign in" → "Đăng nhập"; "Channels" → "Kênh"; "Direct Messages" →
 //   "Tin nhắn riêng"; "Sign out" → "Đăng xuất"; "Language" → "Ngôn ngữ".
 
 import type { TranslationTable } from "./en";
 
 const vi: TranslationTable = {
-  "signin.brand": "Relay",
+  "signin.brand": "Patom",
   "signin.tagline": "Bảng điều khiển vận hành cho các phiên đa agent.",
-  "signin.heading": "Đăng nhập vào Relay",
+  "signin.heading": "Đăng nhập vào Patom",
   "signin.subheading": "Tiếp tục bằng tài khoản Google của bạn.",
   "signin.cta": "Tiếp tục bằng Google",
   "signin.legal": "Khi tiếp tục, bạn đồng ý với Điều khoản dịch vụ và Chính sách bảo mật.",
   "signin.error.forbidden": "Truy cập bị từ chối.",
   "signin.error.oauth_down": "Hiện không thể đăng nhập. Vui lòng thử lại sau.",
 
-  "sidebar.brand": "Relay",
+  "sidebar.brand": "Patom",
   "sidebar.channels": "Kênh",
   "sidebar.dms": "Tin nhắn riêng",
   "sidebar.empty_agents": "Chưa có agent nào được đăng ký.",
@@ -111,7 +111,7 @@ const vi: TranslationTable = {
   "connections.modal.custom.namePlaceholder": "internal-search",
   "connections.modal.custom.urlLabel": "URL máy chủ MCP",
   "connections.modal.custom.urlHint":
-    "URL phải truy cập được từ Relay worker.",
+    "URL phải truy cập được từ Patom worker.",
   "connections.modal.custom.authLabel": "Xác thực",
   "connections.modal.custom.authNone": "Không",
   "connections.modal.custom.authToken": "API token",
@@ -211,7 +211,7 @@ const vi: TranslationTable = {
   "connections.detail.danger.enable.cta": "Bật",
   "connections.detail.danger.disconnect.title": "Ngắt kết nối",
   "connections.detail.danger.disconnect.body":
-    "Agent mất quyền dùng công cụ của kết nối này. Thông tin xác thực của Relay cũng được thu hồi.",
+    "Agent mất quyền dùng công cụ của kết nối này. Thông tin xác thực của Patom cũng được thu hồi.",
   "connections.detail.danger.disconnect.ack": "Tôi hiểu hậu quả",
   "connections.detail.danger.disconnect.cta": "Ngắt kết nối",
   "connections.detail.notFound.title": "Không tìm thấy kết nối",
@@ -630,22 +630,22 @@ const vi: TranslationTable = {
   // Integrations tab
   "settings.integrations.title": "Tích hợp",
   "settings.integrations.subtitle":
-    "Kết nối Relay với nền tảng chat của nhóm. Quản trị workspace điều phối các cài đặt, scope và kênh mặc định.",
+    "Kết nối Patom với nền tảng chat của nhóm. Quản trị workspace điều phối các cài đặt, scope và kênh mặc định.",
   "settings.integrations.connected": "ĐÃ KẾT NỐI",
   "settings.integrations.available": "ĐANG MỞ",
   "settings.integrations.available.helper":
-    "Các nền tảng chat theo luồng Relay có thể tích hợp. Lộ trình ra mắt mỗi tháng.",
+    "Các nền tảng chat theo luồng Patom có thể tích hợp. Lộ trình ra mắt mỗi tháng.",
   "settings.integrations.connect": "Kết nối Slack",
   "settings.integrations.connecting": "Đang mở Slack…",
   "settings.integrations.disconnect": "Ngắt kết nối",
   "settings.integrations.disconnect.confirm.title": "Ngắt kết nối {team}?",
   "settings.integrations.disconnect.confirm.body":
-    "Relay sẽ ngừng nhận sự kiện và lệnh /relay sẽ không còn hoạt động trong workspace Slack này. Các thread đang gắn với agent sẽ bị gỡ liên kết.",
+    "Patom sẽ ngừng nhận sự kiện và lệnh /patom sẽ không còn hoạt động trong workspace Slack này. Các thread đang gắn với agent sẽ bị gỡ liên kết.",
   "settings.integrations.disconnect.cancel": "Hủy",
   "settings.integrations.disconnect.confirmCta": "Ngắt kết nối",
   "settings.integrations.empty.title": "Chưa có tích hợp nào",
   "settings.integrations.empty.body":
-    "Kết nối Slack để gọi /relay và chat trực tiếp với agent trong thread.",
+    "Kết nối Slack để gọi /patom và chat trực tiếp với agent trong thread.",
   "settings.integrations.installedBy": "Cài bởi {who}",
   "settings.integrations.command.label": "LỆNH",
   "settings.integrations.scopes.label": "SCOPES",

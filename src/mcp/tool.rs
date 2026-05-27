@@ -70,7 +70,7 @@ impl Tool for McpTool {
         self.schema.clone()
     }
 
-    #[instrument(name = "tool.mcp", skip_all, fields(relay.tool = %self.name))]
+    #[instrument(name = "tool.mcp", skip_all, fields(patom.tool = %self.name))]
     async fn execute(&self, input: Value, _ctx: &ToolCallContext) -> Result<String, ToolError> {
         match self.client.call_tool(&self.remote_name, input).await {
             Ok(result) => {
@@ -95,7 +95,7 @@ impl Tool for McpTool {
                     // the truncated tool output in two places.
                     tracing::error!(
                         event = "mcp.tool.upstream_error",
-                        relay.tool = %self.name,
+                        patom.tool = %self.name,
                         error = ?err,
                     );
                     return Err(err);

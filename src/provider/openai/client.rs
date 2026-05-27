@@ -19,7 +19,7 @@ use crate::types::{ModelId, SecretString};
 /// The `backend` field carries the [`ProviderId`] this instance was
 /// constructed for (`Openai`, `Deepseek`, …). Two instances can point at the
 /// same SDK with different base URLs and API keys — the id is what surfaces
-/// in tracing (`relay.provider`) so analytics can distinguish them. Typing
+/// in tracing (`patom.provider`) so analytics can distinguish them. Typing
 /// it as `ProviderId` instead of `&'static str` enforces the low-cardinality
 /// label invariant at the type level (CLAUDE.md §2).
 pub struct OpenAiProvider {
@@ -85,18 +85,18 @@ impl LlmProvider for OpenAiProvider {
     // both the request- and response-shaped attributes ride on the same span. Keeping
     // the span name stable (`provider.openai.send`) per CLAUDE.md §2; the spec's
     // recommended `chat <model>` form would put the model in the name and inflate
-    // cardinality. The `relay.provider` field is populated dynamically from
+    // cardinality. The `patom.provider` field is populated dynamically from
     // `self.backend` so DeepSeek (and any future OpenAI-SDK-compatible backend)
     // reports its own backend label without forking the implementation.
     #[instrument(
         name = "provider.openai.send",
         skip_all,
         fields(
-            relay.provider = self.backend.as_str(),
-            relay.model = %request.model,
-            relay.messages = request.messages.len(),
-            relay.tools = request.tools.len(),
-            relay.max_output_tokens = request.max_output_tokens.get(),
+            patom.provider = self.backend.as_str(),
+            patom.model = %request.model,
+            patom.messages = request.messages.len(),
+            patom.tools = request.tools.len(),
+            patom.max_output_tokens = request.max_output_tokens.get(),
             gen_ai.system = tracing::field::Empty,
             gen_ai.operation.name = tracing::field::Empty,
             gen_ai.request.model = tracing::field::Empty,

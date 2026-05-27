@@ -6,32 +6,32 @@
 //! long-running container brought up by the project's `docker-compose.yml`.
 //!
 //! - Env: set `DATABASE_URL` to override the default
-//!   `postgres://relay:relay@localhost:5432/relay`.
+//!   `postgres://patom:patom@localhost:5432/patom`.
 //! - Cleanup is RAII: schemas drop synchronously when [`TestDb`] goes out of scope.
 //!   The [`Drop`] impl uses `tokio::task::block_in_place` + `Handle::block_on`, so
 //!   tests **must** run on the multi-threaded runtime
 //!   (`#[tokio::test(flavor = "multi_thread")]`); a current-thread runtime panics on
 //!   `block_in_place`. Stray schemas can be reaped manually with `psql`:
-//!   `SELECT 'DROP SCHEMA "' || nspname || '" CASCADE;' FROM pg_namespace WHERE nspname LIKE 'relay_test_%';`
+//!   `SELECT 'DROP SCHEMA "' || nspname || '" CASCADE;' FROM pg_namespace WHERE nspname LIKE 'patom_test_%';`
 
 use std::time::Duration;
 
 use std::sync::Arc;
 
-use relay_rs::agents::{
+use patom_rs::agents::{
     AgentDescription, AgentId, AgentName, AgentSystemPrompt, DefaultAgentSeed, PgAgentStore,
     SharedAgentStore,
 };
-use relay_rs::auth::{OrgId, UserId};
-use relay_rs::clock::{SharedClock, SystemClock};
-use relay_rs::runtime::PromptRequestId;
-use relay_rs::session::{SessionId, SessionStore};
-use relay_rs::types::Participant;
+use patom_rs::auth::{OrgId, UserId};
+use patom_rs::clock::{SharedClock, SystemClock};
+use patom_rs::runtime::PromptRequestId;
+use patom_rs::session::{SessionId, SessionStore};
+use patom_rs::types::Participant;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
-const DEFAULT_DATABASE_URL: &str = "postgres://relay:relay@localhost:5432/relay";
+const DEFAULT_DATABASE_URL: &str = "postgres://patom:patom@localhost:5432/patom";
 const TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Owns a freshly-migrated, schema-isolated Postgres pool. Use `pool` to construct
@@ -74,7 +74,7 @@ impl TestDb {
             .await
             .expect("admin pool connect");
 
-        let schema = format!("relay_test_{}", Uuid::new_v4().simple());
+        let schema = format!("patom_test_{}", Uuid::new_v4().simple());
         sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
             .execute(&admin)
             .await

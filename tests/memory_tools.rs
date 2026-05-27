@@ -11,22 +11,22 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use relay_rs::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
-use relay_rs::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
-use relay_rs::clock::{SharedClock, SystemClock};
-use relay_rs::memory::{
+use patom_rs::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
+use patom_rs::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
+use patom_rs::clock::{SharedClock, SystemClock};
+use patom_rs::memory::{
     AgentMemory, MAX_MEMORY_MUTATIONS_PER_TURN, MemoryContent, MemoryHandle, MemoryKind,
     MemoryMutation, MemorySectionLoader, MemoryState, MutationSource, PgMemoryStore,
     SessionMemoryCache, SharedMemoryStore,
 };
-use relay_rs::prompts::Prompts;
-use relay_rs::runtime::PromptRequestId;
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
-use relay_rs::tools::system::{
+use patom_rs::prompts::Prompts;
+use patom_rs::runtime::PromptRequestId;
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::tools::system::{
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
 };
-use relay_rs::tools::{Tool, ToolCallContext, ToolError};
-use relay_rs::types::Participant;
+use patom_rs::tools::{Tool, ToolCallContext, ToolError};
+use patom_rs::types::Participant;
 use serde_json::json;
 
 mod common;
@@ -38,10 +38,10 @@ struct Fixture {
     deps: MemoryToolDeps,
     loader: MemorySectionLoader,
     store: SharedMemoryStore,
-    session: relay_rs::session::SessionId,
-    agent_id: relay_rs::agents::AgentId,
-    user_id: relay_rs::auth::UserId,
-    org_id: relay_rs::auth::OrgId,
+    session: patom_rs::session::SessionId,
+    agent_id: patom_rs::agents::AgentId,
+    user_id: patom_rs::auth::UserId,
+    org_id: patom_rs::auth::OrgId,
 }
 
 async fn fixture(db: &TestDb) -> Fixture {
@@ -98,7 +98,7 @@ fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
         viewer: Participant::agent(f.agent_id),
         root_request_id: request_id,
         request_id,
-        kind_payload: relay_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
         acting_user_id: f.user_id,
         org_id: f.org_id,
     }
@@ -400,7 +400,7 @@ async fn handle_round_trips_through_session_cache() {
         .resolve_handle(
             f.session,
             f.agent_id,
-            &relay_rs::runtime::RequestKindPayload::Normal {},
+            &patom_rs::runtime::RequestKindPayload::Normal {},
             MemoryHandle::try_from(1u32).expect("h"),
         )
         .await
@@ -413,14 +413,14 @@ async fn handle_round_trips_through_session_cache() {
 fn ctx_with_target(
     f: &Fixture,
     request_id: PromptRequestId,
-    target: relay_rs::memory::ContradictionEventId,
+    target: patom_rs::memory::ContradictionEventId,
 ) -> ToolCallContext {
     ToolCallContext {
         session_id: f.session,
         viewer: Participant::agent(f.agent_id),
         root_request_id: request_id,
         request_id,
-        kind_payload: relay_rs::runtime::RequestKindPayload::Resolution {
+        kind_payload: patom_rs::runtime::RequestKindPayload::Resolution {
             contradiction_event_id: target,
         },
         acting_user_id: f.user_id,
@@ -431,9 +431,9 @@ fn ctx_with_target(
 async fn seed_pair_and_contradiction(
     f: &Fixture,
 ) -> (
-    relay_rs::memory::MemoryId,
-    relay_rs::memory::MemoryId,
-    relay_rs::memory::ContradictionEventId,
+    patom_rs::memory::MemoryId,
+    patom_rs::memory::MemoryId,
+    patom_rs::memory::ContradictionEventId,
 ) {
     let a = f
         .store

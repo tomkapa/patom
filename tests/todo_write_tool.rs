@@ -16,15 +16,15 @@
 
 use std::sync::Arc;
 
-use relay_rs::clock::SystemClock;
-use relay_rs::runtime::PromptRequestId;
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
-use relay_rs::tools::system::todos::{
+use patom_rs::clock::SystemClock;
+use patom_rs::runtime::PromptRequestId;
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::tools::system::todos::{
     MAX_TODO_WRITES_PER_TURN, MAX_TODOS_PER_LIST, PgSessionTodoStore, SharedSessionTodoStore,
     TodoToolDeps, TodoWriteTool,
 };
-use relay_rs::tools::{Tool, ToolCallContext, ToolError};
-use relay_rs::types::Participant;
+use patom_rs::tools::{Tool, ToolCallContext, ToolError};
+use patom_rs::types::Participant;
 use serde_json::{Value, json};
 
 mod common;
@@ -33,10 +33,10 @@ use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
 struct Fixture {
     tool: TodoWriteTool,
     store: SharedSessionTodoStore,
-    session: relay_rs::session::SessionId,
-    agent_id: relay_rs::agents::AgentId,
-    user_id: relay_rs::auth::UserId,
-    org_id: relay_rs::auth::OrgId,
+    session: patom_rs::session::SessionId,
+    agent_id: patom_rs::agents::AgentId,
+    user_id: patom_rs::auth::UserId,
+    org_id: patom_rs::auth::OrgId,
 }
 
 async fn fixture(db: &TestDb) -> Fixture {
@@ -69,7 +69,7 @@ fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
         viewer: Participant::agent(f.agent_id),
         root_request_id: request_id,
         request_id,
-        kind_payload: relay_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
         acting_user_id: f.user_id,
         org_id: f.org_id,
     }

@@ -173,13 +173,13 @@ impl GetSessionTool {
         let root = match self.sessions.root_request_id(target).await {
             Ok(r) => r,
             Err(SessionError::NotFound(_)) => {
-                warn!(relay.session.id = %target, "get_session.target_not_found");
+                warn!(patom.session.id = %target, "get_session.target_not_found");
                 return Err(ToolError::InvalidInput(format!(
                     "get_session: session {target} not found"
                 )));
             }
             Err(e) => {
-                warn!(error = %e, relay.session.id = %target, "get_session.target_lookup");
+                warn!(error = %e, patom.session.id = %target, "get_session.target_lookup");
                 return Err(ToolError::Backend(format!(
                     "get_session: session lookup: {e}"
                 )));

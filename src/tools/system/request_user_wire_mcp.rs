@@ -140,8 +140,8 @@ impl Tool for RequestUserWireMcpTool {
         name = "tool.request_user_wire_mcp",
         skip_all,
         fields(
-            relay.org.id = %ctx.org_id,
-            relay.catalog.id = tracing::field::Empty,
+            patom.org.id = %ctx.org_id,
+            patom.catalog.id = tracing::field::Empty,
         ),
         err,
     )]
@@ -168,7 +168,7 @@ impl Tool for RequestUserWireMcpTool {
             )
         })?;
 
-        tracing::Span::current().record("relay.catalog.id", parsed.catalog_id.as_str());
+        tracing::Span::current().record("patom.catalog.id", parsed.catalog_id.as_str());
 
         // Validate the catalog id resolves AND isn't already wired. The
         // two reads are independent — fan out so the model doesn't pay

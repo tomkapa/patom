@@ -5,7 +5,7 @@
 //! minor releases, so the constants are isolated here for one-file bumps.
 //!
 //! Span name is unchanged (CLAUDE.md §2: stable, low-cardinality). Optional
-//! input/output capture is gated on `RELAY_GENAI_CAPTURE_CONTENT=1`. The
+//! input/output capture is gated on `PATOM_GENAI_CAPTURE_CONTENT=1`. The
 //! payload is recorded twice: as a `gen_ai.input.messages` /
 //! `gen_ai.output.messages` span attribute (queryable on the span itself) and
 //! as a `Level::DEBUG` event (visible on stderr for local dev). The duplicate
@@ -38,7 +38,7 @@ fn capture_content() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
         matches!(
-            std::env::var("RELAY_GENAI_CAPTURE_CONTENT").as_deref(),
+            std::env::var("PATOM_GENAI_CAPTURE_CONTENT").as_deref(),
             Ok("1" | "true" | "TRUE" | "yes")
         )
     })

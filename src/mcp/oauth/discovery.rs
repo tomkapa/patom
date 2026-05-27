@@ -79,7 +79,7 @@ struct AsMetadataJson {
     name = "mcp.oauth.discover",
     skip_all,
     fields(
-        relay.mcp.url = %server_url,
+        patom.mcp.url = %server_url,
     ),
 )]
 pub async fn discover_authorization_server(
@@ -154,8 +154,8 @@ async fn chase_delegated_issuer(
 ) -> Result<AsMetadataJson, OAuthError> {
     let claimed = first.issuer.clone();
     tracing::info!(
-        relay.oauth.discovered_issuer = %original_issuer,
-        relay.oauth.claimed_issuer = %claimed,
+        patom.oauth.discovered_issuer = %original_issuer,
+        patom.oauth.claimed_issuer = %claimed,
         "mcp.oauth.discover.issuer_delegation_chase",
     );
     let claimed_url = Url::parse(&claimed)

@@ -103,7 +103,7 @@ impl AssetKind {
         }
     }
 
-    /// Telemetry label, used as `relay.asset.kind` on tracing spans + the
+    /// Telemetry label, used as `patom.asset.kind` on tracing spans + the
     /// `kind` attribute on upload metrics.
     #[must_use]
     pub fn telemetry_label(self) -> &'static str {

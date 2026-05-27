@@ -90,15 +90,15 @@ pub const SLACK_POST_BODY_TIMEOUT: Duration = Duration::from_secs(5);
 /// lower so block/markdown overhead never tips us over.
 pub const SLACK_MAX_POST_CHARS: usize = 35_000;
 
-/// Maximum number of agents rendered in the `/relay` Block Kit picker.
+/// Maximum number of agents rendered in the `/patom` Block Kit picker.
 ///
 /// Slack's `static_select` element hard-caps options at 100; tenants
 /// with more agents see the first 100 alphabetically and fall back to
-/// the `@RelayBot <agent-name>` mention path for the long tail (the
+/// the `@PatomBot <agent-name>` mention path for the long tail (the
 /// modal copy points this out).
 pub const MAX_AGENTS_IN_PICKER: usize = 100;
 
-/// Maximum characters for the prompt text area in the `/relay` modal.
+/// Maximum characters for the prompt text area in the `/patom` modal.
 ///
 /// Slack's `plain_text_input.max_length` accepts up to 3 000; the
 /// downstream `Prompt` newtype caps at 64 KB, so the modal is the

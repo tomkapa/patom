@@ -16,24 +16,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use relay_rs::auth::{OrgId, UserId};
-use relay_rs::clock::SystemClock;
-use relay_rs::mcp::McpServerId;
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
-use relay_rs::tools::{
+use patom_rs::auth::{OrgId, UserId};
+use patom_rs::clock::SystemClock;
+use patom_rs::mcp::McpServerId;
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::tools::{
     MAX_TOOL_CALL_ERROR_MESSAGE_BYTES, PgToolCallStore, ToolCallRow, ToolCallRowId, ToolCallStore,
     clip_error_message,
 };
-use relay_rs::types::ToolName;
+use patom_rs::types::ToolName;
 
 mod common;
 use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
 
 fn fresh_row(
     org_id: OrgId,
-    session_id: relay_rs::session::SessionId,
-    request_id: relay_rs::runtime::PromptRequestId,
-    agent_id: relay_rs::agents::AgentId,
+    session_id: patom_rs::session::SessionId,
+    request_id: patom_rs::runtime::PromptRequestId,
+    agent_id: patom_rs::agents::AgentId,
     mcp_server_id: Option<McpServerId>,
     is_error: bool,
 ) -> ToolCallRow {
@@ -88,8 +88,8 @@ async fn count_rows(pool: &sqlx::PgPool) -> i64 {
 async fn setup_session_and_request(
     db: &TestDb,
 ) -> (
-    relay_rs::session::SessionId,
-    relay_rs::runtime::PromptRequestId,
+    patom_rs::session::SessionId,
+    patom_rs::runtime::PromptRequestId,
 ) {
     let sessions: SharedSessionStore =
         Arc::new(PgSessionStore::new(db.pool.clone(), SystemClock::shared()));
@@ -233,7 +233,7 @@ async fn rls_hides_rows_from_non_member_principal() {
     .await
     .expect("seed outsider user");
 
-    let count = relay_rs::auth::run_as_user::<i64, sqlx::Error>(&db.pool, outsider, async |tx| {
+    let count = patom_rs::auth::run_as_user::<i64, sqlx::Error>(&db.pool, outsider, async |tx| {
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls")
             .fetch_one(&mut **tx)
             .await?;
@@ -245,7 +245,7 @@ async fn rls_hides_rows_from_non_member_principal() {
 
     // The owning principal still sees the row.
     let count =
-        relay_rs::auth::run_as_user::<i64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
+        patom_rs::auth::run_as_user::<i64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
             let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls")
                 .fetch_one(&mut **tx)
                 .await?;

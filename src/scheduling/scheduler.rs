@@ -96,14 +96,14 @@ impl SchedulerInner {
         skip_all,
         name = "scheduling.tick",
         fields(
-            relay.scheduled_task.due_count = tracing::field::Empty,
-            relay.scheduled_task.fired_count = tracing::field::Empty,
+            patom.scheduled_task.due_count = tracing::field::Empty,
+            patom.scheduled_task.fired_count = tracing::field::Empty,
         ),
     )]
     async fn tick(&self) -> Result<(), ScheduledTaskError> {
         let now: DateTime<Utc> = self.clock.now_wall().into();
         let due = self.store.claim_due(now, self.batch_limit).await?;
-        tracing::Span::current().record("relay.scheduled_task.due_count", due.len());
+        tracing::Span::current().record("patom.scheduled_task.due_count", due.len());
 
         let mut fired = 0usize;
         for task in due {
@@ -111,13 +111,13 @@ impl SchedulerInner {
                 Ok(()) => fired += 1,
                 Err(e) => warn!(
                     error = %e,
-                    relay.scheduled_task.id = %task.id,
-                    relay.agent.id = %task.owner_agent_id,
+                    patom.scheduled_task.id = %task.id,
+                    patom.agent.id = %task.owner_agent_id,
                     "scheduling.fire.error",
                 ),
             }
         }
-        tracing::Span::current().record("relay.scheduled_task.fired_count", fired);
+        tracing::Span::current().record("patom.scheduled_task.fired_count", fired);
         Ok(())
     }
 
@@ -156,11 +156,11 @@ impl SchedulerInner {
 
         let next_str = next.map_or_else(|| "none".to_string(), |t| t.to_rfc3339());
         info!(
-            relay.scheduled_task.id = %task.id,
-            relay.agent.id = %task.owner_agent_id,
-            relay.scheduled_task.fire_at = %fire_at,
-            relay.request.id = %request_id,
-            relay.scheduled_task.next_run_at = %next_str,
+            patom.scheduled_task.id = %task.id,
+            patom.agent.id = %task.owner_agent_id,
+            patom.scheduled_task.fire_at = %fire_at,
+            patom.request.id = %request_id,
+            patom.scheduled_task.next_run_at = %next_str,
             "scheduling.fired",
         );
         Ok(())

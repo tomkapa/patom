@@ -3,7 +3,7 @@
 //! Writes go through `auth::run_as_user` so RLS scopes every query to
 //! the caller's org (the active org pinned on the JWT). The single
 //! exception is invite issuance + acceptance, which touch `users` and
-//! `org_members` — both REVOKEd from `relay_app` per migration 14 —
+//! `org_members` — both REVOKEd from `patom_app` per migration 14 —
 //! and therefore have to run privileged. Each privileged path is
 //! gated by an explicit `app_user_is_member` check upstream in the
 //! handler.
@@ -84,7 +84,7 @@ async fn fetch_org_details_priv(
 
 #[async_trait]
 impl OrgStore for PgOrgStore {
-    #[tracing::instrument(skip(self), fields(relay.org.id = %org_id))]
+    #[tracing::instrument(skip(self), fields(patom.org.id = %org_id))]
     async fn read_org(&self, org_id: OrgId) -> Result<OrgDetails, OrgError> {
         let mut tx = auth::begin_privileged(&self.pool).await?;
         let details = fetch_org_details_priv(&mut tx, org_id).await?;
@@ -92,7 +92,7 @@ impl OrgStore for PgOrgStore {
         Ok(details)
     }
 
-    #[tracing::instrument(skip(self, patch, now), fields(relay.org.id = %org_id))]
+    #[tracing::instrument(skip(self, patch, now), fields(patom.org.id = %org_id))]
     async fn update_org(
         &self,
         org_id: OrgId,
@@ -135,7 +135,7 @@ impl OrgStore for PgOrgStore {
     // The union + filter + count query is naturally long; splitting
     // would either bloat the trait surface or force three round trips.
     #[allow(clippy::too_many_lines)]
-    #[tracing::instrument(skip(self, filter, now), fields(relay.org.id = %org_id))]
+    #[tracing::instrument(skip(self, filter, now), fields(patom.org.id = %org_id))]
     async fn list_members(
         &self,
         org_id: OrgId,
@@ -308,9 +308,9 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
     #[tracing::instrument(
         skip(self),
         fields(
-            relay.org.id = %org_id,
-            relay.target.user_id = %user_id,
-            relay.role = %new_role.as_str(),
+            patom.org.id = %org_id,
+            patom.target.user_id = %user_id,
+            patom.role = %new_role.as_str(),
         )
     )]
     async fn change_role(
@@ -335,7 +335,7 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(relay.org.id = %org_id, relay.target.user_id = %user_id))]
+    #[tracing::instrument(skip(self), fields(patom.org.id = %org_id, patom.target.user_id = %user_id))]
     async fn remove_member(&self, org_id: OrgId, user_id: UserId) -> Result<(), OrgError> {
         let mut tx = auth::begin_privileged(&self.pool).await?;
         last_owner_guard(&mut tx, org_id, user_id, None).await?;
@@ -355,9 +355,9 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
     #[tracing::instrument(
         skip(self, emails, now, ttl),
         fields(
-            relay.org.id = %org_id,
-            relay.role = %role.as_str(),
-            relay.invite.batch_size = emails.len(),
+            patom.org.id = %org_id,
+            patom.role = %role.as_str(),
+            patom.invite.batch_size = emails.len(),
         )
     )]
     async fn create_invites(
@@ -423,7 +423,7 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
 
     #[tracing::instrument(
         skip(self, now, ttl),
-        fields(relay.org.id = %org_id, relay.invite.id = %invite_id)
+        fields(patom.org.id = %org_id, patom.invite.id = %invite_id)
     )]
     async fn resend_invite(
         &self,
@@ -461,7 +461,7 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         })
     }
 
-    #[tracing::instrument(skip(self), fields(relay.org.id = %org_id, relay.invite.id = %invite_id))]
+    #[tracing::instrument(skip(self), fields(patom.org.id = %org_id, patom.invite.id = %invite_id))]
     async fn revoke_invite(&self, org_id: OrgId, invite_id: InviteId) -> Result<(), OrgError> {
         let mut tx = auth::begin_privileged(&self.pool).await?;
         let n = sqlx::query("DELETE FROM org_invites WHERE id = $1 AND org_id = $2")

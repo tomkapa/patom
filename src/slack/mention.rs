@@ -6,7 +6,7 @@
 //!
 //! Slack renders user mentions as `<@U012345>` in the event payload —
 //! never as plain `@Foo`. The text we receive for a channel message like
-//! `@RelayBot @Researcher please summarise X` looks like:
+//! `@PatomBot @Researcher please summarise X` looks like:
 //!
 //! ```text
 //! <@U0BOT>  @Researcher please summarise X
@@ -49,7 +49,7 @@ pub struct MentionParse {
 pub fn parse(text: &str, bot: &SlackUserId) -> MentionParse {
     let bot_mention = format!("<@{}>", bot.as_str());
     // Discard everything *before* the bot mention — text preceding the
-    // mention is conversational filler ("hey @RelayBot…") that should
+    // mention is conversational filler ("hey @PatomBot…") that should
     // not be misinterpreted as an agent name candidate.
     let after_bot = text
         .find(&bot_mention)
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn pre_mention_text_is_discarded() {
-        // "hey @RelayBot @critic thoughts?" — pre-mention "hey" is
+        // "hey @PatomBot @critic thoughts?" — pre-mention "hey" is
         // conversational filler and must not be misread as an agent
         // candidate.
         let p = parse("hey <@U0BOT> @critic thoughts?", &bot());

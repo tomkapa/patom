@@ -29,7 +29,7 @@ export function OrgSwitcher() {
         >
           <div className="min-w-0">
             <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
-              Relay
+              Patom
             </div>
             <div className="mt-0.5 truncate font-[var(--font-display)] text-[18px] font-bold tracking-tight text-[var(--color-ink)]">
               {activeOrg.name}

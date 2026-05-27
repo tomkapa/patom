@@ -206,7 +206,7 @@ impl Tool for WebSearchTool {
         true
     }
 
-    #[instrument(name = "tool.web_search", skip_all, fields(relay.tool = "web_search"))]
+    #[instrument(name = "tool.web_search", skip_all, fields(patom.tool = "web_search"))]
     async fn execute(&self, input: Value, _ctx: &ToolCallContext) -> Result<String, ToolError> {
         let Input { query, count } = serde_json::from_value(input)
             .map_err(|e| ToolError::InvalidInput(format!("web_search: {e}")))?;

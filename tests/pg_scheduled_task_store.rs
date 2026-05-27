@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`relay_rs::scheduling::PgScheduledTaskStore`]:
+//! Trait-contract tests for [`patom_rs::scheduling::PgScheduledTaskStore`]:
 //! create + list round-trip, ownership-checked cancel, claim_due filter
 //! ordering, record_fired state advancement, and per-owner cap counting.
 //!
@@ -12,10 +12,10 @@ use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use chrono_tz::Asia::Bangkok;
-use relay_rs::agents::{AgentId, AgentName, AgentStore, AgentSystemPrompt, NewAgent};
-use relay_rs::clock::SystemClock;
-use relay_rs::runtime::PromptRequestId;
-use relay_rs::scheduling::{
+use patom_rs::agents::{AgentId, AgentName, AgentStore, AgentSystemPrompt, NewAgent};
+use patom_rs::clock::SystemClock;
+use patom_rs::runtime::PromptRequestId;
+use patom_rs::scheduling::{
     NewScheduledTask, PgScheduledTaskStore, ScheduleSpec, ScheduledPrompt, ScheduledTaskError,
     ScheduledTaskName, ScheduledTaskState, ScheduledTaskStore, TimeOfDay, Timezone, Weekday,
     Weekdays,
@@ -36,8 +36,8 @@ fn store(db: &TestDb) -> Arc<PgScheduledTaskStore> {
 /// different owner pass it explicitly via the longer-form constructor.
 struct Tenancy {
     owner: AgentId,
-    org_id: relay_rs::auth::OrgId,
-    user_id: relay_rs::auth::UserId,
+    org_id: patom_rs::auth::OrgId,
+    user_id: patom_rs::auth::UserId,
 }
 
 impl Tenancy {
@@ -64,9 +64,9 @@ async fn extra_agent(db: &TestDb, name: &str) -> AgentId {
         org_id: db.default_org_id,
         name: AgentName::try_from(name).expect("valid name"),
         system_prompt: AgentSystemPrompt::try_from("p").expect("valid prompt"),
-        description: relay_rs::agents::AgentDescription::try_from("p").expect("desc"),
+        description: patom_rs::agents::AgentDescription::try_from("p").expect("desc"),
         is_default: false,
-        allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::empty(),
+        allowed_mcp_tools: patom_rs::agents::AllowedMcpTools::empty(),
         model: None,
         edited_by: None,
     };
@@ -246,7 +246,7 @@ async fn cancel_returns_not_found_for_missing_id() {
     let db = TestDb::fresh().await;
     let store = store(&db);
 
-    let phantom = relay_rs::scheduling::ScheduledTaskId::new();
+    let phantom = patom_rs::scheduling::ScheduledTaskId::new();
     let err = store
         .cancel(phantom, db.default_agent_id)
         .await
@@ -381,7 +381,7 @@ async fn insert_with_next_run(
     t: &Tenancy,
     name: &str,
     next_run_at: chrono::DateTime<Utc>,
-) -> relay_rs::scheduling::ScheduledTaskId {
+) -> patom_rs::scheduling::ScheduledTaskId {
     let payload = NewScheduledTask {
         owner_agent_id: t.owner,
         org_id: t.org_id,

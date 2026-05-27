@@ -24,7 +24,7 @@ pub struct SlackAppState {
     pub signing_secret: SecretString,
     pub client_id: Arc<str>,
     pub client_secret: SecretString,
-    /// E.g. `https://relay.example.com/slack/oauth/callback`.
+    /// E.g. `https://patom.example.com/slack/oauth/callback`.
     pub redirect_url: Arc<str>,
     pub workspaces: SharedSlackWorkspaceStore,
     pub identities: SharedSlackIdentityStore,

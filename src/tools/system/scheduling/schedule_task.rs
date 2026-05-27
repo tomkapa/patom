@@ -168,9 +168,9 @@ impl ScheduleTaskTool {
         skip_all,
         name = "tool.schedule_task",
         fields(
-            relay.from.viewer = %ctx.viewer,
-            relay.scheduled_task.outcome = tracing::field::Empty,
-            relay.scheduled_task.id = tracing::field::Empty,
+            patom.from.viewer = %ctx.viewer,
+            patom.scheduled_task.outcome = tracing::field::Empty,
+            patom.scheduled_task.id = tracing::field::Empty,
         ),
     )]
     async fn handle(&self, input: Input, ctx: &ToolCallContext) -> Result<Output, ToolError> {
@@ -205,12 +205,12 @@ impl ScheduleTaskTool {
         // sessions in the interim.
         let agent_record = self.agents.read(owner).await.map_err(|e| {
             set_outcome(TaskOutcome::BackendError);
-            error!(error = ?e, relay.agent.id = %owner, "schedule_task.agent_lookup_failed");
+            error!(error = ?e, patom.agent.id = %owner, "schedule_task.agent_lookup_failed");
             ToolError::Backend(format!("schedule_task: agent lookup: {e}"))
         })?;
         let session_tenancy = self.sessions.tenancy(ctx.session_id).await.map_err(|e| {
             set_outcome(TaskOutcome::BackendError);
-            error!(error = ?e, relay.session.id = %ctx.session_id,
+            error!(error = ?e, patom.session.id = %ctx.session_id,
                 "schedule_task.session_lookup_failed");
             ToolError::Backend(format!("schedule_task: session lookup: {e}"))
         })?;
@@ -246,19 +246,19 @@ impl ScheduleTaskTool {
             }
             Err(e) => {
                 set_outcome(TaskOutcome::BackendError);
-                warn!(error = %e, relay.agent.id = %owner, "schedule_task.create_failed");
+                warn!(error = %e, patom.agent.id = %owner, "schedule_task.create_failed");
                 return Err(ToolError::Backend(format!(
                     "schedule_task: create failed: {e}"
                 )));
             }
         };
 
-        tracing::Span::current().record("relay.scheduled_task.id", tracing::field::display(row.id));
+        tracing::Span::current().record("patom.scheduled_task.id", tracing::field::display(row.id));
         set_outcome(TaskOutcome::Created);
         info!(
-            relay.scheduled_task.id = %row.id,
-            relay.agent.id = %owner,
-            relay.scheduled_task.next_run_at = %next_run_at,
+            patom.scheduled_task.id = %row.id,
+            patom.agent.id = %owner,
+            patom.scheduled_task.next_run_at = %next_run_at,
             "schedule_task.created",
         );
         Ok(Output {
@@ -348,5 +348,5 @@ impl TaskOutcome {
 }
 
 fn set_outcome(outcome: TaskOutcome) {
-    tracing::Span::current().record("relay.scheduled_task.outcome", outcome.as_str());
+    tracing::Span::current().record("patom.scheduled_task.outcome", outcome.as_str());
 }

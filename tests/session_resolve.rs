@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 
-use relay_rs::agents::{AgentName, AgentSystemPrompt, NewAgent, SharedAgentStore};
-use relay_rs::clock::SystemClock;
-use relay_rs::runtime::PromptRequestId;
-use relay_rs::session::{PgSessionStore, SessionStore};
-use relay_rs::types::Participant;
+use patom_rs::agents::{AgentName, AgentSystemPrompt, NewAgent, SharedAgentStore};
+use patom_rs::clock::SystemClock;
+use patom_rs::runtime::PromptRequestId;
+use patom_rs::session::{PgSessionStore, SessionStore};
+use patom_rs::types::Participant;
 
 mod common;
 use common::pg::TestDb;
@@ -32,9 +32,9 @@ async fn fresh_agent(db: &TestDb, name: &str) -> Participant {
             org_id: db.default_org_id,
             name: AgentName::try_from(name).expect("name"),
             system_prompt: AgentSystemPrompt::try_from("test prompt").expect("prompt"),
-            description: relay_rs::agents::AgentDescription::try_from("test desc").expect("desc"),
+            description: patom_rs::agents::AgentDescription::try_from("test desc").expect("desc"),
             is_default: false,
-            allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::empty(),
+            allowed_mcp_tools: patom_rs::agents::AllowedMcpTools::empty(),
             model: None,
             edited_by: None,
         })
@@ -218,5 +218,5 @@ async fn self_session_is_rejected() {
         )
         .await
         .expect_err("self-session forbidden");
-    assert!(matches!(err, relay_rs::session::SessionError::SelfSession));
+    assert!(matches!(err, patom_rs::session::SessionError::SelfSession));
 }

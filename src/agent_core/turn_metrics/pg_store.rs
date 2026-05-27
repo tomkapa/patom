@@ -42,16 +42,16 @@ impl TurnMetricsStore for PgTurnMetricsStore {
         skip_all,
         name = "turn_metrics.record",
         fields(
-            relay.session.id = %row.session_id,
-            relay.agent.id = %row.agent_id,
-            relay.request.id = %row.request_id,
-            relay.request.kind = row.kind.as_str(),
-            relay.provider = row.provider.as_str(),
-            relay.model = row.model.as_str(),
+            patom.session.id = %row.session_id,
+            patom.agent.id = %row.agent_id,
+            patom.request.id = %row.request_id,
+            patom.request.kind = row.kind.as_str(),
+            patom.provider = row.provider.as_str(),
+            patom.model = row.model.as_str(),
             // §1: Model is the catalog handle; `as_str()` returns the &'static name.
-            relay.tokens.input = row.input_tokens.get(),
-            relay.tokens.output = row.output_tokens.get(),
-            relay.duration_ms = row.duration_ms.get(),
+            patom.tokens.input = row.input_tokens.get(),
+            patom.tokens.output = row.output_tokens.get(),
+            patom.duration_ms = row.duration_ms.get(),
         ),
     )]
     async fn record(&self, row: TurnMetricsRow) -> Result<(), TurnRecorderError> {

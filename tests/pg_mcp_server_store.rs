@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`relay_rs::mcp::PgMcpServerStore`]. Each test owns its
+//! Trait-contract tests for [`patom_rs::mcp::PgMcpServerStore`]. Each test owns its
 //! own schema via `TestDb::fresh` so they can run in parallel.
 //!
 //! Note: every `McpServerCreate` requires a matching row in `mcp_catalog`
@@ -10,8 +10,8 @@
 
 use std::sync::Arc;
 
-use relay_rs::clock::SystemClock;
-use relay_rs::mcp::{
+use patom_rs::clock::SystemClock;
+use patom_rs::mcp::{
     ConnectionStatus, DiscoveredTool, McpCatalogId, McpError, McpHealthUpdate, McpHttpUrl,
     McpServerCreate, McpServerId, McpServerStore, McpServerUpdate, McpTransport, PgMcpServerStore,
 };

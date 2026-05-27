@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::provider::{Model, ProviderId};
 use crate::types::SecretString;
 
-/// Default SPA dist path when `RELAY_WEB_DIST` is unset. Matches
+/// Default SPA dist path when `PATOM_WEB_DIST` is unset. Matches
 /// `web/build.ts`'s `outdir`; operators running the binary from outside
 /// the repo root must override.
 const DEFAULT_WEB_DIST: &str = "./web/dist";
@@ -41,26 +41,26 @@ pub enum SettingsError {
     #[error("auth: jwt secret too short — need at least 32 bytes")]
     AuthSecretTooShort,
 
-    #[error("auth: RELAY_WEB_BASE_URL is not a valid origin: {raw:?} ({reason})")]
+    #[error("auth: PATOM_WEB_BASE_URL is not a valid origin: {raw:?} ({reason})")]
     InvalidWebBaseUrl { raw: String, reason: &'static str },
 
     #[error(
-        "slack: partial configuration; set all of RELAY_SLACK_SIGNING_SECRET, \
-         RELAY_SLACK_CLIENT_ID, RELAY_SLACK_CLIENT_SECRET — or none"
+        "slack: partial configuration; set all of PATOM_SLACK_SIGNING_SECRET, \
+         PATOM_SLACK_CLIENT_ID, PATOM_SLACK_CLIENT_SECRET — or none"
     )]
     PartialSlackConfig,
 
-    #[error("slack: RELAY_SLACK_CLIENT_ID must be non-empty after trim")]
+    #[error("slack: PATOM_SLACK_CLIENT_ID must be non-empty after trim")]
     InvalidSlackClientId,
 
     #[error(
-        "r2: partial configuration; set all of RELAY_R2_ACCOUNT_ID, \
-         RELAY_R2_BUCKET, RELAY_R2_ACCESS_KEY_ID, RELAY_R2_SECRET_ACCESS_KEY, \
-         RELAY_R2_PUBLIC_HOST — or none"
+        "r2: partial configuration; set all of PATOM_R2_ACCOUNT_ID, \
+         PATOM_R2_BUCKET, PATOM_R2_ACCESS_KEY_ID, PATOM_R2_SECRET_ACCESS_KEY, \
+         PATOM_R2_PUBLIC_HOST — or none"
     )]
     PartialR2Config,
 
-    #[error("r2: RELAY_R2_PUBLIC_HOST {raw:?} is not a valid https origin ({reason})")]
+    #[error("r2: PATOM_R2_PUBLIC_HOST {raw:?} is not a valid https origin ({reason})")]
     InvalidR2PublicHost { raw: String, reason: &'static str },
 }
 
@@ -94,14 +94,14 @@ pub struct Settings {
     /// Auth / tenancy configuration.
     pub auth: AuthSettings,
     /// SPA dist path the `ServeDir` fallback reads from. Sourced from
-    /// `RELAY_WEB_DIST` (default `./web/dist`).
+    /// `PATOM_WEB_DIST` (default `./web/dist`).
     pub web_dist: PathBuf,
-    /// Slack adapter — present iff all `RELAY_SLACK_*` env vars are
+    /// Slack adapter — present iff all `PATOM_SLACK_*` env vars are
     /// set. `None` is a first-class deployment (the Slack routes and
     /// background workers stay un-spawned).
     pub slack: Option<SlackSettings>,
     /// Cloudflare R2 (S3-compatible) object storage. Present iff all
-    /// `RELAY_R2_*` env vars are set. When `None`, the upload endpoints
+    /// `PATOM_R2_*` env vars are set. When `None`, the upload endpoints
     /// 503 with "asset storage not configured" — deployments that don't
     /// care about avatar/icon uploads stay first-class.
     pub r2: Option<R2Settings>,
@@ -114,7 +114,7 @@ pub struct Settings {
 pub struct R2Settings {
     /// Cloudflare account id — used to compose the S3 endpoint URL.
     pub account_id: SecretString,
-    /// R2 bucket name (e.g. `relay-assets-prod`).
+    /// R2 bucket name (e.g. `patom-assets-prod`).
     pub bucket: String,
     /// Scoped R2 API token: access key id.
     pub access_key_id: SecretString,
@@ -173,18 +173,18 @@ pub struct AuthSettings {
     pub cookie_secure: bool,
     /// Master KEK used to derive per-org KEKs for the MCP credentials
     /// envelope. Base64-encoded 32 bytes; rejected at the boundary if
-    /// missing or wrong size. Sourced from `RELAY_MASTER_KEK`.
+    /// missing or wrong size. Sourced from `PATOM_MASTER_KEK`.
     pub master_kek: SecretString,
-    /// Base URL Relay tells vendors to redirect back to after consent.
+    /// Base URL Patom tells vendors to redirect back to after consent.
     /// The OAuth callback path is appended to this; e.g.
     /// `http://localhost:8080` → `http://localhost:8080/mcp-oauth/callback`.
-    /// Sourced from `RELAY_OAUTH_REDIRECT_BASE`.
+    /// Sourced from `PATOM_OAUTH_REDIRECT_BASE`.
     pub oauth_redirect_base: String,
     /// Origin of the SPA (e.g. `http://localhost:5173` in dev). When set,
     /// the BE prepends this to the post-OAuth-callback redirect so the
     /// browser lands on the FE host instead of the BE host. Empty in
     /// same-origin prod deployments where BE and FE share an origin.
-    /// Sourced from `RELAY_WEB_BASE_URL`.
+    /// Sourced from `PATOM_WEB_BASE_URL`.
     pub web_base_url: Option<String>,
 }
 
@@ -284,49 +284,49 @@ struct RawSettings {
     // Auth — required at startup. Missing values surface as the
     // `config` crate's own "missing field" error via `SettingsError::Source`,
     // same as `database_url` / `brave_search_api_key` above.
-    relay_jwt_secret: SecretString,
+    patom_jwt_secret: SecretString,
     google_client_id: SecretString,
     google_client_secret: SecretString,
     google_redirect_url: String,
     // Secure by default — forgetting to set this in any https-fronted
     // deploy must not silently drop the `Secure` cookie flag. Local-dev
-    // (http://localhost) overrides via `RELAY_COOKIE_SECURE=false` in
+    // (http://localhost) overrides via `PATOM_COOKIE_SECURE=false` in
     // `.env`.
     #[serde(default = "default_cookie_secure")]
-    relay_cookie_secure: bool,
+    patom_cookie_secure: bool,
     // R2 envelope encryption master key, base64-encoded 32 bytes.
-    relay_master_kek: SecretString,
+    patom_master_kek: SecretString,
     // R3 upstream-OAuth redirect base URL. The MCP OAuth callback path is
     // appended at runtime; the AS sees `{this}/mcp-oauth/callback`.
-    relay_oauth_redirect_base: String,
+    patom_oauth_redirect_base: String,
     // Optional SPA origin. When set, the BE prepends this to the
     // post-OAuth-callback redirect so the browser lands on the FE host
     // instead of the BE host (dev: FE on Vite/Bun, BE on 8080).
     #[serde(default)]
-    relay_web_base_url: Option<String>,
+    patom_web_base_url: Option<String>,
     #[serde(default = "default_web_dist")]
-    relay_web_dist: PathBuf,
+    patom_web_dist: PathBuf,
 
     // Slack adapter — all three are optional individually but accepted
     // only as a complete set (validation in `TryFrom<RawSettings>`).
     #[serde(default)]
-    relay_slack_signing_secret: Option<SecretString>,
+    patom_slack_signing_secret: Option<SecretString>,
     #[serde(default)]
-    relay_slack_client_id: Option<String>,
+    patom_slack_client_id: Option<String>,
     #[serde(default)]
-    relay_slack_client_secret: Option<SecretString>,
+    patom_slack_client_secret: Option<SecretString>,
 
     // R2 object storage — same all-or-nothing rule as Slack.
     #[serde(default)]
-    relay_r2_account_id: Option<SecretString>,
+    patom_r2_account_id: Option<SecretString>,
     #[serde(default)]
-    relay_r2_bucket: Option<String>,
+    patom_r2_bucket: Option<String>,
     #[serde(default)]
-    relay_r2_access_key_id: Option<SecretString>,
+    patom_r2_access_key_id: Option<SecretString>,
     #[serde(default)]
-    relay_r2_secret_access_key: Option<SecretString>,
+    patom_r2_secret_access_key: Option<SecretString>,
     #[serde(default)]
-    relay_r2_public_host: Option<String>,
+    patom_r2_public_host: Option<String>,
 }
 
 fn default_web_dist() -> PathBuf {
@@ -367,7 +367,7 @@ fn parse_origin(raw: &str, allowed_schemes: &[&str]) -> Result<String, &'static 
     Ok(parsed.origin().ascii_serialization())
 }
 
-/// Validate `RELAY_WEB_BASE_URL` — must be an http(s) origin so callers
+/// Validate `PATOM_WEB_BASE_URL` — must be an http(s) origin so callers
 /// can prepend it directly to a `/`-anchored route without producing
 /// malformed redirects.
 fn parse_web_base_url(raw: &str) -> Result<String, SettingsError> {
@@ -447,27 +447,27 @@ impl TryFrom<RawSettings> for Settings {
                 raw: raw.default_timezone.clone(),
             }
         })?;
-        if raw.relay_jwt_secret.expose().len() < 32 {
+        if raw.patom_jwt_secret.expose().len() < 32 {
             return Err(SettingsError::AuthSecretTooShort);
         }
-        let web_base_url = match raw.relay_web_base_url {
+        let web_base_url = match raw.patom_web_base_url {
             Some(raw_url) => Some(parse_web_base_url(&raw_url)?),
             None => None,
         };
         let auth = AuthSettings {
-            jwt_secret: raw.relay_jwt_secret,
+            jwt_secret: raw.patom_jwt_secret,
             google_client_id: raw.google_client_id,
             google_client_secret: raw.google_client_secret,
             google_redirect_url: raw.google_redirect_url,
-            cookie_secure: raw.relay_cookie_secure,
-            master_kek: raw.relay_master_kek,
-            oauth_redirect_base: raw.relay_oauth_redirect_base,
+            cookie_secure: raw.patom_cookie_secure,
+            master_kek: raw.patom_master_kek,
+            oauth_redirect_base: raw.patom_oauth_redirect_base,
             web_base_url,
         };
         let slack = match (
-            raw.relay_slack_signing_secret,
-            raw.relay_slack_client_id,
-            raw.relay_slack_client_secret,
+            raw.patom_slack_signing_secret,
+            raw.patom_slack_client_id,
+            raw.patom_slack_client_secret,
         ) {
             (None, None, None) => None,
             (Some(signing_secret), Some(client_id), Some(client_secret)) => {
@@ -492,11 +492,11 @@ impl TryFrom<RawSettings> for Settings {
             _ => return Err(SettingsError::PartialSlackConfig),
         };
         let r2 = match (
-            raw.relay_r2_account_id,
-            raw.relay_r2_bucket,
-            raw.relay_r2_access_key_id,
-            raw.relay_r2_secret_access_key,
-            raw.relay_r2_public_host,
+            raw.patom_r2_account_id,
+            raw.patom_r2_bucket,
+            raw.patom_r2_access_key_id,
+            raw.patom_r2_secret_access_key,
+            raw.patom_r2_public_host,
         ) {
             (None, None, None, None, None) => None,
             (
@@ -526,14 +526,14 @@ impl TryFrom<RawSettings> for Settings {
             embedding,
             default_timezone,
             auth,
-            web_dist: raw.relay_web_dist,
+            web_dist: raw.patom_web_dist,
             slack,
             r2,
         })
     }
 }
 
-/// Validate `RELAY_R2_PUBLIC_HOST` — must be an `https://` origin so the
+/// Validate `PATOM_R2_PUBLIC_HOST` — must be an `https://` origin so the
 /// asset module can join it to object keys with a single `/` without
 /// producing `//<key>` URLs.
 fn parse_r2_public_host(raw: &str) -> Result<String, SettingsError> {
@@ -583,31 +583,31 @@ mod tests {
             brave_search_api_key: secret("brave"),
             model: default_model(),
             http_addr: default_http_addr(),
-            database_url: secret("postgres://relay:relay@localhost:5432/relay"),
+            database_url: secret("postgres://patom:patom@localhost:5432/patom"),
             embedding_api_key: Some(secret("emb")),
             embedding_base_url: None,
             embedding_model: Some("text-embedding-3-small".to_string()),
             embedding_dimensions: None,
             default_timezone: default_timezone_raw(),
-            relay_jwt_secret: secret(&"a".repeat(64)),
+            patom_jwt_secret: secret(&"a".repeat(64)),
             google_client_id: secret("test-client-id"),
             google_client_secret: secret("test-client-secret"),
             google_redirect_url: "http://localhost:8080/auth/google/callback".to_string(),
-            relay_cookie_secure: false,
+            patom_cookie_secure: false,
             // base64 of 32 bytes; never used in these tests since they only
             // exercise the Settings boundary, not crypto.
-            relay_master_kek: secret("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
-            relay_oauth_redirect_base: "http://localhost:8080".to_string(),
-            relay_web_base_url: None,
-            relay_web_dist: default_web_dist(),
-            relay_slack_signing_secret: None,
-            relay_slack_client_id: None,
-            relay_slack_client_secret: None,
-            relay_r2_account_id: None,
-            relay_r2_bucket: None,
-            relay_r2_access_key_id: None,
-            relay_r2_secret_access_key: None,
-            relay_r2_public_host: None,
+            patom_master_kek: secret("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+            patom_oauth_redirect_base: "http://localhost:8080".to_string(),
+            patom_web_base_url: None,
+            patom_web_dist: default_web_dist(),
+            patom_slack_signing_secret: None,
+            patom_slack_client_id: None,
+            patom_slack_client_secret: None,
+            patom_r2_account_id: None,
+            patom_r2_bucket: None,
+            patom_r2_access_key_id: None,
+            patom_r2_secret_access_key: None,
+            patom_r2_public_host: None,
         }
     }
 

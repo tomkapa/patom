@@ -19,23 +19,23 @@ use async_trait::async_trait;
 use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
-use relay_rs::agent_core::AgentBuilder;
-use relay_rs::agent_core::turn_metrics::{
+use patom_rs::agent_core::AgentBuilder;
+use patom_rs::agent_core::turn_metrics::{
     DurationMs, InputTokens, OutputTokens, PgTurnMetricsStore, SharedTurnMetricsStore,
     StopReasonLabel, TurnMetricsRow, TurnMetricsStore,
 };
-use relay_rs::agents::prompt_versions::PromptVersionId;
-use relay_rs::clock::SystemClock;
-use relay_rs::hook::HookChain;
-use relay_rs::memory::{SharedMemory, StaticMemory};
-use relay_rs::provider::{
+use patom_rs::agents::prompt_versions::PromptVersionId;
+use patom_rs::clock::SystemClock;
+use patom_rs::hook::HookChain;
+use patom_rs::memory::{SharedMemory, StaticMemory};
+use patom_rs::provider::{
     AssistantContent, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError,
     ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, Usage,
 };
-use relay_rs::runtime::{PromptRequestId, RequestKindPayload};
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
-use relay_rs::tools::ToolRegistry;
-use relay_rs::types::{Participant, Prompt};
+use patom_rs::runtime::{PromptRequestId, RequestKindPayload};
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::tools::ToolRegistry;
+use patom_rs::types::{Participant, Prompt};
 
 mod common;
 use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
@@ -45,7 +45,7 @@ use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
 /// [`TestDb::fresh`] creates — so this is total under the harness.
 async fn current_prompt_version(
     pool: &sqlx::PgPool,
-    agent_id: relay_rs::agents::AgentId,
+    agent_id: patom_rs::agents::AgentId,
 ) -> PromptVersionId {
     sqlx::query_scalar::<_, PromptVersionId>(
         "SELECT id FROM agent_prompt_versions \
@@ -58,10 +58,10 @@ async fn current_prompt_version(
 }
 
 fn fresh_row(
-    org_id: relay_rs::auth::OrgId,
-    session_id: relay_rs::session::SessionId,
+    org_id: patom_rs::auth::OrgId,
+    session_id: patom_rs::session::SessionId,
     request_id: PromptRequestId,
-    agent_id: relay_rs::agents::AgentId,
+    agent_id: patom_rs::agents::AgentId,
     prompt_version_id: PromptVersionId,
 ) -> TurnMetricsRow {
     TurnMetricsRow {
@@ -70,9 +70,9 @@ fn fresh_row(
         session_id,
         agent_id,
         prompt_version_id,
-        kind: relay_rs::runtime::RequestKind::Normal,
+        kind: patom_rs::runtime::RequestKind::Normal,
         model: Model::try_from("test-model").expect("catalog"),
-        provider: relay_rs::provider::ProviderId::Anthropic,
+        provider: patom_rs::provider::ProviderId::Anthropic,
         input_tokens: InputTokens::try_from(10u32).expect("fits"),
         output_tokens: OutputTokens::try_from(20u32).expect("fits"),
         cache_creation_tokens: None,
@@ -137,7 +137,7 @@ async fn pg_store_trigger_rejects_org_mismatch() {
     let pvid = current_prompt_version(&db.pool, db.default_agent_id).await;
 
     let store = PgTurnMetricsStore::new(db.pool.clone(), SystemClock::shared());
-    let foreign = relay_rs::auth::OrgId::new();
+    let foreign = patom_rs::auth::OrgId::new();
     let row = fresh_row(foreign, session, request_id, db.default_agent_id, pvid);
     let err = store.record(row).await.expect_err("trigger rejects");
     let msg = format!("{err}");
@@ -238,7 +238,7 @@ async fn agent_loop_records_one_row_per_provider_call() {
             Participant::agent(db.default_agent_id),
             vec![prompt],
             request_id,
-            relay_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
             RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,

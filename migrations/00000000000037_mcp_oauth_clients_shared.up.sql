@@ -3,7 +3,7 @@
 -- Background. Google's MCP servers (gmailmcp/calendarmcp) auth via
 -- `https://accounts.google.com/`, which does NOT support RFC 7591
 -- Dynamic Client Registration. Same will be true of Microsoft 365 when
--- it lands. The product fix is one OAuth client owned by the Relay
+-- it lands. The product fix is one OAuth client owned by the Patom
 -- operator (e.g. the same client_id/secret already wired into "Login
 -- with Google"), reused across every tenant — Anthropic's pattern for
 -- Claude Desktop's Gmail connector.

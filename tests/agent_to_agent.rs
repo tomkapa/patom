@@ -40,28 +40,28 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
 
-use relay_rs::agent_core::AgentBuilder;
-use relay_rs::agents::{
+use patom_rs::agent_core::AgentBuilder;
+use patom_rs::agents::{
     AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL, AgentFactory, AgentId, AgentName,
     AgentSystemPrompt, CachedAgents, NewAgent, SharedAgentStore, SharedAgents,
 };
-use relay_rs::clock::SystemClock;
-use relay_rs::hook::HookChain;
-use relay_rs::memory::{SharedMemory, StaticMemory};
-use relay_rs::provider::{
+use patom_rs::clock::SystemClock;
+use patom_rs::hook::HookChain;
+use patom_rs::memory::{SharedMemory, StaticMemory};
+use patom_rs::provider::{
     AssistantContent, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError, ProviderId,
     ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, ToolCall, ToolCallId,
 };
-use relay_rs::runtime::queue::PromptQueue as _;
-use relay_rs::runtime::{
+use patom_rs::runtime::queue::PromptQueue as _;
+use patom_rs::runtime::{
     IdempotencyKey, LeaseTiming, NewPromptRequest, PgDagBudget, PgPromptQueue, PgResponseHub,
     PgThreadStream, PromptRequestId, RequestStatus, ResponseChunk, SharedDagBudget,
     SharedThreadStream, ThreadStreamEvent, WorkerConfig, WorkerPool, WorkerPoolHandle,
 };
-use relay_rs::session::{PgSessionStore, SharedSessionStore};
-use relay_rs::tools::system::SendMessageTool;
-use relay_rs::tools::{ToolBox, ToolRegistry};
-use relay_rs::types::{Participant, Prompt, ToolName};
+use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom_rs::tools::system::SendMessageTool;
+use patom_rs::tools::{ToolBox, ToolRegistry};
+use patom_rs::types::{Participant, Prompt, ToolName};
 use tokio_util::sync::CancellationToken;
 
 mod common;
@@ -150,12 +150,12 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
                 "You translate phrases into French. Reply via send_message.",
             )
             .expect("prompt"),
-            description: relay_rs::agents::AgentDescription::try_from(
+            description: patom_rs::agents::AgentDescription::try_from(
                 "Translates phrases between English and other languages.",
             )
             .expect("desc"),
             is_default: false,
-            allowed_mcp_tools: relay_rs::agents::AllowedMcpTools::empty(),
+            allowed_mcp_tools: patom_rs::agents::AllowedMcpTools::empty(),
             model: None,
             edited_by: None,
         })
@@ -268,10 +268,10 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
         AGENT_PROMPT_CACHE_TTL,
         clock.clone(),
     ));
-    let memory_store_for_pool: relay_rs::memory::SharedMemoryStore =
-        Arc::new(relay_rs::memory::PgMemoryStore::new(
+    let memory_store_for_pool: patom_rs::memory::SharedMemoryStore =
+        Arc::new(patom_rs::memory::PgMemoryStore::new(
             db.pool.clone(),
-            relay_rs::clock::SystemClock::shared(),
+            patom_rs::clock::SystemClock::shared(),
             common::embedding::FakeEmbeddingProvider::shared(),
         ));
 
@@ -324,7 +324,7 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
             idempotency_key: IdempotencyKey::try_from("a2a-root").expect("key"),
             org_id: db.default_org_id,
             created_by_user_id: db.default_user_id,
-            kind_payload: relay_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue root");

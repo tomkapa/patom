@@ -171,15 +171,15 @@ impl Agent {
         skip_all,
         name = "agent.reply",
         fields(
-            relay.session.id = %session,
-            relay.viewer = %viewer,
-            relay.request.kind = kind_payload.kind().as_str(),
-            relay.provider = self.provider().name(),
-            relay.model = %self.model,
-            relay.batch_size = prompts.len(),
-            relay.max_turns = self.max_turns.get(),
-            relay.dag.root = tracing::field::Empty,
-            relay.outcome = tracing::field::Empty,
+            patom.session.id = %session,
+            patom.viewer = %viewer,
+            patom.request.kind = kind_payload.kind().as_str(),
+            patom.provider = self.provider().name(),
+            patom.model = %self.model,
+            patom.batch_size = prompts.len(),
+            patom.max_turns = self.max_turns.get(),
+            patom.dag.root = tracing::field::Empty,
+            patom.outcome = tracing::field::Empty,
         ),
     )]
     pub async fn reply(
@@ -261,14 +261,14 @@ impl Agent {
         skip_all,
         name = "agent.resume",
         fields(
-            relay.session.id = %session,
-            relay.viewer = %viewer,
-            relay.request.kind = kind_payload.kind().as_str(),
-            relay.provider = self.provider().name(),
-            relay.model = %self.model,
-            relay.max_turns = self.max_turns.get(),
-            relay.dag.root = tracing::field::Empty,
-            relay.outcome = tracing::field::Empty,
+            patom.session.id = %session,
+            patom.viewer = %viewer,
+            patom.request.kind = kind_payload.kind().as_str(),
+            patom.provider = self.provider().name(),
+            patom.model = %self.model,
+            patom.max_turns = self.max_turns.get(),
+            patom.dag.root = tracing::field::Empty,
+            patom.outcome = tracing::field::Empty,
         ),
     )]
     #[allow(clippy::too_many_arguments)]
@@ -316,7 +316,7 @@ impl Agent {
         // tool call so `send_message` can bump the per-DAG budget without
         // redundant lookups.
         let root_request_id = self.sessions.root_request_id(session).await?;
-        tracing::Span::current().record("relay.dag.root", tracing::field::display(root_request_id));
+        tracing::Span::current().record("patom.dag.root", tracing::field::display(root_request_id));
 
         let observer = observer.as_ref();
         let mut send_message_calls = 0usize;
@@ -330,12 +330,12 @@ impl Agent {
             };
             let turn_span = tracing::info_span!(
                 "agent.turn",
-                relay.session.id = %session,
-                relay.dag.root = %root_request_id,
-                relay.turn_index = turn,
-                relay.viewer = %viewer,
-                relay.turn.outcome = tracing::field::Empty,
-                relay.tool_calls.count = tracing::field::Empty,
+                patom.session.id = %session,
+                patom.dag.root = %root_request_id,
+                patom.turn_index = turn,
+                patom.viewer = %viewer,
+                patom.turn.outcome = tracing::field::Empty,
+                patom.tool_calls.count = tracing::field::Empty,
             );
             let outcome = async {
                 self.run_turn(

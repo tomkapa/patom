@@ -4,7 +4,7 @@
 -- (where it was plaintext, visible in DB dumps and every list/read response)
 -- into a separate, RLS-scoped, envelope-encrypted table. The encryption is
 -- AES-256-GCM with per-org KEKs derived via HKDF-SHA256 from a process-wide
--- master KEK (`RELAY_MASTER_KEK`); see `src/crypto`.
+-- master KEK (`PATOM_MASTER_KEK`); see `src/crypto`.
 --
 -- One row per server, optional: a server may have no credentials (a public
 -- MCP endpoint) — then no row exists. `kind` distinguishes two payload

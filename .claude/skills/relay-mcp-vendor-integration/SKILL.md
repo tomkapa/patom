@@ -1,9 +1,9 @@
 ---
-name: relay-mcp-vendor-integration
-description: Diagnose and integrate new MCP vendors (Google, Microsoft 365, Atlassian, GitHub, Slack, Notion, …) in the Relay (relay-rs) project — picks the right seam (catalog data vs OAuth-flow code vs MCP transport) for vendor-specific quirks instead of scattering `is_<vendor>_` predicates across the codebase. Use proactively whenever the user says "add <vendor> as an MCP integration", "Gmail/Calendar/Microsoft OAuth fails", "where does this OAuth fix go", "vendor returns DcrUnsupported", "vendor rejects authorize with Missing required parameter: scope", "vendor returns 403 / caller does not have permission" on tool calls, "refresh tokens dying after an hour", "MCP server breaks for vendor X", or any other moment a vendor-specific OAuth / MCP quirk needs a home in the codebase. Also trigger when planning a new MCP integration even before code is touched, so the diagnosis happens before fixes get written into the wrong layer.
+name: patom-mcp-vendor-integration
+description: Diagnose and integrate new MCP vendors (Google, Microsoft 365, Atlassian, GitHub, Slack, Notion, …) in the Patom (patom-rs) project — picks the right seam (catalog data vs OAuth-flow code vs MCP transport) for vendor-specific quirks instead of scattering `is_<vendor>_` predicates across the codebase. Use proactively whenever the user says "add <vendor> as an MCP integration", "Gmail/Calendar/Microsoft OAuth fails", "where does this OAuth fix go", "vendor returns DcrUnsupported", "vendor rejects authorize with Missing required parameter: scope", "vendor returns 403 / caller does not have permission" on tool calls, "refresh tokens dying after an hour", "MCP server breaks for vendor X", or any other moment a vendor-specific OAuth / MCP quirk needs a home in the codebase. Also trigger when planning a new MCP integration even before code is touched, so the diagnosis happens before fixes get written into the wrong layer.
 ---
 
-# relay-mcp-vendor-integration
+# patom-mcp-vendor-integration
 
 When a new MCP vendor breaks (or you're about to add one), this is the playbook for **where the fix belongs** so vendor-specific quirks don't bleed across the codebase. The convention is established in PR #58 (commits `93c8e35` + `2615606`); this skill captures the decision rules.
 

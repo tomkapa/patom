@@ -97,7 +97,7 @@ pub trait UserStore: std::fmt::Debug + Send + Sync + 'static {
 
     /// Batched email lookup keyed by user id.
     ///
-    /// Exists so tenant-scoped routes (which run as `relay_app` and
+    /// Exists so tenant-scoped routes (which run as `patom_app` and
     /// therefore cannot JOIN onto `users` — see migration 14) can still
     /// surface creator emails without going through the privileged
     /// store on every row. Missing ids are omitted from the map; the

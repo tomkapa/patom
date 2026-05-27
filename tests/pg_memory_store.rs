@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`relay_rs::memory::PgMemoryStore`]:
+//! Trait-contract tests for [`patom_rs::memory::PgMemoryStore`]:
 //!
 //! - journal append correctness
 //! - materialized-view consistency
@@ -13,14 +13,14 @@
 
 use std::sync::Arc;
 
-use relay_rs::clock::SystemClock;
-use relay_rs::memory::{
+use patom_rs::clock::SystemClock;
+use patom_rs::memory::{
     MemoryContent, MemoryEventPayload, MemoryId, MemoryKind, MemoryMutation, MemoryState,
     MemoryStore, MemoryStoreError, MutationKind, MutationSource, MutationSourceKind, PgMemoryStore,
     ResolutionOutcome, ResolutionReason, SearchFilter, run_librarian_sweep,
 };
-use relay_rs::provider::embed_one;
-use relay_rs::runtime::{PromptRequestId, RequestKind};
+use patom_rs::provider::embed_one;
+use patom_rs::runtime::{PromptRequestId, RequestKind};
 
 mod common;
 use common::pg::TestDb;
@@ -420,9 +420,9 @@ async fn prompt_requests_kind_defaults_to_normal() {
     // existing rows continue to dispatch as `Normal`.
     let db = TestDb::fresh().await;
 
-    let session_store = relay_rs::session::PgSessionStore::new(
+    let session_store = patom_rs::session::PgSessionStore::new(
         db.pool.clone(),
-        relay_rs::clock::SystemClock::shared(),
+        patom_rs::clock::SystemClock::shared(),
     );
     let session = common::pg::human_to_agent_session(
         &session_store,
@@ -452,7 +452,7 @@ async fn prompt_requests_kind_defaults_to_normal() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn record_validation_promotes_state() {
-    use relay_rs::memory::ValidationOrigin;
+    use patom_rs::memory::ValidationOrigin;
 
     let db = TestDb::fresh().await;
     let s = store(&db);
@@ -856,7 +856,7 @@ async fn set_pinned_toggles_protection() {
 async fn seed_contradiction(
     s: &Arc<PgMemoryStore>,
     db: &TestDb,
-) -> relay_rs::memory::ContradictionEventId {
+) -> patom_rs::memory::ContradictionEventId {
     let a = s
         .apply(MemoryMutation::Write {
             agent: db.default_agent_id,
@@ -965,7 +965,7 @@ async fn resolve_contradiction_is_idempotent() {
 #[test]
 fn resolution_reason_rejects_empty_and_oversize() {
     assert!(ResolutionReason::try_from(String::new()).is_err());
-    let max = relay_rs::memory::CONTRADICTION_REASON_MAX_BYTES;
+    let max = patom_rs::memory::CONTRADICTION_REASON_MAX_BYTES;
     let ok = "x".repeat(max);
     assert!(ResolutionReason::try_from(ok).is_ok());
     let too_long = "x".repeat(max + 1);

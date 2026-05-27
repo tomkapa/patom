@@ -24,7 +24,7 @@ use super::error::ProviderError;
 #[async_trait]
 pub trait EmbeddingProvider: fmt::Debug + Send + Sync {
     /// Stable, low-cardinality identifier for tracing
-    /// (`relay.embedding.provider`). Same shape as
+    /// (`patom.embedding.provider`). Same shape as
     /// [`LlmProvider::name`](super::traits::LlmProvider::name).
     fn name(&self) -> &'static str;
 

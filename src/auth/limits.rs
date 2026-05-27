@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 /// Cookie name carrying the session JWT.
-pub const COOKIE_NAME: &str = "relay_session";
+pub const COOKIE_NAME: &str = "patom_session";
 
 /// JWT validity window.
 ///
@@ -45,7 +45,7 @@ pub const JWT_SECRET_MIN_BYTES: usize = 32;
 /// middleware compares the two and rejects POSTs that disagree (§10.6).
 ///
 /// Wire-protocol constant — keep in sync with `web/src/lib/api.ts`.
-pub const CSRF_COOKIE_NAME: &str = "relay_csrf";
+pub const CSRF_COOKIE_NAME: &str = "patom_csrf";
 
 /// HTTP header the SPA echoes the CSRF token in.
 ///

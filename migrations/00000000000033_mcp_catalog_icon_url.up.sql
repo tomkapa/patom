@@ -11,7 +11,7 @@
 -- on a runaway URL, and matches the `ASSET_URL_MAX_LEN` limit in
 -- `src/assets/limits.rs` (boundary parser rejects past that).
 --
--- Built-in URLs point at `assets.relay.dev` (R2 custom domain). The
+-- Built-in URLs point at `assets.patom.dev` (R2 custom domain). The
 -- four object keys (`mcp/notion.svg` etc.) must be uploaded to the R2
 -- bucket out-of-band BEFORE this migration runs in any environment;
 -- without them the FE renders 404s for the four built-in tiles until

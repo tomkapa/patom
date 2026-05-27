@@ -2640,6 +2640,63 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
+name = "patom-rs"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "async-openai",
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-s3",
+ "axum",
+ "axum-extra",
+ "base64",
+ "bytes",
+ "chrono",
+ "chrono-tz",
+ "claudius",
+ "config",
+ "cookie",
+ "dotenvy",
+ "futures",
+ "hkdf",
+ "hmac 0.12.1",
+ "htmd",
+ "http 1.4.0",
+ "infer",
+ "jsonwebtoken",
+ "oauth2",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
+ "patom-rs",
+ "rand 0.8.6",
+ "reqwest 0.13.3",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "toml",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3060,63 +3117,6 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
-
-[[package]]
-name = "relay-rs"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "async-openai",
- "async-trait",
- "aws-config",
- "aws-credential-types",
- "aws-sdk-s3",
- "axum",
- "axum-extra",
- "base64",
- "bytes",
- "chrono",
- "chrono-tz",
- "claudius",
- "config",
- "cookie",
- "dotenvy",
- "futures",
- "hkdf",
- "hmac 0.12.1",
- "htmd",
- "http 1.4.0",
- "infer",
- "jsonwebtoken",
- "oauth2",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
- "opentelemetry_sdk",
- "rand 0.8.6",
- "relay-rs",
- "reqwest 0.13.3",
- "rmcp",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "subtle",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "toml",
- "tower",
- "tower-http",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "url",
- "uuid",
- "zeroize",
-]
 
 [[package]]
 name = "reqwest"

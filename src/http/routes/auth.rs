@@ -192,9 +192,9 @@ async fn callback(
     let token = state.jwt.mint(upserted.user.id, active_org)?;
     info!(
         event = "auth.login.success",
-        relay.user.id = %upserted.user.id,
-        relay.org.id = %active_org,
-        relay.user.new = upserted.is_new_user,
+        patom.user.id = %upserted.user.id,
+        patom.org.id = %active_org,
+        patom.user.new = upserted.is_new_user,
     );
 
     let session_cookie = build_session_cookie(token, state.cookie_secure(), state.jwt.ttl_secs());

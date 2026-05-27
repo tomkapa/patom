@@ -45,7 +45,7 @@ use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 /// Tenant-scoped transaction.
 ///
 /// The wrapper is the proof that `SET LOCAL app.user_id` ran and that we
-/// dropped to the non-super `relay_app` role, so RLS policies on every
+/// dropped to the non-super `patom_app` role, so RLS policies on every
 /// domain table fire as expected. The only way to mint one is
 /// [`run_as_user`].
 #[derive(Debug)]
@@ -165,12 +165,12 @@ pub async fn begin_as_user<'a>(
         .bind(user_id.as_uuid().to_string())
         .execute(&mut *tx)
         .await?;
-    // Drop privileges to the non-super `relay_app` role so RLS policies
+    // Drop privileges to the non-super `patom_app` role so RLS policies
     // actually apply. Postgres superusers bypass RLS unconditionally —
     // even with FORCE ROW LEVEL SECURITY — so the table owner identity
-    // most apps use in dev (here, `relay`) wouldn't be isolated without
+    // most apps use in dev (here, `patom`) wouldn't be isolated without
     // this. RESET ROLE happens automatically on commit/rollback.
-    sqlx::query("SET LOCAL ROLE relay_app")
+    sqlx::query("SET LOCAL ROLE patom_app")
         .execute(&mut *tx)
         .await?;
     Ok(tx)
@@ -194,7 +194,7 @@ pub async fn begin_privileged(pool: &PgPool) -> Result<Transaction<'_, Postgres>
 /// Run `f` inside a tenant-scoped transaction.
 ///
 /// The closure receives a `&mut TenantTx<'_>`; the runner opens the tx
-/// (with `SET LOCAL app.user_id` + `SET LOCAL ROLE relay_app`), invokes
+/// (with `SET LOCAL app.user_id` + `SET LOCAL ROLE patom_app`), invokes
 /// `f`, and commits on `Ok` or rolls back on `Err`. `.commit()` does not
 /// exist at call sites.
 ///

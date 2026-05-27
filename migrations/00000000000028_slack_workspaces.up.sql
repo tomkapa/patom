@@ -1,6 +1,6 @@
 -- Slack adapter — Phase 1 (workspace install).
 --
--- One row per (Relay org, Slack team). Holds the bot user id (so the
+-- One row per (Patom org, Slack team). Holds the bot user id (so the
 -- bridge can ignore the bot's own messages) and the envelope-encrypted
 -- bot token (xoxb-…). Crypto envelope mirrors `mcp_oauth_clients` —
 -- (ciphertext, nonce, key_version) triple sealed by `OrgEncryptor`.
@@ -36,7 +36,7 @@ CREATE TABLE slack_workspaces (
 
 -- Reverse-lookup index: webhook handler has only `team_id` and must
 -- resolve to `org_id`. UNIQUE because a single Slack workspace can
--- install into exactly one Relay org (re-install in a different org
+-- install into exactly one Patom org (re-install in a different org
 -- requires uninstall first).
 CREATE UNIQUE INDEX slack_workspaces_team_idx ON slack_workspaces(team_id);
 

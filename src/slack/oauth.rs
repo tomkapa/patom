@@ -1,7 +1,7 @@
 //! Slack v2 OAuth install + callback.
 //!
 //! Two routes:
-//! - `POST /api/slack/install` (private; requires a signed-in Relay
+//! - `POST /api/slack/install` (private; requires a signed-in Patom
 //!   user). Returns `{ authorize_url }` for the SPA to open. The state
 //!   parameter is a short-lived HMAC over `(org_id, user_id, exp)`
 //!   keyed on the Slack signing secret — keeps state self-contained
@@ -12,7 +12,7 @@
 //!   upserts `slack_workspaces`.
 //!
 //! Phase 1 scope: the workspace install is the only OAuth flow. Per-
-//! user identity linking (Slack user ↔ Relay user) lives behind a
+//! user identity linking (Slack user ↔ Patom user) lives behind a
 //! separate DM-confirmation flow tracked in GitHub issue #41.
 
 use std::time::Duration;
@@ -52,7 +52,7 @@ type HmacSha256 = Hmac<Sha256>;
 ///   to the agent already bound in `slack_threads`. The bot only acts
 ///   on messages whose `thread_ts` is in `slack_threads`; everything
 ///   else is dropped at the boundary.
-/// - `commands` — register the `/relay` slash command.
+/// - `commands` — register the `/patom` slash command.
 /// - `users:read` — call `users.info` to resolve the slash command
 ///   sender's workspace `display_name` and avatar so the synthetic
 ///   prompt-mirror post reads as the human, not the app default.
@@ -280,8 +280,8 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
         return redirect_to_fe(state.web_base_url.as_deref(), Some("install_failed"));
     }
     info!(
-        relay.org.id = %parsed.org_id.as_uuid(),
-        relay.user.id = %parsed.user_id.as_uuid(),
+        patom.org.id = %parsed.org_id.as_uuid(),
+        patom.user.id = %parsed.user_id.as_uuid(),
         event = "slack.oauth.installed",
     );
     redirect_to_fe(state.web_base_url.as_deref(), None)
