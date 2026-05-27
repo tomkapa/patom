@@ -3,8 +3,8 @@ import { NavLink } from "react-router-dom";
 import { motion } from "motion/react";
 import {
   Bell,
+  Blocks,
   CreditCard,
-  KeyRound,
   Settings2,
   Users,
 } from "lucide-react";
@@ -19,7 +19,7 @@ export type SettingsNavId =
   | "general"
   | "members"
   | "billing"
-  | "webhooks"
+  | "integrations"
   | "notifications";
 
 type NavItem = {
@@ -61,9 +61,9 @@ export function SettingsLayout({
       to: "/settings/billing",
     },
     {
-      id: "webhooks",
-      label: t("settings.nav.webhooks"),
-      icon: KeyRound,
+      id: "integrations",
+      label: t("settings.nav.integrations"),
+      icon: Blocks,
       to: "/settings/integrations",
     },
     {

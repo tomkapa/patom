@@ -19,10 +19,11 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
+use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -34,8 +35,9 @@ use crate::auth::{OrgId, Principal, UserId};
 use crate::http::AppState;
 use crate::http::HttpError;
 
+use super::error::SlackError;
 use super::types::{SlackBotToken, SlackTeamId, SlackUserId};
-use super::workspace::NewWorkspace;
+use super::workspace::{NewWorkspace, WorkspaceSummary};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -62,7 +64,10 @@ const SLACK_SCOPES: &str =
 const STATE_TTL: Duration = Duration::from_secs(60 * 10);
 
 pub fn private_router() -> Router<AppState> {
-    Router::new().route("/slack/install", post(install))
+    Router::new()
+        .route("/slack/install", post(install))
+        .route("/slack/workspaces", get(list_workspaces))
+        .route("/slack/workspaces/{team_id}", delete(disconnect_workspace))
 }
 
 pub fn public_router() -> Router<AppState> {
@@ -99,6 +104,76 @@ async fn install(
     Ok(Json(InstallResponse {
         authorize_url: url.into(),
     }))
+}
+
+// ────────────────────────────────────────────────────────────────────
+// GET /api/slack/workspaces
+// ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct WorkspaceSummaryDto {
+    team_id: String,
+    team_name: String,
+    scopes: String,
+    installed_by_user_id: UserId,
+    installed_at: DateTime<Utc>,
+}
+
+impl From<WorkspaceSummary> for WorkspaceSummaryDto {
+    fn from(s: WorkspaceSummary) -> Self {
+        Self {
+            team_id: s.team_id.as_str().to_owned(),
+            team_name: s.team_name,
+            scopes: s.scopes,
+            installed_by_user_id: s.installed_by_user_id,
+            installed_at: s.installed_at,
+        }
+    }
+}
+
+async fn list_workspaces(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<Json<Vec<WorkspaceSummaryDto>>, HttpError> {
+    let slack = state.slack.as_ref().ok_or(HttpError::NotFound)?;
+    let rows = slack
+        .workspaces
+        .list(&principal)
+        .await
+        .map_err(slack_to_http)?;
+    Ok(Json(
+        rows.into_iter().map(WorkspaceSummaryDto::from).collect(),
+    ))
+}
+
+// ────────────────────────────────────────────────────────────────────
+// DELETE /api/slack/workspaces/{team_id}
+// ────────────────────────────────────────────────────────────────────
+
+async fn disconnect_workspace(
+    State(state): State<AppState>,
+    principal: Principal,
+    Path(team_id): Path<String>,
+) -> Result<StatusCode, HttpError> {
+    let slack = state.slack.as_ref().ok_or(HttpError::NotFound)?;
+    let team_id = SlackTeamId::try_from(team_id.as_str()).map_err(HttpError::Parse)?;
+    slack
+        .workspaces
+        .delete(&principal, &team_id)
+        .await
+        .map_err(slack_to_http)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn slack_to_http(e: SlackError) -> HttpError {
+    match e {
+        SlackError::UnknownWorkspace(_) => HttpError::NotFound,
+        SlackError::Parse(p) => HttpError::Parse(p),
+        other => {
+            error!(error = ?other, event = "slack.workspace.store_error");
+            HttpError::Internal
+        }
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -213,7 +288,7 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
 }
 
 fn redirect_to_fe(web_base: Option<&str>, error: Option<&str>) -> Response {
-    let path = "/settings/slack";
+    let path = "/settings/integrations";
     let target = match (web_base, error) {
         (Some(base), Some(err)) => {
             let mut u = format!("{base}{path}");

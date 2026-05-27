@@ -11,6 +11,7 @@ import { ConnectionsList } from "./pages/ConnectionsList";
 import { OAuthCallback } from "./pages/OAuthCallback";
 import { SettingsComingSoon } from "./pages/SettingsComingSoon";
 import { SettingsGeneral } from "./pages/SettingsGeneral";
+import { SettingsIntegrations } from "./pages/SettingsIntegrations";
 import { SettingsMembers } from "./pages/SettingsMembers";
 import { SignIn } from "./pages/SignIn";
 import { Protected } from "./components/organisms/Protected";
@@ -130,7 +131,7 @@ export function App() {
         path="/settings/integrations"
         element={
           <Protected>
-            <SettingsComingSoon kind="webhooks" />
+            <SettingsIntegrations />
           </Protected>
         }
       />

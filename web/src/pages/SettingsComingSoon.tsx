@@ -11,12 +11,11 @@ import { useT } from "../i18n";
  *  rather than render a misleading "Notifications" label. */
 type ComingSoonKind = Extract<
   SettingsNavId,
-  "billing" | "webhooks" | "notifications"
+  "billing" | "notifications"
 >;
 
 const LABEL_KEYS = {
   billing: "settings.nav.billing",
-  webhooks: "settings.nav.webhooks",
   notifications: "settings.nav.notifications",
 } as const satisfies Record<ComingSoonKind, string>;
 
