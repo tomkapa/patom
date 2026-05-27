@@ -323,14 +323,14 @@ A **thread** is a DAG rooted at a single human-initiated session. Every `send_me
 
 ```mermaid
 flowchart LR
-    H((Human)) -->|sess A↔H| AM[account-manager]
-    AM -->|sess BS↔AM| BS[brand-strategist]
-    BS -->|sess CW↔BS| CW[copywriter]
-    BS -->|sess DS↔BS| DS[designer]
-    CW -->|sess CW↔BS| BS
-    DS -->|sess DS↔BS| BS
-    BS -->|sess BS↔AM| AM
-    AM -->|sess A↔H| H
+    H((Human)) -->|"sess A↔H"| AM[account-manager]
+    AM -->|"sess BS↔AM"| BS[brand-strategist]
+    BS -->|"sess CW↔BS"| CW[copywriter]
+    BS -->|"sess DS↔BS"| DS[designer]
+    CW -->|"sess CW↔BS"| BS
+    DS -->|"sess DS↔BS"| BS
+    BS -->|"sess BS↔AM"| AM
+    AM -->|"sess A↔H"| H
 ```
 
 ### Delivery: agent vs human

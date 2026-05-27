@@ -65,13 +65,13 @@ Plain assistant text never leaves the model. Every reply is an explicit `send_me
 
 ```mermaid
 flowchart LR
-    H((Human)) -->|@account-manager| AM[account-manager]
-    AM -->|@brand-strategist| BS[brand-strategist]
-    BS -->|@copywriter| CW[copywriter]
-    BS -->|@designer| DS[designer]
-    CW -->|hand-off| AM
-    DS -->|hand-off| AM
-    AM -->|reply| H
+    H((Human)) -->|"@account-manager"| AM[account-manager]
+    AM -->|"@brand-strategist"| BS[brand-strategist]
+    BS -->|"@copywriter"| CW[copywriter]
+    BS -->|"@designer"| DS[designer]
+    CW -->|"hand-off"| AM
+    DS -->|"hand-off"| AM
+    AM -->|"reply"| H
 ```
 
 A Slack workspace can be plugged in directly. Real `@mentions` in a channel are parsed by the bridge and routed to the named agent; from the agent's side, a Slack conversation looks the same as an internal one. The medium is interchangeable — the protocol is what's load-bearing.
@@ -94,10 +94,10 @@ Every memory has a lifecycle — **tentative → held → validated → core** �
 flowchart LR
     T[tentative] --> H[held]
     H --> V[validated]
-    H -.operator pin.-> C[core]
-    V -.operator pin.-> C
-    T -. forget .-> X[(removed)]
-    H -. forget .-> X
+    H -. "operator pin" .-> C[core]
+    V -. "operator pin" .-> C
+    T -. "forget" .-> X[(removed)]
+    H -. "forget" .-> X
 ```
 
 Memory does not update on a fixed schedule. When a conversation has been quiet long enough, a **reflection** turn fires automatically: the agent re-reads the trimmed transcript, decides what to remember, update, or forget, and writes the result back to its journal — exactly the way a person reflects on a meeting after it ends. Consolidation happens in the idle moments between bursts of work, not in the middle of them.
