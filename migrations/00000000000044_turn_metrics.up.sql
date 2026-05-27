@@ -35,9 +35,6 @@ CREATE TABLE turn_metrics (
     -- end_turn | tool_use | length | other:<provider-detail>
     stop_reason           TEXT NOT NULL
                            CHECK (octet_length(stop_reason) BETWEEN 1 AND 64),
-    -- Size of the context window for this call. Lets the customer see "is my
-    -- agent's context growing without bound?" at a glance.
-    history_count         INTEGER NOT NULL CHECK (history_count >= 0),
     started_at            TIMESTAMPTZ NOT NULL,
     created_at            TIMESTAMPTZ NOT NULL
 );

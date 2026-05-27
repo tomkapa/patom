@@ -74,6 +74,10 @@ struct MemoryRowResponse {
     content: String,
     state: String,
     pinned: bool,
+    /// The agent turn that produced this row. `None` for operator notes
+    /// and librarian-merged rows — the FE uses presence to decide whether
+    /// to render a "source turn" link back into the chat view.
+    source_turn_id: Option<crate::runtime::PromptRequestId>,
     created_at: DateTime<Utc>,
     last_validated_at: DateTime<Utc>,
     last_accessed_at: DateTime<Utc>,
@@ -89,6 +93,7 @@ impl From<MemoryRow> for MemoryRowResponse {
             content: r.content.as_str().to_owned(),
             state: r.state.as_str().to_owned(),
             pinned: r.pinned,
+            source_turn_id: r.source_turn_id,
             created_at: r.created_at,
             last_validated_at: r.last_validated_at,
             last_accessed_at: r.last_accessed_at,

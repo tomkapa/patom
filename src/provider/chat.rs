@@ -192,9 +192,13 @@ pub struct ChatRequest {
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
-    /// Tokens consumed creating a prompt-cache entry (Anthropic only).
+    /// Tokens consumed creating a prompt-cache entry. Anthropic exposes this
+    /// explicitly; OpenAI-compatible providers (incl. DeepSeek) don't, so the
+    /// field stays `None` for those.
     pub cache_creation_input_tokens: Option<u32>,
-    /// Tokens served from a prompt-cache entry (Anthropic only).
+    /// Tokens served from a prompt-cache entry. Sourced from Anthropic's
+    /// `cache_read_input_tokens`, DeepSeek's `prompt_cache_hit_tokens`, or
+    /// OpenAI's `prompt_tokens_details.cached_tokens`.
     pub cache_read_input_tokens: Option<u32>,
 }
 

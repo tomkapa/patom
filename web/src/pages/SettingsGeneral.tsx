@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { Save, LogOut, Trash2 } from "lucide-react";
 import {
   SettingsBreadcrumb,
@@ -13,6 +14,7 @@ import { Modal, ModalFooter, ModalHeader } from "../components/molecules/Modal";
 import { Select } from "../components/molecules/Select";
 import { PrefixInput } from "../components/core/PrefixInput";
 import {
+  ORG_KEY,
   useLeaveOrg,
   useOrg,
   useUpdateOrg,
@@ -20,6 +22,7 @@ import {
 import { api } from "../lib/api";
 import { ApiError } from "../lib/errors";
 import { useT } from "../i18n";
+import { useAuthStore } from "../stores/authStore";
 import type { Language } from "../types/api";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -27,6 +30,7 @@ const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export function SettingsGeneral() {
   const { t } = useT();
   const nav = useNavigate();
+  const qc = useQueryClient();
   const orgQuery = useOrg();
   const updateOrg = useUpdateOrg();
   const leaveOrg = useLeaveOrg();
@@ -52,10 +56,15 @@ export function SettingsGeneral() {
 
   const dirty = useMemo(() => {
     if (!org) return false;
-    return name !== org.name || slug !== org.slug;
-  }, [org, name, slug]);
+    return (
+      name !== org.name ||
+      slug !== org.slug ||
+      language !== org.default_language
+    );
+  }, [org, name, slug, language]);
 
   const canSave = dirty && !slugError;
+  const [langSaving, setLangSaving] = useState(false);
 
   const onSave = async () => {
     if (!org) return;
@@ -63,8 +72,29 @@ export function SettingsGeneral() {
     const patch: { name?: string; slug?: string } = {};
     if (name !== org.name) patch.name = name.trim();
     if (slug !== org.slug) patch.slug = slug.trim();
+    const langChanged = language !== org.default_language;
     try {
-      await updateOrg.mutateAsync(patch);
+      if (patch.name !== undefined || patch.slug !== undefined) {
+        await updateOrg.mutateAsync(patch);
+      }
+      if (langChanged) {
+        setLangSaving(true);
+        const { default_language } = await api.setOrgLanguage(language);
+        // Mirror into auth store so i18n (driven by the active org's
+        // default_language) flips immediately without a /me re-poll.
+        // Read the latest snapshot to avoid clobbering a concurrent
+        // /me refresh.
+        const latest = useAuthStore.getState().me;
+        if (latest) {
+          useAuthStore.getState().setMe({
+            ...latest,
+            orgs: latest.orgs.map((o) =>
+              o.id === latest.active_org_id ? { ...o, default_language } : o,
+            ),
+          });
+        }
+        qc.invalidateQueries({ queryKey: ORG_KEY });
+      }
       setSavedToast(true);
       window.setTimeout(() => setSavedToast(false), 1800);
     } catch (e) {
@@ -76,16 +106,8 @@ export function SettingsGeneral() {
           setServerError(body || e.message);
         }
       }
-    }
-  };
-
-  const onChangeLanguage = async (next: Language) => {
-    setLanguage(next);
-    try {
-      await api.setOrgLanguage(next);
-    } catch {
-      // Revert on failure.
-      if (org) setLanguage(org.default_language);
+    } finally {
+      setLangSaving(false);
     }
   };
 
@@ -124,7 +146,7 @@ export function SettingsGeneral() {
             <Button
               variant="primary"
               disabled={!canSave}
-              loading={updateOrg.isPending}
+              loading={updateOrg.isPending || langSaving}
               onClick={onSave}
               data-testid="settings-general-save"
             >
@@ -218,7 +240,7 @@ export function SettingsGeneral() {
           >
             <Select<Language>
               value={language}
-              onChange={onChangeLanguage}
+              onChange={setLanguage}
               options={[
                 { value: "en", label: "🇺🇸 English (United States)" },
                 { value: "vi", label: "🇻🇳 Tiếng Việt" },

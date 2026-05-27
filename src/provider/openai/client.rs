@@ -148,8 +148,8 @@ impl LlmProvider for OpenAiProvider {
             .map(|u| Usage {
                 input_tokens: u.prompt_tokens,
                 output_tokens: u.completion_tokens,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
+                cache_creation_input_tokens: u.cache_creation_tokens(),
+                cache_read_input_tokens: u.cache_read_tokens(),
             })
             .unwrap_or_default();
         let model = response

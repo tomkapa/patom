@@ -11,13 +11,14 @@
 //                expanded TurnsTimeline row.
 
 import type { ReactNode } from "react";
-import { AlertTriangle, Check, Link as LinkIcon, X } from "lucide-react";
+import { AlertTriangle, Check, Link as LinkIcon } from "lucide-react";
 import { Collapsible } from "../../molecules/Collapsible";
 import { ToolCallLine } from "../../molecules/ToolCallLine";
 import { Spinner } from "../../atoms/Spinner";
 import { cn } from "../../../lib/utils";
 import { formatMs } from "../../../lib/time";
 import { useTurnDetail } from "../../../hooks/useAgentLogs";
+import { useT } from "../../../i18n";
 import type {
   TurnDetail,
   TurnMemoryEvent,
@@ -25,39 +26,34 @@ import type {
   TurnToolCall,
 } from "../../../types/api";
 
-export function TurnDrawer({
-  requestId,
-  onCollapse,
-}: {
-  requestId: string;
-  /** Optional — when omitted, the "Collapse" chip is suppressed. The
-   *  parent (`TurnsTimeline`) wires this to the row's expand-state
-   *  toggle so a click on the chip behaves like a click on the row. */
-  onCollapse?: () => void;
-}) {
+export function TurnDrawer({ requestId }: { requestId: string }) {
   const { data, isLoading, isError, error } = useTurnDetail(requestId);
 
   return (
     <div className="border-l-[3px] border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-8 py-5">
       {isLoading && <LoadingState />}
       {isError && <ErrorState error={error} />}
-      {data && <DrawerBody detail={data} onCollapse={onCollapse} />}
+      {data && <DrawerBody detail={data} />}
     </div>
   );
 }
 
 function LoadingState() {
+  const { t } = useT();
   return (
     <div className="flex items-center gap-2 py-4 text-[12px] text-[var(--color-muted)]">
       <Spinner size={12} />
-      <span>Loading turn detail…</span>
+      <span>{t("agent.detail.logs.drawer.loading")}</span>
     </div>
   );
 }
 
 function ErrorState({ error }: { error: unknown }) {
+  const { t } = useT();
   const message =
-    error instanceof Error ? error.message : "failed to load turn detail";
+    error instanceof Error
+      ? error.message
+      : t("agent.detail.logs.drawer.error.fallback");
   return (
     <div className="flex items-start gap-2 border border-[var(--color-rose)] bg-[var(--color-rose-soft)] px-3 py-2 text-[12px] text-[var(--color-rose)]">
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
@@ -66,18 +62,12 @@ function ErrorState({ error }: { error: unknown }) {
   );
 }
 
-function DrawerBody({
-  detail,
-  onCollapse,
-}: {
-  detail: TurnDetail;
-  onCollapse?: () => void;
-}) {
+function DrawerBody({ detail }: { detail: TurnDetail }) {
   const { turn, reasoning_blocks, tool_calls, memory_writes, prompt_version } =
     detail;
   return (
     <div className="flex flex-col gap-4">
-      <DrawerHeader detail={detail} onCollapse={onCollapse} />
+      <DrawerHeader detail={detail} />
       {turn.failure_reason && (
         <FailureBanner
           reason={turn.failure_reason}
@@ -99,38 +89,23 @@ function DrawerBody({
 
 // ─── Header ────────────────────────────────────────────────────────────
 
-function DrawerHeader({
-  detail,
-  onCollapse,
-}: {
-  detail: TurnDetail;
-  onCollapse?: () => void;
-}) {
+function DrawerHeader({ detail }: { detail: TurnDetail }) {
+  const { t } = useT();
   const { turn } = detail;
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <HeaderChip label="REQUEST" value={shortId(turn.request_id)} />
-        <HeaderChip label="STOP" value={turn.stop_reason} />
-        <HeaderChip
-          label="HISTORY"
-          value={`${turn.history_count} msgs`}
-        />
-        <HeaderChip
-          label="PROMPT"
-          value={`v${detail.prompt_version.version}`}
-        />
-      </div>
-      {onCollapse && (
-        <button
-          type="button"
-          onClick={onCollapse}
-          className="flex items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-card)] px-2.5 py-1 text-[11px] text-[var(--color-muted)] transition-colors hover:text-[var(--color-ink)]"
-        >
-          <X className="h-3 w-3" strokeWidth={2} />
-          <span>Collapse</span>
-        </button>
-      )}
+    <div className="flex flex-wrap items-center gap-2">
+      <HeaderChip
+        label={t("agent.detail.logs.drawer.header.request")}
+        value={shortId(turn.request_id)}
+      />
+      <HeaderChip
+        label={t("agent.detail.logs.drawer.header.stop")}
+        value={turn.stop_reason}
+      />
+      <HeaderChip
+        label={t("agent.detail.logs.drawer.header.prompt")}
+        value={`v${detail.prompt_version.version}`}
+      />
     </div>
   );
 }
@@ -157,12 +132,13 @@ function FailureBanner({
   stopReason: string;
   durationMs: number;
 }) {
+  const { t } = useT();
   return (
     <div className="border border-[var(--color-rose)] bg-[var(--color-rose-soft)]">
       <div className="flex items-center gap-2 px-3.5 py-2">
         <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-rose)]" />
         <span className="font-[var(--font-caption)] text-[10px] font-semibold tracking-[0.1em] text-[var(--color-rose)]">
-          FAILURE
+          {t("agent.detail.logs.drawer.failure.label")}
         </span>
         <span className="font-[var(--font-mono)] text-[12px] font-semibold text-[var(--color-rose)]">
           {stopReason} · {formatMs(durationMs)}
@@ -178,18 +154,23 @@ function FailureBanner({
 // ─── Reasoning ─────────────────────────────────────────────────────────
 
 function ReasoningSection({ blocks }: { blocks: TurnReasoningBlock[] }) {
+  const { t } = useT();
   const totalBytes = blocks.reduce((s, b) => s + b.byte_count, 0);
+  const triggerKey =
+    blocks.length === 1
+      ? "agent.detail.logs.drawer.reasoning.show.one"
+      : "agent.detail.logs.drawer.reasoning.show.many";
   return (
     <DrawerCard
-      eyebrow={`REASONING · ${formatBytes(totalBytes)}`}
+      eyebrow={t("agent.detail.logs.drawer.reasoning.eyebrow", {
+        bytes: formatBytes(totalBytes),
+      })}
     >
       {blocks.length === 0 ? (
-        <EmptyHint text="No reasoning blocks recorded for this turn." />
+        <EmptyHint text={t("agent.detail.logs.drawer.reasoning.empty")} />
       ) : (
         <div className="px-4 py-3">
-          <Collapsible
-            trigger={`Show ${blocks.length} block${blocks.length === 1 ? "" : "s"}`}
-          >
+          <Collapsible trigger={t(triggerKey, { n: blocks.length })}>
             <div className="flex flex-col gap-3 pt-2">
               {blocks.map((b, i) => (
                 <pre
@@ -210,10 +191,15 @@ function ReasoningSection({ blocks }: { blocks: TurnReasoningBlock[] }) {
 // ─── Tool calls ────────────────────────────────────────────────────────
 
 function ToolCallsSection({ calls }: { calls: TurnToolCall[] }) {
+  const { t } = useT();
   return (
-    <DrawerCard eyebrow={`TOOL CALLS · ${calls.length}`}>
+    <DrawerCard
+      eyebrow={t("agent.detail.logs.drawer.toolCalls.eyebrow", {
+        n: calls.length,
+      })}
+    >
       {calls.length === 0 ? (
-        <EmptyHint text="No tool calls dispatched." />
+        <EmptyHint text={t("agent.detail.logs.drawer.toolCalls.empty")} />
       ) : (
         <div className="flex flex-col">
           {calls.map((c) => (
@@ -236,8 +222,8 @@ function ToolCallRow({ call }: { call: TurnToolCall }) {
         call={{
           call_id: call.id,
           name: call.tool_name,
-          input: call.mcp_server_alias
-            ? { server: call.mcp_server_alias }
+          input: call.mcp_server_catalog_id
+            ? { server: call.mcp_server_catalog_id }
             : undefined,
           is_error: call.is_error,
           status: call.is_error ? "error" : "ok",
@@ -256,6 +242,7 @@ function ToolCallRow({ call }: { call: TurnToolCall }) {
 // ─── Memory writes ─────────────────────────────────────────────────────
 
 function MemoryWritesSection({ events }: { events: TurnMemoryEvent[] }) {
+  const { t } = useT();
   const counts = events.reduce(
     (acc, e) => {
       if (e.mutation === "write") acc.written += 1;
@@ -265,12 +252,14 @@ function MemoryWritesSection({ events }: { events: TurnMemoryEvent[] }) {
     },
     { written: 0, updated: 0, forgotten: 0 },
   );
-  const summary = formatMemorySummary(counts);
+  const summary = formatMemorySummary(counts, t);
 
   return (
-    <DrawerCard eyebrow="MEMORY WRITES">
+    <DrawerCard eyebrow={t("agent.detail.logs.drawer.memoryWrites.eyebrow")}>
       {events.length === 0 ? (
-        <EmptyHint text="No memory writes from this turn." />
+        <EmptyHint
+          text={t("agent.detail.logs.drawer.memoryWrites.empty")}
+        />
       ) : (
         <div className="px-4 py-3">
           <Collapsible trigger={summary}>
@@ -286,19 +275,14 @@ function MemoryWritesSection({ events }: { events: TurnMemoryEvent[] }) {
   );
 }
 
+const MUTATION_STYLE: Record<string, { verb: string; tone: string }> = {
+  write:  { verb: "+", tone: "text-[var(--color-moss-deep)]" },
+  forget: { verb: "−", tone: "text-[var(--color-rose)]" },
+  update: { verb: "~", tone: "text-[var(--color-ink)]" },
+};
+
 function MemoryWriteRow({ event }: { event: TurnMemoryEvent }) {
-  let verb: string;
-  let tone: string;
-  if (event.mutation === "write") {
-    verb = "+";
-    tone = "text-[var(--color-moss-deep)]";
-  } else if (event.mutation === "forget") {
-    verb = "−";
-    tone = "text-[var(--color-rose)]";
-  } else {
-    verb = "~";
-    tone = "text-[var(--color-ink)]";
-  }
+  const { verb, tone } = MUTATION_STYLE[event.mutation] ?? MUTATION_STYLE.update;
   const shown = event.content_after ?? event.content_before ?? "—";
   return (
     <li className="flex items-start gap-2 font-[var(--font-mono)] text-[11.5px]">
@@ -315,9 +299,12 @@ function PromptUsedSection({
 }: {
   version: TurnDetail["prompt_version"];
 }) {
+  const { t } = useT();
   return (
     <DrawerCard
-      eyebrow={`PROMPT USED · v${version.version}`}
+      eyebrow={t("agent.detail.logs.drawer.promptUsed.eyebrow", {
+        version: version.version,
+      })}
     >
       {/* <details> per CLAUDE.md guidance — collapsed by default so the
           drawer height stays manageable until the operator drills in. */}
@@ -325,7 +312,7 @@ function PromptUsedSection({
         <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-[12px] text-[var(--color-muted)] hover:text-[var(--color-ink)]">
           <LinkIcon className="h-3 w-3" />
           <span>
-            {version.model ?? "workspace default model"} · view system prompt
+            {t("agent.detail.logs.drawer.promptUsed.view")}
           </span>
         </summary>
         <div className="border-t border-[var(--color-line)] px-4 py-3">
@@ -380,14 +367,30 @@ function formatBytes(n: number): string {
   return `${(n / 1024).toFixed(1)} KB`;
 }
 
-function formatMemorySummary(c: {
-  written: number;
-  updated: number;
-  forgotten: number;
-}): string {
+function formatMemorySummary(
+  c: { written: number; updated: number; forgotten: number },
+  t: ReturnType<typeof useT>["t"],
+): string {
   const parts: string[] = [];
-  if (c.written) parts.push(`+${c.written} written`);
-  if (c.updated) parts.push(`~${c.updated} updated`);
-  if (c.forgotten) parts.push(`−${c.forgotten} forgotten`);
-  return parts.length ? parts.join(" · ") : "no changes";
+  if (c.written)
+    parts.push(
+      t("agent.detail.logs.drawer.memoryWrites.summary.written", {
+        n: c.written,
+      }),
+    );
+  if (c.updated)
+    parts.push(
+      t("agent.detail.logs.drawer.memoryWrites.summary.updated", {
+        n: c.updated,
+      }),
+    );
+  if (c.forgotten)
+    parts.push(
+      t("agent.detail.logs.drawer.memoryWrites.summary.forgotten", {
+        n: c.forgotten,
+      }),
+    );
+  return parts.length
+    ? parts.join(" · ")
+    : t("agent.detail.logs.drawer.memoryWrites.summary.noChanges");
 }

@@ -13,7 +13,8 @@ use tracing::{debug, warn};
 use crate::auth::Caller;
 use crate::hook::{ToolContext, TurnContext};
 use crate::provider::{
-    ChatMessage, ChatRequest, ChatResponse, ToolCall, ToolCallId, ToolResult, UserContent,
+    ChatMessage, ChatRequest, ChatResponse, StopReason, ToolCall, ToolCallId, ToolResult,
+    UserContent,
 };
 use crate::runtime::{PromptRequestId, RequestKind, RequestKindPayload};
 use crate::session::SessionId;
@@ -29,6 +30,7 @@ use super::limits::MAX_TOOL_CALLS_PER_TURN;
 use super::log;
 use super::observer::SharedTurnObserver;
 use super::outcome::viewer_kind;
+use super::turn_metrics::{DurationMs, InputTokens, OutputTokens, StopReasonLabel, TurnMetricsRow};
 
 impl Agent {
     /// Run one provider call + its tool-call follow-up. Returns `Some(text)` when
@@ -49,9 +51,25 @@ impl Agent {
         observer: Option<&SharedTurnObserver>,
     ) -> Result<Option<String>, AgentError> {
         self.hooks().before_turn(ctx).await?.into_result()?;
+        // Wall-clock `started_at` from the agent clock (CLAUDE.md §11) so
+        // tests can pin timestamps; `started_mono` runs alongside so a
+        // paused / faked wall clock cannot zero out `duration_ms`.
+        let started_at = self.clock().now_utc();
+        let started_mono = Instant::now();
         let response = self
             .send_one_turn(ctx.session_id, viewer, kind_payload, cancel)
             .await?;
+        let duration = started_mono.elapsed();
+        self.record_turn_metrics(
+            request_id,
+            ctx.session_id,
+            caller.org_id,
+            kind_payload.kind(),
+            started_at,
+            duration,
+            &response,
+        )
+        .await;
         self.hooks()
             .after_turn(ctx, &response)
             .await?
@@ -133,6 +151,74 @@ impl Agent {
             )
             .await?;
         Ok(None)
+    }
+
+    /// Best-effort write to `turn_metrics`. Skipped when the recorder is
+    /// not wired (agent_core unit tests). DB / conversion failures emit
+    /// `tracing::error!` and continue — the user has already seen the
+    /// turn (CLAUDE.md §6: observability never blocks the user-visible
+    /// path; the row going missing is one chart cell, not a turn replay).
+    #[allow(clippy::too_many_arguments)] // recorder bundles per-call audit fields, not branching
+    async fn record_turn_metrics(
+        &self,
+        request_id: PromptRequestId,
+        session_id: SessionId,
+        org_id: crate::auth::OrgId,
+        kind: RequestKind,
+        started_at: chrono::DateTime<chrono::Utc>,
+        duration: StdDuration,
+        response: &ChatResponse,
+    ) {
+        let Some(binding) = self.turn_metrics() else {
+            return;
+        };
+        // Token counts come from the provider as `u32`; the newtype's
+        // `TryFrom<u32>` enforces fit-in-i32. A counter that wraps the
+        // bound is a provider bug — log and skip rather than panic.
+        let (Ok(input_tokens), Ok(output_tokens)) = (
+            InputTokens::try_from(response.usage.input_tokens),
+            OutputTokens::try_from(response.usage.output_tokens),
+        ) else {
+            tracing::error!(
+                relay.request.id = %request_id,
+                relay.tokens.input = response.usage.input_tokens,
+                relay.tokens.output = response.usage.output_tokens,
+                "turn_metrics.skip.token_overflow: provider reported counts that don't fit i32",
+            );
+            return;
+        };
+        let cache_creation_tokens = response
+            .usage
+            .cache_creation_input_tokens
+            .and_then(|n| InputTokens::try_from(n).ok());
+        let cache_read_tokens = response
+            .usage
+            .cache_read_input_tokens
+            .and_then(|n| InputTokens::try_from(n).ok());
+        let row = TurnMetricsRow {
+            request_id,
+            org_id,
+            session_id,
+            agent_id: binding.agent_id,
+            prompt_version_id: binding.prompt_version_id,
+            kind,
+            model: self.model(),
+            provider: self.model().provider(),
+            input_tokens,
+            output_tokens,
+            cache_creation_tokens,
+            cache_read_tokens,
+            duration_ms: DurationMs::saturating_from_millis(duration.as_millis()),
+            stop_reason: StopReasonLabel::from_truncated(&stop_reason_label(&response.stop_reason)),
+            started_at,
+        };
+        if let Err(e) = binding.store.record(row).await {
+            tracing::error!(
+                error = ?e,
+                relay.request.id = %request_id,
+                "turn_metrics.record.failed",
+            );
+        }
     }
 
     pub(super) async fn send_one_turn(
@@ -474,6 +560,20 @@ impl Agent {
                 error_result(id, format!("tool `{}` timed out", call.name))
             }
         }
+    }
+}
+
+/// Map a `StopReason` to the short label `turn_metrics.stop_reason`
+/// stores. Stable strings the dashboard can group on; matches the set
+/// pinned in migration 44's column comment
+/// (`end_turn | tool_use | length | other:<provider-detail>`).
+/// `StopReasonLabel::from_truncated` clips to the column CHECK ceiling.
+fn stop_reason_label(stop: &StopReason) -> String {
+    match stop {
+        StopReason::EndTurn => "end_turn".to_owned(),
+        StopReason::ToolUse => "tool_use".to_owned(),
+        StopReason::MaxTokens => "length".to_owned(),
+        StopReason::Other(detail) => format!("other:{detail}"),
     }
 }
 

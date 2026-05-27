@@ -470,9 +470,11 @@ async fn list_agent_tool_calls(
     if has_more {
         items.pop();
     }
-    let next_cursor = has_more
-        .then(|| items.last().map(|r| r.started_at))
-        .flatten();
+    let next_cursor = if has_more {
+        items.last().map(|r| r.started_at)
+    } else {
+        None
+    };
 
     Ok(Json(AgentToolCallListResponse { items, next_cursor }))
 }
@@ -835,18 +837,18 @@ fn compute_deltas(
     totals_failure_count: i64,
     compare: Option<(i64, Option<f64>, i64)>,
 ) -> TimeseriesDeltas {
-    compare.map_or(
-        TimeseriesDeltas {
+    let Some((tokens, p95, failures)) = compare else {
+        return TimeseriesDeltas {
             tokens: None,
             latency_p95_ms: None,
             failure_count: None,
-        },
-        |(tokens, p95, failures)| TimeseriesDeltas {
-            tokens: Some(totals_tokens - tokens),
-            latency_p95_ms: Some(totals_p95_ms - f64_ms_to_i64(p95.unwrap_or(0.0))),
-            failure_count: Some(totals_failure_count - failures),
-        },
-    )
+        };
+    };
+    TimeseriesDeltas {
+        tokens: Some(totals_tokens - tokens),
+        latency_p95_ms: Some(totals_p95_ms - f64_ms_to_i64(p95.unwrap_or(0.0))),
+        failure_count: Some(totals_failure_count - failures),
+    }
 }
 
 fn bucket_row_into_response(r: BucketAggRow) -> TimeseriesBucketRow {
@@ -919,7 +921,6 @@ struct TurnRow {
     cache_read_tokens: Option<i32>,
     duration_ms: i32,
     stop_reason: String,
-    history_count: i32,
     /// Joined from `prompt_requests` so the OUTCOME column can show
     /// `failed` rows distinctly from `done` rows. Mirrors
     /// `RequestStatus::as_str()` labels.
@@ -983,9 +984,11 @@ async fn list_agent_turns(
     if has_more {
         items.pop();
     }
-    let next_cursor = has_more
-        .then(|| items.last().map(|r| r.started_at))
-        .flatten();
+    let next_cursor = if has_more {
+        items.last().map(|r| r.started_at)
+    } else {
+        None
+    };
 
     Ok(Json(TurnsListResponse { items, next_cursor }))
 }
@@ -1005,7 +1008,7 @@ async fn fetch_turn_rows(
     sqlx::query_as::<_, TurnRow>(
         "SELECT tm.request_id, tm.started_at, tm.kind, tm.model, tm.provider, \
                 tm.input_tokens, tm.output_tokens, tm.cache_creation_tokens, tm.cache_read_tokens, \
-                tm.duration_ms, tm.stop_reason, tm.history_count, \
+                tm.duration_ms, tm.stop_reason, \
                 pr.status::text AS status, pr.failure_reason::text AS failure_reason, \
                 apv.version AS prompt_version \
            FROM turn_metrics tm \
@@ -1072,12 +1075,19 @@ impl TryFrom<PromptVersionRowDb> for PromptVersionRow {
 /// the route layer's external schema independent of the domain row.
 /// Model is intentionally absent — model selection is orthogonal to
 /// prompt history and lives on the live `agents.model` column.
+///
+/// `edited_by_email` is the display label the diff modal renders for
+/// the "Edited by" meta cell — surfaced via a second-round privileged
+/// `users` lookup (migration 14 REVOKEs that table from `relay_app`,
+/// so the tenant-scoped query can't JOIN it). `None` for the v1 seed
+/// row or when the user has since been deleted.
 #[derive(Debug, Serialize)]
 struct PromptVersionWire {
     id: PromptVersionId,
     version: PromptVersionNumber,
     system_prompt: String,
     edited_by: Option<UserId>,
+    edited_by_email: Option<String>,
     created_at: DateTime<Utc>,
 }
 
@@ -1088,6 +1098,7 @@ impl From<PromptVersionRow> for PromptVersionWire {
             version: r.version,
             system_prompt: r.system_prompt.as_str().to_owned(),
             edited_by: r.edited_by,
+            edited_by_email: None,
             created_at: r.created_at,
         }
     }
@@ -1134,10 +1145,23 @@ async fn list_agent_prompt_versions(
     .map_err(AuthError::from)?;
     tx.commit().await.map_err(AuthError::from)?;
 
-    let items = rows
+    let mut items = rows
         .into_iter()
         .map(|r| PromptVersionRow::try_from(r).map(PromptVersionWire::from))
         .collect::<Result<Vec<_>, PromptVersionError>>()?;
+
+    // Identity tables are REVOKED from `relay_app` (migration 14), so
+    // the email enrichment runs as a second round-trip through the
+    // privileged user store after the tenant tx commits — same pattern
+    // as `list_mcp_servers` (src/http/routes/mcp.rs).
+    let editor_ids: Vec<UserId> = items.iter().filter_map(|v| v.edited_by).collect();
+    let emails = state.users.read_emails(&editor_ids).await?;
+    for v in &mut items {
+        v.edited_by_email = v
+            .edited_by
+            .and_then(|id| emails.get(&id).map(|e| e.as_str().to_owned()));
+    }
+
     Ok(Json(PromptVersionsListResponse { items }))
 }
 

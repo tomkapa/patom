@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use crate::agents::AgentId;
+use crate::agents::prompt_versions::PromptVersionId;
 use crate::clock::{SharedClock, SystemClock};
 use crate::hook::HookChain;
 use crate::memory::SharedMemory;
@@ -8,6 +10,8 @@ use crate::session::SharedSessionStore;
 use crate::tools::system::todos::SharedSessionTodoStore;
 use crate::tools::{SharedToolCallStore, ToolBox, ToolRegistry};
 use crate::types::{MaxOutputTokens, MaxTurns, ParseError};
+
+use super::turn_metrics::SharedTurnMetricsStore;
 
 use super::core::Agent;
 use super::limits::{
@@ -34,6 +38,17 @@ pub struct AgentBuilder {
     tool_timeout: Duration,
     tool_call_store: Option<SharedToolCallStore>,
     todos_store: Option<SharedSessionTodoStore>,
+    turn_metrics: Option<TurnMetricsBinding>,
+}
+
+/// Per-record identity needed to write a `turn_metrics` row. Bound at build
+/// time so the recorder never has to reach back into the `AgentRecord` —
+/// the factory captures both pieces once, when it materialises the Agent.
+#[derive(Debug, Clone)]
+pub(super) struct TurnMetricsBinding {
+    pub(super) store: SharedTurnMetricsStore,
+    pub(super) agent_id: AgentId,
+    pub(super) prompt_version_id: PromptVersionId,
 }
 
 impl AgentBuilder {
@@ -58,6 +73,7 @@ impl AgentBuilder {
             tool_timeout: TOOL_CALL_TIMEOUT,
             tool_call_store: None,
             todos_store: None,
+            turn_metrics: None,
         })
     }
 
@@ -122,6 +138,30 @@ impl AgentBuilder {
         self
     }
 
+    /// Attach the `turn_metrics` recorder + the per-record identity it
+    /// stamps onto every row.
+    ///
+    /// Optional: agent_core unit tests build an `Agent` without one and the
+    /// turn loop skips recording when absent (CLAUDE.md §6 — observability
+    /// is best-effort, not on the user-visible critical path). The
+    /// production factory binds [`crate::agent_core::turn_metrics::PgTurnMetricsStore`]
+    /// plus the `AgentRecord`'s `(id, current_prompt_version_id)` once when
+    /// the cached agent is materialised.
+    #[must_use]
+    pub fn with_turn_metrics(
+        mut self,
+        store: SharedTurnMetricsStore,
+        agent_id: AgentId,
+        prompt_version_id: PromptVersionId,
+    ) -> Self {
+        self.turn_metrics = Some(TurnMetricsBinding {
+            store,
+            agent_id,
+            prompt_version_id,
+        });
+        self
+    }
+
     /// Attach the per-session todo store.
     ///
     /// Optional: agent_core unit tests skip it. With this wired,
@@ -150,6 +190,7 @@ impl AgentBuilder {
             self.tool_timeout,
             self.tool_call_store,
             self.todos_store,
+            self.turn_metrics,
         )
     }
 }

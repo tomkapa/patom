@@ -129,7 +129,6 @@ CREATE TABLE turn_metrics (
     cache_read_tokens     INTEGER,
     duration_ms           INTEGER NOT NULL CHECK (duration_ms >= 0),
     stop_reason           TEXT NOT NULL,       -- end_turn|tool_use|length|other
-    history_count         INTEGER NOT NULL,    -- size of context window for this call
     started_at            TIMESTAMPTZ NOT NULL,
     created_at            TIMESTAMPTZ NOT NULL
 );
@@ -148,11 +147,6 @@ Why the columns map to the questions one-for-one:
 | Q3 broken | `stop_reason`, joined to `prompt_requests.status` and `failure_reason` |
 | Q4 reasoning / tools | `request_id` is the foreign key into `tool_calls`, `memory_events.source_turn_id`, and `session_messages` reasoning blocks. The drawer joins these. |
 | "compared to what?" | `prompt_version_id` slices every column above by version |
-
-`history_count` is the one extra column. It is the answer to a
-fifth-frequent customer question: *"is my agent's context growing
-without bound?"* — visible at a glance from the timeline column and
-spike-detectable from a sort.
 
 ### 4.3 `hook_events` (optional, slice 3)
 

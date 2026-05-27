@@ -14,6 +14,7 @@ use crate::tools::system::todos::SharedSessionTodoStore;
 use crate::tools::{SharedToolCallStore, ToolBox};
 use crate::types::{AgentReply, MaxOutputTokens, MaxTurns, MessageSender, Participant, Prompt};
 
+use super::builder::TurnMetricsBinding;
 use super::error::AgentError;
 use super::observer::SharedTurnObserver;
 use super::outcome::{record_reply, record_turn};
@@ -55,6 +56,13 @@ pub struct Agent {
     /// agent factory. When `None`, `build_chat_request` skips the
     /// `<todos>` block entirely.
     todos_store: Option<SharedSessionTodoStore>,
+    /// Best-effort recorder for `turn_metrics`, plus the identity stamped
+    /// onto every row. `None` in unit tests that build an `Agent` without
+    /// an `AgentRecord`; the factory at the composition root binds
+    /// [`crate::agent_core::turn_metrics::PgTurnMetricsStore`] in for
+    /// production. When `None` the turn loop skips the INSERT (CLAUDE.md
+    /// §6: observability never blocks the user-visible turn).
+    turn_metrics: Option<TurnMetricsBinding>,
 }
 
 impl Agent {
@@ -73,6 +81,7 @@ impl Agent {
         tool_timeout: Duration,
         tool_call_store: Option<SharedToolCallStore>,
         todos_store: Option<SharedSessionTodoStore>,
+        turn_metrics: Option<TurnMetricsBinding>,
     ) -> Self {
         Self {
             providers,
@@ -88,6 +97,7 @@ impl Agent {
             tool_timeout,
             tool_call_store,
             todos_store,
+            turn_metrics,
         }
     }
 
@@ -142,6 +152,9 @@ impl Agent {
     pub(super) fn todos_store(&self) -> Option<&SharedSessionTodoStore> {
         self.todos_store.as_ref()
     }
+    pub(super) fn turn_metrics(&self) -> Option<&TurnMetricsBinding> {
+        self.turn_metrics.as_ref()
+    }
 
     /// Drive a batch of user prompts to a final assistant text answer, running
     /// tool calls in between turns. Honours `cancel` at the next checkpoint.
@@ -169,7 +182,6 @@ impl Agent {
             relay.outcome = tracing::field::Empty,
         ),
     )]
-    #[allow(clippy::too_many_arguments)]
     pub async fn reply(
         &self,
         session: SessionId,

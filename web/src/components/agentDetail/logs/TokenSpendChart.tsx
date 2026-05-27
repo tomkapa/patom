@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { SectionCard } from "../../molecules/SectionCard";
 import { KpiTile } from "../../molecules/KpiTile";
 import { EmptyState } from "../../molecules/EmptyState";
@@ -12,6 +12,10 @@ import type {
 
 const PADDING = { top: 24, right: 20, bottom: 28, left: 48 } as const;
 const CHART_HEIGHT = 220;
+/** Approx pixel width of a marker label (`↑ v99 edited`) at the rendered
+ *  font size. Two markers closer than this collide visually, so we merge
+ *  them into a single grouped marker. */
+const MARKER_LABEL_PX = 64;
 /** Stacked-bar colour by kind. Mirrors the `--color-moss*` family already
  *  used elsewhere; reflection lands on the tinted variant so the rare,
  *  internal turn type reads visually subordinate to the user-facing one. */
@@ -47,8 +51,14 @@ export function TokenSpendChart({
 }) {
   const { t } = useT();
   const [hovered, setHovered] = useState<number | null>(null);
+  const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
+  const chartRef = useRef<HTMLDivElement | null>(null);
 
   const { width, bars, yMax, xForTime } = useGeometry(buckets);
+  const markerGroups = useMemo(
+    () => groupMarkers(promptEdits, xForTime),
+    [promptEdits, xForTime],
+  );
 
   return (
     <SectionCard
@@ -62,44 +72,57 @@ export function TokenSpendChart({
           />
         ) : (
           <>
-            <svg
-              role="img"
-              aria-label={t("agent.detail.logs.chart.aria")}
-              viewBox={`0 0 ${width} ${CHART_HEIGHT}`}
-              className="w-full"
-              preserveAspectRatio="none"
-            >
-              <YAxis yMax={yMax} />
-              {bars.map((bar, i) => (
-                <BucketBar
-                  key={bar.bucket.start}
-                  bar={bar}
-                  yMax={yMax}
-                  highlighted={hovered === i}
-                  onEnter={() => setHovered(i)}
-                  onLeave={() => setHovered(null)}
-                  onClick={() => onBucketClick?.(bar.bucket.start)}
-                />
-              ))}
-              {promptEdits.map((m) => {
-                const x = xForTime(m.created_at);
-                if (x == null) return null;
-                return (
+            <div ref={chartRef} className="relative">
+              <svg
+                role="img"
+                aria-label={t("agent.detail.logs.chart.aria")}
+                viewBox={`0 0 ${width} ${CHART_HEIGHT}`}
+                className="w-full"
+                preserveAspectRatio="none"
+                onMouseMove={(e) => {
+                  const host = chartRef.current;
+                  if (!host) return;
+                  const rect = host.getBoundingClientRect();
+                  setPointer({
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top,
+                  });
+                }}
+                onMouseLeave={() => {
+                  setPointer(null);
+                  setHovered(null);
+                }}
+              >
+                <YAxis yMax={yMax} />
+                {bars.map((bar, i) => (
+                  <BucketBar
+                    key={bar.bucket.start}
+                    bar={bar}
+                    yMax={yMax}
+                    highlighted={hovered === i}
+                    onEnter={() => setHovered(i)}
+                    onLeave={() => setHovered(null)}
+                    onClick={() => onBucketClick?.(bar.bucket.start)}
+                  />
+                ))}
+                {markerGroups.map((g) => (
                   <EditMarker
-                    key={m.version}
-                    x={x}
-                    version={m.version}
+                    key={g.versions[0]}
+                    x={g.x}
+                    versions={g.versions}
                     onClick={
-                      onMarkerClick ? () => onMarkerClick(m.version) : undefined
+                      onMarkerClick
+                        ? () => onMarkerClick(g.versions[g.versions.length - 1]!)
+                        : undefined
                     }
                   />
-                );
-              })}
-            </svg>
+                ))}
+              </svg>
+              {hovered != null && bars[hovered] && pointer ? (
+                <Tooltip bar={bars[hovered]} pointer={pointer} />
+              ) : null}
+            </div>
             <CaptionRow totals={totals} deltas={deltas} />
-            {hovered != null && bars[hovered] ? (
-              <Tooltip bar={bars[hovered]} />
-            ) : null}
           </>
         )}
       </div>
@@ -234,27 +257,42 @@ function BucketBar({
 
 function EditMarker({
   x,
-  version,
+  versions,
   onClick,
 }: {
   x: number;
-  version: number;
+  versions: number[];
   onClick?: () => void;
 }) {
   const { t } = useT();
   const yTop = PADDING.top - 6;
   const yBottom = CHART_HEIGHT - PADDING.bottom;
   const cursor = onClick ? "cursor-pointer" : undefined;
+  const first = versions[0]!;
+  const last = versions[versions.length - 1]!;
+  const grouped = versions.length > 1;
+  const label = grouped
+    ? t("agent.detail.logs.chart.marker.labelMulti", {
+        first,
+        last,
+        count: versions.length,
+      })
+    : t("agent.detail.logs.chart.marker.label", { version: first });
+  const aria = onClick
+    ? grouped
+      ? t("agent.detail.logs.chart.marker.ariaMulti", {
+          first,
+          last,
+          count: versions.length,
+        })
+      : t("agent.detail.logs.chart.marker.aria", { version: first })
+    : undefined;
   return (
     <g
       className={cursor}
       onClick={onClick}
       role={onClick ? "button" : undefined}
-      aria-label={
-        onClick
-          ? t("agent.detail.logs.chart.marker.aria", { version })
-          : undefined
-      }
+      aria-label={aria}
     >
       <line
         x1={x}
@@ -272,10 +310,37 @@ function EditMarker({
         fill="var(--color-ink)"
         fontFamily="var(--font-mono)"
       >
-        {t("agent.detail.logs.chart.marker.label", { version })}
+        {label}
       </text>
     </g>
   );
+}
+
+type MarkerGroup = { x: number; versions: number[] };
+
+/** Merge prompt-edit markers whose labels would visually collide
+ *  (closer than `MARKER_LABEL_PX` apart on the x-axis). Versions
+ *  within a group are kept in ascending order so the label can read
+ *  `v{first}-v{last}` and clicks resolve to the latest edit. */
+function groupMarkers(
+  edits: PromptEditMarker[],
+  xForTime: (iso: string) => number | null,
+): MarkerGroup[] {
+  const positioned = edits
+    .map((m) => ({ version: m.version, x: xForTime(m.created_at) }))
+    .filter((m): m is { version: number; x: number } => m.x != null)
+    .sort((a, b) => a.x - b.x);
+  const groups: MarkerGroup[] = [];
+  for (const m of positioned) {
+    const last = groups[groups.length - 1];
+    if (last && m.x - last.x < MARKER_LABEL_PX) {
+      last.versions.push(m.version);
+    } else {
+      groups.push({ x: m.x, versions: [m.version] });
+    }
+  }
+  for (const g of groups) g.versions.sort((a, b) => a - b);
+  return groups;
 }
 
 function ChartHero({
@@ -389,10 +454,25 @@ function CaptionRow({
   );
 }
 
-function Tooltip({ bar }: { bar: Bar }) {
+function Tooltip({
+  bar,
+  pointer,
+}: {
+  bar: Bar;
+  pointer: { x: number; y: number };
+}) {
   const { t } = useT();
+  // Offset from cursor so the tooltip doesn't sit under the mouse and
+  // immediately trigger mouseleave. Positioned via inline style because
+  // the coordinates change every mousemove — Tailwind classes can't.
   return (
-    <div className="mt-2 inline-flex flex-col rounded border border-[var(--color-line)] bg-[var(--color-card)] px-2 py-1 font-[var(--font-mono)] text-[11px] text-[var(--color-ink)] shadow">
+    <div
+      className="pointer-events-none absolute z-10 inline-flex flex-col rounded border border-[var(--color-line)] bg-[var(--color-card)] px-2 py-1 font-[var(--font-mono)] text-[11px] text-[var(--color-ink)] shadow"
+      style={{
+        left: pointer.x + 12,
+        top: pointer.y + 12,
+      }}
+    >
       <span>{new Date(bar.bucket.start).toLocaleString()}</span>
       <span>
         {t("agent.detail.logs.chart.tooltip.total", {

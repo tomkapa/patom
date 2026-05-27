@@ -80,12 +80,65 @@ pub(super) struct ChatResponseBody {
 /// Token-usage counters returned by an OpenAI-Chat-Completions endpoint. Field
 /// names match the wire shape; we map to the provider-agnostic
 /// [`crate::provider::chat::Usage`] in [`super::client`].
-#[derive(Debug, Deserialize)]
+///
+/// Cache-hit accounting is *not* part of the base OpenAI schema — each provider
+/// adds its own variant. The structural decision is: deserialize every known
+/// shape as `Option<u32>` (so a missing field is just `None`) and centralize
+/// the priority order inside [`Self::cache_read_tokens`]. Adding a new provider
+/// is then one field on this struct plus one fallback in that method — no
+/// caller code changes.
+///
+/// Known shapes (verified against vendor docs, May 2026):
+/// - DeepSeek: `usage.prompt_cache_hit_tokens` (int, top level).
+///   See api-docs.deepseek.com/guides/kv_cache.
+/// - OpenAI:   `usage.prompt_tokens_details.cached_tokens` (int, nested).
+///   See developers.openai.com/api/docs/guides/prompt-caching.
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct WireUsage {
     #[serde(default)]
     pub prompt_tokens: u32,
     #[serde(default)]
     pub completion_tokens: u32,
+    #[serde(default)]
+    pub prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    pub prompt_tokens_details: Option<WirePromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct WirePromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: Option<u32>,
+}
+
+impl WireUsage {
+    /// Cache-hit input tokens, normalized across provider variants. Returns
+    /// `None` only when no known shape was populated — distinct from `Some(0)`,
+    /// which means the provider reported a zero-token cache hit.
+    ///
+    /// To add a new provider:
+    ///   1. Add the field to `WireUsage` (or a nested wire struct).
+    ///   2. Append one `.or_else(|| …)` clause below.
+    pub(super) fn cache_read_tokens(&self) -> Option<u32> {
+        // DeepSeek (top-level) takes precedence over the nested OpenAI shape so
+        // a DeepSeek response that somehow carried both wouldn't silently drop
+        // the explicit field. Order otherwise doesn't matter: a real response
+        // populates at most one variant.
+        self.prompt_cache_hit_tokens.or_else(|| {
+            self.prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens)
+        })
+    }
+
+    /// Cache-creation tokens. No OpenAI-compatible provider exposes an
+    /// explicit creation event today — caching is opportunistic on their side,
+    /// unlike Anthropic's `cache_control` opt-in. Kept as a hook so the shape
+    /// matches Anthropic and future providers that adopt explicit creation can
+    /// slot in here.
+    pub(super) fn cache_creation_tokens(&self) -> Option<u32> {
+        None
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -360,6 +413,72 @@ mod tests {
         assert!(content.is_none());
         assert!(tool_calls.is_none());
         assert_eq!(reasoning_content.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn wire_usage_resolves_deepseek_cache_hit_field() {
+        let u: WireUsage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_cache_hit_tokens": 64,
+            "prompt_cache_miss_tokens": 36,
+        }))
+        .expect("parses");
+        assert_eq!(u.cache_read_tokens(), Some(64));
+        assert_eq!(u.cache_creation_tokens(), None);
+    }
+
+    #[test]
+    fn wire_usage_resolves_openai_cached_tokens_field() {
+        let u: WireUsage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_tokens_details": { "cached_tokens": 48 },
+        }))
+        .expect("parses");
+        assert_eq!(u.cache_read_tokens(), Some(48));
+        assert_eq!(u.cache_creation_tokens(), None);
+    }
+
+    #[test]
+    fn wire_usage_cache_read_is_none_when_no_variant_present() {
+        let u: WireUsage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+        }))
+        .expect("parses");
+        assert_eq!(u.cache_read_tokens(), None);
+        assert_eq!(u.cache_creation_tokens(), None);
+    }
+
+    #[test]
+    fn wire_usage_cache_read_distinguishes_zero_from_missing() {
+        // OpenAI emits `cached_tokens: 0` on sub-1024-token prompts; that's a
+        // valid "the cache was checked and missed everything" signal, not
+        // absence. Must round-trip as Some(0), not None.
+        let u: WireUsage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_tokens_details": { "cached_tokens": 0 },
+        }))
+        .expect("parses");
+        assert_eq!(u.cache_read_tokens(), Some(0));
+    }
+
+    #[test]
+    fn wire_usage_cache_read_prefers_deepseek_top_level_when_both_present() {
+        // Defensive: if a future gateway returned both shapes, prefer the
+        // explicit top-level field over the nested one. Order in the resolver
+        // is the only thing that pins this — test guards against accidental
+        // reordering.
+        let u: WireUsage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_cache_hit_tokens": 64,
+            "prompt_tokens_details": { "cached_tokens": 48 },
+        }))
+        .expect("parses");
+        assert_eq!(u.cache_read_tokens(), Some(64));
     }
 
     #[test]

@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ChatLayout } from "../components/templates/ChatLayout";
 import { ChannelHeader } from "../components/organisms/ChannelHeader";
 import { Composer } from "../components/organisms/Composer";
@@ -14,6 +15,7 @@ import { useThreads } from "../hooks/useThreads";
 import { useThreadStream } from "../hooks/useThreadStream";
 import { useSubmitPrompt } from "../hooks/useSubmitPrompt";
 import { useThreadView } from "../hooks/useThreadView";
+import { useTurnDetail } from "../hooks/useAgentLogs";
 import { useThreadStore } from "../stores/threadStore";
 import {
   DEMO_AGENTS,
@@ -46,6 +48,26 @@ export function ChatView() {
   // the human's first recipient (`first_agent.id === selectedAgentId`).
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [showPanel, setShowPanel] = useState(true);
+
+  // Deep-link from the memory pane: `/?turn=<request_id>` opens the thread
+  // that owns the turn and scrolls the matching bubble into view. We
+  // resolve turn → root_request_id via the turn-detail endpoint (the
+  // memory rows / events only carry the turn id, not the root).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusTurnId = searchParams.get("turn");
+  const turnDetailQ = useTurnDetail(forcedDemo ? null : focusTurnId);
+  useEffect(() => {
+    const rootId = turnDetailQ.data?.turn.root_request_id;
+    if (!rootId) return;
+    setSelectedRoot(rootId);
+    setShowPanel(true);
+  }, [turnDetailQ.data?.turn.root_request_id]);
+  const clearFocusTurn = () => {
+    if (!focusTurnId) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("turn");
+    setSearchParams(next, { replace: true });
+  };
 
   const agentsQ = useAgents();
   const threadsQ = useThreads();
@@ -213,6 +235,8 @@ export function ChatView() {
             rootMessage={rootMessage}
             showThinking={showThinking}
             pending={submit.isPending}
+            focusRequestId={focusTurnId}
+            onFocusConsumed={clearFocusTurn}
             onReply={onThreadReply}
             onClose={() => setShowPanel(false)}
           />

@@ -406,6 +406,9 @@ const en = {
   "agent.detail.logs.chart.kpi.failed": "FAILED",
   "agent.detail.logs.chart.marker.aria": "Diff against v{version}",
   "agent.detail.logs.chart.marker.label": "↑ v{version} edited",
+  "agent.detail.logs.chart.marker.ariaMulti":
+    "{count} edits between v{first} and v{last} — diff against v{last}",
+  "agent.detail.logs.chart.marker.labelMulti": "↑ v{first}–v{last} edited",
   "agent.detail.logs.chart.tooltip.total": "total {tokens}",
   "agent.detail.logs.chart.tooltip.byKind":
     "normal {normal} · reflection {reflection} · resolution {resolution}",
@@ -425,7 +428,6 @@ const en = {
   "agent.detail.logs.turns.emptyFailed.title": "No failed turns",
   "agent.detail.logs.turns.emptyFailed.body":
     "Toggle Failed only off to see all turns.",
-  "agent.detail.logs.turns.context.value": "{n} msgs",
   "agent.detail.logs.turns.tokens.tooltip.in": "in {n}",
   "agent.detail.logs.turns.tokens.tooltip.out": "out {n}",
   "agent.detail.logs.turns.tokens.tooltip.cacheRead": "cache_read {n}",
@@ -435,6 +437,30 @@ const en = {
     "Prompt edited by {author} · v{from} → v{to}",
   "agent.detail.logs.turns.separator.viewDiff": "VIEW DIFF",
   "agent.detail.logs.turns.separator.author.system": "system",
+
+  // Per-turn drawer
+  "agent.detail.logs.drawer.loading": "Loading turn detail…",
+  "agent.detail.logs.drawer.error.fallback": "failed to load turn detail",
+  "agent.detail.logs.drawer.header.request": "REQUEST",
+  "agent.detail.logs.drawer.header.stop": "STOP",
+  "agent.detail.logs.drawer.header.prompt": "PROMPT",
+  "agent.detail.logs.drawer.failure.label": "FAILURE",
+  "agent.detail.logs.drawer.reasoning.eyebrow": "REASONING · {bytes}",
+  "agent.detail.logs.drawer.reasoning.empty":
+    "No reasoning blocks recorded for this turn.",
+  "agent.detail.logs.drawer.reasoning.show.one": "Show {n} block",
+  "agent.detail.logs.drawer.reasoning.show.many": "Show {n} blocks",
+  "agent.detail.logs.drawer.toolCalls.eyebrow": "TOOL CALLS · {n}",
+  "agent.detail.logs.drawer.toolCalls.empty": "No tool calls dispatched.",
+  "agent.detail.logs.drawer.memoryWrites.eyebrow": "MEMORY WRITES",
+  "agent.detail.logs.drawer.memoryWrites.empty":
+    "No memory writes from this turn.",
+  "agent.detail.logs.drawer.memoryWrites.summary.written": "+{n} written",
+  "agent.detail.logs.drawer.memoryWrites.summary.updated": "~{n} updated",
+  "agent.detail.logs.drawer.memoryWrites.summary.forgotten": "−{n} forgotten",
+  "agent.detail.logs.drawer.memoryWrites.summary.noChanges": "no changes",
+  "agent.detail.logs.drawer.promptUsed.eyebrow": "PROMPT USED · v{version}",
+  "agent.detail.logs.drawer.promptUsed.view": "view system prompt",
 
   // Columns dropdown
   "agent.detail.logs.columns.eyebrow": "COLUMNS",
@@ -449,7 +475,6 @@ const en = {
   "agent.detail.logs.columns.tokens": "Tokens",
   "agent.detail.logs.columns.cacheRead": "Cache read",
   "agent.detail.logs.columns.latency": "Latency",
-  "agent.detail.logs.columns.context": "Context",
   "agent.detail.logs.columns.stopReason": "Stop reason",
   "agent.detail.logs.columns.requestId": "Request ID",
 

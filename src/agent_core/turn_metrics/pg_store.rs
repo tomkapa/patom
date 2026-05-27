@@ -63,8 +63,8 @@ impl TurnMetricsStore for PgTurnMetricsStore {
                      (request_id, org_id, session_id, agent_id, prompt_version_id, \
                       kind, model, provider, \
                       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, \
-                      duration_ms, stop_reason, history_count, started_at, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+                      duration_ms, stop_reason, started_at, created_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
             )
             .bind(row.request_id)
             .bind(row.org_id)
@@ -80,7 +80,6 @@ impl TurnMetricsStore for PgTurnMetricsStore {
             .bind(row.cache_read_tokens.map(InputTokens::get))
             .bind(row.duration_ms.get())
             .bind(row.stop_reason.as_str())
-            .bind(row.history_count.get())
             .bind(row.started_at)
             .bind(created_at)
             .execute(&mut **tx)

@@ -7,9 +7,11 @@
 // successful restore mints a *new* version — v8 byte-identical to v6 —
 // rather than rewriting history).
 //
-// Zero-dependency diff: align lines by index. A v2 of this file can swap
-// in a Myers-LCS once we have evidence the alignment actually matters
-// for tuning (CLAUDE.md §8 zero-dep bias).
+// Zero-dependency diff: LCS-DP line alignment. Bounded at HARD_CAP per
+// side; longer pairs fall back to plain index alignment (the v1 of this
+// function). The DP cost is O(n*m) memory and time — fine for the few-
+// hundred-line system prompts that the modal targets, and the cap keeps
+// the cost predictable for pathological inputs (CLAUDE.md §5).
 
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Check, ChevronDown, ChevronUp, Copy, Info, Undo2, X } from "lucide-react";
@@ -36,24 +38,107 @@ type DiffRow = {
   rightText: string;
 };
 
+/** Hard ceiling on lines per side. Above this we skip the LCS pass and
+ *  fall back to plain index alignment — the DP table would be
+ *  HARD_CAP² cells and the modal isn't designed for megabyte prompts
+ *  anyway (CLAUDE.md §5). */
+const DIFF_HARD_CAP = 2_000;
+
 /** Align two prompt versions line-by-line and tag each row as
- *  `context | added | removed`. Pure index-based alignment — same length
- *  prefix is contextual, trailing tail on each side is added/removed.
- *  Where lengths overlap but contents differ we render the row as
- *  paired added+removed (one rose on the left, one moss on the right).
- *  This is the cheap "first-cut" diff the slice intentionally ships
- *  (CLAUDE.md §8). */
+ *  `context | added | removed`. Uses an LCS DP so a single insertion at
+ *  the top of `right` doesn't cascade every subsequent line into a
+ *  paired add+remove (the bug the v1 index-based alignment had — every
+ *  line below the edit shifted by one and was reported as changed). */
 function diffLines(left: string, right: string): DiffRow[] {
   const leftLines = left.split("\n");
   const rightLines = right.split("\n");
+  if (leftLines.length > DIFF_HARD_CAP || rightLines.length > DIFF_HARD_CAP) {
+    return diffLinesByIndex(leftLines, rightLines);
+  }
+
+  const n = leftLines.length;
+  const m = rightLines.length;
+  // dp[i*(m+1)+j] = LCS length of leftLines[i..n], rightLines[j..m].
+  // Filled bottom-up so the forward walk below is the natural "pick the
+  // branch that preserves the LCS" decision.
+  const stride = m + 1;
+  const dp = new Int32Array((n + 1) * stride);
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      if (leftLines[i] === rightLines[j]) {
+        dp[i * stride + j] = dp[(i + 1) * stride + (j + 1)] + 1;
+      } else {
+        const down = dp[(i + 1) * stride + j];
+        const across = dp[i * stride + (j + 1)];
+        dp[i * stride + j] = down > across ? down : across;
+      }
+    }
+  }
+
+  const out: DiffRow[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (leftLines[i] === rightLines[j]) {
+      out.push({
+        leftLine: i + 1,
+        rightLine: j + 1,
+        kind: "context",
+        leftText: leftLines[i],
+        rightText: rightLines[j],
+      });
+      i += 1;
+      j += 1;
+    } else if (dp[(i + 1) * stride + j] >= dp[i * stride + (j + 1)]) {
+      out.push({
+        leftLine: i + 1,
+        rightLine: null,
+        kind: "removed",
+        leftText: leftLines[i],
+        rightText: "",
+      });
+      i += 1;
+    } else {
+      out.push({
+        leftLine: null,
+        rightLine: j + 1,
+        kind: "added",
+        leftText: "",
+        rightText: rightLines[j],
+      });
+      j += 1;
+    }
+  }
+  while (i < n) {
+    out.push({
+      leftLine: i + 1,
+      rightLine: null,
+      kind: "removed",
+      leftText: leftLines[i],
+      rightText: "",
+    });
+    i += 1;
+  }
+  while (j < m) {
+    out.push({
+      leftLine: null,
+      rightLine: j + 1,
+      kind: "added",
+      leftText: "",
+      rightText: rightLines[j],
+    });
+    j += 1;
+  }
+  return out;
+}
+
+/** Index-based fallback for inputs above the LCS cap. Preserves the
+ *  original v1 behavior so we don't ship a worse experience for the
+ *  pathological case — just the cheap "first-cut" diff. */
+function diffLinesByIndex(leftLines: string[], rightLines: string[]): DiffRow[] {
   const out: DiffRow[] = [];
   const max = Math.max(leftLines.length, rightLines.length);
-  // §5: the doc's MAX_AGENT_SYSTEM_PROMPT length plus an explicit
-  // ceiling keeps this loop bounded for the (degenerate) all-one-line
-  // case where the user pasted megabytes.
-  const HARD_CAP = 10_000;
-  const bound = Math.min(max, HARD_CAP);
-  for (let i = 0; i < bound; i += 1) {
+  for (let i = 0; i < max; i += 1) {
     const l = leftLines[i];
     const r = rightLines[i];
     if (l !== undefined && r !== undefined) {
@@ -68,14 +153,14 @@ function diffLines(left: string, right: string): DiffRow[] {
       } else {
         out.push({
           leftLine: i + 1,
-          rightLine: i + 1,
+          rightLine: null,
           kind: "removed",
           leftText: l,
           rightText: "",
         });
         out.push({
           leftLine: null,
-          rightLine: null,
+          rightLine: i + 1,
           kind: "added",
           leftText: "",
           rightText: r,
@@ -224,7 +309,10 @@ export function PromptDiffModal({
     }
   };
 
-  const editedBy = rightVersion?.edited_by ?? "system";
+  // Prefer the joined email over the raw user id — the modal showed a
+  // UUID before the BE started enriching this field. Falls back through
+  // edited_by_email → edited_by (legacy) → seed-row label.
+  const editedBy = rightVersion?.edited_by_email ?? rightVersion?.edited_by ?? null;
   const editedAt = rightVersion?.created_at ?? "—";
 
   return (
@@ -233,9 +321,10 @@ export function PromptDiffModal({
       onClose={onClose}
       width={1280}
       ariaLabel={t("agent.detail.logs.diff.aria")}
+      fill
     >
       {/* Top bar */}
-      <div className="flex items-center justify-between border-b border-[var(--color-line)] px-7 py-5">
+      <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-line)] px-7 py-5">
         <div className="flex flex-col gap-1.5">
           <div className="font-[var(--font-mono)] text-[10px] tracking-[0.15em] text-[var(--color-muted)] uppercase">
             {t("agent.detail.logs.diff.eyebrow")}
@@ -301,7 +390,7 @@ export function PromptDiffModal({
       </div>
 
       {/* Meta row */}
-      <MetaRow>
+      <MetaRow className="shrink-0">
         <MetaCell
           label={t("agent.detail.logs.diff.meta.editedBy")}
           value={
@@ -341,7 +430,7 @@ export function PromptDiffModal({
       />
 
       {/* Diff toolbar */}
-      <div className="flex items-center justify-between border-b border-[var(--color-line)] px-7 py-2.5">
+      <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-line)] px-7 py-2.5">
         <div className="flex items-center gap-2">
           {/* Mode toggle */}
           <div className="flex items-center border border-[var(--color-line)]">
@@ -408,7 +497,7 @@ export function PromptDiffModal({
       </div>
 
       {/* Diff body */}
-      <div className="grid grid-cols-2 bg-[var(--color-card)]">
+      <div className="grid min-h-0 flex-1 grid-cols-2 bg-[var(--color-card)]">
         <DiffSide
           title={`v${leftVersion?.version ?? "—"}`}
           subtitle={t(
@@ -594,7 +683,7 @@ function SinceStrip({
       : null;
   const failuresDelta = deltas?.failure_count ?? null;
   return (
-    <div className="flex items-center gap-6 border-b border-[var(--color-line)] bg-[var(--color-card)] px-7 py-4">
+    <div className="flex shrink-0 items-center gap-6 border-b border-[var(--color-line)] bg-[var(--color-card)] px-7 py-4">
       <span className="font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--color-muted)]">
         {t("agent.detail.logs.diff.since.label", {
           right: rightVersion,
@@ -623,6 +712,22 @@ function SinceStrip({
   );
 }
 
+function formatDelta(
+  delta: number | null,
+  base: number | null | undefined,
+  format: "pct" | "absolute",
+): string {
+  if (delta == null) return "—";
+  if (format === "absolute") {
+    const sign = delta > 0 ? "+" : "";
+    return `${sign}${delta.toLocaleString()}`;
+  }
+  if (base == null || base === 0) return "—";
+  const pct = (delta / base) * 100;
+  const sign = pct > 0 ? "+" : "";
+  return `${sign}${pct.toFixed(1)}%`;
+}
+
 function SinceCell({
   label,
   delta,
@@ -634,17 +739,7 @@ function SinceCell({
   base?: number | null;
   format: "pct" | "absolute";
 }) {
-  const value = (() => {
-    if (delta == null) return "—";
-    if (format === "absolute") {
-      const sign = delta > 0 ? "+" : "";
-      return `${sign}${delta.toLocaleString()}`;
-    }
-    if (base == null || base === 0) return "—";
-    const pct = (delta / base) * 100;
-    const sign = pct > 0 ? "+" : "";
-    return `${sign}${pct.toFixed(1)}%`;
-  })();
+  const value = formatDelta(delta, base, format);
   const positive = delta != null && delta > 0;
   let tone: string;
   if (delta == null || delta === 0) {
@@ -846,10 +941,11 @@ function DiffSide({
   return (
     <div
       className={cn(
+        "flex min-h-0 flex-col",
         side === "left" && "border-r border-[var(--color-line)]",
       )}
     >
-      <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-4 py-2.5">
+      <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-4 py-2.5">
         <div className="flex items-baseline gap-3">
           <div className="font-[var(--font-mono)] text-[12px] font-semibold text-[var(--color-ink)]">
             {title}
@@ -869,7 +965,7 @@ function DiffSide({
           </button>
         ) : null}
       </div>
-      <div className="max-h-[60vh] min-h-[320px] overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto">
         {loading ? (
           <div className="flex h-32 items-center justify-center">
             <Spinner />

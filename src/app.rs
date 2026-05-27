@@ -386,6 +386,7 @@ struct AgentFactoryPieces {
     model_resolver: crate::agents::SharedModelResolver,
     tool_call_store: crate::tools::SharedToolCallStore,
     todos_store: SharedSessionTodoStore,
+    turn_metrics_store: crate::agent_core::turn_metrics::SharedTurnMetricsStore,
 }
 
 impl AgentFactoryPieces {
@@ -432,6 +433,11 @@ impl AgentFactoryPieces {
         .with_clock(self.clock.clone())
         .with_tool_call_store(self.tool_call_store.clone())
         .with_todos_store(self.todos_store.clone())
+        .with_turn_metrics(
+            self.turn_metrics_store.clone(),
+            record.id,
+            record.current_prompt_version_id,
+        )
         .build()
     }
 }
@@ -606,6 +612,11 @@ pub async fn build_server(
     let tool_call_store: crate::tools::SharedToolCallStore = Arc::new(
         crate::tools::PgToolCallStore::new(pieces.pool.clone(), pieces.clock.clone()),
     );
+    let turn_metrics_store: crate::agent_core::turn_metrics::SharedTurnMetricsStore =
+        Arc::new(crate::agent_core::turn_metrics::PgTurnMetricsStore::new(
+            pieces.pool.clone(),
+            pieces.clock.clone(),
+        ));
     let model_resolver: crate::agents::SharedModelResolver =
         Arc::new(crate::agents::StaticAgentModelResolver::new(settings.model));
     let factory_pieces = AgentFactoryPieces {
@@ -618,6 +629,7 @@ pub async fn build_server(
         model_resolver,
         tool_call_store,
         todos_store: pieces.todos_store.clone(),
+        turn_metrics_store,
     };
     let factory: AgentFactory = Arc::new(move |record| factory_pieces.build(record));
     let agents_registry: SharedAgents = Arc::new(CachedAgents::new(
@@ -709,10 +721,7 @@ pub async fn build_server(
     let memberships = Arc::new(crate::http::MembershipCache::new(pieces.clock.clone()));
     let mcp_test_rate = crate::mcp::TestConnectRateLimiter::new(pieces.clock.clone());
 
-    let oauth_redirect_uri = format!(
-        "{}{}",
-        settings.auth.oauth_redirect_base, "/mcp-oauth/callback"
-    );
+    let oauth_redirect_uri = format!("{}/mcp-oauth/callback", settings.auth.oauth_redirect_base);
     let (oauth_refresher, _oauth_token_cache) = OAuthRefresher::spawn(RefresherDeps {
         pool: pieces.pool.clone(),
         clock: pieces.clock.clone(),
@@ -809,8 +818,8 @@ pub async fn build_server(
     // upload routes 503 cleanly instead of every other handler refusing
     // to start. CLAUDE.md §9: pool sized + endpoint resolved at boot.
     let assets: Option<SharedAssetStore> = settings.r2.as_ref().map(|cfg| {
-        let shared: SharedAssetStore = Arc::new(R2AssetStore::new(cfg));
-        shared
+        let store: SharedAssetStore = Arc::new(R2AssetStore::new(cfg));
+        store
     });
 
     let orgs_store: crate::orgs::SharedOrgStore =

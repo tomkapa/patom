@@ -22,8 +22,8 @@ import type { TranslationKey } from "../../../i18n/en";
 import { cn } from "../../../lib/utils";
 
 // ── Column model ──────────────────────────────────────────────────────────
-// Mirrors pencil frame `b70ay3` (the floating "Columns" panel): 11 columns,
-// 8 visible by default. `time` is locked — design shows it with a lock icon
+// Mirrors pencil frame `b70ay3` (the floating "Columns" panel): 10 columns,
+// 7 visible by default. `time` is locked — design shows it with a lock icon
 // and no drag handle — so users can't hide the time pivot.
 
 type ColumnId =
@@ -35,7 +35,6 @@ type ColumnId =
   | "tokens"
   | "cache_read"
   | "latency"
-  | "context"
   | "stop_reason"
   | "request_id";
 
@@ -47,7 +46,7 @@ type ColumnDef = {
   width: string;
   /** True for columns that cannot be hidden. */
   locked?: boolean;
-  /** Default-on per the design — 8 of 11. */
+  /** Default-on per the design — 7 of 10. */
   defaultVisible: boolean;
   /** Sort key if this column drives sort. */
   sortKey?: SortKey;
@@ -62,7 +61,6 @@ const COLUMNS: ColumnDef[] = [
   { id: "tokens", labelKey: "agent.detail.logs.columns.tokens", width: "minmax(80px,110px)", defaultVisible: true, sortKey: "tokens" },
   { id: "cache_read", labelKey: "agent.detail.logs.columns.cacheRead", width: "minmax(90px,120px)", defaultVisible: false },
   { id: "latency", labelKey: "agent.detail.logs.columns.latency", width: "minmax(80px,110px)", defaultVisible: true, sortKey: "latency" },
-  { id: "context", labelKey: "agent.detail.logs.columns.context", width: "minmax(80px,110px)", defaultVisible: true },
   { id: "stop_reason", labelKey: "agent.detail.logs.columns.stopReason", width: "minmax(110px,1fr)", defaultVisible: true, sortKey: "outcome" },
   { id: "request_id", labelKey: "agent.detail.logs.columns.requestId", width: "minmax(110px,1fr)", defaultVisible: false },
 ];
@@ -551,12 +549,7 @@ function TurnRowView({
           {open ? "▾" : "▸"}
         </span>
       </button>
-      {open ? (
-        <TurnDrawer
-          requestId={row.request_id}
-          onCollapse={() => onToggle()}
-        />
-      ) : null}
+      {open ? <TurnDrawer requestId={row.request_id} /> : null}
     </>
   );
 }
@@ -642,14 +635,6 @@ function RowCell({ col, row }: { col: ColumnDef; row: AgentTurnRow }) {
       return (
         <span className={cn(baseCls, "text-[var(--color-ink)]")}>
           {formatMs(row.duration_ms)}
-        </span>
-      );
-    case "context":
-      return (
-        <span className={cn(baseCls, "text-[var(--color-ink)]")}>
-          {t("agent.detail.logs.turns.context.value", {
-            n: row.history_count,
-          })}
         </span>
       );
     case "stop_reason":
@@ -745,7 +730,7 @@ function sortRows(rows: AgentTurnRow[], key: SortKey, dir: SortDir): AgentTurnRo
 function compareBy(a: AgentTurnRow, b: AgentTurnRow, key: SortKey): number {
   switch (key) {
     case "started_at":
-      return a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0;
+      return a.started_at.localeCompare(b.started_at);
     case "prompt_version":
       return a.prompt_version - b.prompt_version;
     case "kind":

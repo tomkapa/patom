@@ -1,4 +1,5 @@
 import { ExternalLink, Eye, Pin } from "lucide-react";
+import { Link } from "react-router-dom";
 import { cn } from "../../../lib/utils";
 import { useTimeAgo } from "../../../lib/time";
 import { useT } from "../../../i18n";
@@ -69,12 +70,17 @@ export function MemoryRowCard({
           {t("agent.detail.memory.row.access", { n: row.access_count })}
         </span>
         <span className="flex-1" />
-        <span className="inline-flex items-center gap-1 text-[var(--color-moss-deep)]">
-          <ExternalLink className="h-2.5 w-2.5" strokeWidth={1.75} />
-          <span className="font-[var(--font-mono)] text-[11px]">
-            {t("agent.detail.memory.row.sourceTurn")}
-          </span>
-        </span>
+        {row.source_turn_id ? (
+          <Link
+            to={`/?turn=${row.source_turn_id}`}
+            className="inline-flex items-center gap-1 text-[var(--color-moss-deep)] hover:text-[var(--color-moss)] hover:underline"
+          >
+            <ExternalLink className="h-2.5 w-2.5" strokeWidth={1.75} />
+            <span className="font-[var(--font-mono)] text-[11px]">
+              {t("agent.detail.memory.row.sourceTurn")}
+            </span>
+          </Link>
+        ) : null}
       </div>
     </div>
   );

@@ -103,30 +103,6 @@ impl DurationMs {
     }
 }
 
-/// Context window size for the provider call. Same shape as the token
-/// counters; defended at the type level so a sign-bit mistake at the call
-/// site can't reach the column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct HistoryCount(i32);
-
-impl HistoryCount {
-    #[must_use]
-    pub fn get(self) -> i32 {
-        self.0
-    }
-}
-
-impl TryFrom<usize> for HistoryCount {
-    type Error = ParseError;
-    fn try_from(raw: usize) -> Result<Self, Self::Error> {
-        let v = i32::try_from(raw).map_err(|_| ParseError::OutOfRange {
-            field: "history_count",
-            detail: "must fit in i32",
-        })?;
-        Ok(Self(v))
-    }
-}
-
 /// Short label for the provider's stop reason. Bounded at the type level so
 /// a wide upstream string can't blow past the column's CHECK.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +157,5 @@ pub struct TurnMetricsRow {
     pub cache_read_tokens: Option<InputTokens>,
     pub duration_ms: DurationMs,
     pub stop_reason: StopReasonLabel,
-    pub history_count: HistoryCount,
     pub started_at: DateTime<Utc>,
 }

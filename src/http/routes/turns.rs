@@ -33,6 +33,7 @@ use crate::provider::{Model, ProviderId};
 use crate::runtime::{PromptRequestId, RequestKind};
 use crate::session::SessionId;
 use crate::tools::ToolCallRowId;
+use crate::types::MessageSenderKind;
 
 use super::super::error::HttpError;
 use super::super::state::AppState;
@@ -75,11 +76,17 @@ pub enum TurnDetailError {
     /// corrupt row can't take down the worker.
     #[error("prompt version {0} not found for turn")]
     PromptVersionMissing(PromptVersionId),
-    /// Tx open / sqlx query failure. Every inner sqlx call wraps its
-    /// error via `AuthError::from`, so this is the single bridge for
-    /// every database failure surface this route can hit.
+    /// `begin_as` / `visible_to` failure — JWT, membership, or the GUC
+    /// set on the inner tx. Genuinely auth-flavoured: maps onto the
+    /// existing `HttpError::Auth` matrix (401 / 403 / 500-"auth error").
     #[error(transparent)]
     Auth(#[from] AuthError),
+    /// Inner sqlx query failure inside the tx — not an auth concern.
+    /// Kept separate so the wire surface 500s as "turn detail error"
+    /// instead of "auth error", and so a future caller can match on it
+    /// without going through the auth variant.
+    #[error("db: {0}")]
+    Db(#[from] sqlx::Error),
 }
 
 impl From<TurnDetailError> for HttpError {
@@ -92,10 +99,12 @@ impl From<TurnDetailError> for HttpError {
             TurnDetailError::NotFound(_)
             | TurnDetailError::MetricsMissing(_)
             | TurnDetailError::PromptVersionMissing(_) => Self::NotFound,
-            // The HTTP layer's `IntoResponse for HttpError` logs the
-            // 5xx variant via `tracing::error!` already (see
-            // `src/http/error.rs`), so we just bridge the variant.
+            // Bridge each remaining variant to its own HttpError seat so
+            // the wire body and the 5xx tracing log identify the route,
+            // not the auth subsystem. `IntoResponse for HttpError` logs
+            // the full variant tree on 5xx already.
             TurnDetailError::Auth(e) => Self::Auth(e),
+            TurnDetailError::Db(e) => Self::TurnDetail(TurnDetailError::Db(e)),
         }
     }
 }
@@ -108,6 +117,10 @@ impl From<TurnDetailError> for HttpError {
 struct TurnMetricsResponse {
     request_id: PromptRequestId,
     session_id: SessionId,
+    /// Root prompt request of the human-rooted DAG this turn belongs to.
+    /// Used by the FE to map a turn id back to the chat thread it lives
+    /// in so links from the memory pane can deep-link the right panel.
+    root_request_id: PromptRequestId,
     agent_id: AgentId,
     prompt_version_id: PromptVersionId,
     kind: RequestKind,
@@ -119,7 +132,6 @@ struct TurnMetricsResponse {
     cache_read_tokens: Option<i32>,
     duration_ms: i32,
     stop_reason: String,
-    history_count: i32,
     started_at: DateTime<Utc>,
     created_at: DateTime<Utc>,
     /// Joined from `prompt_requests` so the drawer can show "failed
@@ -129,7 +141,7 @@ struct TurnMetricsResponse {
 }
 
 /// One reasoning block extracted from `session_messages.body`. The body
-/// is a `ChatMessage` envelope — we filter to the assistant role and
+/// is a `ChatMessage` envelope — we filter to agent senders and
 /// pull every `AssistantContent::Reasoning(text)` block out, recording
 /// the byte count so the drawer can show "REASONING · 4.2 KB" before the
 /// user expands it.
@@ -152,7 +164,7 @@ struct TurnToolCallResponse {
     /// LEFT JOIN — see `list_agent_tool_calls` for the same `ON DELETE
     /// SET NULL` reasoning.
     mcp_server_id: Option<McpServerId>,
-    mcp_server_alias: Option<String>,
+    mcp_server_catalog_id: Option<String>,
     started_at: DateTime<Utc>,
     duration_ms: i32,
     is_error: bool,
@@ -237,7 +249,7 @@ async fn load_detail(
     let tool_calls = fetch_tool_calls(&mut tx, request_id).await?;
     let memory_writes = fetch_memory_writes(&mut tx, request_id).await?;
     let prompt_version = fetch_prompt_version(&mut tx, turn.prompt_version_id).await?;
-    tx.commit().await.map_err(AuthError::from)?;
+    tx.commit().await?;
 
     Ok(TurnDetailResponse {
         turn,
@@ -260,21 +272,22 @@ async fn fetch_turn_row(
     request_id: PromptRequestId,
 ) -> Result<TurnMetricsResponse, TurnDetailError> {
     let row = sqlx::query_as::<_, TurnMetricsResponse>(
-        "SELECT tm.request_id, tm.session_id, tm.agent_id, tm.prompt_version_id, \
+        "SELECT tm.request_id, tm.session_id, s.root_request_id, \
+                tm.agent_id, tm.prompt_version_id, \
                 tm.kind, tm.model, tm.provider, \
                 tm.input_tokens, tm.output_tokens, \
                 tm.cache_creation_tokens, tm.cache_read_tokens, \
-                tm.duration_ms, tm.stop_reason, tm.history_count, \
+                tm.duration_ms, tm.stop_reason, \
                 tm.started_at, tm.created_at, \
                 pr.failure_reason \
          FROM turn_metrics tm \
          JOIN prompt_requests pr ON pr.id = tm.request_id \
+         JOIN sessions s ON s.id = tm.session_id \
          WHERE tm.request_id = $1",
     )
     .bind(request_id)
     .fetch_optional(&mut **tx)
-    .await
-    .map_err(AuthError::from)?;
+    .await?;
     row.ok_or(TurnDetailError::MetricsMissing(request_id))
 }
 
@@ -294,15 +307,15 @@ async fn fetch_reasoning(
 ) -> Result<Vec<ReasoningBlock>, TurnDetailError> {
     let bodies: Vec<(SqlxJson<JsonValue>,)> = sqlx::query_as(
         "SELECT body FROM session_messages \
-         WHERE request_id = $1 AND role = 'assistant' \
+         WHERE request_id = $1 AND sender_kind = $2 \
          ORDER BY seq ASC \
-         LIMIT $2",
+         LIMIT $3",
     )
     .bind(request_id)
+    .bind(MessageSenderKind::Agent)
     .bind(i64::try_from(MAX_REASONING_BLOCKS_PER_TURN).unwrap_or(i64::MAX))
     .fetch_all(&mut **tx)
-    .await
-    .map_err(AuthError::from)?;
+    .await?;
     let out = extract_reasoning(&bodies);
     assert!(
         out.len() <= MAX_REASONING_BLOCKS_PER_TURN,
@@ -321,7 +334,7 @@ async fn fetch_tool_calls(
     // slice 3 — we leave the constant in place but don't bind it here
     // because there's nothing to assert against yet.
     let rows = sqlx::query_as::<_, TurnToolCallResponse>(
-        "SELECT tc.id, tc.tool_name, tc.mcp_server_id, s.alias AS mcp_server_alias, \
+        "SELECT tc.id, tc.tool_name, tc.mcp_server_id, s.catalog_id AS mcp_server_catalog_id, \
                 tc.started_at, tc.duration_ms, tc.is_error, tc.error_message \
          FROM tool_calls tc \
          LEFT JOIN mcp_servers s ON s.id = tc.mcp_server_id \
@@ -332,8 +345,7 @@ async fn fetch_tool_calls(
     .bind(request_id)
     .bind(i64::try_from(MAX_TOOL_CALLS_PER_TURN).unwrap_or(i64::MAX))
     .fetch_all(&mut **tx)
-    .await
-    .map_err(AuthError::from)?;
+    .await?;
     assert!(
         rows.len() <= MAX_TOOL_CALLS_PER_TURN,
         "invariant: LIMIT enforces MAX_TOOL_CALLS_PER_TURN ceiling"
@@ -356,8 +368,7 @@ async fn fetch_memory_writes(
     .bind(request_id)
     .bind(i64::try_from(MAX_MEMORY_WRITES_PER_TURN).unwrap_or(i64::MAX))
     .fetch_all(&mut **tx)
-    .await
-    .map_err(AuthError::from)?;
+    .await?;
     assert!(
         rows.len() <= MAX_MEMORY_WRITES_PER_TURN,
         "invariant: LIMIT enforces MAX_MEMORY_WRITES_PER_TURN ceiling"
@@ -383,8 +394,7 @@ async fn fetch_prompt_version(
     )
     .bind(prompt_version_id)
     .fetch_optional(&mut **tx)
-    .await
-    .map_err(AuthError::from)?;
+    .await?;
     row.ok_or_else(|| {
         tracing::error!(
             relay.prompt_version.id = %prompt_version_id,

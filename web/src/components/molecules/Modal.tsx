@@ -14,12 +14,18 @@ export function Modal({
   children,
   width = 460,
   ariaLabel,
+  fill = false,
 }: {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
   width?: number;
   ariaLabel?: string;
+  /** When true, the modal box fills the viewport height and lays out as
+   *  a flex column without an outer scrollbar — children control their
+   *  own scroll regions. Use for modals with a fixed header/footer and a
+   *  single scrollable body (e.g. the prompt diff). */
+  fill?: boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
@@ -96,7 +102,11 @@ export function Modal({
             ref={dialogRef}
             tabIndex={-1}
             {...modalMotion}
-            className="max-h-[calc(100vh-64px)] w-full overflow-auto border border-[var(--color-line)] bg-[var(--color-card)] shadow-xl focus:outline-none"
+            className={
+              fill
+                ? "flex h-[calc(100vh-64px)] w-full flex-col border border-[var(--color-line)] bg-[var(--color-card)] shadow-xl focus:outline-none"
+                : "max-h-[calc(100vh-64px)] w-full overflow-auto border border-[var(--color-line)] bg-[var(--color-card)] shadow-xl focus:outline-none"
+            }
             style={{ maxWidth: width }}
           >
             {children}
@@ -150,7 +160,7 @@ export function ModalFooter({
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 border-t border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-3">
+    <div className="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-3">
       <div className="flex min-w-0 items-center gap-2">{left}</div>
       <div className="flex shrink-0 items-center gap-2">{children}</div>
     </div>

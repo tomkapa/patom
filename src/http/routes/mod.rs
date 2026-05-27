@@ -18,7 +18,7 @@ mod models;
 mod org;
 pub(super) mod prompts;
 mod threads;
-mod turns;
+pub(super) mod turns;
 mod uploads;
 
 use axum::Router;

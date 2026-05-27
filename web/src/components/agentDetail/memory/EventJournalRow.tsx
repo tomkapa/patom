@@ -1,4 +1,5 @@
 import { MessageSquare, RotateCcw } from "lucide-react";
+import { Link } from "react-router-dom";
 import { cn } from "../../../lib/utils";
 import { clockTime, longDate } from "../../../lib/time";
 import { useT } from "../../../i18n";
@@ -66,13 +67,16 @@ export function EventJournalRow({
         >
           {t(`agent.detail.memory.journal.source.${event.source}` as const)}
         </span>
-        {event.source === "turn" ? (
-          <span className="inline-flex items-center gap-1 text-[var(--color-moss-deep)]">
+        {event.source === "turn" && event.source_turn_id ? (
+          <Link
+            to={`/?turn=${event.source_turn_id}`}
+            className="inline-flex items-center gap-1 text-[var(--color-moss-deep)] hover:text-[var(--color-moss)] hover:underline"
+          >
             <MessageSquare className="h-2.5 w-2.5" strokeWidth={1.75} />
             <span className="font-[var(--font-mono)] text-[10px]">
               {t("agent.detail.memory.journal.turnRef", { id: turnShort })}
             </span>
-          </span>
+          </Link>
         ) : null}
         <span className="flex-1" />
         <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-muted)]">

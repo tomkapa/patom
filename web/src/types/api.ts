@@ -345,7 +345,7 @@ export type AgentToolCall = {
   id: string;
   tool_name: string;
   mcp_server_id: string | null;
-  /** Catalog id of the originating server (replaces `mcp_server_alias`). */
+  /** Catalog id of the originating server. */
   mcp_server_catalog_id: string | null;
   started_at: string;
   duration_ms: number;
@@ -468,7 +468,9 @@ export type MutationKind = "write" | "update" | "forget";
 export type MutationSource = "turn" | "operator" | "librarian";
 
 /** GET /agents/{id}/memory row. Mirrors
- *  `src/http/routes/memory.rs::MemoryRowResponse`. */
+ *  `src/http/routes/memory.rs::MemoryRowResponse`. `source_turn_id` is
+ *  `null` for operator notes and librarian-merged rows; the memory pane
+ *  uses it to link back to the producing turn in the chat view. */
 export type MemoryRow = {
   id: string;
   agent_id: string;
@@ -476,6 +478,7 @@ export type MemoryRow = {
   content: string;
   state: MemoryState;
   pinned: boolean;
+  source_turn_id: string | null;
   created_at: string;
   last_validated_at: string;
   last_accessed_at: string;
@@ -572,7 +575,6 @@ export type AgentTurnRow = {
   cache_read_tokens: number | null;
   duration_ms: number;
   stop_reason: string;
-  history_count: number;
   status: string;
   failure_reason: string | null;
   prompt_version: number;
@@ -601,6 +603,9 @@ export type LogsCompareMode = "prev_window" | "none";
 export type TurnMetrics = {
   request_id: string;
   session_id: string;
+  /** Root prompt request of the human-rooted DAG this turn belongs to.
+   *  The memory pane uses it to deep-link back into the chat view. */
+  root_request_id: string;
   agent_id: string;
   prompt_version_id: string;
   /** "normal" | "reflection" | "resolution" — mirrors the
@@ -618,7 +623,6 @@ export type TurnMetrics = {
   /** "end_turn" | "tool_use" | "length" | "timeout" | … — model- /
    *  provider-defined. The drawer just renders the string. */
   stop_reason: string;
-  history_count: number;
   started_at: string;
   created_at: string;
   /** Non-null only when the parent request failed; the drawer paints a
@@ -635,13 +639,13 @@ export type TurnReasoningBlock = {
 };
 
 /** One `tool_calls` row scoped to a single turn. Mirrors `AgentToolCall`
- *  one-for-one but with `mcp_server_alias` instead of catalog id (the
- *  drawer renders the alias inline). */
+ *  one-for-one — `mcp_server_catalog_id` identifies the originating
+ *  server when present. */
 export type TurnToolCall = {
   id: string;
   tool_name: string;
   mcp_server_id: string | null;
-  mcp_server_alias: string | null;
+  mcp_server_catalog_id: string | null;
   started_at: string;
   duration_ms: number;
   is_error: boolean;
@@ -663,12 +667,15 @@ export type TurnMemoryEvent = {
 
 /** `agent_prompt_versions` snapshot for the version that was active when
  *  this turn ran. Read-only here; the restore action lives on a separate
- *  endpoint (slice 3). */
+ *  endpoint (slice 3).
+ *
+ *  Model is intentionally absent — model selection is orthogonal to prompt
+ *  versioning and lives on `agents.model`, mutated in place. The drawer's
+ *  MODEL chip reads from `TurnMetrics.model` instead. */
 export type TurnPromptVersion = {
   id: string;
   version: number;
   system_prompt: string;
-  model: string | null;
   edited_by: string | null;
   created_at: string;
 };
@@ -679,12 +686,16 @@ export type TurnPromptVersion = {
  *  `edited_by` is `null` for the v1 seed row that migration 43
  *  minted for every existing agent. Model is intentionally absent --
  *  model selection is orthogonal to prompt versioning and lives on
- *  `agents.model`, mutated in place. */
+ *  `agents.model`, mutated in place. `edited_by_email` is the display
+ *  label the modal renders for the "Edited by" meta cell; joined from
+ *  `users` server-side and `null` when the editor user has since been
+ *  deleted or for the v1 seed row. */
 export type PromptVersion = {
   id: string;
   version: number;
   system_prompt: string;
   edited_by: string | null;
+  edited_by_email: string | null;
   created_at: string;
 };
 

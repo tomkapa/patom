@@ -434,8 +434,11 @@ type PromptVersionMock = {
   version: number;
   system_prompt: string;
   edited_by: string | null;
+  edited_by_email: string | null;
   created_at: string;
 };
+
+const USER_EMAIL = "alice@example.com";
 
 const PROMPT_VERSIONS: Map<string, PromptVersionMock[]> = new Map();
 
@@ -460,6 +463,7 @@ PROMPT_VERSIONS.set(DEFAULT_AGENT_ID, [
     version: 7,
     system_prompt: ATLAS_V7_PROMPT,
     edited_by: USER_ID,
+    edited_by_email: USER_EMAIL,
     created_at: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
   },
   {
@@ -467,6 +471,7 @@ PROMPT_VERSIONS.set(DEFAULT_AGENT_ID, [
     version: 6,
     system_prompt: ATLAS_V6_PROMPT,
     edited_by: USER_ID,
+    edited_by_email: USER_EMAIL,
     created_at: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString(),
   },
 ]);
@@ -485,6 +490,7 @@ type MemRow = {
   content: string;
   state: MemState;
   pinned: boolean;
+  source_turn_id: string | null;
   created_at: string;
   last_validated_at: string;
   last_accessed_at: string;
@@ -521,6 +527,7 @@ MEMORIES.set(ATLAS_ID, [
       "I am Atlas, an AI assistant for the ACME workspace. My primary purpose is to help users manage their smart home devices, integrate new equipment, and optimize their home automation workflows.",
     state: "core",
     pinned: true,
+    source_turn_id: "82a3f000-0000-0000-0000-000000000001",
     created_at: DAY_14_AGO,
     last_validated_at: DAY_14_AGO,
     last_accessed_at: NOW,
@@ -534,6 +541,7 @@ MEMORIES.set(ATLAS_ID, [
       "I should always identify myself as Atlas when asked. I operate within a set of configured tool sandboxes and cannot take actions outside my defined scope.",
     state: "validated",
     pinned: false,
+    source_turn_id: null,
     created_at: DAY_14_AGO,
     last_validated_at: DAY_8_AGO,
     last_accessed_at: NOW,
@@ -547,6 +555,7 @@ MEMORIES.set(ATLAS_ID, [
       "Jane prefers concise responses with bullet points and avoids lengthy explanations. Favors bullet points over prose paragraphs with multiple sentences.",
     state: "held",
     pinned: false,
+    source_turn_id: "82a3f000-0000-0000-0000-000000000002",
     created_at: DAY_5_AGO,
     last_validated_at: DAY_5_AGO,
     last_accessed_at: NOW,
@@ -560,6 +569,7 @@ MEMORIES.set(ATLAS_ID, [
       "Jane may be interested in outdoor lighting integration based on recent conversation patterns. Confidence low.",
     state: "tentative",
     pinned: false,
+    source_turn_id: null,
     created_at: DAY_8_AGO,
     last_validated_at: DAY_8_AGO,
     last_accessed_at: HOUR_3_AGO,
@@ -573,6 +583,7 @@ MEMORIES.set(ATLAS_ID, [
       "Librarian agent 'Archivist' is responsible for memory maintenance and validation. Runs nightly at 02:00 UTC on a 7-day inquiry/sync window.",
     state: "validated",
     pinned: false,
+    source_turn_id: null,
     created_at: DAY_5_AGO,
     last_validated_at: DAY_2_AGO,
     last_accessed_at: NOW,
@@ -586,6 +597,7 @@ MEMORIES.set(ATLAS_ID, [
       "Always summarize quoted content. If new device join confirms intent, run set_state inside a try/except and roll back on failure.",
     state: "held",
     pinned: false,
+    source_turn_id: null,
     created_at: DAY_2_AGO,
     last_validated_at: DAY_2_AGO,
     last_accessed_at: NOW,
@@ -599,6 +611,7 @@ MEMORIES.set(ATLAS_ID, [
       "The ACME workspace has 47 connected devices but I haven't fully mapped their owner/room metadata yet.",
     state: "tentative",
     pinned: false,
+    source_turn_id: null,
     created_at: HOUR_3_AGO,
     last_validated_at: HOUR_3_AGO,
     last_accessed_at: HOUR_3_AGO,
@@ -786,7 +799,6 @@ function buildTurnsFixture(qs: URLSearchParams) {
       cache_read_tokens: 4_000,
       duration_ms: isFailure ? 28_000 : isReflection ? 1_100 : 3_400,
       stop_reason: isFailure ? "length" : "end_turn",
-      history_count: 12 + (i % 6),
       status: isFailure ? "failed" : "done",
       failure_reason: isFailure ? "timeout" : null,
       prompt_version: promptVersion,
@@ -837,6 +849,7 @@ function buildTurnDetail(requestId: string): TurnDetailFixture {
     turn: {
       request_id: id,
       session_id: "82a3f000-0000-0000-0000-0000000aaaaa",
+      root_request_id: id,
       agent_id: ATLAS_ID,
       prompt_version_id: "82a3f000-0000-0000-0000-000000007007",
       kind: "normal",
@@ -848,7 +861,6 @@ function buildTurnDetail(requestId: string): TurnDetailFixture {
       cache_read_tokens: 1800,
       duration_ms: 28_000,
       stop_reason: "timeout",
-      history_count: 42,
       started_at: MIN_2_AGO,
       created_at: NOW,
       failure_reason: "provider deadline exceeded (25s) waiting on tool result",
@@ -861,7 +873,7 @@ function buildTurnDetail(requestId: string): TurnDetailFixture {
         id: "tc-0001",
         tool_name: "search.cve_lookup",
         mcp_server_id: "11111111-1111-7111-8111-111111111111",
-        mcp_server_alias: "security-mcp",
+        mcp_server_catalog_id: "security-mcp",
         started_at: MIN_2_AGO,
         duration_ms: 1_400,
         is_error: false,
@@ -871,7 +883,7 @@ function buildTurnDetail(requestId: string): TurnDetailFixture {
         id: "tc-0002",
         tool_name: "web_search",
         mcp_server_id: "22222222-2222-7222-8222-222222222222",
-        mcp_server_alias: "upstream",
+        mcp_server_catalog_id: "upstream",
         started_at: MIN_2_AGO,
         duration_ms: 25_000,
         is_error: true,
@@ -881,7 +893,7 @@ function buildTurnDetail(requestId: string): TurnDetailFixture {
         id: "tc-0003",
         tool_name: "memory.read",
         mcp_server_id: null,
-        mcp_server_alias: null,
+        mcp_server_catalog_id: null,
         started_at: MIN_2_AGO,
         duration_ms: 700,
         is_error: false,
@@ -1016,6 +1028,7 @@ const server = Bun.serve({
           content: body.content,
           state: body.state ?? "held",
           pinned: Boolean(body.pinned),
+          source_turn_id: null,
           created_at: now,
           last_validated_at: now,
           last_accessed_at: now,
@@ -1149,6 +1162,7 @@ const server = Bun.serve({
           version: nextVersion,
           system_prompt: snapshot.system_prompt,
           edited_by: USER_ID,
+          edited_by_email: USER_EMAIL,
           created_at: new Date().toISOString(),
         };
         PROMPT_VERSIONS.set(id, [minted, ...list]);

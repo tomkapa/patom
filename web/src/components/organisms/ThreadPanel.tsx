@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AtSign,
   Bell,
@@ -39,6 +39,8 @@ export function ThreadPanel({
   rootMessage,
   showThinking,
   pending,
+  focusRequestId,
+  onFocusConsumed,
   onReply,
   onClose,
 }: {
@@ -52,6 +54,11 @@ export function ThreadPanel({
   showThinking?: boolean;
   /** Composer "Send" spinner — `/prompts` mutation in flight. */
   pending?: boolean;
+  /** Deep-link target from `/?turn=<id>`: when a matching bubble is in
+   *  `bubbles`, scroll it into view and pulse a highlight. Cleared via
+   *  `onFocusConsumed` once handled so a later scroll isn't yanked back. */
+  focusRequestId?: string | null;
+  onFocusConsumed?: () => void;
   onReply?: (input: { content: string }) => void;
   onClose?: () => void;
 }) {
@@ -73,6 +80,33 @@ export function ThreadPanel({
     });
   };
   const insertAt = () => insertAtCaret(replyRef, reply, setReply, "@");
+
+  // Deep-link scroll: once a bubble with `focusRequestId` lands in the
+  // rendered list, scroll the matching <article> into view and hold the
+  // highlight on it for a beat. The URL param is cleared immediately via
+  // `onFocusConsumed` so a follow-up sidebar click isn't yanked back to
+  // the deep-link target; the local highlight outlives the URL clear.
+  const lastFocusedRef = useRef<string | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focusRequestId) return;
+    if (lastFocusedRef.current === focusRequestId) return;
+    const present = bubbles.some((b) => b.request_id === focusRequestId);
+    if (!present) return;
+    const el = scrollRef.current?.querySelector<HTMLElement>(
+      `[data-request-id="${CSS.escape(focusRequestId)}"]`,
+    );
+    if (!el) return;
+    lastFocusedRef.current = focusRequestId;
+    setHighlightId(focusRequestId);
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    onFocusConsumed?.();
+    const fadeId = focusRequestId;
+    const timer = window.setTimeout(() => {
+      setHighlightId((cur) => (cur === fadeId ? null : cur));
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [focusRequestId, bubbles, onFocusConsumed]);
 
   // Follow the tail only if the reader is already near the bottom — never
   // yank a user who scrolled up to re-read older replies.
@@ -155,18 +189,20 @@ export function ThreadPanel({
               No replies yet.
             </p>
           )}
-          {bubbles.map((b) =>
-            b.kind === "human" ? (
-              <HumanReplyCard key={b.key} bubble={b} />
+          {bubbles.map((b) => {
+            const focused = highlightId === b.request_id;
+            return b.kind === "human" ? (
+              <HumanReplyCard key={b.key} bubble={b} focused={focused} />
             ) : (
               <AgentReplyCard
                 key={b.key}
                 bubble={b}
                 agents={agents}
                 thread={thread}
+                focused={focused}
               />
-            ),
-          )}
+            );
+          })}
           {showThinking && <ThinkingCard />}
         </div>
       </div>
@@ -228,10 +264,22 @@ export function ThreadPanel({
   );
 }
 
-function HumanReplyCard({ bubble }: { bubble: Bubble }) {
+function HumanReplyCard({
+  bubble,
+  focused,
+}: {
+  bubble: Bubble;
+  focused?: boolean;
+}) {
   const name = bubble.human_name ?? "you";
   return (
-    <article className="flex gap-3 border-b border-[var(--color-line)] px-5 py-4">
+    <article
+      data-request-id={bubble.request_id}
+      className={cn(
+        "flex gap-3 border-b border-[var(--color-line)] px-5 py-4 transition-colors",
+        focused && "bg-[var(--color-moss-tint)]",
+      )}
+    >
       <Monogram
         name={name}
         id={bubble.human_id ?? name}
@@ -260,12 +308,14 @@ function AgentReplyCard({
   bubble,
   agents,
   thread,
+  focused,
 }: {
   bubble: Bubble;
   agents: Agent[];
   /** Thread context — passed to each wire-MCP card so the OAuth start
    *  flow can populate `resume_ctx` for the server-side auto-continue. */
   thread: ThreadSummary | null;
+  focused?: boolean;
 }) {
   // Demo metas pre-populate reasoning + tool calls when the bubble doesn't
   // yet carry them — keeps the design-reference panel honest without
@@ -296,7 +346,13 @@ function AgentReplyCard({
   const agentMonogramId = agent?.id ?? bubble.agent_id ?? "agent";
 
   return (
-    <article className="border-b border-[var(--color-line)] px-5 py-4">
+    <article
+      data-request-id={bubble.request_id}
+      className={cn(
+        "border-b border-[var(--color-line)] px-5 py-4 transition-colors",
+        focused && "bg-[var(--color-moss-tint)]",
+      )}
+    >
       <header className="flex items-center gap-2">
         <Monogram name={agentName} id={agentMonogramId} size={22} tone="moss" />
         <span className="font-[var(--font-display)] text-[13px] font-bold text-[var(--color-ink)]">

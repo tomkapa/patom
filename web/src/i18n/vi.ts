@@ -403,6 +403,9 @@ const vi: TranslationTable = {
   "agent.detail.logs.chart.kpi.failed": "THẤT BẠI",
   "agent.detail.logs.chart.marker.aria": "So sánh với v{version}",
   "agent.detail.logs.chart.marker.label": "↑ v{version} đã sửa",
+  "agent.detail.logs.chart.marker.ariaMulti":
+    "{count} lần sửa từ v{first} đến v{last} — so sánh với v{last}",
+  "agent.detail.logs.chart.marker.labelMulti": "↑ v{first}–v{last} đã sửa",
   "agent.detail.logs.chart.tooltip.total": "tổng {tokens}",
   "agent.detail.logs.chart.tooltip.byKind":
     "thường {normal} · phản tỉnh {reflection} · giải quyết {resolution}",
@@ -422,7 +425,6 @@ const vi: TranslationTable = {
   "agent.detail.logs.turns.emptyFailed.title": "Không có lượt thất bại",
   "agent.detail.logs.turns.emptyFailed.body":
     "Tắt 'Chỉ thất bại' để xem tất cả các lượt.",
-  "agent.detail.logs.turns.context.value": "{n} tin nhắn",
   "agent.detail.logs.turns.tokens.tooltip.in": "vào {n}",
   "agent.detail.logs.turns.tokens.tooltip.out": "ra {n}",
   "agent.detail.logs.turns.tokens.tooltip.cacheRead": "cache_read {n}",
@@ -432,6 +434,31 @@ const vi: TranslationTable = {
     "Prompt được sửa bởi {author} · v{from} → v{to}",
   "agent.detail.logs.turns.separator.viewDiff": "XEM DIFF",
   "agent.detail.logs.turns.separator.author.system": "hệ thống",
+
+  // Per-turn drawer
+  "agent.detail.logs.drawer.loading": "Đang tải chi tiết lượt…",
+  "agent.detail.logs.drawer.error.fallback": "không tải được chi tiết lượt",
+  "agent.detail.logs.drawer.header.request": "YÊU CẦU",
+  "agent.detail.logs.drawer.header.stop": "DỪNG",
+  "agent.detail.logs.drawer.header.prompt": "PROMPT",
+  "agent.detail.logs.drawer.failure.label": "THẤT BẠI",
+  "agent.detail.logs.drawer.reasoning.eyebrow": "SUY LUẬN · {bytes}",
+  "agent.detail.logs.drawer.reasoning.empty":
+    "Không có khối suy luận nào trong lượt này.",
+  "agent.detail.logs.drawer.reasoning.show.one": "Hiện {n} khối",
+  "agent.detail.logs.drawer.reasoning.show.many": "Hiện {n} khối",
+  "agent.detail.logs.drawer.toolCalls.eyebrow": "GỌI CÔNG CỤ · {n}",
+  "agent.detail.logs.drawer.toolCalls.empty":
+    "Không có lệnh gọi công cụ nào.",
+  "agent.detail.logs.drawer.memoryWrites.eyebrow": "GHI BỘ NHỚ",
+  "agent.detail.logs.drawer.memoryWrites.empty":
+    "Không có ghi bộ nhớ nào trong lượt này.",
+  "agent.detail.logs.drawer.memoryWrites.summary.written": "+{n} đã ghi",
+  "agent.detail.logs.drawer.memoryWrites.summary.updated": "~{n} đã cập nhật",
+  "agent.detail.logs.drawer.memoryWrites.summary.forgotten": "−{n} đã quên",
+  "agent.detail.logs.drawer.memoryWrites.summary.noChanges": "không có thay đổi",
+  "agent.detail.logs.drawer.promptUsed.eyebrow": "PROMPT DÙNG · v{version}",
+  "agent.detail.logs.drawer.promptUsed.view": "xem system prompt",
 
   // Columns dropdown
   "agent.detail.logs.columns.eyebrow": "CỘT",
@@ -446,7 +473,6 @@ const vi: TranslationTable = {
   "agent.detail.logs.columns.tokens": "Token",
   "agent.detail.logs.columns.cacheRead": "Đọc cache",
   "agent.detail.logs.columns.latency": "Độ trễ",
-  "agent.detail.logs.columns.context": "Ngữ cảnh",
   "agent.detail.logs.columns.stopReason": "Lý do dừng",
   "agent.detail.logs.columns.requestId": "Mã yêu cầu",
 
