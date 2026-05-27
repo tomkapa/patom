@@ -539,7 +539,7 @@ const vi: TranslationTable = {
   "settings.nav.general": "Chung",
   "settings.nav.members": "Thành viên",
   "settings.nav.billing": "Thanh toán",
-  "settings.nav.webhooks": "API & webhooks",
+  "settings.nav.integrations": "Tích hợp",
   "settings.nav.notifications": "Thông báo",
   "settings.comingSoon.title": "{label}",
   "settings.comingSoon.body": "Phần này sẽ ra mắt sớm. Quay lại sau nhé.",
@@ -622,6 +622,35 @@ const vi: TranslationTable = {
   "settings.members.pagination.next": "Sau",
   "settings.members.pagination.range":
     "Hiển thị {from} trên {total}",
+
+  // Integrations tab
+  "settings.integrations.title": "Tích hợp",
+  "settings.integrations.subtitle":
+    "Kết nối Relay với nền tảng chat của nhóm. Quản trị workspace điều phối các cài đặt, scope và kênh mặc định.",
+  "settings.integrations.connected": "ĐÃ KẾT NỐI",
+  "settings.integrations.available": "ĐANG MỞ",
+  "settings.integrations.available.helper":
+    "Các nền tảng chat theo luồng Relay có thể tích hợp. Lộ trình ra mắt mỗi tháng.",
+  "settings.integrations.connect": "Kết nối Slack",
+  "settings.integrations.connecting": "Đang mở Slack…",
+  "settings.integrations.disconnect": "Ngắt kết nối",
+  "settings.integrations.disconnect.confirm.title": "Ngắt kết nối {team}?",
+  "settings.integrations.disconnect.confirm.body":
+    "Relay sẽ ngừng nhận sự kiện và lệnh /relay sẽ không còn hoạt động trong workspace Slack này. Các thread đang gắn với agent sẽ bị gỡ liên kết.",
+  "settings.integrations.disconnect.cancel": "Hủy",
+  "settings.integrations.disconnect.confirmCta": "Ngắt kết nối",
+  "settings.integrations.empty.title": "Chưa có tích hợp nào",
+  "settings.integrations.empty.body":
+    "Kết nối Slack để gọi /relay và chat trực tiếp với agent trong thread.",
+  "settings.integrations.installedBy": "Cài bởi {who}",
+  "settings.integrations.command.label": "LỆNH",
+  "settings.integrations.scopes.label": "SCOPES",
+  "settings.integrations.errorLoading":
+    "Không tải được workspace Slack. Hãy thử làm mới.",
+  "settings.integrations.notifyMe": "Báo cho tôi",
+  "settings.integrations.notifyMe.toast":
+    "Chúng tôi sẽ thông báo khi tích hợp này ra mắt.",
+  "settings.integrations.target": "Dự kiến · {date}",
 
   // Invite modal
   "settings.invite.eyebrow": "INV",

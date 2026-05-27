@@ -539,7 +539,7 @@ const en = {
   "settings.nav.general": "General",
   "settings.nav.members": "Members",
   "settings.nav.billing": "Billing",
-  "settings.nav.webhooks": "API & webhooks",
+  "settings.nav.integrations": "Integrations",
   "settings.nav.notifications": "Notifications",
   "settings.comingSoon.title": "{label}",
   "settings.comingSoon.body": "This area is coming soon. Check back later.",
@@ -622,6 +622,35 @@ const en = {
   "settings.members.pagination.next": "Next",
   "settings.members.pagination.range":
     "{from} of {total} seats shown",
+
+  // Integrations tab
+  "settings.integrations.title": "Integrations",
+  "settings.integrations.subtitle":
+    "Connect Relay to your team's chat platforms. Workspace admins manage installations, scopes, and default channels.",
+  "settings.integrations.connected": "CONNECTED",
+  "settings.integrations.available": "AVAILABLE",
+  "settings.integrations.available.helper":
+    "Thread-based chat platforms Relay can connect to. Roadmap rolls out monthly.",
+  "settings.integrations.connect": "Connect Slack",
+  "settings.integrations.connecting": "Opening Slack…",
+  "settings.integrations.disconnect": "Disconnect",
+  "settings.integrations.disconnect.confirm.title": "Disconnect {team}?",
+  "settings.integrations.disconnect.confirm.body":
+    "Relay will stop receiving events and the /relay slash command will no longer work in this Slack workspace. Threads bound to Relay agents are unlinked.",
+  "settings.integrations.disconnect.cancel": "Cancel",
+  "settings.integrations.disconnect.confirmCta": "Disconnect",
+  "settings.integrations.empty.title": "No integrations yet",
+  "settings.integrations.empty.body":
+    "Connect Slack to invoke /relay and chat with your agents directly in threads.",
+  "settings.integrations.installedBy": "Installed by {who}",
+  "settings.integrations.command.label": "COMMAND",
+  "settings.integrations.scopes.label": "SCOPES",
+  "settings.integrations.errorLoading":
+    "Couldn't load Slack workspaces. Try refreshing.",
+  "settings.integrations.notifyMe": "Notify me",
+  "settings.integrations.notifyMe.toast":
+    "We'll let you know when this integration launches.",
+  "settings.integrations.target": "Target · {date}",
 
   // Invite modal
   "settings.invite.eyebrow": "INV",

@@ -8,6 +8,8 @@ import type {
   CredentialInput,
   IssuedInvite,
   Language,
+  SlackInstallResponse,
+  SlackWorkspaceSummary,
   ListMembersQuery,
   ListMembersResponse,
   Me,
@@ -160,6 +162,23 @@ export const api = {
     }),
   revokeInvite: (inviteId: string) =>
     request<void>(`/me/org/invites/${inviteId}`, { method: "DELETE" }),
+
+  // ─── Integrations — Slack (src/slack/oauth.rs) ──────────────────────
+  /** Begin a Slack install. The server returns the Slack consent URL;
+   *  the SPA navigates to it so the user lands back on
+   *  `/settings/integrations` once they finish the install. */
+  slackInstall: () =>
+    request<SlackInstallResponse>("/slack/install", { method: "POST" }),
+  /** List Slack workspaces installed against the active org. RLS in
+   *  Postgres constrains the result to the principal's tenant. */
+  slackWorkspaces: () =>
+    request<SlackWorkspaceSummary[]>("/slack/workspaces"),
+  /** Uninstall a Slack workspace by `team_id`. ON DELETE CASCADE cleans
+   *  up identities + thread bindings server-side. */
+  slackDisconnect: (teamId: string) =>
+    request<void>(`/slack/workspaces/${encodeURIComponent(teamId)}`, {
+      method: "DELETE",
+    }),
 
   /** Read-only catalog of catalog model ids the agent picker offers.
    *  Mirrors `src/http/routes/models.rs`. */

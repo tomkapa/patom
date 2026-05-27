@@ -42,6 +42,18 @@ pub struct WorkspaceWithToken {
     pub installed_at: DateTime<Utc>,
 }
 
+/// Settings-page projection — no bot token. The Integrations tab lists
+/// these to show "what's installed and by whom" without ever pulling
+/// the plaintext token into application memory.
+#[derive(Debug, Clone)]
+pub struct WorkspaceSummary {
+    pub team_id: SlackTeamId,
+    pub team_name: String,
+    pub scopes: String,
+    pub installed_by_user_id: UserId,
+    pub installed_at: DateTime<Utc>,
+}
+
 #[async_trait]
 pub trait SlackWorkspaceStore: fmt::Debug + Send + Sync {
     /// Install or replace a workspace row. Caller-driven (user-facing
@@ -54,8 +66,17 @@ pub trait SlackWorkspaceStore: fmt::Debug + Send + Sync {
     /// webhook arrives before any `Principal` is known.
     async fn read_by_team(&self, team_id: &SlackTeamId) -> Result<WorkspaceWithToken, SlackError>;
 
+    /// List the workspaces visible to the principal (RLS scopes the
+    /// query to their active org). Powers the Integrations settings
+    /// tab — the bot token is intentionally not loaded.
+    async fn list(&self, principal: &Principal) -> Result<Vec<WorkspaceSummary>, SlackError>;
+
     /// Tenant-scoped uninstall. ON DELETE CASCADE on
-    /// `slack_workspaces` cleans up identities + threads.
+    /// `slack_workspaces` cleans up identities + threads. Returns
+    /// `SlackError::UnknownWorkspace` when no row matched — RLS and the
+    /// `org_id` predicate make "no match" mean either "no such team"
+    /// or "not visible to this principal"; the handler maps both to 404
+    /// rather than leaking which case applied.
     async fn delete(&self, principal: &Principal, team_id: &SlackTeamId) -> Result<(), SlackError>;
 }
 
@@ -99,6 +120,19 @@ const SQL_READ_BY_TEAM: &str = "SELECT \
         org_id, team_id, bot_user_id, bot_token_ciphertext, \
         bot_token_nonce, key_version, installed_by_user_id, installed_at \
      FROM slack_workspaces WHERE team_id = $1";
+
+/// SELECT cap one above `LIST_MAX_ROWS` so a runaway RLS policy can
+/// never let the in-handler assertion panic the process — the DB clips
+/// the result before we even count it.
+const SQL_LIST: &str = "SELECT \
+        team_id, team_name, scopes, installed_by_user_id, installed_at \
+     FROM slack_workspaces \
+     ORDER BY installed_at DESC \
+     LIMIT 257";
+
+/// Loop bound for `list`. CLAUDE.md §5: hand-pick a pessimistic cap and
+/// expose it so the SQL `LIMIT` and the assertion can't drift.
+const LIST_MAX_ROWS: usize = 256;
 
 #[async_trait]
 impl SlackWorkspaceStore for PgSlackWorkspaceStore {
@@ -196,16 +230,53 @@ impl SlackWorkspaceStore for PgSlackWorkspaceStore {
         })
     }
 
+    async fn list(&self, principal: &Principal) -> Result<Vec<WorkspaceSummary>, SlackError> {
+        // RLS restricts the SELECT to rows where `org_id` matches the
+        // principal's org membership — no app-side WHERE needed (and
+        // adding one would mask a policy regression). The query itself
+        // carries `LIMIT LIST_MAX_ROWS + 1` so the assertion below
+        // catches an unbounded result before the loop runs.
+        type Row = (String, String, String, UserId, DateTime<Utc>);
+        let rows: Vec<Row> =
+            run_as_user::<Vec<Row>, SlackError>(&self.pool, principal.user_id, async |tx| {
+                Ok(sqlx::query_as(SQL_LIST).fetch_all(&mut **tx).await?)
+            })
+            .await?;
+        assert!(
+            rows.len() <= LIST_MAX_ROWS,
+            "invariant: workspace list bounded (got {}, max {})",
+            rows.len(),
+            LIST_MAX_ROWS,
+        );
+        let mut out = Vec::with_capacity(rows.len());
+        for (team_id_str, team_name, scopes, installed_by_user_id, installed_at) in rows {
+            let team_id = SlackTeamId::try_from(team_id_str)?;
+            out.push(WorkspaceSummary {
+                team_id,
+                team_name,
+                scopes,
+                installed_by_user_id,
+                installed_at,
+            });
+        }
+        Ok(out)
+    }
+
     async fn delete(&self, principal: &Principal, team_id: &SlackTeamId) -> Result<(), SlackError> {
         let user_id = principal.user_id;
-        run_as_user::<(), SlackError>(&self.pool, user_id, async |tx| {
-            sqlx::query("DELETE FROM slack_workspaces WHERE org_id = $1 AND team_id = $2")
-                .bind(principal.active_org_id)
-                .bind(team_id.as_str())
-                .execute(&mut **tx)
-                .await?;
-            Ok(())
+        let rows_affected = run_as_user::<u64, SlackError>(&self.pool, user_id, async |tx| {
+            let res =
+                sqlx::query("DELETE FROM slack_workspaces WHERE org_id = $1 AND team_id = $2")
+                    .bind(principal.active_org_id)
+                    .bind(team_id.as_str())
+                    .execute(&mut **tx)
+                    .await?;
+            Ok(res.rows_affected())
         })
-        .await
+        .await?;
+        if rows_affected == 0 {
+            return Err(SlackError::UnknownWorkspace(team_id.clone()));
+        }
+        Ok(())
     }
 }

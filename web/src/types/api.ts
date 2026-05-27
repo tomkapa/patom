@@ -90,6 +90,22 @@ export type ListMembersQuery = {
   per_page?: number;
 };
 
+// ─── Integrations — Slack workspace installs (src/slack/oauth.rs) ───
+
+/** One installed Slack workspace surfaced on the Integrations tab.
+ *  The bot token is intentionally never sent to the SPA; the server
+ *  uses it only to drive outbound `chat.postMessage`. */
+export type SlackWorkspaceSummary = {
+  team_id: string;
+  team_name: string;
+  /** Comma-separated scopes string as Slack stored it at install. */
+  scopes: string;
+  installed_by_user_id: string;
+  installed_at: string;
+};
+
+export type SlackInstallResponse = { authorize_url: string };
+
 /** One issued invite. `token` is the **cleartext** single-use URL
  *  secret returned only at issuance; surface it in the copy-link
  *  affordance and never log it. */
