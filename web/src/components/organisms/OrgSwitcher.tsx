@@ -5,6 +5,8 @@ import { useSwitchOrg } from "../../hooks/useSwitchOrg";
 import { Dropdown } from "../molecules/Dropdown";
 import { Monogram } from "../atoms/Monogram";
 import { Spinner } from "../atoms/Spinner";
+// Default tile for workspaces without a custom avatar.
+import appLogoUrl from "../../../assets/favicon-192.png";
 
 export function OrgSwitcher() {
   const me = useAuthStore((s) => s.me);
@@ -67,7 +69,12 @@ export function OrgSwitcher() {
                   disabled={switchOrg.isPending}
                   className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-paper-2)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <Monogram name={org.name} id={org.id} size={24} />
+                  <Monogram
+                    name={org.name}
+                    id={org.id}
+                    size={24}
+                    avatarUrl={org.avatar_url ?? appLogoUrl}
+                  />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[13px] font-semibold text-[var(--color-ink)]">
                       {org.name}

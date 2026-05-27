@@ -381,6 +381,8 @@ pub struct OrgMembership {
     /// configured an `<organization-rule>` directive yet. Surfaced on
     /// `/me` so the FE editor seeds with the current value.
     pub default_rule: Option<super::org_rule::OrganizationRule>,
+    /// `organizations.avatar_url`. `None` → FE renders the default tile.
+    pub avatar_url: Option<String>,
 }
 
 /// What every authed HTTP request hands to its handler. Built by the

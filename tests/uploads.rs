@@ -372,3 +372,78 @@ async fn mcp_catalog_icon_upload_unknown_id_returns_400() {
     assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
     assert!(store.is_empty().await);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_avatar_upload_writes_store_and_db() {
+    let (h, store) = UploadsHarness::with_assets().await;
+    let app = router(h.state.clone());
+    let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
+    let req = upload_request("/api/uploads/workspace-avatar", &h.primary, body);
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("json");
+    let url = json["url"].as_str().expect("url field");
+    let expected_key = format!("workspaces/{}.png", h.primary.org_id);
+    assert!(url.ends_with(&format!("/{expected_key}")), "url = {url}");
+    assert_eq!(store.len().await, 1);
+
+    let row: (Option<String>,) =
+        sqlx::query_as("SELECT avatar_url FROM organizations WHERE id = $1")
+            .bind(h.primary.org_id)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("read org");
+    assert_eq!(row.0.as_deref(), Some(url));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_avatar_upload_rejects_member_role() {
+    let (h, store) = UploadsHarness::with_assets().await;
+    h.demote_to_member(&h.primary).await;
+    let app = router(h.state.clone());
+    let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
+    let req = upload_request("/api/uploads/workspace-avatar", &h.primary, body);
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::FORBIDDEN);
+    assert!(store.is_empty().await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_avatar_upload_svg_rejected() {
+    let (h, store) = UploadsHarness::with_assets().await;
+    let app = router(h.state.clone());
+    let body = build_multipart(
+        "image/svg+xml",
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+    );
+    let req = upload_request("/api/uploads/workspace-avatar", &h.primary, body);
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert!(store.is_empty().await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_avatar_upload_503_when_assets_unconfigured() {
+    let h = UploadsHarness::without_assets().await;
+    let app = router(h.state.clone());
+    let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
+    let req = upload_request("/api/uploads/workspace-avatar", &h.primary, body);
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_avatar_upload_oversize_returns_413() {
+    let (h, store) = UploadsHarness::with_assets().await;
+    let app = router(h.state.clone());
+    let oversize = pad(PNG_HEADER, 2 * 1024 * 1024 + 1);
+    let body = build_multipart("image/png", &oversize);
+    let req = upload_request("/api/uploads/workspace-avatar", &h.primary, body);
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(store.is_empty().await);
+}

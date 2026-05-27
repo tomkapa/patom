@@ -75,6 +75,8 @@ struct OrgDetailsView {
     member_count: i64,
     created_at: chrono::DateTime<chrono::Utc>,
     role: Role,
+    /// `null` → FE renders the default tile.
+    avatar_url: Option<String>,
 }
 
 impl OrgDetailsView {
@@ -87,6 +89,7 @@ impl OrgDetailsView {
             member_count: details.member_count,
             created_at: details.created_at,
             role,
+            avatar_url: details.avatar_url,
         }
     }
 }

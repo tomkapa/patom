@@ -11,7 +11,10 @@ use bytes::Bytes;
 use crate::types::ParseError;
 
 use super::error::AssetError;
-use super::limits::{ASSET_URL_MAX_LEN, MAX_AVATAR_BYTES, MAX_MCP_ICON_BYTES, OBJECT_KEY_MAX_LEN};
+use super::limits::{
+    ASSET_URL_MAX_LEN, MAX_AVATAR_BYTES, MAX_MCP_ICON_BYTES, MAX_WORKSPACE_AVATAR_BYTES,
+    OBJECT_KEY_MAX_LEN,
+};
 
 /// Image content-type allowed at the upload boundary.
 ///
@@ -82,6 +85,10 @@ pub enum AssetKind {
     /// MCP catalog tile icon. SVG allowed because vendor logos are
     /// distributed as SVG and the assets origin is a separate host.
     McpCatalogIcon,
+    /// Workspace (organization) avatar. SVG denied for the same XSS
+    /// reason as user avatars; distinct key prefix from `Avatar` so
+    /// user and workspace UUIDs cannot collide.
+    WorkspaceAvatar,
 }
 
 impl AssetKind {
@@ -89,8 +96,8 @@ impl AssetKind {
     #[must_use]
     pub fn accepts(self, content_type: ImageContentType) -> bool {
         match (self, content_type) {
-            (Self::Avatar, ImageContentType::Svg) => false,
-            (Self::Avatar | Self::McpCatalogIcon, _) => true,
+            (Self::Avatar | Self::WorkspaceAvatar, ImageContentType::Svg) => false,
+            (Self::Avatar | Self::McpCatalogIcon | Self::WorkspaceAvatar, _) => true,
         }
     }
 
@@ -100,6 +107,7 @@ impl AssetKind {
         match self {
             Self::Avatar => "avatars",
             Self::McpCatalogIcon => "mcp",
+            Self::WorkspaceAvatar => "workspaces",
         }
     }
 
@@ -110,6 +118,7 @@ impl AssetKind {
         match self {
             Self::Avatar => "avatar",
             Self::McpCatalogIcon => "mcp_icon",
+            Self::WorkspaceAvatar => "workspace_avatar",
         }
     }
 
@@ -119,6 +128,7 @@ impl AssetKind {
         match self {
             Self::Avatar => MAX_AVATAR_BYTES,
             Self::McpCatalogIcon => MAX_MCP_ICON_BYTES,
+            Self::WorkspaceAvatar => MAX_WORKSPACE_AVATAR_BYTES,
         }
     }
 }
@@ -372,5 +382,24 @@ mod tests {
         assert!(!AssetKind::Avatar.accepts(ImageContentType::Svg));
         assert!(AssetKind::Avatar.accepts(ImageContentType::Png));
         assert!(AssetKind::McpCatalogIcon.accepts(ImageContentType::Svg));
+    }
+
+    #[test]
+    fn workspace_avatar_rejects_svg() {
+        assert!(!AssetKind::WorkspaceAvatar.accepts(ImageContentType::Svg));
+        assert!(AssetKind::WorkspaceAvatar.accepts(ImageContentType::Png));
+        assert!(AssetKind::WorkspaceAvatar.accepts(ImageContentType::Jpeg));
+        assert!(AssetKind::WorkspaceAvatar.accepts(ImageContentType::Webp));
+    }
+
+    #[test]
+    fn workspace_avatar_uses_own_prefix() {
+        let k = ObjectKey::derive(
+            AssetKind::WorkspaceAvatar,
+            "0123abcd",
+            ImageContentType::Png,
+        )
+        .expect("ok");
+        assert_eq!(k.as_str(), "workspaces/0123abcd.png");
     }
 }

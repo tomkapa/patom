@@ -63,6 +63,7 @@ async fn fetch_org_details_priv(
 ) -> Result<OrgDetails, OrgError> {
     let row = sqlx::query(
         "SELECT o.id, o.name, o.slug::text AS slug, o.default_language, o.created_at,
+                o.avatar_url,
                 (SELECT COUNT(*)::bigint FROM org_members m WHERE m.org_id = o.id) AS member_count
          FROM organizations o
          WHERE o.id = $1",
@@ -79,6 +80,7 @@ async fn fetch_org_details_priv(
         default_language: row.get::<Language, _>("default_language"),
         created_at: row.get("created_at"),
         member_count: row.get("member_count"),
+        avatar_url: row.get("avatar_url"),
     })
 }
 
@@ -471,6 +473,32 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
             .await?
             .rows_affected();
         if n == 0 {
+            return Err(OrgError::NotFound);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self, avatar_url, now), fields(patom.org.id = %org_id))]
+    async fn set_avatar_url(
+        &self,
+        org_id: OrgId,
+        avatar_url: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(), OrgError> {
+        let mut tx = auth::begin_privileged(&self.pool).await?;
+        let rows = sqlx::query(
+            "UPDATE organizations
+             SET avatar_url = $2, updated_at = $3
+             WHERE id = $1",
+        )
+        .bind(org_id)
+        .bind(avatar_url)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if rows == 0 {
             return Err(OrgError::NotFound);
         }
         tx.commit().await?;

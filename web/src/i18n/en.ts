@@ -566,6 +566,11 @@ const en = {
   "settings.general.identity.slug.invalid":
     "Lowercase letters, digits, and dashes only.",
   "settings.general.identity.slug.taken": "That slug is already taken.",
+  "settings.general.identity.avatar": "Avatar",
+  "settings.general.identity.avatar.helper":
+    "Shown in the workspace switcher. Square PNG, JPEG, or WebP up to 2 MB.",
+  "settings.general.identity.avatar.memberHint":
+    "Only workspace owners and admins can change the avatar.",
   "settings.general.defaults.title": "DEFAULTS",
   "settings.general.defaults.helper":
     "Applied to new agents created in this workspace.",

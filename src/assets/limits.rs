@@ -10,6 +10,13 @@ use std::time::Duration;
 /// nudges them to resize before we ever bill bytes to R2.
 pub const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
+/// Upper bound on a single workspace (organization) avatar upload.
+///
+/// Same 2 MiB ceiling as user avatars today; held as its own constant
+/// so the cap can drift if workspace logos diverge from camera output
+/// in product (e.g. designer drops a high-DPI export).
+pub const MAX_WORKSPACE_AVATAR_BYTES: usize = 2 * 1024 * 1024;
+
 /// Upper bound on an MCP-catalog tile icon upload.
 ///
 /// Tile icons are SVGs or PNGs that render at ~48px in the grid. A

@@ -567,6 +567,11 @@ const vi: TranslationTable = {
     "Chỉ chữ thường, số và dấu gạch ngang.",
   "settings.general.identity.slug.taken":
     "Slug này đã có người dùng.",
+  "settings.general.identity.avatar": "Ảnh đại diện",
+  "settings.general.identity.avatar.helper":
+    "Hiển thị ở bộ chọn workspace. PNG, JPEG hoặc WebP vuông, tối đa 2 MB.",
+  "settings.general.identity.avatar.memberHint":
+    "Chỉ chủ workspace và quản trị viên mới đổi được ảnh đại diện.",
   "settings.general.defaults.title": "MẶC ĐỊNH",
   "settings.general.defaults.helper":
     "Áp dụng cho agent mới tạo trong workspace.",
