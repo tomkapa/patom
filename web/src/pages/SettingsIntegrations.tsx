@@ -19,7 +19,11 @@ import {
   SettingsPageHeader,
 } from "../components/templates/SettingsLayout";
 import { Button } from "../components/atoms/Button";
+import { Kbd } from "../components/atoms/Kbd";
+import { SectionHeader } from "../components/atoms/SectionHeader";
 import { Spinner } from "../components/atoms/Spinner";
+import { Banner } from "../components/molecules/Banner";
+import { EmptyState } from "../components/molecules/EmptyState";
 import { Modal, ModalFooter, ModalHeader } from "../components/molecules/Modal";
 import { api } from "../lib/api";
 import type { SlackWorkspaceSummary } from "../types/api";
@@ -80,20 +84,34 @@ export function SettingsIntegrations() {
 
       <div className="min-h-0 flex-1 overflow-auto">
         {/* CONNECTED */}
-        <SectionEyebrow label={t("settings.integrations.connected")} />
+        <SectionHeader
+          eyebrow={t("settings.integrations.connected")}
+          className="border-t px-8 py-2.5"
+        />
         <div className="border-b border-[var(--color-line)] px-8 py-6">
           {installs.isLoading ? (
             <div className="flex h-24 items-center justify-center">
               <Spinner />
             </div>
           ) : installs.isError ? (
-            <div className="border border-[var(--color-rose)] bg-[var(--color-rose-soft)] px-3 py-2 text-[12px] text-[var(--color-rose)]">
+            <Banner variant="rose">
               {t("settings.integrations.errorLoading")}
-            </div>
+            </Banner>
           ) : rows.length === 0 ? (
-            <EmptyConnected
-              onConnect={() => install.mutate()}
-              connecting={install.isPending}
+            <EmptyState
+              icon={<Slack className="h-5 w-5" strokeWidth={1.5} />}
+              title={t("settings.integrations.empty.title")}
+              description={t("settings.integrations.empty.body")}
+              action={
+                <Button
+                  variant="primary"
+                  loading={install.isPending}
+                  onClick={() => install.mutate()}
+                  data-testid="slack-connect"
+                >
+                  {t("settings.integrations.connect")}
+                </Button>
+              }
             />
           ) : (
             <div className="flex flex-col border border-[var(--color-line)] bg-[var(--color-card)]">
@@ -109,9 +127,14 @@ export function SettingsIntegrations() {
         </div>
 
         {/* AVAILABLE */}
-        <SectionEyebrow
-          label={t("settings.integrations.available")}
-          helper={t("settings.integrations.available.helper")}
+        <SectionHeader
+          eyebrow={t("settings.integrations.available")}
+          right={
+            <span className="font-[var(--font-body)] text-[12px] font-normal tracking-normal normal-case text-[var(--color-muted)]">
+              {t("settings.integrations.available.helper")}
+            </span>
+          }
+          className="border-t px-8 py-2.5"
         />
         <div className="grid grid-cols-1 gap-4 px-8 py-6 lg:grid-cols-2">
           <AvailableCard
@@ -199,31 +222,6 @@ export function SettingsIntegrations() {
   );
 }
 
-function SectionEyebrow({
-  label,
-  helper,
-}: {
-  label: string;
-  helper?: string;
-}) {
-  return (
-    <div className="flex items-center gap-3 border-y border-[var(--color-line)] bg-[var(--color-paper-2)] px-8 py-2.5">
-      <span className="font-[var(--font-mono)] text-[11px] font-bold tracking-[0.1em] text-[var(--color-ink)]">
-        {label}
-      </span>
-      {helper ? (
-        <>
-          <span
-            aria-hidden
-            className="h-3 w-px bg-[var(--color-line)]"
-          />
-          <span className="text-[12px] text-[var(--color-muted)]">{helper}</span>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
 function SlackRow({
   row,
   onDisconnect,
@@ -285,9 +283,9 @@ function SlackRow({
           {t("settings.integrations.command.label")}
         </span>
         <div>
-          <span className="inline-flex items-center border border-[var(--color-line)] bg-[var(--color-paper-2)] px-2.5 py-1 font-[var(--font-mono)] text-[13px] font-medium text-[var(--color-ink)]">
+          <Kbd className="h-auto px-2.5 py-1 text-[13px] font-medium text-[var(--color-ink)]">
             /relay
-          </span>
+          </Kbd>
         </div>
       </div>
       <div className="grid grid-cols-[140px_minmax(0,1fr)] gap-6 px-6 py-3.5">
@@ -296,44 +294,15 @@ function SlackRow({
         </span>
         <div className="flex flex-wrap gap-1.5">
           {scopes.map((s) => (
-            <span
+            <Kbd
               key={s}
-              className="inline-flex items-center border border-[var(--color-line)] bg-[var(--color-paper-2)] px-2 py-[3px] font-[var(--font-mono)] text-[11px] text-[var(--color-ink)]"
+              className="h-auto px-2 py-[3px] text-[11px] text-[var(--color-ink)]"
             >
               {s}
-            </span>
+            </Kbd>
           ))}
         </div>
       </div>
-    </div>
-  );
-}
-
-function EmptyConnected({
-  onConnect,
-  connecting,
-}: {
-  onConnect: () => void;
-  connecting: boolean;
-}) {
-  const { t } = useT();
-  return (
-    <div className="flex flex-col items-center gap-3 border border-dashed border-[var(--color-line)] bg-[var(--color-card)] px-6 py-10 text-center">
-      <Slack className="h-8 w-8 text-[var(--color-muted)]" strokeWidth={1.5} />
-      <div className="font-[var(--font-display)] text-[16px] font-semibold text-[var(--color-ink)]">
-        {t("settings.integrations.empty.title")}
-      </div>
-      <p className="max-w-[420px] text-[13px] text-[var(--color-muted)]">
-        {t("settings.integrations.empty.body")}
-      </p>
-      <Button
-        variant="primary"
-        loading={connecting}
-        onClick={onConnect}
-        data-testid="slack-connect"
-      >
-        {t("settings.integrations.connect")}
-      </Button>
     </div>
   );
 }
