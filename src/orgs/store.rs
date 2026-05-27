@@ -19,6 +19,8 @@ pub struct OrgDetails {
     pub default_language: Language,
     pub created_at: DateTime<Utc>,
     pub member_count: i64,
+    /// Public asset URL, or `None` → FE renders the default tile.
+    pub avatar_url: Option<String>,
 }
 
 /// Bag of optional patches for `PATCH /me/org`. `None` means "don't
@@ -182,4 +184,12 @@ pub trait OrgStore: std::fmt::Debug + Send + Sync + 'static {
 
     /// Delete a pending invite (revoke).
     async fn revoke_invite(&self, org_id: OrgId, invite_id: InviteId) -> Result<(), OrgError>;
+
+    /// Set (or clear, with `None`) the workspace avatar URL.
+    async fn set_avatar_url(
+        &self,
+        org_id: OrgId,
+        avatar_url: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(), OrgError>;
 }

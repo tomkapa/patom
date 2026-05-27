@@ -60,6 +60,8 @@ struct OrgView {
     /// org hasn't configured a rule; the FE editor seeds with this
     /// value on load.
     default_rule: Option<String>,
+    /// `null` → FE renders the default tile in the OrgSwitcher.
+    avatar_url: Option<String>,
 }
 
 async fn me(
@@ -118,6 +120,7 @@ fn view_org(m: &OrgMembership) -> OrgView {
         role: m.role,
         default_language: m.default_language,
         default_rule: m.default_rule.as_ref().map(|r| r.as_str().to_owned()),
+        avatar_url: m.avatar_url.clone(),
     }
 }
 

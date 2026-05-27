@@ -178,7 +178,8 @@ impl UserStore for PgUserStore {
     async fn list_user_orgs(&self, user_id: UserId) -> Result<Vec<OrgMembership>, AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
         let rows = sqlx::query(
-            "SELECT o.id, o.name, o.slug::text AS slug, o.default_language, o.default_rule, m.role
+            "SELECT o.id, o.name, o.slug::text AS slug, o.default_language, o.default_rule,
+                    o.avatar_url, m.role
              FROM org_members m
              JOIN organizations o ON o.id = m.org_id
              WHERE m.user_id = $1
@@ -202,6 +203,7 @@ impl UserStore for PgUserStore {
                         .ok_or(AuthError::Internal("unknown role in db"))?,
                     default_language: r.get::<Language, _>("default_language"),
                     default_rule,
+                    avatar_url: r.get("avatar_url"),
                 })
             })
             .collect()

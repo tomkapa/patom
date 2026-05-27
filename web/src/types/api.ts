@@ -17,6 +17,8 @@ export type Org = {
    *  the web app's i18n. Mutated via `PATCH /me/org/language` for
    *  owner/admin members. */
   default_language: Language;
+  /** `null` → FE renders the default tile in the OrgSwitcher. */
+  avatar_url: string | null;
 };
 
 export type User = {
@@ -46,6 +48,8 @@ export type OrgDetails = {
   member_count: number;
   created_at: string;
   role: Role;
+  /** See {@link Org.avatar_url}. */
+  avatar_url: string | null;
 };
 
 /** Status of a row on the Members tab. */

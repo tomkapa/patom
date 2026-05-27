@@ -13,17 +13,22 @@ import { SectionCard } from "../components/molecules/SectionCard";
 import { Modal, ModalFooter, ModalHeader } from "../components/molecules/Modal";
 import { Select } from "../components/molecules/Select";
 import { PrefixInput } from "../components/core/PrefixInput";
+import { ImageUploader } from "../components/molecules/ImageUploader";
+import { Monogram } from "../components/atoms/Monogram";
 import {
   ORG_KEY,
   useLeaveOrg,
   useOrg,
   useUpdateOrg,
 } from "../hooks/useOrg";
+import { ME_QUERY_KEY } from "../hooks/useMe";
 import { api } from "../lib/api";
 import { ApiError } from "../lib/errors";
 import { useT } from "../i18n";
 import { useAuthStore } from "../stores/authStore";
 import type { Language } from "../types/api";
+// Default tile for workspaces without a custom avatar; matches OrgSwitcher.
+import appLogoUrl from "../../assets/favicon-192.png";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
@@ -111,6 +116,26 @@ export function SettingsGeneral() {
     }
   };
 
+  const handleAvatarUpload = async (file: File) => {
+    if (!org) throw new Error("workspace not loaded");
+    const { url } = await api.uploadWorkspaceAvatar(file);
+    // Mirror into the auth store so the OrgSwitcher tile updates
+    // without waiting for a /me re-poll, then invalidate the workspace
+    // query so PATCH-driven panels (Members header, etc.) refetch.
+    const latest = useAuthStore.getState().me;
+    if (latest) {
+      useAuthStore.getState().setMe({
+        ...latest,
+        orgs: latest.orgs.map((o) =>
+          o.id === org.id ? { ...o, avatar_url: url } : o,
+        ),
+      });
+    }
+    qc.invalidateQueries({ queryKey: ORG_KEY });
+    qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+    return url;
+  };
+
   if (orgQuery.isLoading) {
     return (
       <SettingsLayout active="general">
@@ -180,6 +205,31 @@ export function SettingsGeneral() {
           }
           bodyClassName="grid grid-cols-1 gap-5 px-5 py-5"
         >
+          <Field
+            label={t("settings.general.identity.avatar")}
+            helper={t("settings.general.identity.avatar.helper")}
+          >
+            {org.role === "member" ? (
+              <div className="flex items-start gap-3">
+                <Monogram
+                  name={org.name}
+                  id={org.id}
+                  size={64}
+                  avatarUrl={org.avatar_url ?? appLogoUrl}
+                />
+                <div className="font-[var(--font-mono)] text-[11px] tracking-[0.06em] text-[var(--color-muted-foreground)] uppercase">
+                  {t("settings.general.identity.avatar.memberHint")}
+                </div>
+              </div>
+            ) : (
+              <ImageUploader
+                kind="avatar"
+                currentUrl={org.avatar_url ?? appLogoUrl}
+                size={64}
+                onUpload={handleAvatarUpload}
+              />
+            )}
+          </Field>
           <Field
             label={t("settings.general.identity.name")}
             helper={t("settings.general.identity.name.helper")}

@@ -390,6 +390,16 @@ export const api = {
     });
   },
 
+  /** Upload a new workspace (organization) avatar. Owner/admin only. */
+  uploadWorkspaceAvatar: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<UploadResponse>("/uploads/workspace-avatar", {
+      method: "POST",
+      body: form,
+    });
+  },
+
   /** Upload a tile icon for an org-scoped MCP catalog entry. Owner/admin
    *  only; built-in (global) catalog ids return 403. */
   uploadMcpCatalogIcon: (catalogId: string, file: File) => {
