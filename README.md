@@ -1,26 +1,76 @@
-# Patom
+<p align="center">
+  <a href="https://github.com/tomtran/patom-rs">
+    <img src="./doc/assets/banner.png" alt="Patom" width="100%" />
+  </a>
+</p>
 
-**Patom** is a provider-agnostic, hookable multi-agent runtime written in Rust. It lets a small team operate a fleet of specialised LLM agents that each have their own memory, their own tool allowlist, and the ability to schedule their own wake-ups — collaborating over a structured `send_message` protocol instead of one monolithic prompt.
+<p align="center">
+  <strong>A provider-agnostic, hookable multi-agent runtime in Rust.</strong>
+</p>
 
-> Status: pre-1.0. APIs, schema, and on-disk formats are still moving.
+<p align="center">
+  <a href="./LICENSE.md"><img alt="License: FSL-1.1-Apache-2.0" src="https://img.shields.io/badge/license-FSL--1.1--Apache--2.0-blue.svg"></a>
+  <a href="./rust-toolchain.toml"><img alt="Rust" src="https://img.shields.io/badge/rust-2024_edition-orange.svg?logo=rust"></a>
+  <a href="./CLAUDE.md"><img alt="Style: TIGER_STYLE" src="https://img.shields.io/badge/style-TIGER__STYLE-black.svg"></a>
+  <a href="./CONTRIBUTING.md"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg"></a>
+  <img alt="Status: pre-1.0" src="https://img.shields.io/badge/status-pre--1.0-yellow.svg">
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#why-patom">Why</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="./CLAUDE.md">Engineering rules</a> ·
+  <a href="./CONTRIBUTING.md">Contributing</a>
+</p>
 
 ---
+
+Patom lets a small team operate a fleet of specialised LLM agents — each with its own memory, its own tool allowlist, and the ability to schedule its own wake-ups — collaborating over a structured `send_message` protocol instead of one monolithic prompt.
+
+One Rust binary (`patom-rs`) plus a Postgres-backed control plane. Every external dependency sits behind a trait, so the agent core has no I/O of its own and the runtime is testable end-to-end without a network.
+
+> **Status:** pre-1.0. APIs, schema, and on-disk formats are still moving.
+
+## Quick start
+
+```bash
+# 1. Postgres + pgvector
+docker compose up -d
+
+# 2. Configure
+cp .env.example .env   # then set ANTHROPIC_API_KEY, PATOM_JWT_SECRET, PATOM_ORG_KEK, ...
+
+# 3. Run migrations + start the server (boots on :8080)
+cargo run --release
+
+# 4. (optional) Web UI
+cd web && bun install && bun run dev
+```
+
+See [Prerequisites](#prerequisites) for the full set of env vars and dependencies.
 
 ## Why Patom
 
-Most "agent frameworks" hand you one chat loop with a bag of tools. Patom is built around three load-bearing ideas that change that shape:
+Most agent frameworks hand you one chat loop with a bag of tools. Patom is built around three load-bearing ideas that change that shape:
 
-1. **Per-agent memory bounded by role.** Each agent owns its own private journal. The account-manager's memory of how a client signs off contracts never leaks into the copywriter's voice rules.
-2. **Per-agent tool boundaries enforced in code.** An agent's `allowed_mcp_servers` and `allowed_mcp_tools` lists are checked by the runtime before a tool ever reaches the model — the designer literally cannot call Gmail because Gmail isn't in their ToolBox.
-3. **Autonomous wake-ups.** Agents schedule one-time and recurring tasks for themselves via `schedule_task`. A `prompt_requests` row appears at fire time and the agent runs the same code path as a human prompt — there's no "the human clicked a button" beat.
+- **Per-agent memory bounded by role.** Each agent owns its own private journal. The account-manager's memory of how a client signs off contracts never leaks into the copywriter's voice rules.
+- **Per-agent tool boundaries enforced in code.** An agent's `allowed_mcp_servers` and `allowed_mcp_tools` lists are checked by the runtime before a tool ever reaches the model — the designer literally cannot call Gmail because Gmail isn't in their ToolBox.
+- **Autonomous wake-ups.** Agents schedule one-time and recurring tasks for themselves via `schedule_task`. A `prompt_requests` row appears at fire time and the agent runs the same code path as a human prompt — there's no "the human clicked a button" beat.
 
 Combined, those three turn a chat agent into something closer to an org chart: roles, memory, and side-effects on real clocks.
 
----
+## Features
+
+- **Provider-agnostic core.** Anthropic and OpenAI adapters today; the agent loop knows nothing about either.
+- **Hookable policy.** Pre- and post-turn hooks can allow, deny, or mutate. PII redaction, budget caps, and tool allowlists are hooks, not branches inside the loop.
+- **Durable, leased queue.** `prompt_requests` is the durable inbox. Workers claim rows under lease so a crashed worker can't double-fire a turn.
+- **Tenant isolation.** RLS on top of `org_id` plus per-org envelope encryption for upstream MCP credentials.
+- **MCP first-class.** Per-agent scoping, OAuth flow + refresher, and a vendor catalog (Notion, Gmail, GCal, Pencil, …).
+- **Wide-event observability.** `tracing` + OpenTelemetry; every turn is one span tree with `patom.*` attributes.
+- **TDD-first.** Real Postgres in integration tests via `#[sqlx::test]`; mocks reserved for paid third-party APIs.
 
 ## Architecture
-
-Patom is one Rust binary (`patom-rs`) plus a Postgres-backed control plane. Every external dependency sits behind a trait so the agent core has no I/O of its own — that's what makes the runtime testable end-to-end without a network.
 
 ### Component diagram
 
@@ -137,7 +187,7 @@ sequenceDiagram
     A-->>H: SSE / response
 ```
 
-### Data model (Postgres)
+### Data model
 
 The schema lives under [`migrations/`](./migrations) and is tenant-scoped end-to-end (RLS on top of `org_id`). Highlights:
 
@@ -160,7 +210,7 @@ The schema lives under [`migrations/`](./migrations) and is tenant-scoped end-to
 | `src/session/` | Session/message persistence. |
 | `src/memory/` | Per-agent memory, librarian, reflection scheduler. |
 | `src/hook/` | Pre/post-turn policy hooks. |
-| `src/tools/` | Built-in tools (`memory_*`, `send_message`, `schedule_task`, `web_fetch`, ...). |
+| `src/tools/` | Built-in tools (`memory_*`, `send_message`, `schedule_task`, `web_fetch`, …). |
 | `src/mcp/` | MCP client, registry, per-agent scoping, OAuth + refresher. |
 | `src/provider/` | Anthropic + OpenAI provider adapters; embeddings. |
 | `src/scheduling/` | Cron-like scheduled tasks; timezone-aware. |
@@ -173,8 +223,6 @@ The schema lives under [`migrations/`](./migrations) and is tenant-scoped end-to
 
 For the data-flow rationale and the deeper "why" behind each seam, read [`CLAUDE.md`](./CLAUDE.md) and the design notes under [`doc/`](./doc/).
 
----
-
 ## Getting started
 
 ### Prerequisites
@@ -184,29 +232,17 @@ For the data-flow rationale and the deeper "why" behind each seam, read [`CLAUDE
 - [Bun](https://bun.sh) if you want to develop the web UI.
 - An Anthropic or OpenAI API key.
 
-### Run it locally
+### Environment
+
+The full set is in [`src/config.rs`](./src/config.rs). The minimum to boot:
 
 ```bash
-# 1. Start Postgres
-docker compose up -d
-
-# 2. Configure env (see config.rs for the full set)
-cp .env.example .env   # then fill in keys
-# Required-ish:
-#   DATABASE_URL=postgres://patom:patom@localhost:5432/patom
-#   ANTHROPIC_API_KEY=...
-#   OPENAI_API_KEY=...        # only if you want OpenAI / embeddings
-#   PATOM_JWT_SECRET=...      # session cookies
-#   PATOM_ORG_KEK=...         # MCP credential envelope key
-
-# 3. Run migrations + start the server
-cargo run --release
-
-# 4. (optional) Web UI
-cd web && bun install && bun run dev
+DATABASE_URL=postgres://patom:patom@localhost:5432/patom
+ANTHROPIC_API_KEY=...
+OPENAI_API_KEY=...        # only if you want OpenAI / embeddings
+PATOM_JWT_SECRET=...      # session cookies
+PATOM_ORG_KEK=...         # MCP credential envelope key
 ```
-
-The HTTP server boots on `0.0.0.0:8080` by default; the web UI dev server proxies API calls to it.
 
 ### Run the tests
 
@@ -219,16 +255,6 @@ cargo test --all-features
 ```
 
 All four gates (`fmt`, `clippy`, `check`, `test`) must be green before a PR lands.
-
----
-
-## Engineering rules
-
-Patom inherits its style from TigerBeetle's TIGER_STYLE and NASA's Power of Ten. The full ruleset — types-encode-invariants, no recursion, every loop has a bound, assertions crash the process, one error type per module boundary, etc. — is in [`CLAUDE.md`](./CLAUDE.md). It's binding, not advisory.
-
-If you're contributing, read it before you read any module.
-
----
 
 ## Project layout
 
@@ -244,15 +270,17 @@ If you're contributing, read it before you read any module.
 └── tests/                # integration tests
 ```
 
----
+## Engineering rules
+
+Patom inherits its style from TigerBeetle's TIGER_STYLE and NASA's Power of Ten. The full ruleset — types-encode-invariants, no recursion, every loop has a bound, assertions crash the process, one error type per module boundary, etc. — is in [`CLAUDE.md`](./CLAUDE.md). It's binding, not advisory.
+
+If you're contributing, read it before you read any module.
 
 ## Contributing
 
 We welcome contributions. Start with [`CONTRIBUTING.md`](./CONTRIBUTING.md). Security issues go through [`SECURITY.md`](./SECURITY.md) — please don't open public issues for vulnerabilities.
 
 By participating you agree to our [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
-
----
 
 ## License
 
@@ -267,3 +295,9 @@ In plain English:
 If you need a commercial license that lifts the Competing Use restriction sooner, contact the maintainers.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Patom by you shall be licensed under the same FSL-1.1-Apache-2.0 terms, without any additional terms or conditions.
+
+---
+
+<p align="center">
+  Built with care, in Rust.
+</p>
