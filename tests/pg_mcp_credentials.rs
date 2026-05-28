@@ -75,9 +75,7 @@ async fn oauth2_payload_roundtrips_full_stored_credentials() {
         .upsert(McpCredentialWrite {
             server_id,
             org_id: db.default_org_id,
-            payload: CredentialPayload::Oauth2(OAuth2Payload {
-                stored: stored.clone(),
-            }),
+            payload: CredentialPayload::Oauth2(OAuth2Payload::new(stored.clone())),
         })
         .await
         .expect("upsert");
@@ -90,14 +88,11 @@ async fn oauth2_payload_roundtrips_full_stored_credentials() {
     let CredentialPayload::Oauth2(got) = record.payload else {
         panic!("variant mismatch");
     };
-    assert_eq!(got.stored.client_id, "dcr-client-789");
-    assert_eq!(got.stored.granted_scopes, vec!["read", "write"]);
-    assert_eq!(got.stored.token_received_at, Some(1_700_000_000));
-    let token_back = got
-        .stored
-        .token_response
-        .as_ref()
-        .expect("token_response preserved");
+    let s = got.as_stored();
+    assert_eq!(s.client_id, "dcr-client-789");
+    assert_eq!(s.granted_scopes, vec!["read", "write"]);
+    assert_eq!(s.token_received_at, Some(1_700_000_000));
+    let token_back = s.token_response.as_ref().expect("token_response preserved");
     assert_eq!(token_back.access_token().secret(), "at-123");
     assert_eq!(
         token_back.refresh_token().map(|t| t.secret().as_str()),
@@ -136,7 +131,7 @@ async fn oauth2_payload_without_refresh_token_roundtrips() {
         .upsert(McpCredentialWrite {
             server_id,
             org_id: db.default_org_id,
-            payload: CredentialPayload::Oauth2(OAuth2Payload { stored }),
+            payload: CredentialPayload::Oauth2(OAuth2Payload::new(stored)),
         })
         .await
         .expect("upsert");
@@ -150,7 +145,10 @@ async fn oauth2_payload_without_refresh_token_roundtrips() {
     else {
         panic!("variant mismatch");
     };
-    let token_back = got.stored.token_response.expect("token_response preserved");
+    let token_back = got
+        .into_stored()
+        .token_response
+        .expect("token_response preserved");
     assert_eq!(token_back.access_token().secret(), "at-platform");
     assert!(token_back.refresh_token().is_none());
 }

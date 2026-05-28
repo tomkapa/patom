@@ -72,7 +72,7 @@ pub enum CredentialPayload {
 /// `Debug` already redacts `token_response`, so we just delegate.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2Payload {
-    pub stored: rmcp::transport::auth::StoredCredentials,
+    stored: rmcp::transport::auth::StoredCredentials,
 }
 
 impl fmt::Debug for OAuth2Payload {
@@ -84,6 +84,31 @@ impl fmt::Debug for OAuth2Payload {
 }
 
 impl OAuth2Payload {
+    /// Construct from rmcp's canonical credential shape. Only used by
+    /// the [`crate::mcp::oauth::PatomCredentialStore`] adapter (the
+    /// `CredentialStore::save` impl) and by tests; production code
+    /// never builds an `OAuth2Payload` outside that seam.
+    #[must_use]
+    pub fn new(stored: rmcp::transport::auth::StoredCredentials) -> Self {
+        Self { stored }
+    }
+
+    /// Borrow the inner `StoredCredentials`. The OAuth credential
+    /// adapter reads this on every `CredentialStore::load`; UI/HTTP
+    /// callers should prefer the higher-level accessors below.
+    #[must_use]
+    pub fn as_stored(&self) -> &rmcp::transport::auth::StoredCredentials {
+        &self.stored
+    }
+
+    /// Consume and return the inner `StoredCredentials`. Useful when
+    /// the caller owns the payload and needs to hand `rmcp`'s machinery
+    /// the by-value form — avoids a clone on the hot path.
+    #[must_use]
+    pub fn into_stored(self) -> rmcp::transport::auth::StoredCredentials {
+        self.stored
+    }
+
     /// Approximate UTC expiry timestamp for UI display.
     ///
     /// Computed from `token_received_at + token_response.expires_in()`;
@@ -278,17 +303,16 @@ mod tests {
             vec!["openid".into(), "email".into()],
             Some(1_700_000_000),
         );
-        let payload = CredentialPayload::Oauth2(OAuth2Payload {
-            stored: stored.clone(),
-        });
+        let payload = CredentialPayload::Oauth2(OAuth2Payload::new(stored.clone()));
         let (kind, blob) = seal_payload(&e, org, &payload).expect("seal");
         assert_eq!(kind, "oauth2");
         let back = open_payload(&e, org, &kind, &blob).expect("open");
         match back {
             CredentialPayload::Oauth2(p) => {
-                assert_eq!(p.stored.client_id, "client-test");
-                assert_eq!(p.stored.granted_scopes, vec!["openid", "email"]);
-                assert_eq!(p.stored.token_received_at, Some(1_700_000_000));
+                let s = p.as_stored();
+                assert_eq!(s.client_id, "client-test");
+                assert_eq!(s.granted_scopes, vec!["openid", "email"]);
+                assert_eq!(s.token_received_at, Some(1_700_000_000));
             }
             CredentialPayload::StaticHeaders { .. } => panic!("variant mismatch"),
         }

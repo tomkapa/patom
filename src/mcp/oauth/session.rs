@@ -38,7 +38,7 @@
 use std::collections::HashMap;
 
 use rmcp::transport::auth::{
-    AuthorizationManager, AuthorizationSession, OAuthClientConfig, OAuthState,
+    AuthorizationManager, AuthorizationSession, CredentialStore as _, OAuthClientConfig, OAuthState,
 };
 use url::Url;
 
@@ -210,6 +210,15 @@ async fn start_platform(
 
 /// DCR branch: rmcp's `OAuthState::new` registers a client dynamically
 /// inside `start_authorization`. Mirrors codex `perform_oauth_login.rs:611-617`.
+///
+/// Patom-specific: rmcp's `register_client` configures the freshly
+/// DCR-issued client_id in-memory on the `AuthorizationManager` but
+/// never *persists* it. Codex relies on the same process holding the
+/// `OAuthState` between start and callback, so the in-memory client
+/// survives. Patom's flow crosses replicas (callback may land on a
+/// different process), so we must persist the client_id at the end of
+/// start. The callback then reads it back via [`PatomCredentialStore`]
+/// and calls `configure_client_id` to rebuild the manager.
 #[allow(clippy::too_many_arguments)]
 async fn start_dcr(
     server_url: &str,
@@ -229,7 +238,11 @@ async fn start_dcr(
         .await
         .map_err(OAuthError::from)?;
     manager.with_client(http).map_err(OAuthError::from)?;
-    manager.set_credential_store(PatomCredentialStore::new(server_id, org_id, credentials));
+    manager.set_credential_store(PatomCredentialStore::new(
+        server_id,
+        org_id,
+        credentials.clone(),
+    ));
     manager.set_state_store(state_store);
     let mut state = OAuthState::Unauthorized(manager);
     state
@@ -241,6 +254,17 @@ async fn start_dcr(
             "DCR start_authorization returned unexpected OAuthState variant".into(),
         ));
     };
+    // Persist the DCR-issued client_id with `token_response = None` so the
+    // callback (potentially on a different replica) can call
+    // `configure_client_id` before the code exchange runs. `get_credentials`
+    // returns `(client_id, token_response)`; token_response is None at this
+    // point — that's expected, we'll overwrite the row inside
+    // `exchange_code_for_token` once the code is exchanged.
+    let (client_id, _token) = session.get_credentials().await.map_err(OAuthError::from)?;
+    let cred_store = PatomCredentialStore::new(server_id, org_id, credentials);
+    let bootstrap =
+        rmcp::transport::auth::StoredCredentials::new(client_id, None, Vec::new(), None);
+    cred_store.save(bootstrap).await.map_err(OAuthError::from)?;
     Ok(session.get_authorization_url().to_owned())
 }
 
@@ -296,7 +320,11 @@ pub async fn handle_callback(
         .await
         .map_err(OAuthError::from)?;
     manager.with_client(http).map_err(OAuthError::from)?;
-    manager.set_credential_store(PatomCredentialStore::new(server_id, org_id, credentials));
+    manager.set_credential_store(PatomCredentialStore::new(
+        server_id,
+        org_id,
+        credentials.clone(),
+    ));
     manager.set_state_store(state_store);
     let metadata = manager
         .discover_metadata()
@@ -336,13 +364,23 @@ pub async fn handle_callback(
             manager.configure_client(config).map_err(OAuthError::from)?;
         }
         ClientSource::Dcr => {
-            // DCR: the client_id was persisted on the first successful
-            // start via `CredentialStore::save` and loaded just now from
-            // the bound store. configure_client_id uses what
-            // `initialize_from_store` populated.
+            // DCR: `start_dcr` persisted a bootstrap row with the
+            // freshly-registered `client_id` and `token_response = None`.
+            // Load it directly and call `configure_client_id` — rmcp's
+            // `initialize_from_store` won't help us here because it
+            // gates the `configure_client_id` call on
+            // `stored.token_response.is_some()`, which by definition is
+            // false at the pre-exchange callback hop.
+            let cred_store = PatomCredentialStore::new(server_id, org_id, credentials);
+            let stored = cred_store.load().await.map_err(OAuthError::from)?;
+            let stored = stored.ok_or_else(|| {
+                OAuthError::Misconfigured(format!(
+                    "callback for DCR server {server_id}/{org_id} has no persisted client_id; \
+                     start_authorization must run first",
+                ))
+            })?;
             manager
-                .initialize_from_store()
-                .await
+                .configure_client_id(&stored.client_id)
                 .map_err(OAuthError::from)?;
         }
     }

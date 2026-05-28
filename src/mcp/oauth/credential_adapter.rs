@@ -63,7 +63,7 @@ impl CredentialStore for PatomCredentialStore {
             return Ok(None);
         };
         match record.payload {
-            CredentialPayload::Oauth2(p) => Ok(Some(p.stored)),
+            CredentialPayload::Oauth2(p) => Ok(Some(p.into_stored())),
             CredentialPayload::StaticHeaders { .. } => {
                 // The server is configured with a static-bearer header, not
                 // OAuth — the AuthorizationManager should never have been
@@ -79,9 +79,7 @@ impl CredentialStore for PatomCredentialStore {
     }
 
     async fn save(&self, credentials: StoredCredentials) -> Result<(), AuthError> {
-        let payload = CredentialPayload::Oauth2(OAuth2Payload {
-            stored: credentials,
-        });
+        let payload = CredentialPayload::Oauth2(OAuth2Payload::new(credentials));
         self.inner
             .upsert(McpCredentialWrite {
                 server_id: self.server_id,
