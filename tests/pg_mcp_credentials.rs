@@ -1,24 +1,27 @@
-//! Roundtrip tests for the encrypted `mcp_server_credentials` envelope —
-//! specifically the OAuth2 payload variant after the DCR-client merge.
+//! Roundtrip tests for the encrypted `mcp_server_credentials` envelope
+//! after the rmcp-auth adoption.
 //!
-//! Background: pre-refactor, DCR-issued client credentials lived in a
-//! separate `mcp_oauth_clients` table. Migration 50 drops that table and
-//! folds the client material into `OAuth2Payload` so one encrypted row
-//! per server holds the access token + refresh token + (optionally) the
-//! DCR client_id / client_secret / token_endpoint_auth_method.
+//! Patom's `OAuth2Payload` wraps `rmcp::transport::auth::StoredCredentials`
+//! verbatim. The seal/open path must round-trip the inner struct without
+//! lossy field translation (rmcp's `client_id`, `token_response`,
+//! `granted_scopes`, `token_received_at` all survive).
 
 #![allow(clippy::expect_used)]
 
 use std::sync::Arc;
 
-use chrono::Duration;
+use oauth2::AccessToken;
+use oauth2::RefreshToken;
+use oauth2::TokenResponse as _;
+use oauth2::basic::BasicTokenType;
 use patom_rs::clock::SystemClock;
 use patom_rs::crypto::OrgEncryptor;
 use patom_rs::mcp::{
     ConnectionStatus, CredentialPayload, McpCatalogId, McpCredentialStore, McpCredentialWrite,
     McpHttpUrl, McpServerCreate, McpServerStore, McpTransport, OAuth2Payload, PgMcpCredentialStore,
-    PgMcpServerStore, TokenAuthMethod,
+    PgMcpServerStore,
 };
+use rmcp::transport::auth::{OAuthTokenResponse, StoredCredentials, VendorExtraTokenFields};
 
 mod common;
 use common::pg::TestDb;
@@ -44,7 +47,7 @@ async fn seed_server(db: &TestDb) -> patom_rs::mcp::McpServerId {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn oauth2_payload_carries_dcr_client_id() {
+async fn oauth2_payload_roundtrips_full_stored_credentials() {
     let db = TestDb::fresh().await;
     let server_id = seed_server(&db).await;
     let clock = SystemClock::shared();
@@ -55,23 +58,26 @@ async fn oauth2_payload_carries_dcr_client_id() {
         enc,
     ));
 
-    let payload = OAuth2Payload {
-        access_token: "at-123".to_string(),
-        refresh_token: Some("rt-456".to_string()),
-        expires_at: clock.now_utc() + Duration::hours(1),
-        scope: Some("read write".to_string()),
-        issuer: "https://example.test".to_string(),
-        token_endpoint: "https://example.test/token".to_string(),
-        dcr_client_id: Some("dcr-client-789".to_string()),
-        dcr_client_secret: Some("dcr-secret-xyz".to_string()),
-        token_endpoint_auth_method: Some(TokenAuthMethod::ClientSecretPost),
-    };
+    let mut token = OAuthTokenResponse::new(
+        AccessToken::new("at-123".to_owned()),
+        BasicTokenType::Bearer,
+        VendorExtraTokenFields::default(),
+    );
+    token.set_refresh_token(Some(RefreshToken::new("rt-456".to_owned())));
+    let stored = StoredCredentials::new(
+        "dcr-client-789".to_owned(),
+        Some(token),
+        vec!["read".to_owned(), "write".to_owned()],
+        Some(1_700_000_000),
+    );
 
     store
         .upsert(McpCredentialWrite {
             server_id,
             org_id: db.default_org_id,
-            payload: CredentialPayload::Oauth2(payload),
+            payload: CredentialPayload::Oauth2(OAuth2Payload {
+                stored: stored.clone(),
+            }),
         })
         .await
         .expect("upsert");
@@ -81,24 +87,29 @@ async fn oauth2_payload_carries_dcr_client_id() {
         .await
         .expect("read")
         .expect("row present");
-
     let CredentialPayload::Oauth2(got) = record.payload else {
         panic!("variant mismatch");
     };
-    assert_eq!(got.access_token, "at-123");
-    assert_eq!(got.refresh_token.as_deref(), Some("rt-456"));
-    assert_eq!(got.dcr_client_id.as_deref(), Some("dcr-client-789"));
-    assert_eq!(got.dcr_client_secret.as_deref(), Some("dcr-secret-xyz"));
+    assert_eq!(got.stored.client_id, "dcr-client-789");
+    assert_eq!(got.stored.granted_scopes, vec!["read", "write"]);
+    assert_eq!(got.stored.token_received_at, Some(1_700_000_000));
+    let token_back = got
+        .stored
+        .token_response
+        .as_ref()
+        .expect("token_response preserved");
+    assert_eq!(token_back.access_token().secret(), "at-123");
     assert_eq!(
-        got.token_endpoint_auth_method,
-        Some(TokenAuthMethod::ClientSecretPost)
+        token_back.refresh_token().map(|t| t.secret().as_str()),
+        Some("rt-456"),
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn oauth2_payload_without_dcr_fields_still_roundtrips() {
-    // Platform-credential entries leave the DCR fields `None` — confirm
-    // the absence path round-trips cleanly too.
+async fn oauth2_payload_without_refresh_token_roundtrips() {
+    // Some Platform-credential entries (vendors that don't issue
+    // refresh tokens) leave that slot `None`; confirm the absence
+    // survives a seal+open round-trip.
     let db = TestDb::fresh().await;
     let server_id = seed_server(&db).await;
     let clock = SystemClock::shared();
@@ -109,23 +120,23 @@ async fn oauth2_payload_without_dcr_fields_still_roundtrips() {
         enc,
     ));
 
-    let payload = OAuth2Payload {
-        access_token: "at-platform".to_string(),
-        refresh_token: None,
-        expires_at: clock.now_utc() + Duration::hours(1),
-        scope: None,
-        issuer: "https://accounts.google.com".to_string(),
-        token_endpoint: "https://oauth2.googleapis.com/token".to_string(),
-        dcr_client_id: None,
-        dcr_client_secret: None,
-        token_endpoint_auth_method: None,
-    };
+    let token = OAuthTokenResponse::new(
+        AccessToken::new("at-platform".to_owned()),
+        BasicTokenType::Bearer,
+        VendorExtraTokenFields::default(),
+    );
+    let stored = StoredCredentials::new(
+        "platform-client".to_owned(),
+        Some(token),
+        Vec::new(),
+        Some(1_700_000_000),
+    );
 
     store
         .upsert(McpCredentialWrite {
             server_id,
             org_id: db.default_org_id,
-            payload: CredentialPayload::Oauth2(payload),
+            payload: CredentialPayload::Oauth2(OAuth2Payload { stored }),
         })
         .await
         .expect("upsert");
@@ -139,7 +150,7 @@ async fn oauth2_payload_without_dcr_fields_still_roundtrips() {
     else {
         panic!("variant mismatch");
     };
-    assert!(got.dcr_client_id.is_none());
-    assert!(got.dcr_client_secret.is_none());
-    assert!(got.token_endpoint_auth_method.is_none());
+    let token_back = got.stored.token_response.expect("token_response preserved");
+    assert_eq!(token_back.access_token().secret(), "at-platform");
+    assert!(token_back.refresh_token().is_none());
 }

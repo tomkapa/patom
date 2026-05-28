@@ -33,7 +33,7 @@ use crate::crypto::OrgEncryptor;
 use crate::error::AppError;
 use crate::hook::HookChain;
 use crate::http::{AppState, router};
-use crate::mcp::oauth::{OAuthFlowClient, PgMcpOAuthPendingStore, SharedMcpOAuthPendingStore};
+use crate::mcp::oauth::{OAuthSessionMap, PgMcpOAuthPendingStore, SharedMcpOAuthPendingStore};
 use crate::mcp::{
     McpRefresher, McpRegistry, PgMcpCatalogStore, PgMcpCredentialStore, PgMcpServerStore,
     ScopedMcpSource, SharedMcpCatalogStore, SharedMcpCredentialStore, SharedMcpServerStore,
@@ -128,7 +128,7 @@ struct Collaborators {
     mcp_catalog: SharedMcpCatalogStore,
     mcp_credentials: SharedMcpCredentialStore,
     mcp_oauth_pending: SharedMcpOAuthPendingStore,
-    mcp_oauth_flow: OAuthFlowClient,
+    oauth_sessions: Arc<OAuthSessionMap>,
     /// Env-keyed Patom-supported OAuth clients. Built once at boot and
     /// shared by both the registry's OAuth adapter and the HTTP routes
     /// that initiate / complete the OAuth flow.
@@ -262,31 +262,18 @@ impl Collaborators {
             clock.clone(),
             encryptor.clone(),
         ));
-        let mcp_oauth_pending: SharedMcpOAuthPendingStore = Arc::new(PgMcpOAuthPendingStore::new(
-            pool.clone(),
-            clock.clone(),
-            encryptor.clone(),
-        ));
-        let mcp_oauth_flow = OAuthFlowClient::new(http.clone())
-            .map_err(|e| AppError::Misconfigured(format!("mcp oauth flow http: {e}")))?;
+        let mcp_oauth_pending: SharedMcpOAuthPendingStore =
+            Arc::new(PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()));
+        let oauth_sessions = Arc::new(OAuthSessionMap::new());
         let platform_oauth_clients = Arc::new(settings.auth.platform_oauth_clients.clone());
-        let oauth_refresh_locks: Arc<crate::mcp::RefreshLockMap> =
-            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-        let oauth_redirect_uri: Arc<str> = Arc::from(format!(
-            "{base}/mcp-oauth/callback",
-            base = settings.auth.oauth_redirect_base
-        ));
         let mcp_registry = McpRegistry::with_oauth_deps(
             mcp_store.clone(),
             mcp_credentials.clone(),
             crate::mcp::OAuthAdapterDeps {
                 credentials: mcp_credentials.clone(),
                 catalog: mcp_catalog.clone(),
-                flow: mcp_oauth_flow.clone(),
                 platform_clients: platform_oauth_clients.clone(),
                 inner_http: http.clone(),
-                refresh_locks: oauth_refresh_locks.clone(),
-                redirect_uri: oauth_redirect_uri.clone(),
             },
             clock.clone(),
         );
@@ -372,7 +359,7 @@ impl Collaborators {
             mcp_catalog,
             mcp_credentials,
             mcp_oauth_pending,
-            mcp_oauth_flow,
+            oauth_sessions,
             platform_oauth_clients,
             mcp_encryptor: encryptor,
             mcp_registry,
@@ -845,7 +832,7 @@ pub async fn build_server(
         mcp_test_rate,
         platform_oauth_clients: pieces.platform_oauth_clients,
         mcp_oauth_pending: pieces.mcp_oauth_pending,
-        mcp_oauth_flow: pieces.mcp_oauth_flow,
+        oauth_sessions: pieces.oauth_sessions,
         oauth_redirect_base: Arc::from(settings.auth.oauth_redirect_base.as_str()),
         web_base_url: settings.auth.web_base_url.as_deref().map(Arc::from),
         thread_stream,

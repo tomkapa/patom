@@ -25,14 +25,14 @@ use uuid::Uuid;
 use crate::agents::AgentId;
 use crate::auth::{AuthError, Principal, VisibilityTable, visible_to};
 use crate::mcp::oauth::{
-    OAuthError, PendingAuthorization, build_authorize_url, discover_authorization_server,
-    exchange_code,
+    OAuthError, PatomPendingCtx, ResumeCtx, SlackPingCtx, StartCtx, handle_callback,
+    start_authorization,
 };
 use crate::mcp::{
     CatalogUpsert, ConnectionStatus, CredentialPayload, DiscoveredTool,
     MCP_CREDENTIAL_READ_TIMEOUT, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName,
     McpCatalogId, McpClient, McpCredentialWrite, McpDescription, McpError, McpServerCreate,
-    McpServerId, McpServerRecord, McpServerUpdate, McpTransport, OAUTH2_KIND_LABEL, OAuth2Payload,
+    McpServerId, McpServerRecord, McpServerUpdate, McpTransport, OAUTH2_KIND_LABEL,
     OAuthAuthorizeExtras,
 };
 use crate::tools::{DEFAULT_TOOL_CALLS_PAGE, MAX_TOOL_CALLS_PAGE, ToolCallRowId};
@@ -609,7 +609,7 @@ async fn read_mcp_server(
         if let Some(record) = cred
             && let CredentialPayload::Oauth2(oauth) = &record.payload
         {
-            row.token_expires_at = Some(oauth.expires_at);
+            row.token_expires_at = oauth.approx_expires_at();
         }
     }
     Ok(Json(row.try_into_response()?))
@@ -1126,14 +1126,17 @@ struct OAuthStartResponse {
 
 /// `POST /mcp-servers/{id}/oauth/start` — kick off the browser flow.
 ///
-/// Steps:
-///   1. Resolve server, ensure caller is authorized for it.
-///   2. Discover authorization-server metadata (RFC 9728 + RFC 8414).
-///   3. Look up the registered DCR client for `(org, issuer)`, or
-///      register one via RFC 7591 if first time.
-///   4. Mint PKCE + state, persist the pending row.
-///   5. Build the authorize URL and hand it back.
-#[allow(clippy::too_many_lines)] // composition path — branching is what each step is
+/// Single thin wrapper over `oauth::session::start_authorization`. The
+/// branching on `client_source` (Platform vs DCR vs None) lives there;
+/// discovery, PKCE, DCR (when needed), and authorize-URL construction
+/// are all `rmcp::transport::auth`'s job now. Patom owns:
+///
+///   * The pending-row context (server_id, user_id, org_id, redirect_to,
+///     resume_ctx, slack_ctx) captured into `PatomStateStore::writer`.
+///   * Tenant validation (the catalog read enforces the principal's
+///     active_org_id).
+///   * Vendor-quirk extras (e.g. `access_type=offline` for Google) read
+///     from `mcp_catalog.authorize_extra_params`.
 async fn start_oauth(
     State(state): State<AppState>,
     principal: Principal,
@@ -1142,27 +1145,6 @@ async fn start_oauth(
 ) -> Result<Json<OAuthStartResponse>, HttpError> {
     let server_id = McpServerId::from(id);
 
-    // Step 1: tenant gate — look up the server and ensure the caller can
-    // see it. The store read goes through `run_privileged` but the
-    // explicit org_id filter pins the row to the principal's org.
-    let as_metadata =
-        resolve_as_metadata_for_server(&state, principal.active_org_id, server_id).await?;
-
-    // Step 2: resolve the catalog-derived OAuth config for this server
-    // (`default_scope` + `authorize_extra_params`) in one DB hit so the
-    // ordering of vendor-specific quirks lives in data, not code.
-    //
-    // Scope precedence: request override → catalog `default_scope` →
-    // None (the AS applies its own default, works for DCR vendors like
-    // Notion / Linear that don't require an explicit `scope` param).
-    // Google rejects with `Missing required parameter: scope` if both
-    // layers return None, so the catalog default carries the
-    // Gmail/Calendar scope sets seeded by migration 38.
-    //
-    // A request that sends `scope = ""` (empty / whitespace-only) is
-    // treated as if it wasn't sent — otherwise the empty string would
-    // win over the catalog default and Google would reject the
-    // authorize redirect with `Missing required parameter: scope`.
     let catalog_entry = catalog_entry_for_server(&state, principal.active_org_id, server_id)
         .await?
         .ok_or_else(|| {
@@ -1170,55 +1152,60 @@ async fn start_oauth(
                 "server's catalog entry no longer exists — re-wire the server".into(),
             )
         })?;
+    let server = state
+        .mcp_store
+        .read(server_id, principal.active_org_id)
+        .await
+        .map_err(|_| HttpError::NotFound)?;
     let effective_scope = effective_oauth_scope(
         body.scope.as_deref(),
         catalog_entry.default_scope.as_deref(),
     );
-
-    // Step 3: resolve the OAuth client (platform env or fresh DCR) via
-    // the single seam in `client_resolver`. For DCR catalog entries the
-    // resolver registers a brand-new client every flow — the resulting
-    // `(client_id, secret, auth_method, endpoints)` rides the pending
-    // row across to the callback, then folds into the encrypted
-    // `OAuth2Payload` so subsequent refreshes don't need a separate
-    // clients table.
+    let extras_owned = authorize_extras_owned(catalog_entry.authorize_extra_params.as_ref());
+    let resume_ctx = parse_resume_ctx(body.session_id, body.agent_id)?;
     let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
-    let creds = crate::mcp::oauth::resolve_oauth_client_creds(crate::mcp::oauth::ResolveCtx {
+    let expires_at = state.clock.now_utc()
+        + chrono::Duration::from_std(OAUTH_PENDING_TTL)
+            .expect("invariant: OAUTH_PENDING_TTL fits in chrono::Duration");
+
+    let writer = state.mcp_oauth_pending.clone().writer(PatomPendingCtx {
+        server_id,
+        user_id: principal.user_id,
+        org_id: principal.active_org_id,
+        redirect_to: body.redirect_to.clone(),
+        resume_ctx,
+        slack_ctx: None,
+        expires_at,
+    });
+
+    let server_url = match &server.config {
+        McpTransport::Http { url } => url.as_str().to_owned(),
+    };
+    let scopes: Vec<String> = effective_scope
+        .map(|s| s.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default();
+    let http = reqwest::Client::builder().build().map_err(|e| {
+        tracing::error!(event = "mcp.oauth.start.http_client_build_failed", error = %e);
+        HttpError::Internal
+    })?;
+
+    let authorize_url = start_authorization(StartCtx {
         catalog: &catalog_entry,
+        server_url,
+        http,
+        scopes,
+        authorize_extras: extras_owned,
+        redirect_uri,
         platform_clients: &state.platform_oauth_clients,
-        as_metadata: &as_metadata,
-        redirect_uri: &redirect_uri,
-        requested_scope: effective_scope,
-        flow: &state.mcp_oauth_flow,
+        credentials: state.mcp_credentials.clone(),
+        state_store: writer,
+        server_id,
+        org_id: principal.active_org_id,
     })
     .await
     .map_err(map_oauth_err)?;
 
-    // Step 4: PKCE + state, persist pending row.
-    let resume_ctx = parse_resume_ctx(body.session_id, body.agent_id)?;
-    let extras = authorize_extras_borrowed(catalog_entry.authorize_extra_params.as_ref());
-    let dcr_for_pending = dcr_pending_from_creds(&catalog_entry, &creds);
-    let start = persist_oauth_pending(
-        &state,
-        &creds,
-        &redirect_uri,
-        effective_scope,
-        &extras,
-        PendingFromRequest {
-            server_id,
-            user_id: principal.user_id,
-            org_id: principal.active_org_id,
-            redirect_to: body.redirect_to.clone(),
-            resume_ctx,
-            slack_ctx: None,
-            dcr_client: dcr_for_pending,
-        },
-    )
-    .await?;
-
-    Ok(Json(OAuthStartResponse {
-        authorize_url: start.authorize_url.to_string(),
-    }))
+    Ok(Json(OAuthStartResponse { authorize_url }))
 }
 
 /// Both-or-neither parsing of the (session_id, agent_id) pair on the
@@ -1227,9 +1214,9 @@ async fn start_oauth(
 fn parse_resume_ctx(
     session_id: Option<crate::session::SessionId>,
     agent_id: Option<crate::agents::AgentId>,
-) -> Result<Option<crate::mcp::oauth::ResumeCtx>, HttpError> {
+) -> Result<Option<ResumeCtx>, HttpError> {
     match (session_id, agent_id) {
-        (Some(session_id), Some(agent_id)) => Ok(Some(crate::mcp::oauth::ResumeCtx {
+        (Some(session_id), Some(agent_id)) => Ok(Some(ResumeCtx {
             session_id,
             agent_id,
         })),
@@ -1238,76 +1225,6 @@ fn parse_resume_ctx(
             "session_id and agent_id must both be present or both absent".into(),
         )),
     }
-}
-
-/// Inputs that `persist_oauth_pending` needs from the calling request
-/// (everything that isn't derivable from the resolved OAuth client or
-/// AS-supplied scope).
-struct PendingFromRequest {
-    server_id: McpServerId,
-    user_id: crate::auth::UserId,
-    org_id: crate::auth::OrgId,
-    redirect_to: Option<String>,
-    resume_ctx: Option<crate::mcp::oauth::ResumeCtx>,
-    slack_ctx: Option<crate::mcp::oauth::SlackPingCtx>,
-    /// DCR-issued client material to carry to the callback. `None` for
-    /// Platform-credential entries.
-    dcr_client: Option<crate::mcp::oauth::PendingDcrClient>,
-}
-
-/// Build the authorize URL + persist the `mcp_oauth_pending` row in one
-/// shot. Returns the [`AuthorizeStart`] so the caller can serialize the
-/// `authorize_url` back to the browser.
-async fn persist_oauth_pending(
-    state: &AppState,
-    creds: &crate::mcp::oauth::OAuthClientCreds,
-    redirect_uri: &str,
-    scope: Option<&str>,
-    extras: &[(&str, &str)],
-    req: PendingFromRequest,
-) -> Result<crate::mcp::oauth::AuthorizeStart, HttpError> {
-    let start = build_authorize_url(creds, redirect_uri, scope, extras).map_err(map_oauth_err)?;
-    let expires_at = state.clock.now_utc()
-        + chrono::Duration::from_std(OAUTH_PENDING_TTL)
-            .expect("invariant: OAUTH_PENDING_TTL fits in chrono::Duration");
-    state
-        .mcp_oauth_pending
-        .insert(crate::mcp::oauth::PendingAuthorizationWrite {
-            state: start.state.clone(),
-            server_id: req.server_id,
-            user_id: req.user_id,
-            org_id: req.org_id,
-            pkce_verifier: start.pkce_verifier.clone(),
-            redirect_to: req.redirect_to,
-            expires_at,
-            resume_ctx: req.resume_ctx,
-            slack_ctx: req.slack_ctx,
-            dcr_client: req.dcr_client,
-        })
-        .await
-        .map_err(map_oauth_err)?;
-    Ok(start)
-}
-
-/// Project resolved [`OAuthClientCreds`] onto the pending-row carrier
-/// shape: Platform entries leave it `None` (the resolver derives them
-/// fresh on refresh from env); DCR entries copy the freshly-registered
-/// client material so the callback exchange + future refreshes have
-/// what they need.
-fn dcr_pending_from_creds(
-    catalog_entry: &crate::mcp::McpCatalogEntry,
-    creds: &crate::mcp::oauth::OAuthClientCreds,
-) -> Option<crate::mcp::oauth::PendingDcrClient> {
-    if !matches!(catalog_entry.client_source, crate::mcp::ClientSource::Dcr) {
-        return None;
-    }
-    Some(crate::mcp::oauth::PendingDcrClient {
-        client_id: creds.client_id.clone(),
-        client_secret: creds.client_secret.clone(),
-        token_endpoint_auth_method: creds.token_endpoint_auth_method,
-        authorization_endpoint: creds.authorization_endpoint.clone(),
-        token_endpoint: creds.token_endpoint.clone(),
-    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1350,6 +1267,7 @@ struct CallbackFail {
     reason: &'static str,
 }
 
+#[allow(clippy::too_many_lines)] // composition path; each step is a typed branch with its own redirect
 async fn callback_flow(
     state: &AppState,
     q: OAuthCallbackQuery,
@@ -1361,8 +1279,6 @@ async fn callback_flow(
             description = q.error_description.as_deref().unwrap_or(""),
         );
         let redirect_to = consume_pending_for_redirect(state, q.state.as_deref()).await;
-        // The vendor's `error` token already passes through `sanitize_reason`
-        // in `failed_redirect`, so a raw value here is safe.
         return Err(CallbackFail {
             redirect_to,
             reason: vendor_error_to_reason(err),
@@ -1379,22 +1295,111 @@ async fn callback_flow(
             reason: "code_missing",
         });
     };
-    let now = state.clock.now_utc();
-    let pending = consume_pending(state, state_val, now).await?;
-    let creds = oauth_creds_from_pending(state, &pending).await?;
-    let token = exchange_token(state, &creds, &pending, code, now).await?;
-    persist_oauth_success(state, &pending, token, &creds, now)
+
+    // Recover patom-side context (server_id, org_id, redirect_to,
+    // resume_ctx, slack_ctx) *without* deleting the row — rmcp's
+    // `OAuthState::handle_callback` will fire `StateStore::delete`
+    // internally after the code exchange succeeds.
+    let pending = match state.mcp_oauth_pending.read_pending_ctx(state_val).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return Err(CallbackFail {
+                redirect_to: None,
+                reason: "unknown_or_expired_state",
+            });
+        }
+        Err(e) => {
+            tracing::error!(event = "mcp.oauth.callback.read_ctx_failed", error = ?e);
+            return Err(CallbackFail {
+                redirect_to: None,
+                reason: "internal_error",
+            });
+        }
+    };
+
+    // Look up the catalog row + the server's URL so we know which
+    // discovery + client config to feed rmcp.
+    let catalog = match catalog_entry_for_server(state, pending.org_id, pending.server_id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return Err(CallbackFail {
+                redirect_to: pending.redirect_to.clone(),
+                reason: "catalog_entry_missing",
+            });
+        }
+        Err(e) => {
+            tracing::error!(event = "mcp.oauth.callback.catalog_lookup_failed", error = ?e);
+            return Err(CallbackFail {
+                redirect_to: pending.redirect_to.clone(),
+                reason: "internal_error",
+            });
+        }
+    };
+    let server = match state
+        .mcp_store
+        .read(pending.server_id, pending.org_id)
         .await
-        .map_err(|reason| CallbackFail {
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(event = "mcp.oauth.callback.server_lookup_failed", error = ?e);
+            return Err(CallbackFail {
+                redirect_to: pending.redirect_to.clone(),
+                reason: "internal_error",
+            });
+        }
+    };
+    let server_url = match &server.config {
+        McpTransport::Http { url } => url.as_str().to_owned(),
+    };
+    let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
+    let http = match reqwest::Client::builder().build() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(event = "mcp.oauth.callback.http_build_failed", error = %e);
+            return Err(CallbackFail {
+                redirect_to: pending.redirect_to.clone(),
+                reason: "internal_error",
+            });
+        }
+    };
+    let reader = state.mcp_oauth_pending.clone().reader();
+    let now = state.clock.now_utc();
+
+    if let Err(e) = handle_callback(
+        &catalog,
+        &server_url,
+        http,
+        code,
+        state_val,
+        &redirect_uri,
+        &state.platform_oauth_clients,
+        pending.server_id,
+        pending.org_id,
+        state.mcp_credentials.clone(),
+        reader,
+    )
+    .await
+    {
+        tracing::warn!(event = "mcp.oauth.callback.exchange_failed", error = ?e);
+        return Err(CallbackFail {
             redirect_to: pending.redirect_to.clone(),
-            reason,
-        })?;
-    // Best-effort post-success behaviours, gated on the optional ctx
-    // groups carried by the consumed pending row. Each is independent
-    // and never fails the callback — the credential write is the
-    // load-bearing artifact. Auto-continue (a `POST /prompts`-equivalent
-    // DB write) and the Slack ping (an outbound Slack HTTP call) touch
-    // disjoint resources, so they run concurrently.
+            reason: "token_exchange_failed",
+        });
+    }
+
+    if let Err(e) = mark_connected(state, pending.server_id, pending.org_id, now).await {
+        tracing::error!(event = "mcp.oauth.callback.status_update_failed", error = ?e);
+        return Err(CallbackFail {
+            redirect_to: pending.redirect_to.clone(),
+            reason: "internal_error",
+        });
+    }
+    state.mcp_refresh.request();
+
+    // Best-effort post-success behaviours; each is independent and never
+    // fails the callback because the credential write has already
+    // landed.
     let display_name = resolve_display_name(state, &pending).await;
     tokio::join!(
         do_auto_continue(state, &pending, state_val, &display_name),
@@ -1417,7 +1422,7 @@ fn render_resume_prompt(display_name: &str) -> String {
 /// (Slack ping + synthetic resume prompt). Returns `"the connector"` on
 /// any lookup failure — better to fall back than block the callback,
 /// since the credential write has already succeeded.
-async fn resolve_display_name(state: &AppState, pending: &PendingAuthorization) -> String {
+async fn resolve_display_name(state: &AppState, pending: &PatomPendingCtx) -> String {
     let Ok(server) = state
         .mcp_store
         .read(pending.server_id, pending.org_id)
@@ -1445,7 +1450,7 @@ async fn resolve_display_name(state: &AppState, pending: &PendingAuthorization) 
 /// one synthetic prompt.
 async fn do_auto_continue(
     state: &AppState,
-    pending: &PendingAuthorization,
+    pending: &PatomPendingCtx,
     state_token: &str,
     display_name: &str,
 ) {
@@ -1495,7 +1500,7 @@ async fn do_auto_continue(
 /// Post the `✓ Connected — <Provider>` follow-up into the originating
 /// Slack thread. Best effort — Slack returning an error never blocks
 /// the credential write or the universal auto-continue.
-async fn do_slack_ping(state: &AppState, pending: &PendingAuthorization, display_name: &str) {
+async fn do_slack_ping(state: &AppState, pending: &PatomPendingCtx, display_name: &str) {
     let Some(ctx) = pending.slack_ctx.as_ref() else {
         return;
     };
@@ -1574,203 +1579,6 @@ fn vendor_error_to_reason(raw: &str) -> &'static str {
     }
 }
 
-async fn consume_pending(
-    state: &AppState,
-    state_val: &str,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<PendingAuthorization, CallbackFail> {
-    match state.mcp_oauth_pending.consume(state_val, now).await {
-        Ok(Some(p)) => Ok(p),
-        Ok(None) => Err(CallbackFail {
-            redirect_to: None,
-            reason: "unknown_or_expired_state",
-        }),
-        Err(e) => {
-            tracing::error!(
-                event = "mcp.oauth.callback.consume_failed",
-                error = ?e,
-            );
-            Err(CallbackFail {
-                redirect_to: None,
-                reason: "internal_error",
-            })
-        }
-    }
-}
-
-/// Reconstruct the OAuth client credentials needed to exchange the
-/// callback code. DCR entries carry the client material on the pending
-/// row (set at start time); Platform entries discover the AS metadata
-/// fresh + look up the env-keyed client.
-async fn oauth_creds_from_pending(
-    state: &AppState,
-    pending: &PendingAuthorization,
-) -> Result<crate::mcp::oauth::OAuthClientCreds, CallbackFail> {
-    if let Some(dcr) = pending.dcr_client.clone() {
-        // We don't persist `issuer` on the pending row (it's not used by
-        // the exchange grant and the AS isn't re-fetched here). Use the
-        // token endpoint's origin as the carrier — it's the AS-bearing
-        // URL the refresh path will later trace against, and it stays
-        // consistent with what discovery would have produced.
-        let issuer = token_endpoint_origin(&dcr.token_endpoint)
-            .unwrap_or_else(|| dcr.token_endpoint.clone());
-        return Ok(crate::mcp::oauth::OAuthClientCreds {
-            issuer,
-            client_id: dcr.client_id,
-            client_secret: dcr.client_secret,
-            authorization_endpoint: dcr.authorization_endpoint,
-            token_endpoint: dcr.token_endpoint,
-            token_endpoint_auth_method: dcr.token_endpoint_auth_method,
-            scope: None,
-        });
-    }
-    // Platform path: re-derive via catalog + AS discovery + env.
-    let catalog_entry =
-        match catalog_entry_for_server(state, pending.org_id, pending.server_id).await {
-            Ok(Some(e)) => e,
-            Ok(None) => {
-                return Err(CallbackFail {
-                    redirect_to: pending.redirect_to.clone(),
-                    reason: "catalog_entry_missing",
-                });
-            }
-            Err(e) => {
-                tracing::error!(event = "mcp.oauth.callback.catalog_lookup_failed", error = ?e);
-                return Err(CallbackFail {
-                    redirect_to: pending.redirect_to.clone(),
-                    reason: "internal_error",
-                });
-            }
-        };
-    let as_metadata =
-        match resolve_as_metadata_for_server(state, pending.org_id, pending.server_id).await {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(event = "mcp.oauth.callback.discovery_failed", error = ?e);
-                return Err(CallbackFail {
-                    redirect_to: pending.redirect_to.clone(),
-                    reason: "discovery_failed",
-                });
-            }
-        };
-    let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
-    crate::mcp::oauth::resolve_oauth_client_creds(crate::mcp::oauth::ResolveCtx {
-        catalog: &catalog_entry,
-        platform_clients: &state.platform_oauth_clients,
-        as_metadata: &as_metadata,
-        redirect_uri: &redirect_uri,
-        requested_scope: None,
-        flow: &state.mcp_oauth_flow,
-    })
-    .await
-    .map_err(|e| {
-        tracing::warn!(event = "mcp.oauth.callback.client_resolve_failed", error = ?e);
-        CallbackFail {
-            redirect_to: pending.redirect_to.clone(),
-            reason: "oauth_client_resolve_failed",
-        }
-    })
-}
-
-/// Strip the path/query/fragment off a token endpoint URL, leaving the
-/// `scheme://host[:port]` origin — the shape an OAuth issuer identifier
-/// usually takes.
-fn token_endpoint_origin(token_endpoint: &str) -> Option<String> {
-    let url = url::Url::parse(token_endpoint).ok()?;
-    let origin = url.origin();
-    origin.is_tuple().then(|| origin.ascii_serialization())
-}
-
-async fn exchange_token(
-    state: &AppState,
-    creds: &crate::mcp::oauth::OAuthClientCreds,
-    pending: &PendingAuthorization,
-    code: &str,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<crate::mcp::oauth::TokenExchangeResult, CallbackFail> {
-    let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
-    exchange_code(
-        &state.mcp_oauth_flow,
-        creds,
-        &redirect_uri,
-        code,
-        &pending.pkce_verifier,
-        now,
-    )
-    .await
-    .map_err(|e| {
-        tracing::warn!(
-            event = "mcp.oauth.callback.exchange_failed",
-            error = ?e,
-        );
-        CallbackFail {
-            redirect_to: pending.redirect_to.clone(),
-            reason: "token_exchange_failed",
-        }
-    })
-}
-
-async fn persist_oauth_success(
-    state: &AppState,
-    pending: &PendingAuthorization,
-    token: crate::mcp::oauth::TokenExchangeResult,
-    creds: &crate::mcp::oauth::OAuthClientCreds,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<(), &'static str> {
-    // DCR entries fold the client material into the encrypted
-    // `OAuth2Payload` so the refresh path can rebuild `RefreshCreds`
-    // without consulting a clients table. Platform entries leave the
-    // `dcr_*` slots `None` — the refresh path reads env instead.
-    // **Both** branches persist `token_endpoint_auth_method`: the
-    // refresh path needs the resolver's start-time pick to align the
-    // POST with the AS's `token_endpoint_auth_methods_supported`.
-    let (dcr_client_id, dcr_client_secret) = if pending.dcr_client.is_some() {
-        (
-            Some(creds.client_id.as_str().to_owned()),
-            creds.client_secret.as_ref().map(|s| s.expose().to_owned()),
-        )
-    } else {
-        (None, None)
-    };
-    let payload = CredentialPayload::Oauth2(OAuth2Payload {
-        access_token: token.access_token,
-        refresh_token: token.refresh_token,
-        expires_at: token.expires_at,
-        scope: token.scope,
-        issuer: token.issuer,
-        token_endpoint: token.token_endpoint,
-        dcr_client_id,
-        dcr_client_secret,
-        token_endpoint_auth_method: Some(creds.token_endpoint_auth_method),
-    });
-    if let Err(e) = state
-        .mcp_credentials
-        .upsert(McpCredentialWrite {
-            server_id: pending.server_id,
-            org_id: pending.org_id,
-            payload,
-        })
-        .await
-    {
-        tracing::error!(
-            event = "mcp.oauth.callback.credentials_write_failed",
-            error = ?e,
-        );
-        return Err("credentials_write_failed");
-    }
-    mark_connected(state, pending.server_id, pending.org_id, now)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                event = "mcp.oauth.callback.status_update_failed",
-                error = ?e,
-            );
-            "internal_error"
-        })?;
-    state.mcp_refresh.request();
-    Ok(())
-}
-
 // Privileged write: the callback runs without a session cookie, so we
 // can't go through `begin_as`. `org_id = $2` pins the row to the tenant
 // the pending row was issued for.
@@ -1798,22 +1606,26 @@ async fn mark_connected(
 
 /// Best-effort consumption of the pending row when we already know the
 /// flow has failed and just want to extract the `redirect_to` so the FE
-/// lands on the right page. Swallows errors and absence — the failure
-/// redirect falls back to `/` either way.
+/// lands on the right page. Reads the patom-side ctx then deletes the
+/// row so a vendor retry on the same `state` token can't double-fire.
+/// Swallows errors and absence — the failure redirect falls back to `/`
+/// either way.
 async fn consume_pending_for_redirect(state: &AppState, raw_state: Option<&str>) -> Option<String> {
+    use rmcp::transport::auth::StateStore as _;
     let raw = raw_state?;
-    let now = state.clock.now_utc();
-    match state.mcp_oauth_pending.consume(raw, now).await {
-        Ok(Some(p)) => p.redirect_to,
-        Ok(None) => None,
+    let ctx = match state.mcp_oauth_pending.read_pending_ctx(raw).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return None,
         Err(e) => {
             tracing::warn!(
-                event = "mcp.oauth.callback.consume_for_redirect_failed",
+                event = "mcp.oauth.callback.read_ctx_for_redirect_failed",
                 error = ?e,
             );
-            None
+            return None;
         }
-    }
+    };
+    let _ = state.mcp_oauth_pending.clone().reader().delete(raw).await;
+    ctx.redirect_to
 }
 
 /// Build the successful-callback redirect URL. The base path is the
@@ -1927,25 +1739,6 @@ async fn disconnect_oauth(
     Ok(Json(OAuthDisconnectResponse { ok: true }))
 }
 
-/// Tenant-gate a server, then run discovery against its HTTP URL.
-/// Shared by every OAuth handler that needs the same `AsMetadata`
-/// `start_oauth` would resolve.
-async fn resolve_as_metadata_for_server(
-    state: &AppState,
-    org_id: crate::auth::OrgId,
-    server_id: McpServerId,
-) -> Result<crate::mcp::oauth::AsMetadata, HttpError> {
-    let server = state
-        .mcp_store
-        .read(server_id, org_id)
-        .await
-        .map_err(HttpError::Mcp)?;
-    let url = server.config.http_url();
-    discover_authorization_server(&state.mcp_oauth_flow.http, url.as_str())
-        .await
-        .map_err(map_oauth_err)
-}
-
 /// Pick the OAuth `scope` value to forward into the authorize URL.
 ///
 /// Precedence: request override → catalog `default_scope` → `None`.
@@ -1994,15 +1787,15 @@ async fn catalog_entry_for_server(
         .map_err(HttpError::Mcp)
 }
 
-/// Borrow [`OAuthAuthorizeExtras`] as the `&[(&str, &str)]` shape
-/// [`build_authorize_url`] consumes. Empty slice when the catalog row
-/// has no extras (the common DCR-vendor case).
-fn authorize_extras_borrowed(extras: Option<&OAuthAuthorizeExtras>) -> Vec<(&str, &str)> {
+/// Owned copy of [`OAuthAuthorizeExtras`] for handoff into
+/// `oauth::session::start_authorization` (which can't borrow from the
+/// short-lived `McpCatalogEntry`).
+fn authorize_extras_owned(extras: Option<&OAuthAuthorizeExtras>) -> Vec<(String, String)> {
     extras
         .map(|e| {
             e.as_slice()
                 .iter()
-                .map(|p| (p.key.as_str(), p.value.as_str()))
+                .map(|p| (p.key.as_str().to_owned(), p.value.as_str().to_owned()))
                 .collect()
         })
         .unwrap_or_default()
@@ -2110,18 +1903,8 @@ async fn handle_slack_connect_inner(
             "Couldn't install this connector. The catalog entry may be missing."
         })?;
 
-    let (start, dcr_pending) = slack_connect_build_oauth_start(state, org_id, server.id).await?;
-
-    persist_slack_connect_pending(
-        state,
-        &claims,
-        &start,
-        server.id,
-        user_id,
-        org_id,
-        dcr_pending,
-    )
-    .await?;
+    let authorize_url =
+        slack_connect_build_oauth_start(state, &claims, server.id, user_id, org_id).await?;
 
     tracing::info!(
         patom.mcp.catalog_id = %claims.catalog_id,
@@ -2129,7 +1912,7 @@ async fn handle_slack_connect_inner(
         patom.user.id = %user_id.as_uuid(),
         event = "slack.connect.redirect",
     );
-    Ok(start.authorize_url.to_string())
+    Ok(authorize_url)
 }
 
 async fn resolve_slack_connect_identity(
@@ -2158,23 +1941,16 @@ async fn resolve_slack_connect_identity(
     }
 }
 
+/// Slack-flow start: same shape as the web-flow's `start_oauth`, but
+/// the patom-side context carries Slack thread metadata so the
+/// post-success ping fires after the callback.
 async fn slack_connect_build_oauth_start(
     state: &AppState,
-    org_id: crate::auth::OrgId,
+    claims: &crate::slack::connect_link::SlackConnectClaims,
     server_id: McpServerId,
-) -> Result<
-    (
-        crate::mcp::oauth::AuthorizeStart,
-        Option<crate::mcp::oauth::PendingDcrClient>,
-    ),
-    &'static str,
-> {
-    let as_metadata = resolve_as_metadata_for_server(state, org_id, server_id)
-        .await
-        .map_err(|e| {
-            tracing::warn!(error = ?e, event = "slack.connect.discovery_failed");
-            "Couldn't reach the connector's authorisation server."
-        })?;
+    user_id: crate::auth::UserId,
+    org_id: crate::auth::OrgId,
+) -> Result<String, &'static str> {
     let catalog_entry = catalog_entry_for_server(state, org_id, server_id)
         .await
         .map_err(|e| {
@@ -2185,89 +1961,89 @@ async fn slack_connect_build_oauth_start(
             tracing::warn!(event = "slack.connect.catalog_entry_missing");
             "Connector's catalog entry no longer exists."
         })?;
+    let server = state.mcp_store.read(server_id, org_id).await.map_err(|e| {
+        tracing::warn!(error = ?e, event = "slack.connect.server_lookup_failed");
+        "Couldn't load the connector's server row."
+    })?;
+    let server_url = match &server.config {
+        McpTransport::Http { url } => url.as_str().to_owned(),
+    };
     let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
-    let creds = crate::mcp::oauth::resolve_oauth_client_creds(crate::mcp::oauth::ResolveCtx {
+    let scopes: Vec<String> = catalog_entry
+        .default_scope
+        .as_deref()
+        .map(|s| s.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default();
+    let extras_owned = authorize_extras_owned(catalog_entry.authorize_extra_params.as_ref());
+    let expires_at = state.clock.now_utc()
+        + chrono::Duration::from_std(OAUTH_PENDING_TTL)
+            .expect("invariant: OAUTH_PENDING_TTL fits in chrono::Duration");
+
+    let writer = state.mcp_oauth_pending.clone().writer(PatomPendingCtx {
+        server_id,
+        user_id,
+        org_id,
+        redirect_to: None,
+        resume_ctx: Some(ResumeCtx {
+            session_id: claims.session_id,
+            agent_id: claims.agent_id,
+        }),
+        slack_ctx: Some(SlackPingCtx {
+            team_id: claims.team_id.as_str().to_owned(),
+            channel_id: claims.channel_id.as_str().to_owned(),
+            thread_ts: claims.thread_ts.as_str().to_owned(),
+        }),
+        expires_at,
+    });
+
+    let http = reqwest::Client::builder().build().map_err(|e| {
+        tracing::error!(event = "slack.connect.http_build_failed", error = %e);
+        "Internal error creating the HTTP client."
+    })?;
+
+    start_authorization(StartCtx {
         catalog: &catalog_entry,
+        server_url,
+        http,
+        scopes,
+        authorize_extras: extras_owned,
+        redirect_uri,
         platform_clients: &state.platform_oauth_clients,
-        as_metadata: &as_metadata,
-        redirect_uri: &redirect_uri,
-        requested_scope: catalog_entry.default_scope.as_deref(),
-        flow: &state.mcp_oauth_flow,
+        credentials: state.mcp_credentials.clone(),
+        state_store: writer,
+        server_id,
+        org_id,
     })
     .await
     .map_err(|e| {
-        tracing::warn!(error = ?e, event = "slack.connect.oauth_client_resolve_failed");
-        "Couldn't resolve an OAuth client for this connector."
-    })?;
-    let extras = authorize_extras_borrowed(catalog_entry.authorize_extra_params.as_ref());
-    let start = build_authorize_url(
-        &creds,
-        &redirect_uri,
-        catalog_entry.default_scope.as_deref(),
-        &extras,
-    )
-    .map_err(|e| {
-        tracing::warn!(error = ?e, event = "slack.connect.build_url_failed");
-        "Couldn't build the authorisation URL."
-    })?;
-    let dcr_pending = dcr_pending_from_creds(&catalog_entry, &creds);
-    Ok((start, dcr_pending))
-}
-
-async fn persist_slack_connect_pending(
-    state: &AppState,
-    claims: &crate::slack::connect_link::SlackConnectClaims,
-    start: &crate::mcp::oauth::AuthorizeStart,
-    server_id: McpServerId,
-    user_id: crate::auth::UserId,
-    org_id: crate::auth::OrgId,
-    dcr_client: Option<crate::mcp::oauth::PendingDcrClient>,
-) -> Result<(), &'static str> {
-    let now_chrono = state.clock.now_utc();
-    let expires_at = now_chrono
-        + chrono::Duration::from_std(OAUTH_PENDING_TTL)
-            .expect("invariant: OAUTH_PENDING_TTL fits in chrono::Duration");
-    let resume_ctx = Some(crate::mcp::oauth::ResumeCtx {
-        session_id: claims.session_id,
-        agent_id: claims.agent_id,
-    });
-    let slack_ctx = Some(crate::mcp::oauth::SlackPingCtx {
-        team_id: claims.team_id.as_str().to_owned(),
-        channel_id: claims.channel_id.as_str().to_owned(),
-        thread_ts: claims.thread_ts.as_str().to_owned(),
-    });
-    state
-        .mcp_oauth_pending
-        .insert(crate::mcp::oauth::PendingAuthorizationWrite {
-            state: start.state.clone(),
-            server_id,
-            user_id,
-            org_id,
-            pkce_verifier: start.pkce_verifier.clone(),
-            redirect_to: None,
-            expires_at,
-            resume_ctx,
-            slack_ctx,
-            dcr_client,
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!(error = ?e, event = "slack.connect.pending_insert_failed");
-            "Internal error persisting authorisation state."
-        })
+        tracing::warn!(event = "slack.connect.start_authorization_failed", error = ?e);
+        "Couldn't start the OAuth flow."
+    })
 }
 
 fn map_oauth_err(err: OAuthError) -> HttpError {
     match err {
-        OAuthError::InvalidState | OAuthError::Expired => HttpError::BadRequest(err.to_string()),
-        OAuthError::Discovery(_) | OAuthError::Dcr(_) | OAuthError::TokenEndpoint(_) => {
-            tracing::warn!(error = %err, "mcp.oauth.upstream_error");
-            HttpError::BadRequest(err.to_string())
-        }
-        OAuthError::RefreshRevoked => HttpError::Conflict(err.to_string()),
-        OAuthError::Crypto(_) | OAuthError::Db(_) | OAuthError::Misconfigured(_) => {
+        OAuthError::Rmcp(ref inner) => match inner {
+            rmcp::transport::auth::AuthError::RegistrationFailed(_)
+            | rmcp::transport::auth::AuthError::TokenExchangeFailed(_)
+            | rmcp::transport::auth::AuthError::TokenRefreshFailed(_)
+            | rmcp::transport::auth::AuthError::MetadataError(_)
+            | rmcp::transport::auth::AuthError::NoAuthorizationSupport => {
+                tracing::warn!(error = %err, "mcp.oauth.upstream_error");
+                HttpError::BadRequest(err.to_string())
+            }
+            _ => {
+                tracing::error!(error = %err, "mcp.oauth.internal_error");
+                HttpError::Internal
+            }
+        },
+        OAuthError::Crypto(_) | OAuthError::Db(_) => {
             tracing::error!(error = %err, "mcp.oauth.internal_error");
             HttpError::Internal
+        }
+        OAuthError::Misconfigured(_) => {
+            tracing::warn!(error = %err, "mcp.oauth.misconfigured");
+            HttpError::BadRequest(err.to_string())
         }
         OAuthError::Mcp(e) => HttpError::Mcp(e),
     }

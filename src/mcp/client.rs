@@ -22,7 +22,6 @@ use tokio::time::timeout;
 use super::credentials::CredentialPayload;
 use super::error::McpError;
 use super::limits::{MCP_CALL_TIMEOUT, MCP_CONNECT_TIMEOUT, MCP_LIST_TOOLS_TIMEOUT};
-use super::oauth::PatomMcpHttpClient;
 use super::types::McpTransport;
 
 /// Connected MCP server. Cheap to clone (the running service lives behind an `Arc`)
@@ -73,14 +72,15 @@ impl McpClient {
         }
     }
 
-    /// Open an OAuth-aware connection. The adapter implements rmcp's
-    /// `StreamableHttpClient` trait with the refresh-on-acquire +
-    /// refresh-on-401 behaviour described in [`PatomMcpHttpClient`];
-    /// no static Bearer is attached, so a rotated token takes effect
-    /// on the next call without reconnecting.
+    /// Open an OAuth-aware connection. The adapter is
+    /// `rmcp::transport::auth::AuthClient<reqwest::Client>`, which wraps
+    /// an [`rmcp::transport::auth::AuthorizationManager`] and handles
+    /// bearer injection plus refresh-on-401 internally. No static
+    /// Bearer is attached, so a rotated token takes effect on the next
+    /// call without reconnecting.
     pub async fn connect_with_adapter(
         transport: &McpTransport,
-        adapter: PatomMcpHttpClient,
+        adapter: rmcp::transport::auth::AuthClient<reqwest::Client>,
     ) -> Result<Self, McpError> {
         match transport {
             McpTransport::Http { url } => {

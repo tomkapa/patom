@@ -45,7 +45,7 @@ pub use pg_credentials::PgMcpCredentialStore;
 pub use pg_store::PgMcpServerStore;
 pub use rate_limit::TestConnectRateLimiter;
 pub use refresher::{McpRefreshTrigger, McpRefresher};
-pub use registry::{McpRegistry, OAuthAdapterDeps, RefreshLockMap, RegistrySnapshot, ToolOrigin};
+pub use registry::{McpRegistry, OAuthAdapterDeps, RegistrySnapshot, ToolOrigin};
 pub use scoped::ScopedMcpSource;
 pub use store::{
     McpHealthUpdate, McpServerCreate, McpServerStore, McpServerUpdate, SharedMcpServerStore,

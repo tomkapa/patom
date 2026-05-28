@@ -1,41 +1,41 @@
-//! Upstream-vendor OAuth 2.0 plumbing for MCP servers.
+//! Upstream-vendor OAuth 2.0 plumbing for MCP servers — built on
+//! `rmcp::transport::auth`.
 //!
-//! Three concerns, one module:
-//!   1. **Discovery** — given an MCP server URL, find the authorization
-//!      server: protected-resource metadata (RFC 9728) →
-//!      authorization-server metadata (RFC 8414). One fetch each, no
-//!      fallback probes, no delegated-issuer chase. Codex-shape.
-//!   2. **Client resolution** — for a catalog entry, produce the
-//!      `(client_id, client_secret, endpoints, auth_method)` tuple the
-//!      flow needs. Platform entries read env; DCR entries register
-//!      against the AS. The result is carried across `POST /oauth/start`
-//!      → `GET /oauth/callback` on the pending row and then folded into
-//!      the encrypted `OAuth2Payload` so one row per server holds
-//!      everything refresh needs.
-//!   3. **Browser flow** — mint PKCE + state, build the authorize URL,
-//!      handle the callback by exchanging the code for tokens. The
-//!      transport adapter ([`PatomMcpHttpClient`]) keeps tokens fresh on
-//!      every request (refresh-on-acquire + refresh-on-401) — no
-//!      background refresher.
+//! Patom delegates the whole OAuth protocol surface (discovery, PKCE
+//! generation, DCR per RFC 7591, code exchange, refresh, bearer
+//! injection on outgoing requests) to rmcp 1.7's `auth` feature, which
+//! is the same machinery codex consumes
+//! (`codex-rs/rmcp-client/src/perform_oauth_login.rs`). This module
+//! owns the multi-tenant adapters between rmcp's traits and patom's
+//! Postgres persistence:
+//!
+//!   * [`PatomCredentialStore`] — `impl rmcp::CredentialStore` keyed at
+//!     construction by `(server_id, org_id)`. Wraps patom's encrypted
+//!     `mcp_server_credentials` row; rmcp's `StoredCredentials` is the
+//!     persisted payload verbatim.
+//!   * [`PatomStateStore`] — `impl rmcp::StateStore` for the PKCE +
+//!     CSRF state that bridges `/oauth/start` → `/oauth/callback`.
+//!     Postgres-backed (`mcp_oauth_pending`) so the callback can land
+//!     on any replica.
+//!   * [`session`] — orchestration. [`start_authorization`] mirrors
+//!     codex's branching on `client_source` (Platform vs DCR vs None).
+//!     [`handle_callback`] resumes the flow, exchanges the code,
+//!     persists tokens.
+//!
+//! No DCR / PKCE / token-exchange / refresh code lives here any more —
+//! that's all rmcp.
 
-mod client_resolver;
-mod discovery;
+mod credential_adapter;
 mod errors;
-mod flow;
-mod pg_store;
-mod store;
-mod transport;
+mod session;
+mod state_adapter;
 
-pub use client_resolver::{ResolveCtx, resolve as resolve_oauth_client_creds};
-pub use discovery::{AsMetadata, discover_authorization_server};
+pub use credential_adapter::PatomCredentialStore;
 pub use errors::OAuthError;
-pub use flow::{
-    AuthorizeStart, OAuthFlowClient, RefreshCreds, TokenExchangeResult, build_authorize_url,
-    exchange_code,
+pub use session::{
+    OAuthSessionMap, StartCtx, build_manager_for_request, handle_callback, start_authorization,
 };
-pub use pg_store::PgMcpOAuthPendingStore;
-pub use store::{
-    OAuthClientCreds, PendingAuthorization, PendingAuthorizationWrite, PendingDcrClient, ResumeCtx,
-    SharedMcpOAuthPendingStore, SlackPingCtx, TokenAuthMethod,
+pub use state_adapter::{
+    PatomPendingCtx, PatomStateStore, PgMcpOAuthPendingStore, ResumeCtx,
+    SharedMcpOAuthPendingStore, SlackPingCtx,
 };
-pub use transport::{PatomMcpHttpClient, PatomMcpHttpClientConfig};

@@ -26,68 +26,34 @@ use super::client::McpClient;
 use super::credentials::{CredentialPayload, SharedMcpCredentialStore};
 use super::error::McpError;
 use super::limits::{MAX_MCP_SERVERS, MAX_TOOLS_PER_SERVER};
-use super::oauth::{OAuthFlowClient, PatomMcpHttpClient, PatomMcpHttpClientConfig};
+use super::oauth::build_manager_for_request;
 use super::store::{McpHealthUpdate, SharedMcpServerStore};
 use super::tool::McpTool;
 use super::types::{
     DiscoveredTool, McpCatalogId, McpServerId, McpServerRecord, McpToolRemoteName, McpTransport,
 };
 
-/// Process-wide per-(server, org) refresh mutex map.
-///
-/// Shared across every adapter instance the registry mints. Each
-/// `connect_oauth` call gets a fresh `PatomMcpHttpClient`; without a
-/// shared lock the per-adapter mutex would lose dedup across concurrent
-/// reconnects for the same server.
-pub type RefreshLockMap = std::sync::Mutex<
-    HashMap<(crate::mcp::types::McpServerId, crate::auth::OrgId), Arc<tokio::sync::Mutex<()>>>,
->;
-
-/// Collaborators for building a [`PatomMcpHttpClient`] adapter.
+/// Collaborators for building an OAuth-aware MCP connection.
 ///
 /// Wired on the registry for OAuth2-credentialed servers. Tests without
 /// an OAuth-capable harness wire `None` and the registry refuses to
 /// connect those servers with a typed error.
+///
+/// Note: refresh-on-acquire and refresh-on-401 are now owned by rmcp's
+/// `AuthClient`/`AuthorizationManager`, so there is no patom-side
+/// refresh lock map any more — rmcp's `Arc<Mutex<AuthorizationManager>>`
+/// dedupes refreshes for the lifetime of one connection.
 #[derive(Clone)]
 pub struct OAuthAdapterDeps {
     pub credentials: SharedMcpCredentialStore,
     pub catalog: SharedMcpCatalogStore,
-    pub flow: OAuthFlowClient,
     pub platform_clients: Arc<HashMap<String, PlatformOAuthClient>>,
     pub inner_http: reqwest::Client,
-    /// Per-(server, org) mutexes, shared across reconnects so two
-    /// concurrent refresh calls for the same server can't both POST to
-    /// the AS and double-rotate the refresh_token.
-    pub refresh_locks: Arc<RefreshLockMap>,
-    /// Public OAuth callback URL — Patom's
-    /// `<oauth_redirect_base>/mcp-oauth/callback`. Threaded into the
-    /// adapter so the refresh grant attaches the same `redirect_uri`
-    /// the authorization step used.
-    pub redirect_uri: Arc<str>,
 }
 
 impl std::fmt::Debug for OAuthAdapterDeps {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OAuthAdapterDeps").finish_non_exhaustive()
-    }
-}
-
-impl OAuthAdapterDeps {
-    /// Acquire (or create) the per-(server, org) refresh mutex. Holds
-    /// the map lock only long enough to insert; returned `Arc<Mutex<()>>`
-    /// is then locked by the caller for the refresh window.
-    fn refresh_lock_for(
-        &self,
-        server_id: crate::mcp::types::McpServerId,
-        org_id: crate::auth::OrgId,
-    ) -> Arc<tokio::sync::Mutex<()>> {
-        let mut map = self
-            .refresh_locks
-            .lock()
-            .expect("invariant: refresh_locks map mutex poisoned");
-        map.entry((server_id, org_id))
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
     }
 }
 
@@ -638,8 +604,15 @@ impl McpRegistryInner {
         }
     }
 
-    /// Build a [`PatomMcpHttpClient`] adapter for this server and open
-    /// the MCP connection through it.
+    /// Open an OAuth-aware connection backed by `rmcp::transport::auth`.
+    ///
+    /// Builds a fresh `AuthorizationManager` bound to
+    /// `(server_id, org_id)` via [`PatomCredentialStore`] (so token
+    /// refreshes land in patom's encrypted credential row), wraps it in
+    /// `rmcp::transport::auth::AuthClient`, and hands the AuthClient to
+    /// rmcp's `StreamableHttpClientTransport` as the underlying HTTP
+    /// client. Bearer injection + refresh-on-401 are rmcp's job from
+    /// here on.
     async fn connect_oauth(
         &self,
         server_id: McpServerId,
@@ -652,33 +625,17 @@ impl McpRegistryInner {
                     .into(),
             )
         })?;
-        // Need the catalog row for the refresh path's client_source
-        // branch. Read here so the connect failure surface is uniform.
-        let server = self.store.read(server_id, org_id).await?;
-        let catalog = deps
-            .catalog
-            .get_for_org(org_id, &server.catalog_id)
-            .await?
-            .ok_or_else(|| {
-                McpError::InvalidConfig(format!(
-                    "catalog `{id}` for server {server_id} no longer exists",
-                    id = server.catalog_id,
-                ))
-            })?;
-        let refresh_lock = deps.refresh_lock_for(server_id, org_id);
-        let adapter = PatomMcpHttpClient::new(PatomMcpHttpClientConfig {
-            inner: deps.inner_http.clone(),
-            credentials: deps.credentials.clone(),
-            flow: deps.flow.clone(),
-            clock: self.clock.clone(),
+        let McpTransport::Http { url } = transport;
+        let manager = build_manager_for_request(
             server_id,
             org_id,
-            custom_headers: HashMap::new(),
-            catalog,
-            platform_clients: deps.platform_clients.clone(),
-            refresh_lock,
-            redirect_uri: deps.redirect_uri.clone(),
-        });
+            url.as_str(),
+            deps.inner_http.clone(),
+            deps.credentials.clone(),
+        )
+        .await
+        .map_err(|e| McpError::Connect(format!("oauth manager init: {e}")))?;
+        let adapter = rmcp::transport::auth::AuthClient::new(deps.inner_http.clone(), manager);
         McpClient::connect_with_adapter(transport, adapter).await
     }
 }
