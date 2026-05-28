@@ -626,14 +626,24 @@ impl McpRegistryInner {
             )
         })?;
         let McpTransport::Http { url } = transport;
-        let manager = build_manager_for_request(
-            server_id,
-            org_id,
-            url.as_str(),
-            deps.inner_http.clone(),
-            deps.credentials.clone(),
+        // Bound the OAuth manager build: it performs PRM + AS metadata
+        // discovery over HTTP plus a credential-store read, so a slow
+        // vendor must not stall the connect path (CLAUDE.md §5).
+        // `MCP_CONNECT_TIMEOUT` (10 s) is the same outer bound the
+        // initialize handshake uses below — keeping them aligned makes
+        // the worst-case connect duration predictable.
+        let manager = tokio::time::timeout(
+            super::limits::MCP_CONNECT_TIMEOUT,
+            build_manager_for_request(
+                server_id,
+                org_id,
+                url.as_str(),
+                deps.inner_http.clone(),
+                deps.credentials.clone(),
+            ),
         )
         .await
+        .map_err(|_| McpError::Connect("oauth manager init timed out".into()))?
         .map_err(|e| McpError::Connect(format!("oauth manager init: {e}")))?;
         let adapter = rmcp::transport::auth::AuthClient::new(deps.inner_http.clone(), manager);
         McpClient::connect_with_adapter(transport, adapter).await

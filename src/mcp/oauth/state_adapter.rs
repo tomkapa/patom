@@ -142,7 +142,7 @@ impl PgMcpOAuthPendingStore {
             },
         )
         .await?;
-        Ok(row.map(PendingCtxRow::into_ctx))
+        row.map(PendingCtxRow::into_ctx).transpose()
     }
 }
 
@@ -282,20 +282,29 @@ struct PendingCtxRow {
 }
 
 impl PendingCtxRow {
-    fn into_ctx(self) -> PatomPendingCtx {
-        // The all-or-none CHECK constraints on `mcp_oauth_pending` keep
-        // each tuple uniform; a half-populated read is a schema-vs-code
-        // divergence that should crash the process (CLAUDE.md §6).
+    /// Decode a fetched row into the boundary type. The all-or-none
+    /// CHECK constraints on `mcp_oauth_pending` keep each tuple uniform,
+    /// so half-populated reads should be unreachable — but a future
+    /// constraint regression or an out-of-band `INSERT` mustn't crash
+    /// the process (CLAUDE.md §12 forbids `panic!` across a module
+    /// boundary; the previous `panic = abort` would SIGABRT a
+    /// recoverable user-visible failure). Return a typed
+    /// `Misconfigured` error instead so the callback handler can
+    /// surface a clean redirect.
+    fn into_ctx(self) -> Result<PatomPendingCtx, OAuthError> {
         let resume_ctx = match (self.session_id, self.agent_id) {
             (Some(session_id), Some(agent_id)) => Some(ResumeCtx {
                 session_id,
                 agent_id,
             }),
             (None, None) => None,
-            _ => panic!(
-                "invariant: mcp_oauth_pending.resume_ctx half-populated; \
-                 CHECK constraint violated"
-            ),
+            _ => {
+                return Err(OAuthError::Misconfigured(
+                    "mcp_oauth_pending.resume_ctx half-populated; \
+                     CHECK constraint violated"
+                        .to_owned(),
+                ));
+            }
         };
         let slack_ctx = match (
             self.slack_team_id,
@@ -308,12 +317,15 @@ impl PendingCtxRow {
                 thread_ts,
             }),
             (None, None, None) => None,
-            _ => panic!(
-                "invariant: mcp_oauth_pending.slack_ctx partially-populated; \
-                 CHECK constraint violated"
-            ),
+            _ => {
+                return Err(OAuthError::Misconfigured(
+                    "mcp_oauth_pending.slack_ctx partially populated; \
+                     CHECK constraint violated"
+                        .to_owned(),
+                ));
+            }
         };
-        PatomPendingCtx {
+        Ok(PatomPendingCtx {
             server_id: self.server_id,
             user_id: self.user_id,
             org_id: self.org_id,
@@ -321,7 +333,7 @@ impl PendingCtxRow {
             resume_ctx,
             slack_ctx,
             expires_at: self.expires_at,
-        }
+        })
     }
 }
 

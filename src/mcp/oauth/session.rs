@@ -366,11 +366,12 @@ pub async fn handle_callback(
         ClientSource::Dcr => {
             // DCR: `start_dcr` persisted a bootstrap row with the
             // freshly-registered `client_id` and `token_response = None`.
-            // Load it directly and call `configure_client_id` — rmcp's
-            // `initialize_from_store` won't help us here because it
-            // gates the `configure_client_id` call on
-            // `stored.token_response.is_some()`, which by definition is
-            // false at the pre-exchange callback hop.
+            // Load it and call `configure_client` (NOT `configure_client_id`
+            // — that helper hardcodes `redirect_uri = self.base_url`, which
+            // is the MCP server URL, and the vendor will reject the code
+            // exchange with `invalid_grant: Invalid redirect URI` because
+            // OAuth 2.0 §4.1.3 requires byte-equality with the URI used
+            // at the authorize step).
             let cred_store = PatomCredentialStore::new(server_id, org_id, credentials);
             let stored = cred_store.load().await.map_err(OAuthError::from)?;
             let stored = stored.ok_or_else(|| {
@@ -379,9 +380,8 @@ pub async fn handle_callback(
                      start_authorization must run first",
                 ))
             })?;
-            manager
-                .configure_client_id(&stored.client_id)
-                .map_err(OAuthError::from)?;
+            let config = OAuthClientConfig::new(stored.client_id, redirect_uri.to_owned());
+            manager.configure_client(config).map_err(OAuthError::from)?;
         }
     }
 
