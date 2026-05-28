@@ -18,13 +18,18 @@
 //!
 //! ## Adding a provider
 //!
-//! 1. Add `Option<SecretString>` fields for `client_id` / `client_secret`
-//!    to [`AuthSettings`][crate::config::AuthSettings] + the matching
-//!    raw env vars in `RawSettings`. Keep the names symmetric with the
-//!    existing `google_*` pair.
-//! 2. Uncomment / add the matching `if let Some(...)` branch in
-//!    [`specs`]. The endpoint constants are stable RFC 8414 discovery
-//!    values; inline them as `const` rather than fetching at boot.
+//! 1. Add `client_id` / `client_secret` fields to
+//!    [`AuthSettings`][crate::config::AuthSettings] + the matching raw
+//!    env vars in `RawSettings`. Required vs optional is a per-vendor
+//!    call: if the catalog row is dead without those credentials (no
+//!    DCR, no per-org fallback the deploy actually uses), make them
+//!    required `SecretString` like `google_*` / `github_*`; otherwise
+//!    `Option<SecretString>` and a paired-set match. Keep names
+//!    symmetric with the existing pairs.
+//! 2. Add the matching `out.push(...)` (required) or `if let Some(...)`
+//!    (optional) branch in [`specs`]. The endpoint constants are stable
+//!    RFC 8414 discovery values; inline them as `const` rather than
+//!    fetching at boot.
 //! 3. Add a catalog entry that points at the provider's remote MCP
 //!    server URL (migrations/) so tenants can wire an `mcp_servers`
 //!    row against the right `catalog_id`.
@@ -69,7 +74,7 @@ struct SharedClientSpec {
 /// (`/<tenant_id>/`) remains a future per-org override via
 /// `PUT /oauth/client`.
 fn specs(auth: &AuthSettings) -> Vec<SharedClientSpec> {
-    let mut out = Vec::with_capacity(2);
+    let mut out = Vec::with_capacity(3);
 
     // Google — always present in this build (the same credentials power
     // Login with Google, plumbed via `AuthSettings`).
@@ -109,6 +114,37 @@ fn specs(auth: &AuthSettings) -> Vec<SharedClientSpec> {
     //         client_secret: secret.clone(),
     //     });
     // }
+
+    // GitHub — official remote MCP server at api.githubcopilot.com.
+    // GitHub's authorization server does NOT advertise RFC 7591 DCR, so
+    // the platform must register an OAuth App up-front and share that
+    // client across tenants. Required at startup (same shape as Google
+    // above) — without it the `github` catalog row cannot complete a
+    // flow.
+    //
+    // Issuer is `https://github.com/login/oauth`, not the bare
+    // `https://github.com`. This is the value api.githubcopilot.com's
+    // protected-resource metadata returns in `authorization_servers[0]`,
+    // and the AS metadata document at
+    // `https://github.com/login/oauth/.well-known/oauth-authorization-server`
+    // self-identifies with that same string per RFC 8414 §2.4. The
+    // shared-client lookup in `resolve_oauth_client` does strict
+    // equality on what discovery returns, so any other spelling here
+    // (e.g. the OAuth App homepage `https://github.com`) leaves the
+    // catalog row falling through to DCR — which GitHub doesn't
+    // support — and the user sees the "DcrUnsupported" 4xx.
+    //
+    // `ClientSecretPost` matches GitHub's documented token-endpoint
+    // convention; their `Basic` auth path also works but `_post` is
+    // what the OAuth App emits in its example payloads.
+    out.push(SharedClientSpec {
+        issuer: "https://github.com/login/oauth",
+        authorization_endpoint: "https://github.com/login/oauth/authorize",
+        token_endpoint: "https://github.com/login/oauth/access_token",
+        token_endpoint_auth_method: TokenAuthMethod::ClientSecretPost,
+        client_id: auth.github_client_id.clone(),
+        client_secret: auth.github_client_secret.clone(),
+    });
 
     out
 }

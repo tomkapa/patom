@@ -320,3 +320,64 @@ async fn builtin_notion_entry_has_no_default_scope() {
         notion.default_scope
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn builtin_github_entry_points_at_official_remote_mcp_server() {
+    // Migration 49 seeds the GitHub catalog row aimed at the official
+    // remote MCP server at api.githubcopilot.com. Pin the transport URL
+    // and auth_kind here so a future migration cannot silently retarget
+    // the row (e.g. at a self-hosted mirror) without breaking this lock.
+    let db = TestDb::fresh().await;
+    let store = store(&db);
+    let github = store
+        .get_for_org(db.default_org_id, &cat("github"))
+        .await
+        .expect("get_for_org github")
+        .expect("github row exists");
+    assert!(matches!(github.auth_kind, McpAuthKind::OAuth2));
+    let McpTransport::Http { url } = github.default_transport;
+    assert_eq!(url.as_str(), "https://api.githubcopilot.com/mcp/");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn builtin_github_entry_carries_default_scope() {
+    // Migration 49 seeds the GitHub scope set on the built-in row. Without
+    // it `start_oauth` would dispatch an authorize request with no `scope`
+    // parameter — GitHub returns an empty token (no tools accessible) on
+    // that path. Pin the four scopes the MCP server's default toolset
+    // filters against.
+    let db = TestDb::fresh().await;
+    let store = store(&db);
+    let github = store
+        .get_for_org(db.default_org_id, &cat("github"))
+        .await
+        .expect("get_for_org github")
+        .expect("github row exists");
+    let scope = github.default_scope.expect("github default_scope set");
+    for required in ["repo", "read:packages", "read:org", "read:user"] {
+        assert!(
+            scope.split_whitespace().any(|s| s == required),
+            "github default_scope must include {required}, got: {scope}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn builtin_github_entry_has_no_authorize_extra_params() {
+    // GitHub's authorize endpoint is vanilla RFC 6749 §4.1 — no Google-
+    // shaped `access_type=offline` / `prompt=consent` quirk required.
+    // This lock guards against a future migration accidentally adding
+    // params that GitHub's AS would reject.
+    let db = TestDb::fresh().await;
+    let store = store(&db);
+    let github = store
+        .get_for_org(db.default_org_id, &cat("github"))
+        .await
+        .expect("get_for_org github")
+        .expect("github row exists");
+    assert!(
+        github.authorize_extra_params.is_none(),
+        "github authorize_extra_params must be NULL, got: {:?}",
+        github.authorize_extra_params
+    );
+}
