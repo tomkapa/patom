@@ -167,6 +167,17 @@ pub struct AuthSettings {
     /// Redirect URL registered with Google, e.g.
     /// `http://localhost:8080/auth/google/callback`.
     pub google_redirect_url: String,
+    /// GitHub OAuth App client id, used by the MCP shared-client seeder
+    /// (`src/mcp/oauth/shared_seed.rs`) to register a platform-owned OAuth
+    /// client keyed by issuer `https://github.com`. Required at startup:
+    /// GitHub does not support RFC 7591 DCR, so without this the `github`
+    /// catalog row cannot complete an OAuth flow and the connector ships
+    /// dead. A missing env var surfaces as the `config` crate's own
+    /// "missing field" error, same shape as `google_client_id`.
+    pub github_client_id: SecretString,
+    /// GitHub OAuth App client secret. Required at startup; same
+    /// rationale as `github_client_id`.
+    pub github_client_secret: SecretString,
     /// Whether to set the `Secure` flag on the session cookie. Off in
     /// local-dev to keep `http://localhost` workable; on everywhere
     /// else.
@@ -288,6 +299,13 @@ struct RawSettings {
     google_client_id: SecretString,
     google_client_secret: SecretString,
     google_redirect_url: String,
+    // GitHub MCP shared OAuth App — required at startup. GitHub does not
+    // expose RFC 7591 DCR, so the platform-owned OAuth App is the only
+    // way the `github` catalog row can complete a flow. Same shape as
+    // `google_client_id` above; a missing env var surfaces as the
+    // `config` crate's own "missing field" error.
+    patom_github_client_id: SecretString,
+    patom_github_client_secret: SecretString,
     // Secure by default — forgetting to set this in any https-fronted
     // deploy must not silently drop the `Secure` cookie flag. Local-dev
     // (http://localhost) overrides via `PATOM_COOKIE_SECURE=false` in
@@ -459,6 +477,8 @@ impl TryFrom<RawSettings> for Settings {
             google_client_id: raw.google_client_id,
             google_client_secret: raw.google_client_secret,
             google_redirect_url: raw.google_redirect_url,
+            github_client_id: raw.patom_github_client_id,
+            github_client_secret: raw.patom_github_client_secret,
             cookie_secure: raw.patom_cookie_secure,
             master_kek: raw.patom_master_kek,
             oauth_redirect_base: raw.patom_oauth_redirect_base,
@@ -593,6 +613,8 @@ mod tests {
             google_client_id: secret("test-client-id"),
             google_client_secret: secret("test-client-secret"),
             google_redirect_url: "http://localhost:8080/auth/google/callback".to_string(),
+            patom_github_client_id: secret("test-github-client-id"),
+            patom_github_client_secret: secret("test-github-client-secret"),
             patom_cookie_secure: false,
             // base64 of 32 bytes; never used in these tests since they only
             // exercise the Settings boundary, not crypto.
