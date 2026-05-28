@@ -51,9 +51,17 @@ pub enum CredentialPayload {
 
 /// OAuth credential payload. Stored encrypted alongside `static_headers`.
 ///
-/// Hand-rolled `Debug` that redacts `access_token` / `refresh_token`:
-/// the struct travels through tracing spans and panic backtraces, and a
-/// stray `?payload` would otherwise leak the bearer (CLAUDE.md §2).
+/// Hand-rolled `Debug` that redacts `access_token` / `refresh_token` /
+/// `dcr_client_secret`: the struct travels through tracing spans and panic
+/// backtraces, and a stray `?payload` would otherwise leak the bearer
+/// (CLAUDE.md §2).
+///
+/// DCR client material lives inside the same encrypted envelope so one
+/// row per `(server_id, org_id)` holds everything needed to refresh —
+/// access_token, refresh_token, and (for DCR vendors) the client_id /
+/// client_secret the AS issued at registration. Platform-credential
+/// entries (where the client comes from env) leave the `dcr_*` fields
+/// `None`.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2Payload {
     pub access_token: String,
@@ -62,6 +70,25 @@ pub struct OAuth2Payload {
     pub scope: Option<String>,
     pub issuer: String,
     pub token_endpoint: String,
+    /// DCR-issued client_id for this server. `None` for `client_source =
+    /// Platform` entries (the resolver pulls those from env).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dcr_client_id: Option<String>,
+    /// DCR-issued client_secret. Confidential; redacted in `Debug`.
+    /// `None` when the AS issued a public (PKCE-only) client or when the
+    /// entry uses platform credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dcr_client_secret: Option<String>,
+    /// Token-endpoint auth method picked at start time from
+    /// `token_endpoint_auth_methods_supported`. Tracked for **both**
+    /// Platform and DCR entries so the refresh path doesn't re-discover
+    /// AS metadata to know whether the secret rides on the
+    /// Authorization header or in the POST body. `None` only for
+    /// pre-this-PR rows decoded via `#[serde(default)]` — the refresh
+    /// path falls back to `ClientSecretBasic` (the RFC 7591 default)
+    /// when that happens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_endpoint_auth_method: Option<super::types::TokenAuthMethod>,
 }
 
 impl fmt::Debug for OAuth2Payload {
@@ -73,6 +100,15 @@ impl fmt::Debug for OAuth2Payload {
             .field("scope", &self.scope)
             .field("issuer", &self.issuer)
             .field("token_endpoint", &self.token_endpoint)
+            .field("dcr_client_id", &self.dcr_client_id)
+            .field(
+                "dcr_client_secret",
+                &self.dcr_client_secret.as_ref().map(|_| "***"),
+            )
+            .field(
+                "token_endpoint_auth_method",
+                &self.token_endpoint_auth_method,
+            )
             .finish()
     }
 }

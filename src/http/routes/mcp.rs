@@ -25,9 +25,8 @@ use uuid::Uuid;
 use crate::agents::AgentId;
 use crate::auth::{AuthError, Principal, VisibilityTable, visible_to};
 use crate::mcp::oauth::{
-    ClientProvenance, NewOAuthClient, OAuthClientId, OAuthError, PendingAuthorization,
-    TokenAuthMethod, build_authorize_url, discover_authorization_server, exchange_code,
-    register_dynamic_client,
+    OAuthError, PendingAuthorization, build_authorize_url, discover_authorization_server,
+    exchange_code,
 };
 use crate::mcp::{
     CatalogUpsert, ConnectionStatus, CredentialPayload, DiscoveredTool,
@@ -37,7 +36,6 @@ use crate::mcp::{
     OAuthAuthorizeExtras,
 };
 use crate::tools::{DEFAULT_TOOL_CALLS_PAGE, MAX_TOOL_CALLS_PAGE, ToolCallRowId};
-use crate::types::SecretString;
 
 use super::super::error::HttpError;
 use super::super::state::AppState;
@@ -70,7 +68,6 @@ pub(super) fn router() -> Router<AppState> {
         )
         .route("/mcp-servers/{id}/oauth/start", post(start_oauth))
         .route("/mcp-servers/{id}/oauth/disconnect", post(disconnect_oauth))
-        .route("/mcp-servers/{id}/oauth/client", put(put_oauth_client))
 }
 
 /// Public router (no auth middleware) for the OAuth callback. The browser
@@ -1166,32 +1163,44 @@ async fn start_oauth(
     // treated as if it wasn't sent — otherwise the empty string would
     // win over the catalog default and Google would reject the
     // authorize redirect with `Missing required parameter: scope`.
-    let catalog_oauth =
-        catalog_oauth_config_for_server(&state, principal.active_org_id, server_id).await?;
+    let catalog_entry = catalog_entry_for_server(&state, principal.active_org_id, server_id)
+        .await?
+        .ok_or_else(|| {
+            HttpError::BadRequest(
+                "server's catalog entry no longer exists — re-wire the server".into(),
+            )
+        })?;
     let effective_scope = effective_oauth_scope(
         body.scope.as_deref(),
-        catalog_oauth.default_scope.as_deref(),
+        catalog_entry.default_scope.as_deref(),
     );
 
-    // Step 3: resolve the OAuth client (org → shared → DCR). See
-    // [`resolve_or_register_oauth_client`] for the precedence rules.
+    // Step 3: resolve the OAuth client (platform env or fresh DCR) via
+    // the single seam in `client_resolver`. For DCR catalog entries the
+    // resolver registers a brand-new client every flow — the resulting
+    // `(client_id, secret, auth_method, endpoints)` rides the pending
+    // row across to the callback, then folds into the encrypted
+    // `OAuth2Payload` so subsequent refreshes don't need a separate
+    // clients table.
     let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
-    let dcr = resolve_or_register_oauth_client(
-        &state,
-        principal.active_org_id,
-        &as_metadata,
-        &redirect_uri,
-        effective_scope,
-    )
+    let creds = crate::mcp::oauth::resolve_oauth_client_creds(crate::mcp::oauth::ResolveCtx {
+        catalog: &catalog_entry,
+        platform_clients: &state.platform_oauth_clients,
+        as_metadata: &as_metadata,
+        redirect_uri: &redirect_uri,
+        requested_scope: effective_scope,
+        flow: &state.mcp_oauth_flow,
+    })
     .await
     .map_err(map_oauth_err)?;
 
     // Step 4: PKCE + state, persist pending row.
     let resume_ctx = parse_resume_ctx(body.session_id, body.agent_id)?;
-    let extras = authorize_extras_borrowed(catalog_oauth.authorize_extra_params.as_ref());
+    let extras = authorize_extras_borrowed(catalog_entry.authorize_extra_params.as_ref());
+    let dcr_for_pending = dcr_pending_from_creds(&catalog_entry, &creds);
     let start = persist_oauth_pending(
         &state,
-        &dcr,
+        &creds,
         &redirect_uri,
         effective_scope,
         &extras,
@@ -1202,6 +1211,7 @@ async fn start_oauth(
             redirect_to: body.redirect_to.clone(),
             resume_ctx,
             slack_ctx: None,
+            dcr_client: dcr_for_pending,
         },
     )
     .await?;
@@ -1231,7 +1241,7 @@ fn parse_resume_ctx(
 }
 
 /// Inputs that `persist_oauth_pending` needs from the calling request
-/// (everything that isn't derivable from the resolved DCR client or
+/// (everything that isn't derivable from the resolved OAuth client or
 /// AS-supplied scope).
 struct PendingFromRequest {
     server_id: McpServerId,
@@ -1240,6 +1250,9 @@ struct PendingFromRequest {
     redirect_to: Option<String>,
     resume_ctx: Option<crate::mcp::oauth::ResumeCtx>,
     slack_ctx: Option<crate::mcp::oauth::SlackPingCtx>,
+    /// DCR-issued client material to carry to the callback. `None` for
+    /// Platform-credential entries.
+    dcr_client: Option<crate::mcp::oauth::PendingDcrClient>,
 }
 
 /// Build the authorize URL + persist the `mcp_oauth_pending` row in one
@@ -1247,13 +1260,13 @@ struct PendingFromRequest {
 /// `authorize_url` back to the browser.
 async fn persist_oauth_pending(
     state: &AppState,
-    dcr: &crate::mcp::oauth::DcrClientRecord,
+    creds: &crate::mcp::oauth::OAuthClientCreds,
     redirect_uri: &str,
     scope: Option<&str>,
     extras: &[(&str, &str)],
     req: PendingFromRequest,
 ) -> Result<crate::mcp::oauth::AuthorizeStart, HttpError> {
-    let start = build_authorize_url(dcr, redirect_uri, scope, extras).map_err(map_oauth_err)?;
+    let start = build_authorize_url(creds, redirect_uri, scope, extras).map_err(map_oauth_err)?;
     let expires_at = state.clock.now_utc()
         + chrono::Duration::from_std(OAUTH_PENDING_TTL)
             .expect("invariant: OAUTH_PENDING_TTL fits in chrono::Duration");
@@ -1264,57 +1277,37 @@ async fn persist_oauth_pending(
             server_id: req.server_id,
             user_id: req.user_id,
             org_id: req.org_id,
-            issuer: dcr.issuer.clone(),
             pkce_verifier: start.pkce_verifier.clone(),
             redirect_to: req.redirect_to,
             expires_at,
             resume_ctx: req.resume_ctx,
             slack_ctx: req.slack_ctx,
+            dcr_client: req.dcr_client,
         })
         .await
         .map_err(map_oauth_err)?;
     Ok(start)
 }
 
-/// Resolve the OAuth client for `(org_id, as_metadata.issuer)`,
-/// registering a new one via DCR if needed. Precedence:
-///   1. Org-scoped row (`PUT /oauth/client` operator-provisioned, or a
-///      prior DCR registration) — wins so per-tenant overrides take
-///      effect.
-///   2. Shared row (`org_id IS NULL`) seeded by the boot-time
-///      `shared_seed` for vendors that don't support DCR (Google,
-///      future Microsoft 365).
-///   3. DCR — register a new client at the AS's `registration_endpoint`
-///      and persist it as an org-scoped row.
-///
-/// Falling off the end of (3) surfaces `OAuthError::DcrUnsupported` with
-/// the actionable CTA to `PUT /oauth/client`. Shared by `start_oauth`
-/// and the Slack-connect path so the precedence stays in sync.
-async fn resolve_or_register_oauth_client(
-    state: &AppState,
-    org_id: crate::auth::OrgId,
-    as_metadata: &crate::mcp::oauth::AsMetadata,
-    redirect_uri: &str,
-    scope: Option<&str>,
-) -> Result<crate::mcp::oauth::DcrClientRecord, OAuthError> {
-    if let Some(existing) = crate::mcp::oauth::resolve_oauth_client(
-        &state.mcp_oauth_clients,
-        org_id,
-        &as_metadata.issuer,
-    )
-    .await?
-    {
-        return Ok(existing);
+/// Project resolved [`OAuthClientCreds`] onto the pending-row carrier
+/// shape: Platform entries leave it `None` (the resolver derives them
+/// fresh on refresh from env); DCR entries copy the freshly-registered
+/// client material so the callback exchange + future refreshes have
+/// what they need.
+fn dcr_pending_from_creds(
+    catalog_entry: &crate::mcp::McpCatalogEntry,
+    creds: &crate::mcp::oauth::OAuthClientCreds,
+) -> Option<crate::mcp::oauth::PendingDcrClient> {
+    if !matches!(catalog_entry.client_source, crate::mcp::ClientSource::Dcr) {
+        return None;
     }
-    let new = register_dynamic_client(
-        &state.mcp_oauth_flow,
-        as_metadata,
-        org_id,
-        redirect_uri,
-        scope,
-    )
-    .await?;
-    state.mcp_oauth_clients.upsert(new).await
+    Some(crate::mcp::oauth::PendingDcrClient {
+        client_id: creds.client_id.clone(),
+        client_secret: creds.client_secret.clone(),
+        token_endpoint_auth_method: creds.token_endpoint_auth_method,
+        authorization_endpoint: creds.authorization_endpoint.clone(),
+        token_endpoint: creds.token_endpoint.clone(),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1388,9 +1381,9 @@ async fn callback_flow(
     };
     let now = state.clock.now_utc();
     let pending = consume_pending(state, state_val, now).await?;
-    let dcr = load_dcr(state, &pending).await?;
-    let token = exchange_token(state, &dcr, &pending, code, now).await?;
-    persist_oauth_success(state, &pending, token, now)
+    let creds = oauth_creds_from_pending(state, &pending).await?;
+    let token = exchange_token(state, &creds, &pending, code, now).await?;
+    persist_oauth_success(state, &pending, token, &creds, now)
         .await
         .map_err(|reason| CallbackFail {
             redirect_to: pending.redirect_to.clone(),
@@ -1605,38 +1598,92 @@ async fn consume_pending(
     }
 }
 
-async fn load_dcr(
+/// Reconstruct the OAuth client credentials needed to exchange the
+/// callback code. DCR entries carry the client material on the pending
+/// row (set at start time); Platform entries discover the AS metadata
+/// fresh + look up the env-keyed client.
+async fn oauth_creds_from_pending(
     state: &AppState,
     pending: &PendingAuthorization,
-) -> Result<crate::mcp::oauth::DcrClientRecord, CallbackFail> {
-    match crate::mcp::oauth::resolve_oauth_client(
-        &state.mcp_oauth_clients,
-        pending.org_id,
-        &pending.issuer,
-    )
-    .await
-    {
-        Ok(Some(dcr)) => Ok(dcr),
-        Ok(None) => Err(CallbackFail {
-            redirect_to: pending.redirect_to.clone(),
-            reason: "oauth_client_missing",
-        }),
-        Err(e) => {
-            tracing::error!(
-                event = "mcp.oauth.callback.client_lookup_failed",
-                error = ?e,
-            );
-            Err(CallbackFail {
-                redirect_to: pending.redirect_to.clone(),
-                reason: "internal_error",
-            })
-        }
+) -> Result<crate::mcp::oauth::OAuthClientCreds, CallbackFail> {
+    if let Some(dcr) = pending.dcr_client.clone() {
+        // We don't persist `issuer` on the pending row (it's not used by
+        // the exchange grant and the AS isn't re-fetched here). Use the
+        // token endpoint's origin as the carrier — it's the AS-bearing
+        // URL the refresh path will later trace against, and it stays
+        // consistent with what discovery would have produced.
+        let issuer = token_endpoint_origin(&dcr.token_endpoint)
+            .unwrap_or_else(|| dcr.token_endpoint.clone());
+        return Ok(crate::mcp::oauth::OAuthClientCreds {
+            issuer,
+            client_id: dcr.client_id,
+            client_secret: dcr.client_secret,
+            authorization_endpoint: dcr.authorization_endpoint,
+            token_endpoint: dcr.token_endpoint,
+            token_endpoint_auth_method: dcr.token_endpoint_auth_method,
+            scope: None,
+        });
     }
+    // Platform path: re-derive via catalog + AS discovery + env.
+    let catalog_entry =
+        match catalog_entry_for_server(state, pending.org_id, pending.server_id).await {
+            Ok(Some(e)) => e,
+            Ok(None) => {
+                return Err(CallbackFail {
+                    redirect_to: pending.redirect_to.clone(),
+                    reason: "catalog_entry_missing",
+                });
+            }
+            Err(e) => {
+                tracing::error!(event = "mcp.oauth.callback.catalog_lookup_failed", error = ?e);
+                return Err(CallbackFail {
+                    redirect_to: pending.redirect_to.clone(),
+                    reason: "internal_error",
+                });
+            }
+        };
+    let as_metadata =
+        match resolve_as_metadata_for_server(state, pending.org_id, pending.server_id).await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(event = "mcp.oauth.callback.discovery_failed", error = ?e);
+                return Err(CallbackFail {
+                    redirect_to: pending.redirect_to.clone(),
+                    reason: "discovery_failed",
+                });
+            }
+        };
+    let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
+    crate::mcp::oauth::resolve_oauth_client_creds(crate::mcp::oauth::ResolveCtx {
+        catalog: &catalog_entry,
+        platform_clients: &state.platform_oauth_clients,
+        as_metadata: &as_metadata,
+        redirect_uri: &redirect_uri,
+        requested_scope: None,
+        flow: &state.mcp_oauth_flow,
+    })
+    .await
+    .map_err(|e| {
+        tracing::warn!(event = "mcp.oauth.callback.client_resolve_failed", error = ?e);
+        CallbackFail {
+            redirect_to: pending.redirect_to.clone(),
+            reason: "oauth_client_resolve_failed",
+        }
+    })
+}
+
+/// Strip the path/query/fragment off a token endpoint URL, leaving the
+/// `scheme://host[:port]` origin — the shape an OAuth issuer identifier
+/// usually takes.
+fn token_endpoint_origin(token_endpoint: &str) -> Option<String> {
+    let url = url::Url::parse(token_endpoint).ok()?;
+    let origin = url.origin();
+    origin.is_tuple().then(|| origin.ascii_serialization())
 }
 
 async fn exchange_token(
     state: &AppState,
-    dcr: &crate::mcp::oauth::DcrClientRecord,
+    creds: &crate::mcp::oauth::OAuthClientCreds,
     pending: &PendingAuthorization,
     code: &str,
     now: chrono::DateTime<chrono::Utc>,
@@ -1644,7 +1691,7 @@ async fn exchange_token(
     let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
     exchange_code(
         &state.mcp_oauth_flow,
-        dcr,
+        creds,
         &redirect_uri,
         code,
         &pending.pkce_verifier,
@@ -1652,9 +1699,6 @@ async fn exchange_token(
     )
     .await
     .map_err(|e| {
-        // Upstream/vendor failure — not our error, so `warn`. CLAUDE.md
-        // §2: "ERROR = user-visible failure"; vendor refusing the
-        // exchange is an operating error from our side.
         tracing::warn!(
             event = "mcp.oauth.callback.exchange_failed",
             error = ?e,
@@ -1670,8 +1714,24 @@ async fn persist_oauth_success(
     state: &AppState,
     pending: &PendingAuthorization,
     token: crate::mcp::oauth::TokenExchangeResult,
+    creds: &crate::mcp::oauth::OAuthClientCreds,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), &'static str> {
+    // DCR entries fold the client material into the encrypted
+    // `OAuth2Payload` so the refresh path can rebuild `RefreshCreds`
+    // without consulting a clients table. Platform entries leave the
+    // `dcr_*` slots `None` — the refresh path reads env instead.
+    // **Both** branches persist `token_endpoint_auth_method`: the
+    // refresh path needs the resolver's start-time pick to align the
+    // POST with the AS's `token_endpoint_auth_methods_supported`.
+    let (dcr_client_id, dcr_client_secret) = if pending.dcr_client.is_some() {
+        (
+            Some(creds.client_id.as_str().to_owned()),
+            creds.client_secret.as_ref().map(|s| s.expose().to_owned()),
+        )
+    } else {
+        (None, None)
+    };
     let payload = CredentialPayload::Oauth2(OAuth2Payload {
         access_token: token.access_token,
         refresh_token: token.refresh_token,
@@ -1679,6 +1739,9 @@ async fn persist_oauth_success(
         scope: token.scope,
         issuer: token.issuer,
         token_endpoint: token.token_endpoint,
+        dcr_client_id,
+        dcr_client_secret,
+        token_endpoint_auth_method: Some(creds.token_endpoint_auth_method),
     });
     if let Err(e) = state
         .mcp_credentials
@@ -1864,141 +1927,6 @@ async fn disconnect_oauth(
     Ok(Json(OAuthDisconnectResponse { ok: true }))
 }
 
-/// Boundary input for `PUT /mcp-servers/{id}/oauth/client`. Length caps
-/// and the secret↔method cross-field invariant are enforced by the
-/// smart-constructor for [`OAuthClientCredentials`]; the handler does
-/// not branch on the relation after that point.
-#[derive(Debug, Deserialize)]
-struct OAuthClientRequest {
-    client_id: String,
-    #[serde(default)]
-    client_secret: Option<String>,
-    #[serde(default)]
-    token_endpoint_auth_method: Option<TokenAuthMethod>,
-    #[serde(default)]
-    scope: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct OAuthClientResponse {
-    issuer: String,
-    client_id: String,
-    token_endpoint_auth_method: TokenAuthMethod,
-    scope: Option<String>,
-}
-
-/// Parsed credentials. Constructing this is the only path that produces
-/// a coherent (secret, method) pair.
-#[derive(Debug)]
-enum OAuthClientCredentials {
-    Public,
-    Confidential {
-        secret: SecretString,
-        method: TokenAuthMethod,
-    },
-}
-
-impl OAuthClientCredentials {
-    const SECRET_MAX_BYTES: usize = 4 * 1024;
-
-    const fn method(&self) -> TokenAuthMethod {
-        match self {
-            Self::Public => TokenAuthMethod::None,
-            Self::Confidential { method, .. } => *method,
-        }
-    }
-
-    fn into_secret(self) -> Option<SecretString> {
-        match self {
-            Self::Public => None,
-            Self::Confidential { secret, .. } => Some(secret),
-        }
-    }
-
-    fn parse(
-        raw_secret: Option<String>,
-        raw_method: Option<TokenAuthMethod>,
-    ) -> Result<Self, &'static str> {
-        match (raw_secret, raw_method) {
-            (None, None | Some(TokenAuthMethod::None)) => Ok(Self::Public),
-            (None, Some(_)) => {
-                Err("client_secret required for the selected token_endpoint_auth_method")
-            }
-            (Some(_), Some(TokenAuthMethod::None)) => {
-                Err("token_endpoint_auth_method=none is incompatible with client_secret")
-            }
-            (Some(s), method) => {
-                if s.is_empty() || s.len() > Self::SECRET_MAX_BYTES {
-                    return Err("client_secret length out of range");
-                }
-                let secret = SecretString::try_from(s).map_err(|_| "client_secret rejected")?;
-                Ok(Self::Confidential {
-                    secret,
-                    method: method.unwrap_or(TokenAuthMethod::ClientSecretBasic),
-                })
-            }
-        }
-    }
-}
-
-const OAUTH_SCOPE_MAX_BYTES: usize = 2 * 1024;
-
-/// `PUT /mcp-servers/{id}/oauth/client` — register or replace an
-/// operator-supplied OAuth client for vendors that do not implement RFC
-/// 7591 Dynamic Client Registration. Runs discovery so the AS endpoints
-/// we store stay in lockstep with what `start_oauth` resolves at flow
-/// time.
-async fn put_oauth_client(
-    State(state): State<AppState>,
-    principal: Principal,
-    Path(id): Path<Uuid>,
-    Json(body): Json<OAuthClientRequest>,
-) -> Result<Json<OAuthClientResponse>, HttpError> {
-    let server_id = McpServerId::from(id);
-    let client_id = OAuthClientId::try_from(body.client_id).map_err(HttpError::Parse)?;
-    let credentials =
-        OAuthClientCredentials::parse(body.client_secret, body.token_endpoint_auth_method)
-            .map_err(|m| HttpError::BadRequest(m.to_owned()))?;
-    if let Some(s) = body.scope.as_deref()
-        && s.len() > OAUTH_SCOPE_MAX_BYTES
-    {
-        return Err(HttpError::BadRequest("scope too large".into()));
-    }
-
-    let as_metadata =
-        resolve_as_metadata_for_server(&state, principal.active_org_id, server_id).await?;
-    let method = credentials.method();
-    let new = NewOAuthClient {
-        issuer: as_metadata.issuer.clone(),
-        client_id,
-        client_secret: credentials.into_secret(),
-        authorization_endpoint: as_metadata.authorization_endpoint,
-        token_endpoint: as_metadata.token_endpoint,
-        token_endpoint_auth_method: method,
-        scope: body.scope,
-        provenance: ClientProvenance::Operator {
-            org_id: principal.active_org_id,
-        },
-    };
-    let stored = state
-        .mcp_oauth_clients
-        .upsert(new)
-        .await
-        .map_err(map_oauth_err)?;
-    tracing::info!(
-        patom.org.id = %principal.active_org_id,
-        patom.oauth.issuer = %stored.issuer,
-        patom.mcp.server.id = %server_id,
-        event = "mcp.oauth.client.operator_set",
-    );
-    Ok(Json(OAuthClientResponse {
-        issuer: stored.issuer,
-        client_id: stored.client_id.into_inner(),
-        token_endpoint_auth_method: stored.token_endpoint_auth_method,
-        scope: stored.scope,
-    }))
-}
-
 /// Tenant-gate a server, then run discovery against its HTTP URL.
 /// Shared by every OAuth handler that needs the same `AsMetadata`
 /// `start_oauth` would resolve.
@@ -2040,41 +1968,30 @@ fn effective_oauth_scope<'a>(
 /// authorize-URL params the vendor needs. Returned together so the
 /// OAuth start paths make exactly one catalog lookup per request.
 ///
-/// Either field is `None` for DCR vendors (Notion, Linear, Slack,
-/// Jira): the AS applies its own scope at registration and accepts a
-/// plain RFC 6749 redirect.
-#[derive(Debug, Clone, Default)]
-struct CatalogOAuthConfig {
-    default_scope: Option<String>,
-    authorize_extra_params: Option<OAuthAuthorizeExtras>,
-}
-
-/// One-shot catalog lookup that returns the OAuth-flow-relevant fields
-/// for `server_id`. The pair is small enough to clone; bundling them
-/// keeps the call sites linear and stops a future field addition (e.g.
-/// `audience`, `prompt_login`) from growing parameter counts at every
-/// caller.
-async fn catalog_oauth_config_for_server(
+/// One-shot catalog lookup that returns the full
+/// [`crate::mcp::McpCatalogEntry`] for `server_id`. The resolver branches
+/// on the entry's `client_source`, and the start handler uses
+/// `default_scope` + `authorize_extra_params` to assemble the authorize
+/// URL — having the whole entry in hand keeps the start path readable.
+///
+/// Returns `Ok(None)` when the catalog row no longer exists (the server
+/// was wired against an entry that was since deleted); the caller maps
+/// that to a misconfiguration error.
+async fn catalog_entry_for_server(
     state: &AppState,
     org_id: crate::auth::OrgId,
     server_id: McpServerId,
-) -> Result<CatalogOAuthConfig, HttpError> {
+) -> Result<Option<crate::mcp::McpCatalogEntry>, HttpError> {
     let server = state
         .mcp_store
         .read(server_id, org_id)
         .await
         .map_err(HttpError::Mcp)?;
-    let entry = state
+    state
         .mcp_catalog
         .get_for_org(org_id, &server.catalog_id)
         .await
-        .map_err(HttpError::Mcp)?;
-    Ok(entry
-        .map(|e| CatalogOAuthConfig {
-            default_scope: e.default_scope,
-            authorize_extra_params: e.authorize_extra_params,
-        })
-        .unwrap_or_default())
+        .map_err(HttpError::Mcp)
 }
 
 /// Borrow [`OAuthAuthorizeExtras`] as the `&[(&str, &str)]` shape
@@ -2193,10 +2110,18 @@ async fn handle_slack_connect_inner(
             "Couldn't install this connector. The catalog entry may be missing."
         })?;
 
-    let (start, issuer) = slack_connect_build_oauth_start(state, org_id, server.id).await?;
+    let (start, dcr_pending) = slack_connect_build_oauth_start(state, org_id, server.id).await?;
 
-    persist_slack_connect_pending(state, &claims, &start, server.id, user_id, org_id, issuer)
-        .await?;
+    persist_slack_connect_pending(
+        state,
+        &claims,
+        &start,
+        server.id,
+        user_id,
+        org_id,
+        dcr_pending,
+    )
+    .await?;
 
     tracing::info!(
         patom.mcp.catalog_id = %claims.catalog_id,
@@ -2237,44 +2162,56 @@ async fn slack_connect_build_oauth_start(
     state: &AppState,
     org_id: crate::auth::OrgId,
     server_id: McpServerId,
-) -> Result<(crate::mcp::oauth::AuthorizeStart, String), &'static str> {
+) -> Result<
+    (
+        crate::mcp::oauth::AuthorizeStart,
+        Option<crate::mcp::oauth::PendingDcrClient>,
+    ),
+    &'static str,
+> {
     let as_metadata = resolve_as_metadata_for_server(state, org_id, server_id)
         .await
         .map_err(|e| {
             tracing::warn!(error = ?e, event = "slack.connect.discovery_failed");
             "Couldn't reach the connector's authorisation server."
         })?;
-    let catalog_oauth = catalog_oauth_config_for_server(state, org_id, server_id)
+    let catalog_entry = catalog_entry_for_server(state, org_id, server_id)
         .await
         .map_err(|e| {
             tracing::warn!(error = ?e, event = "slack.connect.catalog_lookup_failed");
             "Internal error resolving the connector's catalog entry."
+        })?
+        .ok_or_else(|| {
+            tracing::warn!(event = "slack.connect.catalog_entry_missing");
+            "Connector's catalog entry no longer exists."
         })?;
     let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
-    let dcr = resolve_or_register_oauth_client(
-        state,
-        org_id,
-        &as_metadata,
-        &redirect_uri,
-        catalog_oauth.default_scope.as_deref(),
-    )
+    let creds = crate::mcp::oauth::resolve_oauth_client_creds(crate::mcp::oauth::ResolveCtx {
+        catalog: &catalog_entry,
+        platform_clients: &state.platform_oauth_clients,
+        as_metadata: &as_metadata,
+        redirect_uri: &redirect_uri,
+        requested_scope: catalog_entry.default_scope.as_deref(),
+        flow: &state.mcp_oauth_flow,
+    })
     .await
     .map_err(|e| {
         tracing::warn!(error = ?e, event = "slack.connect.oauth_client_resolve_failed");
         "Couldn't resolve an OAuth client for this connector."
     })?;
-    let extras = authorize_extras_borrowed(catalog_oauth.authorize_extra_params.as_ref());
+    let extras = authorize_extras_borrowed(catalog_entry.authorize_extra_params.as_ref());
     let start = build_authorize_url(
-        &dcr,
+        &creds,
         &redirect_uri,
-        catalog_oauth.default_scope.as_deref(),
+        catalog_entry.default_scope.as_deref(),
         &extras,
     )
     .map_err(|e| {
         tracing::warn!(error = ?e, event = "slack.connect.build_url_failed");
         "Couldn't build the authorisation URL."
     })?;
-    Ok((start, dcr.issuer))
+    let dcr_pending = dcr_pending_from_creds(&catalog_entry, &creds);
+    Ok((start, dcr_pending))
 }
 
 async fn persist_slack_connect_pending(
@@ -2284,7 +2221,7 @@ async fn persist_slack_connect_pending(
     server_id: McpServerId,
     user_id: crate::auth::UserId,
     org_id: crate::auth::OrgId,
-    issuer: String,
+    dcr_client: Option<crate::mcp::oauth::PendingDcrClient>,
 ) -> Result<(), &'static str> {
     let now_chrono = state.clock.now_utc();
     let expires_at = now_chrono
@@ -2306,12 +2243,12 @@ async fn persist_slack_connect_pending(
             server_id,
             user_id,
             org_id,
-            issuer,
             pkce_verifier: start.pkce_verifier.clone(),
             redirect_to: None,
             expires_at,
             resume_ctx,
             slack_ctx,
+            dcr_client,
         })
         .await
         .map_err(|e| {
@@ -2328,10 +2265,6 @@ fn map_oauth_err(err: OAuthError) -> HttpError {
             HttpError::BadRequest(err.to_string())
         }
         OAuthError::RefreshRevoked => HttpError::Conflict(err.to_string()),
-        OAuthError::DcrUnsupported { .. } => {
-            tracing::info!(error = %err, "mcp.oauth.dcr_unsupported");
-            HttpError::Conflict(err.to_string())
-        }
         OAuthError::Crypto(_) | OAuthError::Db(_) | OAuthError::Misconfigured(_) => {
             tracing::error!(error = %err, "mcp.oauth.internal_error");
             HttpError::Internal

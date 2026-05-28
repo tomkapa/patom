@@ -1,27 +1,27 @@
-//! Browser flow: PKCE + DCR + authorize URL + code exchange.
+//! Browser flow: PKCE + DCR + authorize URL + code exchange + refresh.
 //!
 //! Uses the `oauth2` crate (already a dep) for the PKCE + token-exchange
-//! pieces; DCR (RFC 7591) is a one-shot POST we render directly.
+//! pieces; DCR (RFC 7591) is a one-shot POST rendered directly.
 
 use std::time::Duration;
 
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::Client as OAuthHttpClient;
 use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
+    AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet,
+    EndpointSet, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, Scope,
+    TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 use url::Url;
 
-use crate::auth::OrgId;
 use crate::types::SecretString;
 
 use super::discovery::AsMetadata;
 use super::errors::OAuthError;
-use super::store::{NewOAuthClient, TokenAuthMethod};
+use super::store::{OAuthClientCreds, OAuthClientId, TokenAuthMethod};
 
 const FLOW_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const DCR_MAX_BYTES: usize = 32 * 1024;
@@ -56,7 +56,7 @@ impl OAuthFlowClient {
     }
 }
 
-/// Output of [`start_authorization`].
+/// Output of [`build_authorize_url`].
 #[derive(Debug, Clone)]
 pub struct AuthorizeStart {
     pub authorize_url: Url,
@@ -76,12 +76,31 @@ pub struct TokenExchangeResult {
     pub token_endpoint: String,
 }
 
-pub type PendingAuthorization = super::store::PendingAuthorization;
+/// Minimal credential bundle [`refresh_oauth_token`] needs.
+///
+/// The refresh grant doesn't touch the authorization endpoint, so the
+/// persisted `OAuth2Payload` carries only what's listed here (`issuer`,
+/// `token_endpoint`, `token_endpoint_auth_method`, plus DCR client
+/// material for `client_source = 'dcr'` entries — Platform entries
+/// reconstruct credentials via env + catalog).
+///
+/// `redirect_uri` is mandatory: some ASes (Microsoft Azure AD with
+/// strict redirect-URI validation) echo back the original redirect on
+/// the refresh grant.
+#[derive(Debug, Clone)]
+pub struct RefreshCreds {
+    pub issuer: String,
+    pub token_endpoint: String,
+    pub client_id: OAuthClientId,
+    pub client_secret: Option<SecretString>,
+    pub token_endpoint_auth_method: TokenAuthMethod,
+    pub redirect_uri: String,
+}
 
 /// RFC 7591 Dynamic Client Registration. POSTs the smallest viable
 /// metadata document to `registration_endpoint`; refuses to proceed if
-/// the AS metadata doesn't advertise one (the operator must provision a
-/// client out-of-band in that case).
+/// the AS metadata doesn't advertise one (the catalog entry is then
+/// either marked `client_source = 'platform'` or unsupported).
 #[tracing::instrument(
     name = "mcp.oauth.dcr",
     skip_all,
@@ -89,31 +108,28 @@ pub type PendingAuthorization = super::store::PendingAuthorization;
         patom.mcp.oauth.issuer = %as_metadata.issuer,
     ),
 )]
-pub async fn register_dynamic_client(
+pub(super) async fn register_dynamic_client(
     flow: &OAuthFlowClient,
     as_metadata: &AsMetadata,
-    org_id: OrgId,
     redirect_uri: &str,
     scope: Option<&str>,
-) -> Result<NewOAuthClient, OAuthError> {
+) -> Result<OAuthClientCreds, OAuthError> {
     let registration_endpoint = as_metadata
         .registration_endpoint
         .as_deref()
-        .ok_or_else(|| OAuthError::DcrUnsupported {
-            issuer: as_metadata.issuer.clone(),
+        .ok_or_else(|| {
+            OAuthError::Dcr(format!(
+                "issuer {} does not advertise registration_endpoint; mark catalog \
+             `client_source = 'platform'` and configure env credentials",
+                as_metadata.issuer
+            ))
         })?;
 
-    // Pick the auth method: prefer `none` (PKCE-only public client) when
-    // the AS advertises it, else `client_secret_basic`. RFC 7591 lets us
-    // request a specific method; we read the supported list to avoid
-    // negotiating one the AS will reject.
     let supported = as_metadata
         .token_endpoint_auth_methods_supported
         .as_deref()
         .unwrap_or(&[]);
     let pick = |method: TokenAuthMethod| supported.iter().any(|m| m == method.as_str());
-    // RFC 7591 default is `client_secret_basic`. Prefer `none` (public
-    // PKCE-only client) when the AS supports it.
     let auth_method = if pick(TokenAuthMethod::None) {
         TokenAuthMethod::None
     } else if pick(TokenAuthMethod::ClientSecretBasic) {
@@ -164,23 +180,14 @@ pub async fn register_dynamic_client(
     }
     let raw: DcrResponse =
         serde_json::from_slice(&bytes).map_err(|e| OAuthError::Dcr(format!("parse: {e}")))?;
-    // Surface SecretString::try_from failures (empty / oversized) as a
-    // typed DCR error rather than silently dropping the field — a half-
-    // registered client where the secret was discarded would fail later
-    // in non-obvious ways.
     let client_secret = raw
         .client_secret
         .map(SecretString::try_from)
         .transpose()
         .map_err(|e| OAuthError::Dcr(format!("invalid client_secret: {e}")))?;
-    let registration_access_token = raw
-        .registration_access_token
-        .map(SecretString::try_from)
-        .transpose()
-        .map_err(|e| OAuthError::Dcr(format!("invalid registration_access_token: {e}")))?;
-    let client_id = super::store::OAuthClientId::try_from(raw.client_id)
+    let client_id = OAuthClientId::try_from(raw.client_id)
         .map_err(|e| OAuthError::Dcr(format!("invalid client_id: {e}")))?;
-    Ok(NewOAuthClient {
+    Ok(OAuthClientCreds {
         issuer: as_metadata.issuer.clone(),
         client_id,
         client_secret,
@@ -188,11 +195,6 @@ pub async fn register_dynamic_client(
         token_endpoint: as_metadata.token_endpoint.clone(),
         token_endpoint_auth_method: auth_method,
         scope: scope.map(str::to_owned),
-        provenance: super::store::ClientProvenance::Dcr {
-            org_id,
-            registration_client_uri: raw.registration_client_uri,
-            registration_access_token,
-        },
     })
 }
 
@@ -212,23 +214,13 @@ struct DcrResponse {
     client_id: String,
     #[serde(default)]
     client_secret: Option<String>,
-    #[serde(default)]
-    registration_client_uri: Option<String>,
-    #[serde(default)]
-    registration_access_token: Option<String>,
 }
 
 /// Build the authorize URL the browser will be redirected to. PKCE +
 /// state are minted here; the caller persists them in
 /// `mcp_oauth_pending` for the callback to consume.
-///
-/// `extras` are non-standard query params the catalog row pins for
-/// vendors whose AS rejects (or silently misbehaves on) a strict
-/// RFC 6749 §4.1 redirect — promoted to catalog data in migration 39 so
-/// new vendors are a row, not a code change. Order is preserved into
-/// the URL: some ASes (Microsoft) care about repeat-key order.
 pub fn build_authorize_url(
-    client: &super::store::DcrClientRecord,
+    client: &OAuthClientCreds,
     redirect_uri: &str,
     requested_scope: Option<&str>,
     extras: &[(&str, &str)],
@@ -265,7 +257,7 @@ pub fn build_authorize_url(
 )]
 pub async fn exchange_code(
     flow: &OAuthFlowClient,
-    client: &super::store::DcrClientRecord,
+    client: &OAuthClientCreds,
     redirect_uri: &str,
     code: &str,
     pkce_verifier: &str,
@@ -280,10 +272,6 @@ pub async fn exchange_code(
         .map_err(|e| OAuthError::TokenEndpoint(format!("exchange: {e}")))?;
     let access_token = token.access_token().secret().clone();
     let refresh_token = token.refresh_token().map(|t| t.secret().clone());
-    // Default to a conservative 10-minute expiry when the server omits
-    // `expires_in`. Vendors that don't return one are rare; the cap
-    // means we refresh sooner rather than later, which is the safer
-    // failure mode.
     let default_expiry = chrono::Duration::seconds(600);
     let expires_in = token.expires_in().map_or(default_expiry, |d| {
         chrono::Duration::from_std(d).unwrap_or(default_expiry)
@@ -305,11 +293,24 @@ pub async fn exchange_code(
     })
 }
 
+/// Map our token-endpoint auth method to the `oauth2` crate's wire-side
+/// `AuthType`. The crate defaults to `BasicAuth` if `set_auth_type` is
+/// not called, so a `set_auth_type` call is mandatory for `_Post` ASes
+/// (Google, some Notion-style DCR ASes) — otherwise the secret rides in
+/// the `Authorization: Basic` header and the AS replies `invalid_client`.
+const fn auth_type_for(method: TokenAuthMethod) -> AuthType {
+    match method {
+        TokenAuthMethod::ClientSecretPost => AuthType::RequestBody,
+        // None has no secret to place anywhere; `BasicAuth` is harmless.
+        TokenAuthMethod::ClientSecretBasic | TokenAuthMethod::None => AuthType::BasicAuth,
+    }
+}
+
 /// Authorize + exchange paths must agree byte-for-byte on the client
 /// config, or PKCE silently fails the comparison; build the `oauth2`
 /// `BasicClient` here so both call sites see the same shape.
 fn build_basic_client(
-    client: &super::store::DcrClientRecord,
+    client: &OAuthClientCreds,
     redirect_uri: &str,
 ) -> Result<
     BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>,
@@ -322,8 +323,37 @@ fn build_basic_client(
     let redirect = RedirectUrl::new(redirect_uri.to_owned())
         .map_err(|e| OAuthError::Misconfigured(format!("redirect_uri: {e}")))?;
     let mut b = BasicClient::new(ClientId::new(client.client_id.as_str().to_owned()))
-        .set_auth_uri(auth_url);
+        .set_auth_uri(auth_url)
+        .set_auth_type(auth_type_for(client.token_endpoint_auth_method));
     if let Some(secret) = &client.client_secret {
+        b = b.set_client_secret(ClientSecret::new(secret.expose().to_owned()));
+    }
+    Ok(b.set_token_uri(token_url).set_redirect_uri(redirect))
+}
+
+/// Refresh-only variant of [`build_basic_client`]. The refresh grant
+/// doesn't touch the authorization endpoint, so we synthesize a dummy
+/// `AuthUrl` from the same origin as the token endpoint to satisfy the
+/// `oauth2` crate's type state (`set_auth_uri` is mandatory before
+/// `exchange_refresh_token`). `redirect_uri` is still attached because
+/// some ASes (notably Microsoft Azure AD with strict redirect
+/// validation) echo back the original redirect on the refresh grant.
+fn build_refresh_client(
+    creds: &RefreshCreds,
+) -> Result<
+    BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>,
+    OAuthError,
+> {
+    let token_url = TokenUrl::new(creds.token_endpoint.clone())
+        .map_err(|e| OAuthError::Misconfigured(format!("token_endpoint: {e}")))?;
+    let dummy_auth_url = AuthUrl::new(creds.token_endpoint.clone())
+        .map_err(|e| OAuthError::Misconfigured(format!("token_endpoint as auth_url: {e}")))?;
+    let redirect = RedirectUrl::new(creds.redirect_uri.clone())
+        .map_err(|e| OAuthError::Misconfigured(format!("redirect_uri: {e}")))?;
+    let mut b = BasicClient::new(ClientId::new(creds.client_id.as_str().to_owned()))
+        .set_auth_uri(dummy_auth_url)
+        .set_auth_type(auth_type_for(creds.token_endpoint_auth_method));
+    if let Some(secret) = &creds.client_secret {
         b = b.set_client_secret(ClientSecret::new(secret.expose().to_owned()));
     }
     Ok(b.set_token_uri(token_url).set_redirect_uri(redirect))
@@ -333,30 +363,27 @@ fn build_basic_client(
 /// each variant — typically: `Refreshed` → seal + persist the new token;
 /// `Revoked` → flip `connection_status = 'reconnect_required'`.
 #[derive(Debug)]
-pub enum RefreshOutcome {
+pub(super) enum RefreshOutcome {
     Refreshed(TokenExchangeResult),
     Revoked,
 }
 
 /// Exchange `refresh_token` for a fresh access token. The redirect_uri
-/// isn't strictly required for the refresh grant by RFC 6749 §6, but
-/// some ASes echo back redirect-URI checks; pass the same one the
-/// authorization step used.
+/// isn't strictly required for the refresh grant by RFC 6749 §6.
 #[tracing::instrument(
     name = "mcp.oauth.refresh",
     skip_all,
     fields(
-        patom.mcp.oauth.issuer = %client.issuer,
+        patom.mcp.oauth.issuer = %creds.issuer,
     ),
 )]
-pub async fn refresh_oauth_token(
+pub(super) async fn refresh_oauth_token(
     flow: &OAuthFlowClient,
-    client: &super::store::DcrClientRecord,
+    creds: &RefreshCreds,
     refresh_token: &str,
-    redirect_uri: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<RefreshOutcome, OAuthError> {
-    let oauth_client = build_basic_client(client, redirect_uri)?;
+    let oauth_client = build_refresh_client(creds)?;
     let resp = oauth_client
         .exchange_refresh_token(&RefreshToken::new(refresh_token.to_owned()))
         .request_async(&flow.http_oauth)
@@ -368,8 +395,7 @@ pub async fn refresh_oauth_token(
             // crate-specific enum. Match on the textual form so we
             // don't tie this code to a `oauth2::RequestTokenError`
             // private layout. `invalid_grant` is the standard signal
-            // for "refresh token revoked / expired" per RFC 6749
-            // §5.2.
+            // for "refresh token revoked / expired" per RFC 6749 §5.2.
             let s = e.to_string();
             if s.contains("invalid_grant") {
                 tracing::warn!(error = %e, "mcp.oauth.refresh.revoked");
@@ -379,9 +405,6 @@ pub async fn refresh_oauth_token(
         }
     };
     let access_token = token.access_token().secret().clone();
-    // Some ASes rotate the refresh token on each use; if so we take the
-    // new one. Otherwise we keep the existing one — the caller carries
-    // the prior value over when we return `None` here.
     let new_refresh = token.refresh_token().map(|t| t.secret().clone());
     let default_expiry = chrono::Duration::seconds(600);
     let expires_in = token.expires_in().map_or(default_expiry, |d| {
@@ -398,19 +421,18 @@ pub async fn refresh_oauth_token(
         refresh_token: new_refresh,
         expires_at: now + expires_in,
         scope,
-        issuer: client.issuer.clone(),
-        token_endpoint: client.token_endpoint.clone(),
+        issuer: creds.issuer.clone(),
+        token_endpoint: creds.token_endpoint.clone(),
     }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::store::{DcrClientRecord, OAuthClientId, TokenAuthMethod};
+    use super::super::store::{OAuthClientCreds, OAuthClientId, TokenAuthMethod};
     use super::build_authorize_url;
 
-    fn client(issuer: &str) -> DcrClientRecord {
-        DcrClientRecord {
-            org_id: None,
+    fn client(issuer: &str) -> OAuthClientCreds {
+        OAuthClientCreds {
             issuer: issuer.to_owned(),
             client_id: OAuthClientId::try_from("test-client-id".to_owned())
                 .expect("invariant: literal client id is valid"),

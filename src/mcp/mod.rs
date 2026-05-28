@@ -22,9 +22,9 @@ mod tool;
 mod types;
 
 pub use catalog::{
-    CatalogUpsert, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName, McpCatalogEntry,
-    McpCatalogStore, OAuthAuthorizeExtra, OAuthAuthorizeExtras, PgMcpCatalogStore,
-    SharedMcpCatalogStore,
+    CatalogUpsert, ClientSource, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName,
+    McpCatalogEntry, McpCatalogStore, OAuthAuthorizeExtra, OAuthAuthorizeExtras, PgMcpCatalogStore,
+    SharedMcpCatalogStore, platform_env_keys, platform_env_middle,
 };
 pub use client::McpClient;
 pub use credentials::{
@@ -45,7 +45,7 @@ pub use pg_credentials::PgMcpCredentialStore;
 pub use pg_store::PgMcpServerStore;
 pub use rate_limit::TestConnectRateLimiter;
 pub use refresher::{McpRefreshTrigger, McpRefresher};
-pub use registry::{McpRegistry, RegistrySnapshot, ToolOrigin};
+pub use registry::{McpRegistry, OAuthAdapterDeps, RefreshLockMap, RegistrySnapshot, ToolOrigin};
 pub use scoped::ScopedMcpSource;
 pub use store::{
     McpHealthUpdate, McpServerCreate, McpServerStore, McpServerUpdate, SharedMcpServerStore,
@@ -54,4 +54,5 @@ pub use tool::McpTool;
 pub use types::{
     ConnectionStatus, DiscoveredTool, McpCatalogId, McpDescription, McpHeaderName, McpHeaderValue,
     McpHttpUrl, McpServerAlias, McpServerId, McpServerRecord, McpToolRemoteName, McpTransport,
+    TokenAuthMethod,
 };

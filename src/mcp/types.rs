@@ -511,6 +511,18 @@ crate::str_enum! {
     }
 }
 
+crate::str_enum! {
+    /// Token-endpoint authentication method as defined by RFC 7591 §2.
+    /// Lives here (not in `oauth/`) so `credentials::OAuth2Payload` can
+    /// carry it without inducing a `credentials → oauth → credentials`
+    /// dep cycle.
+    pub enum TokenAuthMethod {
+        None              => "none",
+        ClientSecretBasic => "client_secret_basic",
+        ClientSecretPost  => "client_secret_post",
+    }
+}
+
 /// Tool metadata cached on the row after a successful refresh, surfaced by the
 /// list/read API so operators can see what a server is exposing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

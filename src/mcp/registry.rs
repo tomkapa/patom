@@ -16,19 +16,80 @@ use serde_json::Value;
 use tracing::{error, instrument, warn};
 
 use crate::clock::SharedClock;
+use crate::config::PlatformOAuthClient;
 use crate::provider::ToolSpec;
 use crate::tools::{DynamicToolSource, SharedTool};
 use crate::types::{ParseError, ToolName};
 
+use super::catalog::SharedMcpCatalogStore;
 use super::client::McpClient;
 use super::credentials::{CredentialPayload, SharedMcpCredentialStore};
 use super::error::McpError;
 use super::limits::{MAX_MCP_SERVERS, MAX_TOOLS_PER_SERVER};
+use super::oauth::{OAuthFlowClient, PatomMcpHttpClient, PatomMcpHttpClientConfig};
 use super::store::{McpHealthUpdate, SharedMcpServerStore};
 use super::tool::McpTool;
 use super::types::{
     DiscoveredTool, McpCatalogId, McpServerId, McpServerRecord, McpToolRemoteName, McpTransport,
 };
+
+/// Process-wide per-(server, org) refresh mutex map.
+///
+/// Shared across every adapter instance the registry mints. Each
+/// `connect_oauth` call gets a fresh `PatomMcpHttpClient`; without a
+/// shared lock the per-adapter mutex would lose dedup across concurrent
+/// reconnects for the same server.
+pub type RefreshLockMap = std::sync::Mutex<
+    HashMap<(crate::mcp::types::McpServerId, crate::auth::OrgId), Arc<tokio::sync::Mutex<()>>>,
+>;
+
+/// Collaborators for building a [`PatomMcpHttpClient`] adapter.
+///
+/// Wired on the registry for OAuth2-credentialed servers. Tests without
+/// an OAuth-capable harness wire `None` and the registry refuses to
+/// connect those servers with a typed error.
+#[derive(Clone)]
+pub struct OAuthAdapterDeps {
+    pub credentials: SharedMcpCredentialStore,
+    pub catalog: SharedMcpCatalogStore,
+    pub flow: OAuthFlowClient,
+    pub platform_clients: Arc<HashMap<String, PlatformOAuthClient>>,
+    pub inner_http: reqwest::Client,
+    /// Per-(server, org) mutexes, shared across reconnects so two
+    /// concurrent refresh calls for the same server can't both POST to
+    /// the AS and double-rotate the refresh_token.
+    pub refresh_locks: Arc<RefreshLockMap>,
+    /// Public OAuth callback URL — Patom's
+    /// `<oauth_redirect_base>/mcp-oauth/callback`. Threaded into the
+    /// adapter so the refresh grant attaches the same `redirect_uri`
+    /// the authorization step used.
+    pub redirect_uri: Arc<str>,
+}
+
+impl std::fmt::Debug for OAuthAdapterDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthAdapterDeps").finish_non_exhaustive()
+    }
+}
+
+impl OAuthAdapterDeps {
+    /// Acquire (or create) the per-(server, org) refresh mutex. Holds
+    /// the map lock only long enough to insert; returned `Arc<Mutex<()>>`
+    /// is then locked by the caller for the refresh window.
+    fn refresh_lock_for(
+        &self,
+        server_id: crate::mcp::types::McpServerId,
+        org_id: crate::auth::OrgId,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self
+            .refresh_locks
+            .lock()
+            .expect("invariant: refresh_locks map mutex poisoned");
+        map.entry((server_id, org_id))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+}
 
 /// Cheap-clone handle to the live MCP tool catalogue.
 ///
@@ -68,6 +129,10 @@ struct McpRegistryInner {
     /// loads decrypted credentials and threads them into each `connect`.
     /// Tests that don't exercise credentials wire `None`.
     credentials: Option<SharedMcpCredentialStore>,
+    /// Optional OAuth-adapter collaborators. When `Some`, oauth2-credentialed
+    /// servers connect via [`PatomMcpHttpClient`]; when `None` the registry
+    /// skips them with a typed connect error.
+    oauth_deps: Option<OAuthAdapterDeps>,
     clock: SharedClock,
     server_cap: usize,
 }
@@ -118,9 +183,9 @@ impl McpRegistry {
         Self::with_credentials(store, None, clock)
     }
 
-    /// Construct with a credentials store wired in. The composition root
-    /// uses this in production; tests that don't exercise the encrypted
-    /// path stick with [`Self::new`].
+    /// Construct with a credentials store wired in. Tests that don't
+    /// exercise the encrypted path stick with [`Self::new`]; tests that
+    /// touch OAuth wire [`Self::with_oauth_deps`] instead.
     #[must_use]
     pub fn with_credentials(
         store: SharedMcpServerStore,
@@ -131,6 +196,27 @@ impl McpRegistry {
             inner: RwLock::new(McpState::default()),
             store,
             credentials,
+            oauth_deps: None,
+            clock,
+            server_cap: MAX_MCP_SERVERS,
+        }))
+    }
+
+    /// Production constructor — credentials + OAuth-adapter collaborators
+    /// both wired. OAuth2-credentialed servers connect through
+    /// [`PatomMcpHttpClient`] with refresh-on-acquire / refresh-on-401.
+    #[must_use]
+    pub fn with_oauth_deps(
+        store: SharedMcpServerStore,
+        credentials: SharedMcpCredentialStore,
+        oauth_deps: OAuthAdapterDeps,
+        clock: SharedClock,
+    ) -> Self {
+        Self(Arc::new(McpRegistryInner {
+            inner: RwLock::new(McpState::default()),
+            store,
+            credentials: Some(credentials),
+            oauth_deps: Some(oauth_deps),
             clock,
             server_cap: MAX_MCP_SERVERS,
         }))
@@ -252,6 +338,7 @@ impl McpRegistry {
             // never-touched fields can hold null-object stand-ins.
             store: crate::mcp::store::test_support::null_store(),
             credentials: None,
+            oauth_deps: None,
             clock: crate::clock::SystemClock::shared(),
             server_cap: MAX_MCP_SERVERS,
         }))
@@ -520,7 +607,12 @@ impl McpRegistryInner {
             // takes effect within one tick.
             return Some(prev.client);
         }
-        match McpClient::connect(config, credentials).await {
+        let connect_result = if matches!(credentials, Some(CredentialPayload::Oauth2(_))) {
+            self.connect_oauth(id, org_id, config).await
+        } else {
+            McpClient::connect(config, credentials).await
+        };
+        match connect_result {
             Ok(c) => Some(Arc::new(c)),
             Err(e) => {
                 warn!(
@@ -544,6 +636,50 @@ impl McpRegistryInner {
                 None
             }
         }
+    }
+
+    /// Build a [`PatomMcpHttpClient`] adapter for this server and open
+    /// the MCP connection through it.
+    async fn connect_oauth(
+        &self,
+        server_id: McpServerId,
+        org_id: crate::auth::OrgId,
+        transport: &McpTransport,
+    ) -> Result<McpClient, McpError> {
+        let deps = self.oauth_deps.as_ref().ok_or_else(|| {
+            McpError::InvalidConfig(
+                "oauth2 credentials require OAuthAdapterDeps; registry was built without them"
+                    .into(),
+            )
+        })?;
+        // Need the catalog row for the refresh path's client_source
+        // branch. Read here so the connect failure surface is uniform.
+        let server = self.store.read(server_id, org_id).await?;
+        let catalog = deps
+            .catalog
+            .get_for_org(org_id, &server.catalog_id)
+            .await?
+            .ok_or_else(|| {
+                McpError::InvalidConfig(format!(
+                    "catalog `{id}` for server {server_id} no longer exists",
+                    id = server.catalog_id,
+                ))
+            })?;
+        let refresh_lock = deps.refresh_lock_for(server_id, org_id);
+        let adapter = PatomMcpHttpClient::new(PatomMcpHttpClientConfig {
+            inner: deps.inner_http.clone(),
+            credentials: deps.credentials.clone(),
+            flow: deps.flow.clone(),
+            clock: self.clock.clone(),
+            server_id,
+            org_id,
+            custom_headers: HashMap::new(),
+            catalog,
+            platform_clients: deps.platform_clients.clone(),
+            refresh_lock,
+            redirect_uri: deps.redirect_uri.clone(),
+        });
+        McpClient::connect_with_adapter(transport, adapter).await
     }
 }
 

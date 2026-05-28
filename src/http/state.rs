@@ -10,7 +10,7 @@ use crate::auth::{
 };
 use crate::clock::SharedClock;
 use crate::http::MembershipCache;
-use crate::mcp::oauth::{OAuthFlowClient, SharedMcpOAuthClientStore, SharedMcpOAuthPendingStore};
+use crate::mcp::oauth::{OAuthFlowClient, SharedMcpOAuthPendingStore};
 use crate::mcp::{
     McpRefreshTrigger, SharedMcpCatalogStore, SharedMcpCredentialStore, SharedMcpServerStore,
     TestConnectRateLimiter,
@@ -58,8 +58,12 @@ pub struct AppState {
     /// Per-user rate limiter for `POST /mcp-servers/test-connect`. Process-wide
     /// singleton shared across all handlers.
     pub mcp_test_rate: TestConnectRateLimiter,
-    /// Per-(org, issuer) registered DCR clients store.
-    pub mcp_oauth_clients: SharedMcpOAuthClientStore,
+    /// Env-keyed Patom-supported OAuth clients
+    /// (`PATOM_<X>_CLIENT_ID/_SECRET`). Used by
+    /// [`crate::mcp::oauth::resolve_oauth_client_creds`] for catalog
+    /// entries marked `client_source = 'platform'`.
+    pub platform_oauth_clients:
+        std::sync::Arc<std::collections::HashMap<String, crate::config::PlatformOAuthClient>>,
     /// Pending-authorization rows that bridge `POST /oauth/start` →
     /// `GET /oauth/callback`.
     pub mcp_oauth_pending: SharedMcpOAuthPendingStore,

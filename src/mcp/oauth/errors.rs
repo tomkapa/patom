@@ -34,17 +34,4 @@ pub enum OAuthError {
 
     #[error("misconfigured: {0}")]
     Misconfigured(String),
-
-    /// The authorization server does not advertise a
-    /// `registration_endpoint` (no RFC 7591 support). The operator must
-    /// pre-provision an OAuth client out-of-band and register it via
-    /// `PUT /api/mcp-servers/{id}/oauth/client`. Distinct from
-    /// `Misconfigured` so the HTTP layer can return an actionable 4xx
-    /// instead of a generic 500.
-    #[error(
-        "authorization server {issuer} does not support dynamic client registration; \
-         provision an OAuth client manually and register it via \
-         PUT /api/mcp-servers/{{id}}/oauth/client"
-    )]
-    DcrUnsupported { issuer: String },
 }

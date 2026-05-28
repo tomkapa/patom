@@ -22,6 +22,7 @@ use tokio::time::timeout;
 use super::credentials::CredentialPayload;
 use super::error::McpError;
 use super::limits::{MCP_CALL_TIMEOUT, MCP_CONNECT_TIMEOUT, MCP_LIST_TOOLS_TIMEOUT};
+use super::oauth::PatomMcpHttpClient;
 use super::types::McpTransport;
 
 /// Connected MCP server. Cheap to clone (the running service lives behind an `Arc`)
@@ -37,20 +38,54 @@ impl std::fmt::Debug for McpClient {
 }
 
 impl McpClient {
-    /// Open a connection to `transport` and complete the MCP `initialize` handshake
-    /// under [`MCP_CONNECT_TIMEOUT`]. Credentials, when present, are decrypted in
-    /// the caller and passed in; the headers / bearer token are attached to the
-    /// outbound HTTP transport in-memory and never persisted back.
+    /// Open a connection to `transport` and complete the MCP `initialize`
+    /// handshake under [`MCP_CONNECT_TIMEOUT`]. Used for servers with
+    /// no credentials or with static-headers credentials — the headers
+    /// are attached verbatim to every outbound request via rmcp's
+    /// `custom_headers`.
+    ///
+    /// OAuth-bearing servers go through [`Self::connect_with_adapter`]
+    /// so refresh-on-acquire / refresh-on-401 are handled by
+    /// [`PatomMcpHttpClient`] instead of baking a static Bearer here.
     pub async fn connect(
         transport: &McpTransport,
         credentials: Option<&CredentialPayload>,
     ) -> Result<Self, McpError> {
+        if matches!(credentials, Some(CredentialPayload::Oauth2(_))) {
+            return Err(McpError::InvalidConfig(
+                "oauth2 credentials require connect_with_adapter for refresh handling".into(),
+            ));
+        }
         match transport {
             McpTransport::Http { url } => {
                 let custom_headers = build_request_headers(credentials)?;
                 let cfg = StreamableHttpClientTransportConfig::with_uri(url.as_str())
                     .custom_headers(custom_headers);
                 let transport = StreamableHttpClientTransport::from_config(cfg);
+                let connect = timeout(MCP_CONNECT_TIMEOUT, ().serve(transport))
+                    .await
+                    .map_err(|_| McpError::Connect("initialize timed out".into()))?
+                    .map_err(|e| McpError::Connect(e.to_string()))?;
+                Ok(Self {
+                    inner: Arc::new(connect),
+                })
+            }
+        }
+    }
+
+    /// Open an OAuth-aware connection. The adapter implements rmcp's
+    /// `StreamableHttpClient` trait with the refresh-on-acquire +
+    /// refresh-on-401 behaviour described in [`PatomMcpHttpClient`];
+    /// no static Bearer is attached, so a rotated token takes effect
+    /// on the next call without reconnecting.
+    pub async fn connect_with_adapter(
+        transport: &McpTransport,
+        adapter: PatomMcpHttpClient,
+    ) -> Result<Self, McpError> {
+        match transport {
+            McpTransport::Http { url } => {
+                let cfg = StreamableHttpClientTransportConfig::with_uri(url.as_str());
+                let transport = StreamableHttpClientTransport::with_client(adapter, cfg);
                 let connect = timeout(MCP_CONNECT_TIMEOUT, ().serve(transport))
                     .await
                     .map_err(|_| McpError::Connect("initialize timed out".into()))?

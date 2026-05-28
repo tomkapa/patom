@@ -1,11 +1,13 @@
-//! Storage seam for the OAuth tables. Two stores:
-//!   - [`McpOAuthClientStore`] — per-(org, issuer) registered DCR clients,
-//!     with encrypted `client_secret` + `registration_access_token`.
-//!   - [`McpOAuthPendingStore`] — short-lived (state, server_id, …) rows
-//!     bridging `POST /oauth/start` to `GET /oauth/callback`.
+//! Storage seam for the OAuth pending table.
 //!
-//! Both surface only validated domain types; ciphertext + nonces stay
-//! inside the impls.
+//! Short-lived `(state, server_id, …)` rows bridge `POST /oauth/start` to
+//! `GET /oauth/callback`. After the refactor, freshly-registered DCR
+//! client material (client_id + encrypted client_secret + auth method +
+//! endpoints) is carried on the same pending row so the start→callback
+//! handoff doesn't need a separate `mcp_oauth_clients` table.
+//!
+//! All boundary-validated types live here; ciphertext + nonces stay
+//! inside the [`super::pg_store`] impl.
 
 use std::fmt;
 use std::sync::Arc;
@@ -49,16 +51,10 @@ pub struct SlackPingCtx {
     pub thread_ts: String,
 }
 
-crate::str_enum! {
-    /// Token-endpoint authentication method as defined by RFC 7591 §2.
-    /// The DB CHECK constraint and the wire format both key off these
-    /// labels; adding a method is a one-line edit.
-    pub enum TokenAuthMethod {
-        None              => "none",
-        ClientSecretBasic => "client_secret_basic",
-        ClientSecretPost  => "client_secret_post",
-    }
-}
+// `TokenAuthMethod` moved to `crate::mcp::types` so `credentials.rs` can
+// embed it in `OAuth2Payload` without creating a `credentials → oauth →
+// credentials` dep cycle. Re-exported here for source-compatibility.
+pub use crate::mcp::types::TokenAuthMethod;
 
 /// Vendor-issued OAuth `client_id`. Parsed once at the boundary — the
 /// length cap defends against arbitrary input being persisted into the
@@ -97,81 +93,14 @@ impl TryFrom<String> for OAuthClientId {
     }
 }
 
-/// Where this OAuth client came from.
+/// OAuth client credentials resolved for one flow.
 ///
-/// Drives `mcp_oauth_clients` write semantics: DCR rows are idempotent
-/// (re-registering the same vendor for the same org must not churn the
-/// row); operator-supplied rows replace in full (rotating a pasted
-/// secret must actually overwrite ciphertext); shared rows live with
-/// `org_id IS NULL` and are reused across every tenant.
-///
-/// `org_id` lives on each variant that needs one so the type makes the
-/// `(provenance, org_id)` pairing unrepresentable rather than relying on
-/// a runtime guard in the store impl — §1 in CLAUDE.md.
-///
-/// Adding a fourth provenance (e.g. "vendor-specific quirk that needs
-/// extra refresh headers") is one new variant here plus one match arm
-/// in the store impl — no trait churn.
+/// Replaces the pre-refactor `DcrClientRecord`. Same field set, but the
+/// shape is no longer storage-tagged — it's just "what the start /
+/// callback / refresh path needs to talk to the AS." The resolver
+/// produces this from env (Platform) or DCR (a fresh registration).
 #[derive(Debug, Clone)]
-pub enum ClientProvenance {
-    /// RFC 7591 Dynamic Client Registration response. Carries the
-    /// management URL + bearer the AS returned, so we can in theory
-    /// deregister (RFC 7592) later.
-    Dcr {
-        org_id: OrgId,
-        registration_client_uri: Option<String>,
-        registration_access_token: Option<SecretString>,
-    },
-    /// Operator pasted credentials they created out-of-band in the
-    /// vendor's developer console (vendors that don't implement DCR).
-    /// Never carries `registration_*` fields by construction.
-    Operator { org_id: OrgId },
-    /// Platform-operator-provisioned client, shared across every tenant
-    /// of this Patom deployment. Persists with `org_id IS NULL`. Used
-    /// for vendors that don't support DCR (Google, Microsoft 365 — same
-    /// model Anthropic uses for Claude Desktop's Gmail connector).
-    /// Written exclusively by the boot-time seeder; never overwritten
-    /// by the per-org OAuth flows.
-    Shared,
-}
-
-impl ClientProvenance {
-    /// Owning org for this client, or `None` for `Shared` (the row
-    /// lives with `org_id IS NULL`). Lets call sites that don't care
-    /// about the provenance shape read the org seam uniformly.
-    #[must_use]
-    pub fn org_id(&self) -> Option<OrgId> {
-        match self {
-            Self::Dcr { org_id, .. } | Self::Operator { org_id } => Some(*org_id),
-            Self::Shared => None,
-        }
-    }
-}
-
-/// New OAuth-client record ready to persist. Holds plaintext secrets
-/// briefly — the store seals them before INSERT. The owning `org_id`
-/// (when applicable) lives on [`ClientProvenance`].
-#[derive(Debug, Clone)]
-pub struct NewOAuthClient {
-    pub issuer: String,
-    pub client_id: OAuthClientId,
-    pub client_secret: Option<SecretString>,
-    pub authorization_endpoint: String,
-    pub token_endpoint: String,
-    pub token_endpoint_auth_method: TokenAuthMethod,
-    pub scope: Option<String>,
-    pub provenance: ClientProvenance,
-}
-
-/// Decrypted OAuth client returned by a lookup.
-///
-/// `org_id` mirrors the row: `None` for shared platform rows, `Some` for
-/// org-scoped (DCR or operator) rows. Downstream code reads the
-/// authorize/token endpoints + credentials and does not branch on
-/// org_id past the store seam.
-#[derive(Debug, Clone)]
-pub struct DcrClientRecord {
-    pub org_id: Option<OrgId>,
+pub struct OAuthClientCreds {
     pub issuer: String,
     pub client_id: OAuthClientId,
     pub client_secret: Option<SecretString>,
@@ -180,34 +109,6 @@ pub struct DcrClientRecord {
     pub token_endpoint_auth_method: TokenAuthMethod,
     pub scope: Option<String>,
 }
-
-#[async_trait]
-pub trait McpOAuthClientStore: fmt::Debug + Send + Sync {
-    /// Write-or-fetch dispatched by `new.provenance`:
-    /// - [`ClientProvenance::Dcr`]: insert-or-return (existing row wins),
-    ///   keyed by `(org_id, issuer)`.
-    /// - [`ClientProvenance::Operator`]: full overwrite,
-    ///   keyed by `(org_id, issuer)`; `registration_*` columns are
-    ///   forced to NULL.
-    /// - [`ClientProvenance::Shared`]: full overwrite,
-    ///   keyed by `(issuer)` against the `org_id IS NULL` row.
-    async fn upsert(&self, new: NewOAuthClient) -> Result<DcrClientRecord, OAuthError>;
-
-    /// Lookup the org-scoped client for `(org_id, issuer)`. Returns
-    /// `None` if no per-org row exists — the caller decides whether to
-    /// fall through to [`Self::read_shared`] or run DCR.
-    async fn read(
-        &self,
-        org_id: OrgId,
-        issuer: &str,
-    ) -> Result<Option<DcrClientRecord>, OAuthError>;
-
-    /// Lookup the shared (platform-owned) client for `issuer`. Returns
-    /// `None` when the seeder hasn't seeded an entry for that issuer.
-    async fn read_shared(&self, issuer: &str) -> Result<Option<DcrClientRecord>, OAuthError>;
-}
-
-pub type SharedMcpOAuthClientStore = Arc<dyn McpOAuthClientStore>;
 
 #[derive(Debug, Clone)]
 pub struct PendingAuthorizationWrite {
@@ -215,7 +116,6 @@ pub struct PendingAuthorizationWrite {
     pub server_id: McpServerId,
     pub user_id: UserId,
     pub org_id: OrgId,
-    pub issuer: String,
     pub pkce_verifier: String,
     pub redirect_to: Option<String>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
@@ -226,6 +126,26 @@ pub struct PendingAuthorizationWrite {
     /// Slack-thread channel context. When `Some`, the callback posts a
     /// "✓ Connected — <Provider>" follow-up into that thread.
     pub slack_ctx: Option<SlackPingCtx>,
+    /// DCR-issued client material to carry from start to callback —
+    /// `None` for Platform entries (resolver derives those from env on
+    /// callback too). Present iff the catalog entry's `client_source =
+    /// 'dcr'` and the resolver registered fresh.
+    pub dcr_client: Option<PendingDcrClient>,
+}
+
+/// DCR-issued client material persisted with the pending row.
+///
+/// Carries the `(client_id, client_secret, auth_method, endpoints)`
+/// produced by the start handler so the callback can exchange code with
+/// the same client. Plaintext at the boundary; the store seals the
+/// secret with the org's KEK before INSERT.
+#[derive(Debug, Clone)]
+pub struct PendingDcrClient {
+    pub client_id: OAuthClientId,
+    pub client_secret: Option<SecretString>,
+    pub token_endpoint_auth_method: TokenAuthMethod,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
 }
 
 #[derive(Debug, Clone)]
@@ -234,11 +154,11 @@ pub struct PendingAuthorization {
     pub server_id: McpServerId,
     pub user_id: UserId,
     pub org_id: OrgId,
-    pub issuer: String,
     pub pkce_verifier: String,
     pub redirect_to: Option<String>,
     pub resume_ctx: Option<ResumeCtx>,
     pub slack_ctx: Option<SlackPingCtx>,
+    pub dcr_client: Option<PendingDcrClient>,
 }
 
 #[async_trait]

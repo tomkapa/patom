@@ -35,6 +35,51 @@ crate::str_enum! {
     }
 }
 
+crate::str_enum! {
+    /// Where the OAuth client_id / client_secret for this catalog entry
+    /// come from. Drives [`crate::mcp::oauth`]'s client resolver.
+    ///
+    /// * `Platform` — Patom-supported vendor. Credentials read from env
+    ///   via [`platform_env_keys`]; the resolver short-circuits DCR.
+    /// * `Dcr` — BYO vendor that supports RFC 7591 Dynamic Client
+    ///   Registration. The resolver registers a fresh client on the first
+    ///   `/oauth/start` and persists it inside the same encrypted
+    ///   `mcp_server_credentials` envelope as the access token.
+    /// * `None` — no OAuth (`auth_kind = 'none'` rows). Only here so the
+    ///   resolver's `match` is exhaustive.
+    pub enum ClientSource {
+        Platform => "platform",
+        Dcr      => "dcr",
+        None     => "none",
+    }
+}
+
+/// Env-var names that source a `ClientSource::Platform` catalog entry's
+/// OAuth client. The convention is `PATOM_<UPPER>_CLIENT_ID/SECRET` where
+/// `<UPPER>` is the catalog id upper-cased with `-` → `_`.
+///
+/// The transform is total: [`McpCatalogId`] is restricted to
+/// `[a-z][a-z0-9_-]{0,39}` so `to_ascii_uppercase` + `replace('-', "_")`
+/// always yields a valid env-var name.
+#[must_use]
+pub fn platform_env_keys(catalog_id: &McpCatalogId) -> (String, String) {
+    let upper = catalog_id.as_str().to_ascii_uppercase().replace('-', "_");
+    (
+        format!("PATOM_{upper}_CLIENT_ID"),
+        format!("PATOM_{upper}_CLIENT_SECRET"),
+    )
+}
+
+/// Env-var middle used to look up a platform OAuth client in
+/// [`crate::config::AuthSettings::platform_oauth_clients`].
+///
+/// Same transform as [`platform_env_keys`] but returns the lowercased
+/// middle (matching the `HashMap` key the env parser emits).
+#[must_use]
+pub fn platform_env_middle(catalog_id: &McpCatalogId) -> String {
+    catalog_id.as_str().replace('-', "_")
+}
+
 /// Display name for a catalog entry. Bounded so list views stay readable.
 #[derive(Clone, PartialEq, Eq)]
 pub struct McpCatalogDisplayName(Arc<str>);
@@ -257,6 +302,17 @@ pub struct McpCatalogEntry {
     /// `access_type=offline` + `prompt=consent`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorize_extra_params: Option<OAuthAuthorizeExtras>,
+    /// Where the OAuth client_id/secret for this entry come from. Defaults
+    /// to `Dcr` at the DB level — built-in entries that diverge (Google,
+    /// GitHub, Gmail, Calendar) are set by migration 50.
+    pub client_source: ClientSource,
+    /// Optional alias to another platform catalog id whose env-var
+    /// credentials this entry shares. `gmail` and `gcal` both point at
+    /// `google` so one Google OAuth app covers both products. `None` when
+    /// the entry uses its own credentials (or isn't `client_source =
+    /// Platform`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform_client_alias: Option<McpCatalogId>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -373,6 +429,8 @@ struct CatalogRow {
     auth_kind: String,
     default_scope: Option<String>,
     authorize_extra_params: Option<serde_json::Value>,
+    client_source: ClientSource,
+    platform_client_alias: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -390,6 +448,10 @@ impl TryFrom<CatalogRow> for McpCatalogEntry {
         })?;
         let org_id = row.org_id.map(OrgId::from);
         let authorize_extra_params = decode_authorize_extra_params(row.authorize_extra_params)?;
+        let platform_client_alias = row
+            .platform_client_alias
+            .map(McpCatalogId::try_from)
+            .transpose()?;
         Ok(Self {
             id,
             org_id,
@@ -401,6 +463,8 @@ impl TryFrom<CatalogRow> for McpCatalogEntry {
             auth_kind,
             default_scope: row.default_scope,
             authorize_extra_params,
+            client_source: row.client_source,
+            platform_client_alias,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -433,7 +497,7 @@ impl McpCatalogStore for PgMcpCatalogStore {
         let rows: Vec<CatalogRow> = sqlx::query_as::<_, CatalogRow>(
             "SELECT id, org_id, display_name, description, homepage_url, icon_url, \
                     default_transport, auth_kind, default_scope, authorize_extra_params, \
-                    created_at, updated_at \
+                    client_source, platform_client_alias, created_at, updated_at \
                FROM mcp_catalog \
               WHERE org_id IS NULL OR org_id = $1 \
               ORDER BY id ASC",
@@ -550,7 +614,7 @@ impl McpCatalogStore for PgMcpCatalogStore {
         let row: Option<CatalogRow> = sqlx::query_as::<_, CatalogRow>(
             "SELECT id, org_id, display_name, description, homepage_url, icon_url, \
                     default_transport, auth_kind, default_scope, authorize_extra_params, \
-                    created_at, updated_at \
+                    client_source, platform_client_alias, created_at, updated_at \
                FROM mcp_catalog \
               WHERE id = $1 \
                 AND (org_id IS NULL OR org_id = $2) \
