@@ -4,8 +4,10 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { useT } from "../../i18n";
 import { useAuthStore } from "../../stores/authStore";
+import { useActiveOrg } from "../../hooks/useMe";
 import { indicatorSpring } from "../../lib/motion";
 import { UserMenu } from "./UserMenu";
+import appLogoUrl from "../../../assets/favicon-192.png";
 
 type MenuItem = {
   id: string;
@@ -21,6 +23,9 @@ export function MenuRail() {
   const { pathname } = useLocation();
   const { t } = useT();
   const me = useAuthStore((s) => s.me);
+  const activeOrg = useActiveOrg();
+  const workspaceLogo = activeOrg?.avatar_url ?? appLogoUrl;
+  const workspaceName = activeOrg?.name ?? "Patom";
 
   const items: MenuItem[] = [
     {
@@ -58,14 +63,12 @@ export function MenuRail() {
       className="flex h-full w-[72px] shrink-0 flex-col items-center gap-1.5 bg-[#1E3322] p-2"
       aria-label="Menu rail"
     >
-      <div
-        className="flex h-9 w-9 items-center justify-center border border-white bg-[var(--color-moss)]"
-        aria-hidden
-      >
-        <span className="font-mono text-[11px] font-bold tracking-tight text-white">
-          NX
-        </span>
-      </div>
+      <img
+        src={workspaceLogo}
+        alt={workspaceName}
+        aria-label={workspaceName}
+        className="h-9 w-9 shrink-0 object-cover select-none"
+      />
 
       <div className="my-0.5 h-px w-6 bg-white/20" aria-hidden />
 
