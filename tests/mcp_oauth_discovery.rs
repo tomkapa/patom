@@ -13,13 +13,26 @@ use axum::routing::get;
 use patom_rs::mcp::oauth::discover_authorization_server;
 use reqwest::Client;
 use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
+
+/// RAII guard around a spawned axum server task. Aborts on drop so a
+/// test that bails (panic, early `?`) doesn't leak the task into the
+/// runtime — CLAUDE.md §7: "Floating tasks are banned: `tokio::spawn(...)`
+/// whose `JoinHandle` is dropped."
+struct ServerGuard(JoinHandle<()>);
+
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn discovers_endpoints_via_two_well_known_hops() {
     // Reusable stub: the two well-known paths are wired up; the AS doc
     // self-identifies with the stub's own origin so the §2.4 self-check
     // passes.
-    let (base, _handle) = spawn_stub().await;
+    let (base, _guard) = spawn_stub().await;
 
     let http = Client::new();
     let meta = discover_authorization_server(&http, &format!("{base}/mcp/v1"))
@@ -83,9 +96,9 @@ async fn accepts_trailing_slash_drift_between_prm_and_as() {
                 }
             }),
         );
-    let _handle = tokio::spawn(async move {
+    let _guard = ServerGuard(tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
-    });
+    }));
 
     let http = Client::new();
     let meta = discover_authorization_server(&http, &format!("{base}/mcp/v1"))
@@ -100,9 +113,9 @@ async fn rejects_when_well_known_404s() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let app = Router::new().fallback(get(|| async { StatusCode::NOT_FOUND }));
-    let _handle = tokio::spawn(async move {
+    let _guard = ServerGuard(tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
-    });
+    }));
 
     let http = Client::new();
     let err = discover_authorization_server(&http, &format!("http://{addr}/mcp/v1"))
@@ -146,9 +159,9 @@ async fn rejects_when_as_metadata_issuer_mismatches() {
                 )
             }),
         );
-    let _handle = tokio::spawn(async move {
+    let _guard = ServerGuard(tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
-    });
+    }));
 
     let http = Client::new();
     let err = discover_authorization_server(&http, &format!("http://{addr}/mcp/v1"))
@@ -164,7 +177,7 @@ async fn rejects_when_as_metadata_issuer_mismatches() {
 /// Stub that serves both well-knowns with the AS doc self-claiming the
 /// stub's own origin. Routed via shared state so the AS doc can plug in
 /// the actual `http://127.0.0.1:<port>` once `axum::serve` has bound.
-async fn spawn_stub() -> (String, tokio::task::JoinHandle<()>) {
+async fn spawn_stub() -> (String, ServerGuard) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let base = format!("http://{addr}");
@@ -208,5 +221,5 @@ async fn spawn_stub() -> (String, tokio::task::JoinHandle<()>) {
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    (base, handle)
+    (base, ServerGuard(handle))
 }

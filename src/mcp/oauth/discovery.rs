@@ -124,22 +124,31 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(
     http: &Client,
     url: &Url,
 ) -> Result<T, OAuthError> {
-    let resp = timeout(DISCOVERY_TIMEOUT, http.get(url.clone()).send())
-        .await
-        .map_err(|_| OAuthError::Discovery("timed out".into()))?
-        .map_err(|e| OAuthError::Discovery(format!("http: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(OAuthError::Discovery(format!(
-            "{} {} {}",
-            url,
-            resp.status().as_u16(),
-            resp.status().canonical_reason().unwrap_or("")
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| OAuthError::Discovery(format!("body: {e}")))?;
+    // Wrap send + status check + body read in a single timeout. The
+    // body stream is part of the same I/O event we want to bound — a
+    // slow vendor that flushes headers but trickles bytes would
+    // otherwise hang the handler indefinitely (CLAUDE.md §5).
+    let url_for_err = url.clone();
+    let bytes = timeout(DISCOVERY_TIMEOUT, async {
+        let resp = http
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|e| OAuthError::Discovery(format!("http: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(OAuthError::Discovery(format!(
+                "{} {} {}",
+                url_for_err,
+                resp.status().as_u16(),
+                resp.status().canonical_reason().unwrap_or("")
+            )));
+        }
+        resp.bytes()
+            .await
+            .map_err(|e| OAuthError::Discovery(format!("body: {e}")))
+    })
+    .await
+    .map_err(|_| OAuthError::Discovery("timed out".into()))??;
     if bytes.len() > DISCOVERY_MAX_BYTES {
         return Err(OAuthError::Discovery(format!(
             "response exceeds {DISCOVERY_MAX_BYTES} bytes"

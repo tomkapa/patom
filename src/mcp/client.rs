@@ -175,15 +175,16 @@ fn build_request_headers(
                 out.insert(header_name, header_value);
             }
         }
-        CredentialPayload::Oauth2(oauth) => {
-            // Bearer-tokens may carry chars outside `HeaderValue`'s ASCII
-            // visible set; the rejection lands as `InvalidConfig` rather
-            // than a panic so a misformatted upstream response surfaces
-            // cleanly. The Authorization header is hard-coded — never
-            // overridden by static headers, which would defeat OAuth.
-            let header_value = HeaderValue::from_str(&format!("Bearer {}", oauth.access_token))
-                .map_err(|_| McpError::InvalidConfig("oauth access_token rejected".into()))?;
-            out.insert(http::header::AUTHORIZATION, header_value);
+        // `connect` rejects `CredentialPayload::Oauth2` before reaching
+        // this helper (oauth servers must go through
+        // `connect_with_adapter` so refresh-on-401 / refresh-on-acquire
+        // are wired). The arm exists only to keep the match exhaustive;
+        // observing it means a caller bypassed `connect`'s guard —
+        // §6: `expect` as a named assertion, not silent fallthrough.
+        CredentialPayload::Oauth2(_) => {
+            return Err(McpError::InvalidConfig(
+                "oauth2 credentials reached build_request_headers; use connect_with_adapter".into(),
+            ));
         }
     }
     Ok(out)

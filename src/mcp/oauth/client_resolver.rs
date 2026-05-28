@@ -135,7 +135,9 @@ fn pick_auth_method(supported: &[String], confidential: bool) -> TokenAuthMethod
         if supports(TokenAuthMethod::ClientSecretBasic) {
             return TokenAuthMethod::ClientSecretBasic;
         }
-        TokenAuthMethod::ClientSecretPost
+        // RFC 6749 §2.3.1 / RFC 7591 default when the AS doesn't
+        // advertise `token_endpoint_auth_methods_supported`.
+        TokenAuthMethod::ClientSecretBasic
     } else if supports(TokenAuthMethod::None) {
         TokenAuthMethod::None
     } else {

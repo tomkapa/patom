@@ -32,6 +32,7 @@ use rmcp::transport::streamable_http_client::{
 };
 use sse_stream::{Error as SseError, Sse};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use crate::auth::OrgId;
 use crate::clock::SharedClock;
@@ -50,6 +51,16 @@ use super::store::OAuthClientId;
 /// within this window of expiry. 60 s gives a few RTTs of headroom on
 /// vendors that issue 1-hour tokens.
 const REFRESH_SKEW: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Outer bound on the refresh-grant HTTP round-trip.
+///
+/// `OAuthFlowClient` already configures a 10 s `.timeout` + 5 s
+/// `.connect_timeout` on its `reqwest::Client`, but per CLAUDE.md §5
+/// every I/O `await` is wrapped explicitly so a future change to the
+/// inner client (or a slow body stream on a connection that doesn't
+/// otherwise drop) can't hold the per-server refresh mutex
+/// indefinitely.
+const REFRESH_GRANT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// [`REFRESH_SKEW`] in `chrono::Duration` form. Wrapped in a helper so
 /// the `expect` lives in one spot — the conversion is infallible for
@@ -196,6 +207,15 @@ impl PatomMcpHttpClient {
     /// every adapter for this server share exactly one token-endpoint
     /// POST. The mutex is released before the credentials upsert —
     /// only the AS round-trip is the dedup hot path.
+    #[tracing::instrument(
+        name = "mcp.oauth.transport.refresh_payload",
+        skip_all,
+        fields(
+            patom.mcp.server.id = %self.state.server_id,
+            patom.org.id = %self.state.org_id,
+            patom.mcp.catalog_id = %self.state.catalog.id,
+        ),
+    )]
     async fn refresh_payload(
         &self,
         observed: OAuth2Payload,
@@ -227,9 +247,22 @@ impl PatomMcpHttpClient {
                 return Err(AdapterError::ReconnectRequired("no refresh_token".into()));
             };
             let creds = self.build_refresh_creds(&current)?;
-            let outcome = refresh_oauth_token(&self.state.flow, &creds, refresh_token, now)
-                .await
-                .map_err(AdapterError::Refresh)?;
+            // Belt-and-braces: `OAuthFlowClient`'s reqwest client already
+            // configures send + connect timeouts, but per CLAUDE.md §5
+            // every I/O await is explicitly bounded so a future change to
+            // the inner client can't hold the refresh mutex forever.
+            let outcome = timeout(
+                REFRESH_GRANT_TIMEOUT,
+                refresh_oauth_token(&self.state.flow, &creds, refresh_token, now),
+            )
+            .await
+            .map_err(|_| {
+                AdapterError::Refresh(OAuthError::TokenEndpoint(format!(
+                    "refresh grant exceeded {}s",
+                    REFRESH_GRANT_TIMEOUT.as_secs()
+                )))
+            })?
+            .map_err(AdapterError::Refresh)?;
             match outcome {
                 RefreshOutcome::Refreshed(t) => OAuth2Payload {
                     access_token: t.access_token,
