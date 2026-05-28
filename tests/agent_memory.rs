@@ -12,7 +12,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use patom_rs::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
+use patom_rs::agents::{
+    AgentNamesCache, AgentPromptCache, AgentSystemPrompt, AgentUpdate, SharedAgentStore,
+};
 use patom_rs::auth::OrganizationRule;
 use patom_rs::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use patom_rs::clock::{SharedClock, SystemClock, TestClock};
@@ -411,10 +413,17 @@ async fn cache_serves_within_ttl_then_refreshes_after_expiry() {
         .expect("load");
     assert_eq!(first.as_str(), "test default prompt");
 
-    sqlx::query("UPDATE agents SET system_prompt = $1 WHERE id = $2")
-        .bind("rolled-out v2")
-        .bind(db.default_agent_id)
-        .execute(&db.pool)
+    agents
+        .update(
+            db.default_agent_id,
+            AgentUpdate {
+                system_prompt: Some(
+                    AgentSystemPrompt::try_from("rolled-out v2").expect("valid prompt"),
+                ),
+                edited_by: Some(db.default_user_id),
+                ..AgentUpdate::default()
+            },
+        )
         .await
         .expect("update");
 
