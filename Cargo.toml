@@ -78,7 +78,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 # message variants); rmcp is the upstream-maintained reference implementation. We pin
 # only the client + HTTP transport features — no server, no macros, no stdio — so the
 # surface stays narrow. Owner: mcp/.
-rmcp = { version = "1.7", default-features = false, features = ["client", "reqwest", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "1.7", default-features = false, features = ["auth", "client", "reqwest", "transport-streamable-http-client-reqwest"] }
 # §8 (zero-dep bias): already transitively used by rmcp's `StreamableHttpClient`
 # trait — the trait's `get_stream` returns `BoxStream<Result<Sse, SseError>>`,
 # so any custom impl needs the `Sse` type. rmcp re-exports `SseError` but not
