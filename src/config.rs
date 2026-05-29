@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -154,15 +156,98 @@ pub struct SlackSettings {
     pub redirect_url: String,
 }
 
+/// Patom-supported MCP OAuth client credentials, keyed by the env-var
+/// middle (lowercased) of `PATOM_<MID>_CLIENT_ID` / `_CLIENT_SECRET`.
+///
+/// Sourced from env so the secrets stay in the secret manager, never the
+/// database. The catalog-id ↔ env-var-middle mapping (`-` → `_`) is the
+/// caller's concern; this type is namespace-agnostic.
+#[derive(Clone)]
+pub struct PlatformOAuthClient {
+    pub client_id: SecretString,
+    pub client_secret: SecretString,
+}
+
+impl fmt::Debug for PlatformOAuthClient {
+    // Both fields are already `SecretString` so Debug is redacted by
+    // construction; the explicit impl exists so a future plaintext field
+    // can't be added without the Debug review catching it.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlatformOAuthClient")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret)
+            .finish()
+    }
+}
+
+/// Parse `PATOM_<MID>_CLIENT_ID` / `_CLIENT_SECRET` pairs from env.
+///
+/// Unpaired halves, empty values, and non-`PATOM_` keys are silently
+/// dropped — boot must not fail on stray env vars. The returned map is
+/// keyed by the lowercased middle (e.g. `google`, `microsoft_365`).
+/// Catalog membership and `-` ↔ `_` normalization are downstream concerns
+/// handled by the resolver.
+pub fn parse_platform_oauth_clients<I>(vars: I) -> HashMap<String, PlatformOAuthClient>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    const PREFIX: &str = "PATOM_";
+    const ID_SUFFIX: &str = "_CLIENT_ID";
+    const SECRET_SUFFIX: &str = "_CLIENT_SECRET";
+
+    let mut ids: HashMap<String, String> = HashMap::new();
+    let mut secrets: HashMap<String, String> = HashMap::new();
+
+    for (key, value) in vars {
+        let Some(remainder) = key.strip_prefix(PREFIX) else {
+            continue;
+        };
+        if let Some(middle) = remainder.strip_suffix(SECRET_SUFFIX)
+            && !middle.is_empty()
+        {
+            secrets.insert(middle.to_ascii_lowercase(), value);
+        } else if let Some(middle) = remainder.strip_suffix(ID_SUFFIX)
+            && !middle.is_empty()
+        {
+            ids.insert(middle.to_ascii_lowercase(), value);
+        }
+    }
+
+    let mut out = HashMap::with_capacity(ids.len());
+    for (middle, id_value) in ids {
+        let Some(secret_value) = secrets.remove(&middle) else {
+            continue;
+        };
+        let Ok(client_id) = SecretString::try_from(id_value) else {
+            continue;
+        };
+        let Ok(client_secret) = SecretString::try_from(secret_value) else {
+            continue;
+        };
+        out.insert(
+            middle,
+            PlatformOAuthClient {
+                client_id,
+                client_secret,
+            },
+        );
+    }
+    out
+}
+
 /// Auth subsystem configuration. All fields are required; the OAuth
 /// flow refuses to start without a real Google client.
 #[derive(Debug, Clone)]
 pub struct AuthSettings {
     /// HS256 signing secret for session JWTs. Must be ≥32 bytes.
     pub jwt_secret: SecretString,
-    /// Google OAuth client id (no secret material).
+    /// Google OAuth client id for **Login-with-Google only**. The MCP
+    /// `google` catalog entry reads its credentials from
+    /// `PATOM_GOOGLE_CLIENT_ID` / `_CLIENT_SECRET` env vars via
+    /// [`platform_oauth_clients`] — operators may point both at the same
+    /// upstream OAuth app or split them.
     pub google_client_id: SecretString,
-    /// Google OAuth client secret.
+    /// Google OAuth client secret. Login-with-Google only.
     pub google_client_secret: SecretString,
     /// Redirect URL registered with Google, e.g.
     /// `http://localhost:8080/auth/google/callback`.
@@ -178,6 +263,11 @@ pub struct AuthSettings {
     /// GitHub OAuth App client secret. Required at startup; same
     /// rationale as `github_client_id`.
     pub github_client_secret: SecretString,
+    /// Platform-supported MCP OAuth clients, keyed by env-var middle
+    /// (lowercased). Sourced from env so the secrets never touch the DB.
+    /// Empty if the operator has wired no platform vendors — entries that
+    /// rely on DCR work without these.
+    pub platform_oauth_clients: HashMap<String, PlatformOAuthClient>,
     /// Whether to set the `Secure` flag on the session cookie. Off in
     /// local-dev to keep `http://localhost` workable; on everywhere
     /// else.
@@ -479,6 +569,9 @@ impl TryFrom<RawSettings> for Settings {
             google_redirect_url: raw.google_redirect_url,
             github_client_id: raw.patom_github_client_id,
             github_client_secret: raw.patom_github_client_secret,
+            // Populated by `Settings::load` after `try_from`; left empty
+            // here so `try_from` (and tests that go through it) stay pure.
+            platform_oauth_clients: HashMap::new(),
             cookie_secure: raw.patom_cookie_secure,
             master_kek: raw.patom_master_kek,
             oauth_redirect_base: raw.patom_oauth_redirect_base,
@@ -577,7 +670,12 @@ impl Settings {
             .add_source(Environment::default())
             .build()?
             .try_deserialize()?;
-        Self::try_from(raw)
+        let mut settings = Self::try_from(raw)?;
+        // Populate the platform-OAuth map from env after the rest of the
+        // boundary parse. Kept outside `RawSettings` because the keys are
+        // dynamic (`PATOM_<X>_CLIENT_ID`) rather than a fixed schema.
+        settings.auth.platform_oauth_clients = parse_platform_oauth_clients(std::env::vars());
+        Ok(settings)
     }
 }
 

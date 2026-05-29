@@ -5,6 +5,7 @@
 //! chaining a policy hook is a one-line change here — the agent and runtime
 //! themselves do not move.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,10 +33,7 @@ use crate::crypto::OrgEncryptor;
 use crate::error::AppError;
 use crate::hook::HookChain;
 use crate::http::{AppState, router};
-use crate::mcp::oauth::{
-    OAuthFlowClient, OAuthRefresher, PgMcpOAuthClientStore, PgMcpOAuthPendingStore, RefresherDeps,
-    SharedMcpOAuthClientStore, SharedMcpOAuthPendingStore,
-};
+use crate::mcp::oauth::{PgMcpOAuthPendingStore, SharedMcpOAuthPendingStore};
 use crate::mcp::{
     McpRefresher, McpRegistry, PgMcpCatalogStore, PgMcpCredentialStore, PgMcpServerStore,
     ScopedMcpSource, SharedMcpCatalogStore, SharedMcpCredentialStore, SharedMcpServerStore,
@@ -101,7 +99,6 @@ pub struct Server {
     pub state: AppState,
     pub workers: WorkerPoolHandle,
     pub mcp_refresher: McpRefresher,
-    pub oauth_refresher: OAuthRefresher,
     pub reflection_scheduler: ReflectionScheduler,
     pub librarian_scheduler: LibrarianScheduler,
     pub scheduling_scheduler: ScheduledTaskScheduler,
@@ -130,9 +127,11 @@ struct Collaborators {
     mcp_store: SharedMcpServerStore,
     mcp_catalog: SharedMcpCatalogStore,
     mcp_credentials: SharedMcpCredentialStore,
-    mcp_oauth_clients: SharedMcpOAuthClientStore,
     mcp_oauth_pending: SharedMcpOAuthPendingStore,
-    mcp_oauth_flow: OAuthFlowClient,
+    /// Env-keyed Patom-supported OAuth clients. Built once at boot and
+    /// shared by both the registry's OAuth adapter and the HTTP routes
+    /// that initiate / complete the OAuth flow.
+    platform_oauth_clients: Arc<HashMap<String, crate::config::PlatformOAuthClient>>,
     mcp_encryptor: crate::crypto::SharedOrgEncryptor,
     mcp_registry: McpRegistry,
     scheduled_tasks: SharedScheduledTaskStore,
@@ -262,18 +261,18 @@ impl Collaborators {
             clock.clone(),
             encryptor.clone(),
         ));
-        let mcp_oauth_clients: SharedMcpOAuthClientStore = Arc::new(PgMcpOAuthClientStore::new(
-            pool.clone(),
-            clock.clone(),
-            encryptor.clone(),
-        ));
         let mcp_oauth_pending: SharedMcpOAuthPendingStore =
             Arc::new(PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()));
-        let mcp_oauth_flow = OAuthFlowClient::new(http.clone())
-            .map_err(|e| AppError::Misconfigured(format!("mcp oauth flow http: {e}")))?;
-        let mcp_registry = McpRegistry::with_credentials(
+        let platform_oauth_clients = Arc::new(settings.auth.platform_oauth_clients.clone());
+        let mcp_registry = McpRegistry::with_oauth_deps(
             mcp_store.clone(),
-            Some(mcp_credentials.clone()),
+            mcp_credentials.clone(),
+            crate::mcp::OAuthAdapterDeps {
+                credentials: mcp_credentials.clone(),
+                catalog: mcp_catalog.clone(),
+                platform_clients: platform_oauth_clients.clone(),
+                inner_http: http.clone(),
+            },
             clock.clone(),
         );
 
@@ -357,9 +356,8 @@ impl Collaborators {
             mcp_store,
             mcp_catalog,
             mcp_credentials,
-            mcp_oauth_clients,
             mcp_oauth_pending,
-            mcp_oauth_flow,
+            platform_oauth_clients,
             mcp_encryptor: encryptor,
             mcp_registry,
             scheduled_tasks,
@@ -710,27 +708,17 @@ pub async fn build_server(
     )
     .map_err(AppError::Auth)?;
 
-    // Seed shared (platform-owned) MCP OAuth clients. Reuses the
-    // Login-with-Google credentials above so any user clicking
-    // "Connect Gmail" hits Google's consent screen with the same
-    // "Patom" brand, no per-tenant Google Cloud project required.
-    // Per-spec failures are logged WARN and the loop continues — boot
-    // is not blocked on a misconfigured shared client.
-    crate::mcp::oauth::seed_shared_clients(&pieces.mcp_oauth_clients, &settings.auth).await;
+    // Platform-supported MCP OAuth clients now resolve from env
+    // (`PATOM_<X>_CLIENT_ID/_SECRET`) via `client_resolver::resolve` at
+    // request time — no boot-time DB seeding. See
+    // `src/mcp/oauth/client_resolver.rs`.
 
     let memberships = Arc::new(crate::http::MembershipCache::new(pieces.clock.clone()));
     let mcp_test_rate = crate::mcp::TestConnectRateLimiter::new(pieces.clock.clone());
 
-    let oauth_redirect_uri = format!("{}/mcp-oauth/callback", settings.auth.oauth_redirect_base);
-    let (oauth_refresher, _oauth_token_cache) = OAuthRefresher::spawn(RefresherDeps {
-        pool: pieces.pool.clone(),
-        clock: pieces.clock.clone(),
-        enc: pieces.mcp_encryptor.clone(),
-        credentials: pieces.mcp_credentials.clone(),
-        oauth_clients: pieces.mcp_oauth_clients.clone(),
-        flow: pieces.mcp_oauth_flow.clone(),
-        redirect_uri: oauth_redirect_uri,
-    });
+    // Token refresh is now per-call inside `PatomMcpHttpClient` (the rmcp
+    // transport adapter) — refresh-on-acquire + refresh-on-401. No
+    // background task.
 
     // Slack adapter — built only when the operator has set the three
     // `PATOM_SLACK_*` env vars. We construct the stores, mint the
@@ -839,9 +827,8 @@ pub async fn build_server(
         mcp_credentials: pieces.mcp_credentials,
         mcp_refresh,
         mcp_test_rate,
-        mcp_oauth_clients: pieces.mcp_oauth_clients,
+        platform_oauth_clients: pieces.platform_oauth_clients,
         mcp_oauth_pending: pieces.mcp_oauth_pending,
-        mcp_oauth_flow: pieces.mcp_oauth_flow,
         oauth_redirect_base: Arc::from(settings.auth.oauth_redirect_base.as_str()),
         web_base_url: settings.auth.web_base_url.as_deref().map(Arc::from),
         thread_stream,
@@ -866,7 +853,6 @@ pub async fn build_server(
         state,
         workers,
         mcp_refresher,
-        oauth_refresher,
         reflection_scheduler,
         librarian_scheduler,
         scheduling_scheduler,
@@ -883,7 +869,6 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
         state,
         workers,
         mcp_refresher,
-        oauth_refresher,
         reflection_scheduler,
         librarian_scheduler,
         scheduling_scheduler,
@@ -917,7 +902,6 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
     scheduling_scheduler.shutdown().await;
     info!("scheduling_scheduler.shutdown.complete");
     mcp_refresher.shutdown().await;
-    oauth_refresher.shutdown().await;
     info!("mcp.refresher.shutdown.complete");
     if let Some(bridge) = slack_bridge {
         bridge.shutdown().await;

@@ -37,20 +37,55 @@ impl std::fmt::Debug for McpClient {
 }
 
 impl McpClient {
-    /// Open a connection to `transport` and complete the MCP `initialize` handshake
-    /// under [`MCP_CONNECT_TIMEOUT`]. Credentials, when present, are decrypted in
-    /// the caller and passed in; the headers / bearer token are attached to the
-    /// outbound HTTP transport in-memory and never persisted back.
+    /// Open a connection to `transport` and complete the MCP `initialize`
+    /// handshake under [`MCP_CONNECT_TIMEOUT`]. Used for servers with
+    /// no credentials or with static-headers credentials — the headers
+    /// are attached verbatim to every outbound request via rmcp's
+    /// `custom_headers`.
+    ///
+    /// OAuth-bearing servers go through [`Self::connect_with_adapter`]
+    /// so refresh-on-acquire / refresh-on-401 are handled by
+    /// [`PatomMcpHttpClient`] instead of baking a static Bearer here.
     pub async fn connect(
         transport: &McpTransport,
         credentials: Option<&CredentialPayload>,
     ) -> Result<Self, McpError> {
+        if matches!(credentials, Some(CredentialPayload::Oauth2(_))) {
+            return Err(McpError::InvalidConfig(
+                "oauth2 credentials require connect_with_adapter for refresh handling".into(),
+            ));
+        }
         match transport {
             McpTransport::Http { url } => {
                 let custom_headers = build_request_headers(credentials)?;
                 let cfg = StreamableHttpClientTransportConfig::with_uri(url.as_str())
                     .custom_headers(custom_headers);
                 let transport = StreamableHttpClientTransport::from_config(cfg);
+                let connect = timeout(MCP_CONNECT_TIMEOUT, ().serve(transport))
+                    .await
+                    .map_err(|_| McpError::Connect("initialize timed out".into()))?
+                    .map_err(|e| McpError::Connect(e.to_string()))?;
+                Ok(Self {
+                    inner: Arc::new(connect),
+                })
+            }
+        }
+    }
+
+    /// Open an OAuth-aware connection. The adapter is
+    /// `rmcp::transport::auth::AuthClient<reqwest::Client>`, which wraps
+    /// an [`rmcp::transport::auth::AuthorizationManager`] and handles
+    /// bearer injection plus refresh-on-401 internally. No static
+    /// Bearer is attached, so a rotated token takes effect on the next
+    /// call without reconnecting.
+    pub async fn connect_with_adapter(
+        transport: &McpTransport,
+        adapter: rmcp::transport::auth::AuthClient<reqwest::Client>,
+    ) -> Result<Self, McpError> {
+        match transport {
+            McpTransport::Http { url } => {
+                let cfg = StreamableHttpClientTransportConfig::with_uri(url.as_str());
+                let transport = StreamableHttpClientTransport::with_client(adapter, cfg);
                 let connect = timeout(MCP_CONNECT_TIMEOUT, ().serve(transport))
                     .await
                     .map_err(|_| McpError::Connect("initialize timed out".into()))?
@@ -140,15 +175,16 @@ fn build_request_headers(
                 out.insert(header_name, header_value);
             }
         }
-        CredentialPayload::Oauth2(oauth) => {
-            // Bearer-tokens may carry chars outside `HeaderValue`'s ASCII
-            // visible set; the rejection lands as `InvalidConfig` rather
-            // than a panic so a misformatted upstream response surfaces
-            // cleanly. The Authorization header is hard-coded — never
-            // overridden by static headers, which would defeat OAuth.
-            let header_value = HeaderValue::from_str(&format!("Bearer {}", oauth.access_token))
-                .map_err(|_| McpError::InvalidConfig("oauth access_token rejected".into()))?;
-            out.insert(http::header::AUTHORIZATION, header_value);
+        // `connect` rejects `CredentialPayload::Oauth2` before reaching
+        // this helper (oauth servers must go through
+        // `connect_with_adapter` so refresh-on-401 / refresh-on-acquire
+        // are wired). The arm exists only to keep the match exhaustive;
+        // observing it means a caller bypassed `connect`'s guard —
+        // §6: `expect` as a named assertion, not silent fallthrough.
+        CredentialPayload::Oauth2(_) => {
+            return Err(McpError::InvalidConfig(
+                "oauth2 credentials reached build_request_headers; use connect_with_adapter".into(),
+            ));
         }
     }
     Ok(out)

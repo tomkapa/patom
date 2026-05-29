@@ -107,18 +107,10 @@ impl AuthThreadsHarness {
                 std::sync::Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
             )),
             mcp_test_rate: patom_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
-            mcp_oauth_clients: std::sync::Arc::new(
-                patom_rs::mcp::oauth::PgMcpOAuthClientStore::new(
-                    pool.clone(),
-                    clock.clone(),
-                    std::sync::Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
-                ),
-            ),
+            platform_oauth_clients: std::sync::Arc::new(std::collections::HashMap::new()),
             mcp_oauth_pending: std::sync::Arc::new(
                 patom_rs::mcp::oauth::PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()),
             ),
-            mcp_oauth_flow: patom_rs::mcp::oauth::OAuthFlowClient::new(reqwest::Client::new())
-                .expect("oauth http"),
             oauth_redirect_base: std::sync::Arc::from("http://localhost:8080"),
             web_base_url: None,
             thread_stream,

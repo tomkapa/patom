@@ -2,14 +2,16 @@
 
 ## Why this doc exists
 
-The Northstar pitch demo (`doc/pitch_demo.md`) wires Gmail and Google
-Calendar via Google's hosted remote MCP servers
-(`gmailmcp.googleapis.com`, `calendarmcp.googleapis.com`). We brought
-the OAuth shared-client architecture online to drive them, completed
-the consent flow successfully, and then hit a hard, opaque wall on the
-actual tool invocations. This document records what we tried, what we
-ruled out, what's actually gating us, and the workaround that
-unblocks the demo without waiting on Google.
+We attempted to wire Gmail and Google Calendar via Google's hosted
+remote MCP servers (`gmailmcp.googleapis.com`,
+`calendarmcp.googleapis.com`), bringing the OAuth shared-client
+architecture online to drive them. The consent flow completed
+successfully, but tool invocations hit a hard, opaque wall. This
+document records what we tried, what we ruled out, what's actually
+gating us, and the workaround that unblocks integrators without
+waiting on Google. (The original use case — a fictional-agency demo
+that depended on Gmail — has since been retired in favour of
+`doc/marketing.md`, which has no Gmail dependency.)
 
 ## Symptom
 

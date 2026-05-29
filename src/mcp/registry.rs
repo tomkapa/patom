@@ -16,19 +16,46 @@ use serde_json::Value;
 use tracing::{error, instrument, warn};
 
 use crate::clock::SharedClock;
+use crate::config::PlatformOAuthClient;
 use crate::provider::ToolSpec;
 use crate::tools::{DynamicToolSource, SharedTool};
 use crate::types::{ParseError, ToolName};
 
+use super::catalog::SharedMcpCatalogStore;
 use super::client::McpClient;
 use super::credentials::{CredentialPayload, SharedMcpCredentialStore};
 use super::error::McpError;
 use super::limits::{MAX_MCP_SERVERS, MAX_TOOLS_PER_SERVER};
+use super::oauth::build_manager_for_request;
 use super::store::{McpHealthUpdate, SharedMcpServerStore};
 use super::tool::McpTool;
 use super::types::{
     DiscoveredTool, McpCatalogId, McpServerId, McpServerRecord, McpToolRemoteName, McpTransport,
 };
+
+/// Collaborators for building an OAuth-aware MCP connection.
+///
+/// Wired on the registry for OAuth2-credentialed servers. Tests without
+/// an OAuth-capable harness wire `None` and the registry refuses to
+/// connect those servers with a typed error.
+///
+/// Note: refresh-on-acquire and refresh-on-401 are now owned by rmcp's
+/// `AuthClient`/`AuthorizationManager`, so there is no patom-side
+/// refresh lock map any more — rmcp's `Arc<Mutex<AuthorizationManager>>`
+/// dedupes refreshes for the lifetime of one connection.
+#[derive(Clone)]
+pub struct OAuthAdapterDeps {
+    pub credentials: SharedMcpCredentialStore,
+    pub catalog: SharedMcpCatalogStore,
+    pub platform_clients: Arc<HashMap<String, PlatformOAuthClient>>,
+    pub inner_http: reqwest::Client,
+}
+
+impl std::fmt::Debug for OAuthAdapterDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthAdapterDeps").finish_non_exhaustive()
+    }
+}
 
 /// Cheap-clone handle to the live MCP tool catalogue.
 ///
@@ -68,6 +95,10 @@ struct McpRegistryInner {
     /// loads decrypted credentials and threads them into each `connect`.
     /// Tests that don't exercise credentials wire `None`.
     credentials: Option<SharedMcpCredentialStore>,
+    /// Optional OAuth-adapter collaborators. When `Some`, oauth2-credentialed
+    /// servers connect via [`PatomMcpHttpClient`]; when `None` the registry
+    /// skips them with a typed connect error.
+    oauth_deps: Option<OAuthAdapterDeps>,
     clock: SharedClock,
     server_cap: usize,
 }
@@ -118,9 +149,9 @@ impl McpRegistry {
         Self::with_credentials(store, None, clock)
     }
 
-    /// Construct with a credentials store wired in. The composition root
-    /// uses this in production; tests that don't exercise the encrypted
-    /// path stick with [`Self::new`].
+    /// Construct with a credentials store wired in. Tests that don't
+    /// exercise the encrypted path stick with [`Self::new`]; tests that
+    /// touch OAuth wire [`Self::with_oauth_deps`] instead.
     #[must_use]
     pub fn with_credentials(
         store: SharedMcpServerStore,
@@ -131,6 +162,27 @@ impl McpRegistry {
             inner: RwLock::new(McpState::default()),
             store,
             credentials,
+            oauth_deps: None,
+            clock,
+            server_cap: MAX_MCP_SERVERS,
+        }))
+    }
+
+    /// Production constructor — credentials + OAuth-adapter collaborators
+    /// both wired. OAuth2-credentialed servers connect through
+    /// [`PatomMcpHttpClient`] with refresh-on-acquire / refresh-on-401.
+    #[must_use]
+    pub fn with_oauth_deps(
+        store: SharedMcpServerStore,
+        credentials: SharedMcpCredentialStore,
+        oauth_deps: OAuthAdapterDeps,
+        clock: SharedClock,
+    ) -> Self {
+        Self(Arc::new(McpRegistryInner {
+            inner: RwLock::new(McpState::default()),
+            store,
+            credentials: Some(credentials),
+            oauth_deps: Some(oauth_deps),
             clock,
             server_cap: MAX_MCP_SERVERS,
         }))
@@ -252,6 +304,7 @@ impl McpRegistry {
             // never-touched fields can hold null-object stand-ins.
             store: crate::mcp::store::test_support::null_store(),
             credentials: None,
+            oauth_deps: None,
             clock: crate::clock::SystemClock::shared(),
             server_cap: MAX_MCP_SERVERS,
         }))
@@ -520,7 +573,12 @@ impl McpRegistryInner {
             // takes effect within one tick.
             return Some(prev.client);
         }
-        match McpClient::connect(config, credentials).await {
+        let connect_result = if matches!(credentials, Some(CredentialPayload::Oauth2(_))) {
+            self.connect_oauth(id, org_id, config).await
+        } else {
+            McpClient::connect(config, credentials).await
+        };
+        match connect_result {
             Ok(c) => Some(Arc::new(c)),
             Err(e) => {
                 warn!(
@@ -544,6 +602,51 @@ impl McpRegistryInner {
                 None
             }
         }
+    }
+
+    /// Open an OAuth-aware connection backed by `rmcp::transport::auth`.
+    ///
+    /// Builds a fresh `AuthorizationManager` bound to
+    /// `(server_id, org_id)` via [`PatomCredentialStore`] (so token
+    /// refreshes land in patom's encrypted credential row), wraps it in
+    /// `rmcp::transport::auth::AuthClient`, and hands the AuthClient to
+    /// rmcp's `StreamableHttpClientTransport` as the underlying HTTP
+    /// client. Bearer injection + refresh-on-401 are rmcp's job from
+    /// here on.
+    async fn connect_oauth(
+        &self,
+        server_id: McpServerId,
+        org_id: crate::auth::OrgId,
+        transport: &McpTransport,
+    ) -> Result<McpClient, McpError> {
+        let deps = self.oauth_deps.as_ref().ok_or_else(|| {
+            McpError::InvalidConfig(
+                "oauth2 credentials require OAuthAdapterDeps; registry was built without them"
+                    .into(),
+            )
+        })?;
+        let McpTransport::Http { url } = transport;
+        // Bound the OAuth manager build: it performs PRM + AS metadata
+        // discovery over HTTP plus a credential-store read, so a slow
+        // vendor must not stall the connect path (CLAUDE.md §5).
+        // `MCP_CONNECT_TIMEOUT` (10 s) is the same outer bound the
+        // initialize handshake uses below — keeping them aligned makes
+        // the worst-case connect duration predictable.
+        let manager = tokio::time::timeout(
+            super::limits::MCP_CONNECT_TIMEOUT,
+            build_manager_for_request(
+                server_id,
+                org_id,
+                url.as_str(),
+                deps.inner_http.clone(),
+                deps.credentials.clone(),
+            ),
+        )
+        .await
+        .map_err(|_| McpError::Connect("oauth manager init timed out".into()))?
+        .map_err(|e| McpError::Connect(format!("oauth manager init: {e}")))?;
+        let adapter = rmcp::transport::auth::AuthClient::new(deps.inner_http.clone(), manager);
+        McpClient::connect_with_adapter(transport, adapter).await
     }
 }
 

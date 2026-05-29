@@ -43,37 +43,90 @@ pub enum CredentialPayload {
     StaticHeaders {
         headers: BTreeMap<McpHeaderName, McpHeaderValue>,
     },
-    /// OAuth-issued access + refresh tokens. Populated by phase C; the
-    /// variant exists in phase B so the `kind` column already knows about
-    /// it and migrations don't churn.
+    /// OAuth-issued credentials, in the exact shape `rmcp::transport::auth`
+    /// understands. Patom delegates the whole OAuth surface (discovery,
+    /// PKCE, code exchange, refresh, bearer injection) to rmcp; storage is
+    /// the only seam patom owns. We persist rmcp's `StoredCredentials`
+    /// verbatim so `PatomCredentialStore::load`/`save` (in
+    /// `oauth/credential_adapter.rs`) is the identity transform on the
+    /// inner value.
     Oauth2(OAuth2Payload),
 }
 
 /// OAuth credential payload. Stored encrypted alongside `static_headers`.
 ///
-/// Hand-rolled `Debug` that redacts `access_token` / `refresh_token`:
-/// the struct travels through tracing spans and panic backtraces, and a
-/// stray `?payload` would otherwise leak the bearer (CLAUDE.md §2).
+/// Wraps `rmcp::transport::auth::StoredCredentials` — the upstream library's
+/// canonical persistence shape. Patom captures it once and hands it back to
+/// the `AuthorizationManager` unchanged; we don't deconstruct fields here
+/// because:
+///   1. `StoredCredentials` is `#[non_exhaustive]` upstream; we'd rebreak
+///      every time rmcp adds a field.
+///   2. `StoredCredentials.token_response: Option<OAuthTokenResponse>`
+///      carries `VendorExtraTokenFields` — vendor-specific token fields
+///      (Google's `id_token`, Notion's `bot_id`, etc.). Round-tripping the
+///      whole struct preserves them without patom knowing they exist.
+///
+/// Hand-rolled `Debug` redacts the inner credentials: the struct travels
+/// through tracing spans and panic backtraces, and a stray `?payload` would
+/// otherwise leak the bearer (CLAUDE.md §2). `StoredCredentials`'s own
+/// `Debug` already redacts `token_response`, so we just delegate.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2Payload {
-    pub access_token: String,
-    pub refresh_token: Option<String>,
-    pub expires_at: chrono::DateTime<chrono::Utc>,
-    pub scope: Option<String>,
-    pub issuer: String,
-    pub token_endpoint: String,
+    stored: rmcp::transport::auth::StoredCredentials,
 }
 
 impl fmt::Debug for OAuth2Payload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OAuth2Payload")
-            .field("access_token", &"***")
-            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "***"))
-            .field("expires_at", &self.expires_at)
-            .field("scope", &self.scope)
-            .field("issuer", &self.issuer)
-            .field("token_endpoint", &self.token_endpoint)
+            .field("stored", &self.stored)
             .finish()
+    }
+}
+
+impl OAuth2Payload {
+    /// Construct from rmcp's canonical credential shape. Only used by
+    /// the [`crate::mcp::oauth::PatomCredentialStore`] adapter (the
+    /// `CredentialStore::save` impl) and by tests; production code
+    /// never builds an `OAuth2Payload` outside that seam.
+    #[must_use]
+    pub fn new(stored: rmcp::transport::auth::StoredCredentials) -> Self {
+        Self { stored }
+    }
+
+    /// Borrow the inner `StoredCredentials`. The OAuth credential
+    /// adapter reads this on every `CredentialStore::load`; UI/HTTP
+    /// callers should prefer the higher-level accessors below.
+    #[must_use]
+    pub fn as_stored(&self) -> &rmcp::transport::auth::StoredCredentials {
+        &self.stored
+    }
+
+    /// Consume and return the inner `StoredCredentials`. Useful when
+    /// the caller owns the payload and needs to hand `rmcp`'s machinery
+    /// the by-value form — avoids a clone on the hot path.
+    #[must_use]
+    pub fn into_stored(self) -> rmcp::transport::auth::StoredCredentials {
+        self.stored
+    }
+
+    /// Approximate UTC expiry timestamp for UI display.
+    ///
+    /// Computed from `token_received_at + token_response.expires_in()`;
+    /// returns `None` when either is missing (no token yet, or an AS that
+    /// doesn't advertise `expires_in`). The HTTP layer surfaces this as
+    /// `token_expires_at` on the server-detail response — purely
+    /// informational, never used for refresh-decision logic (rmcp's
+    /// `AuthorizationManager` owns that).
+    #[must_use]
+    pub fn approx_expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        use oauth2::TokenResponse;
+        let token_resp = self.stored.token_response.as_ref()?;
+        let expires_in = token_resp.expires_in()?;
+        let received = self.stored.token_received_at?;
+        let received_dt =
+            chrono::DateTime::<chrono::Utc>::from_timestamp(received.try_into().ok()?, 0)?;
+        let delta = chrono::Duration::from_std(expires_in).ok()?;
+        Some(received_dt + delta)
     }
 }
 
@@ -229,5 +282,39 @@ mod tests {
         let (_kind, blob) = seal_payload(&e, org, &p).expect("seal");
         let err = open_payload(&e, org, "oauth2", &blob).expect_err("kind mismatch");
         assert!(matches!(err, McpError::Backend(_)));
+    }
+
+    #[test]
+    fn oauth2_payload_roundtrips_through_seal_open() {
+        use oauth2::AccessToken;
+        use oauth2::basic::BasicTokenType;
+        use rmcp::transport::auth::{StoredCredentials, VendorExtraTokenFields};
+
+        let e = enc();
+        let org = OrgId::new();
+        let token_response = rmcp::transport::auth::OAuthTokenResponse::new(
+            AccessToken::new("access-test".into()),
+            BasicTokenType::Bearer,
+            VendorExtraTokenFields::default(),
+        );
+        let stored = StoredCredentials::new(
+            "client-test".into(),
+            Some(token_response),
+            vec!["openid".into(), "email".into()],
+            Some(1_700_000_000),
+        );
+        let payload = CredentialPayload::Oauth2(OAuth2Payload::new(stored.clone()));
+        let (kind, blob) = seal_payload(&e, org, &payload).expect("seal");
+        assert_eq!(kind, "oauth2");
+        let back = open_payload(&e, org, &kind, &blob).expect("open");
+        match back {
+            CredentialPayload::Oauth2(p) => {
+                let s = p.as_stored();
+                assert_eq!(s.client_id, "client-test");
+                assert_eq!(s.granted_scopes, vec!["openid", "email"]);
+                assert_eq!(s.token_received_at, Some(1_700_000_000));
+            }
+            CredentialPayload::StaticHeaders { .. } => panic!("variant mismatch"),
+        }
     }
 }

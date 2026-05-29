@@ -97,7 +97,7 @@ VALUES
         'Linear',
         'Linear issue tracker integration. Use for structured product/engineering work: issues, projects, cycles, triage queues. Exposes issue search, create, comment, and status transitions.',
         'https://linear.app/docs/mcp',
-        '{"type":"http","url":"https://mcp.linear.app/sse"}'::jsonb,
+        '{"type":"http","url":"https://mcp.linear.app/mcp"}'::jsonb,
         'oauth2'
     ),
     (
@@ -115,7 +115,7 @@ VALUES
         'Jira',
         'Atlassian Jira integration. Use when the team tracks work in Jira rather than Linear: issue search, create, transition, comment. Includes Confluence-adjacent context where the same Atlassian MCP exposes it.',
         'https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/',
-        '{"type":"http","url":"https://mcp.atlassian.com/v1/sse"}'::jsonb,
+        '{"type":"http","url":"https://mcp.atlassian.com/v1/mcp/authv2"}'::jsonb,
         'oauth2'
     )
 ON CONFLICT DO NOTHING;
