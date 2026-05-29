@@ -320,13 +320,43 @@ pub async fn handle_callback(
 
     // Re-configure the client identically to the start path so rmcp's
     // internal state matches the AS's record of this flow.
+    configure_client_for_callback(
+        &mut manager,
+        catalog,
+        redirect_uri,
+        platform_clients,
+        server_id,
+        org_id,
+        credentials,
+    )
+    .await?;
+
+    let session = AuthorizationSession::for_scope_upgrade(manager, String::new(), redirect_uri);
+    session
+        .handle_callback(code, state)
+        .await
+        .map_err(OAuthError::from)?;
+    Ok(())
+}
+
+/// Branch on `client_source` and call `configure_client` on the manager with
+/// the right config. Extracted from [`handle_callback`] to keep that function
+/// under the §4 length ceiling.
+#[allow(clippy::too_many_arguments)]
+async fn configure_client_for_callback(
+    manager: &mut AuthorizationManager,
+    catalog: &McpCatalogEntry,
+    redirect_uri: &str,
+    platform_clients: &HashMap<String, PlatformOAuthClient>,
+    server_id: McpServerId,
+    org_id: crate::auth::OrgId,
+    credentials: SharedMcpCredentialStore,
+) -> Result<(), OAuthError> {
     match catalog.client_source {
-        ClientSource::None => {
-            return Err(OAuthError::Misconfigured(format!(
-                "catalog `{id}` has client_source=none; callback not applicable",
-                id = catalog.id
-            )));
-        }
+        ClientSource::None => Err(OAuthError::Misconfigured(format!(
+            "catalog `{id}` has client_source=none; callback not applicable",
+            id = catalog.id
+        ))),
         ClientSource::Platform => {
             let key_catalog_id = catalog
                 .platform_client_alias
@@ -347,7 +377,7 @@ pub async fn handle_callback(
             // Scopes aren't needed for code-exchange (the code is bound to
             // the scopes the AS granted at the authorize step); leave the
             // config's `scopes` empty.
-            manager.configure_client(config).map_err(OAuthError::from)?;
+            manager.configure_client(config).map_err(OAuthError::from)
         }
         ClientSource::Dcr => {
             // DCR: `start_dcr` persisted a bootstrap row with the
@@ -367,16 +397,9 @@ pub async fn handle_callback(
                 ))
             })?;
             let config = OAuthClientConfig::new(stored.client_id, redirect_uri.to_owned());
-            manager.configure_client(config).map_err(OAuthError::from)?;
+            manager.configure_client(config).map_err(OAuthError::from)
         }
     }
-
-    let session = AuthorizationSession::for_scope_upgrade(manager, String::new(), redirect_uri);
-    session
-        .handle_callback(code, state)
-        .await
-        .map_err(OAuthError::from)?;
-    Ok(())
 }
 
 #[cfg(test)]
