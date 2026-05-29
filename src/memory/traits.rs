@@ -28,10 +28,11 @@ pub enum MemoryError {
     Rule(#[from] RuleResolverError),
 }
 
-/// Provides per-turn context to the agent. Returns the system prompt
-/// for the active turn mode; the implementation selects the right
-/// `<core>` block via `kind_payload.kind()` and composes it with the
-/// agent's role + memory section.
+/// Provides per-turn context to the agent.
+///
+/// Returns the system prompt for the active turn mode; the implementation
+/// selects the right `<core>` block via `kind_payload.kind()` and composes
+/// it with the agent's role + memory section.
 ///
 /// `viewer` is the participant the worker is currently driving — for an
 /// agent↔agent session it disambiguates which side's role prompt to

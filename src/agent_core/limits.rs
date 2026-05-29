@@ -25,11 +25,11 @@ pub const MAX_TOOL_CALLS_PER_TURN: usize = 16;
 pub const MAX_HOOKS_PER_TURN: usize = 32;
 
 /// Per-call timeout for `LlmProvider::send`. CLAUDE.md §5: every I/O await is wrapped.
-pub const PROVIDER_CALL_TIMEOUT: Duration = Duration::from_secs(120);
+pub const PROVIDER_CALL_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Per-call timeout for any `Tool::execute`. The tool may have its own narrower timeout
 /// (e.g. fetch is 20 s); this is the outer fence.
-pub const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+pub const TOOL_CALL_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Hard cap on the number of `turn_metrics` rows aggregated into one
 /// `/agents/:id/metrics/timeseries` response.

@@ -11,12 +11,12 @@ pub const COOKIE_NAME: &str = "patom_session";
 /// Hard expiry, no sliding refresh in v1 — user re-logs in once a week.
 /// Picked to outlast a long working day in any timezone, but short
 /// enough that a leaked token doesn't grant indefinite access.
-pub const JWT_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+pub const JWT_TTL: Duration = Duration::from_hours(24 * 7);
 
 /// `oauth_login_states` row TTL. The Google flow happens within seconds;
 /// 10 minutes is generous coverage for users who click "Sign in", make
 /// coffee, then complete consent.
-pub const OAUTH_STATE_TTL: Duration = Duration::from_secs(10 * 60);
+pub const OAUTH_STATE_TTL: Duration = Duration::from_mins(10);
 
 /// Maximum slug-collision retries when minting the personal org.
 ///

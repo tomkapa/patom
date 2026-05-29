@@ -34,7 +34,7 @@ pub const SLACK_WEBHOOK_MAX_BYTES: usize = 96 * 1024;
 /// Matches Slack's recommended threshold and is the gate against replay
 /// attacks — the signature alone is forgeable from a captured payload if
 /// the timestamp is not validated.
-pub const SLACK_TIMESTAMP_MAX_SKEW: Duration = Duration::from_secs(60 * 5);
+pub const SLACK_TIMESTAMP_MAX_SKEW: Duration = Duration::from_mins(5);
 
 /// Outbound `chat.postMessage` per-attempt timeout. Below the default
 /// `reqwest` timeout so a hung Slack edge does not stall the pump.
@@ -56,7 +56,7 @@ pub const MAX_SLACK_STREAM_PUMPS: usize = 256;
 /// Idle TTL for a per-thread pump. If no chunks arrive in this window
 /// the pump exits; a future event in the same Slack thread re-attaches
 /// fresh via `bridge::process_event`.
-pub const SLACK_PUMP_IDLE_TTL: Duration = Duration::from_secs(60 * 30);
+pub const SLACK_PUMP_IDLE_TTL: Duration = Duration::from_mins(30);
 
 /// Upper bound on how many distinct Slack threads a single DAG may mint.
 ///

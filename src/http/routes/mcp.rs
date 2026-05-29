@@ -1091,7 +1091,7 @@ const OAUTH_CALLBACK_PATH: &str = "/mcp-oauth/callback";
 /// complete the consent flow even with a slow network; short enough that
 /// an abandoned row is reaped on schedule. Matches the spec's typical
 /// "10 minutes" cap.
-const OAUTH_PENDING_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+const OAUTH_PENDING_TTL: std::time::Duration = std::time::Duration::from_mins(10);
 
 #[derive(Debug, Deserialize)]
 struct OAuthStartRequest {

@@ -50,7 +50,7 @@ pub const AGENT_PROMPT_CACHE_CAP: usize = 256;
 
 /// TTL for cached agent prompts. Edits to an agent's `system_prompt` row become
 /// visible to live workers within this window — no LISTEN/NOTIFY required.
-pub const AGENT_PROMPT_CACHE_TTL: Duration = Duration::from_secs(60);
+pub const AGENT_PROMPT_CACHE_TTL: Duration = Duration::from_mins(1);
 
 /// Maximum number of MCP catalog ids that may sit in one agent's
 /// `allowed_mcp_tools` map (i.e. distinct keys at the top level).

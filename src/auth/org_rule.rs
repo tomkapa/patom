@@ -122,7 +122,7 @@ const ORG_RULE_CACHE_CAP: usize = 256;
 /// TTL on the cached rule. Matches the prompt + language caches (60s) so
 /// the three surfaces share one liveness window; the PATCH route forces
 /// an immediate invalidation rather than waiting for natural expiry.
-const ORG_RULE_CACHE_TTL: Duration = Duration::from_secs(60);
+const ORG_RULE_CACHE_TTL: Duration = Duration::from_mins(1);
 
 /// Resolver errors.
 ///
