@@ -118,7 +118,6 @@ impl ThreadsHarness {
             mcp_oauth_pending: std::sync::Arc::new(
                 patom_rs::mcp::oauth::PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()),
             ),
-            oauth_sessions: std::sync::Arc::new(patom_rs::mcp::oauth::OAuthSessionMap::new()),
             oauth_redirect_base: std::sync::Arc::from("http://localhost:8080"),
             web_base_url: None,
             thread_stream: thread_stream.clone(),

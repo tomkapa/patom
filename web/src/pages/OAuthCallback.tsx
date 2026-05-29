@@ -3,8 +3,8 @@ import { ArrowLeft, Check, RefreshCw, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/atoms/Button";
 import { Spinner } from "../components/atoms/Spinner";
-import { Monogram } from "../components/atoms/Monogram";
 import { CatalogIcon } from "../components/atoms/CatalogIcon";
+import appLogoUrl from "../../assets/favicon-192.png";
 import {
   useCatalogLookup,
   useMcpServer,
@@ -18,7 +18,7 @@ type View = "connecting" | "authorized" | "failed";
 type DiagramState = "pending" | "ok" | "error";
 type Step = "redirected" | "awaiting" | "discover";
 
-const PATOM_TILE = { bg: "#FAF7EE", fg: "#1A2B1E", glyph: "R", label: "Patom" } as const;
+const PATOM_TILE = { label: "Patom" } as const;
 
 const WATCHDOG_MS = 30_000;
 const AUTO_REDIRECT_MS = 3_200;
@@ -278,7 +278,7 @@ function FailedView({
   );
 }
 
-type PatomTile = { bg: string; fg: string; glyph: string; label: string };
+type PatomTile = { label: string };
 
 type VendorTile = {
   label: "Vendor";
@@ -358,13 +358,12 @@ function Diagram({
 function PatomTileView({ tile }: { tile: PatomTile }) {
   return (
     <div className="flex flex-col items-center gap-2">
-      <Monogram
-        name={tile.label}
-        size={68}
-        bg={tile.bg}
-        fg={tile.fg}
-        glyph={tile.glyph}
-        className="border border-[var(--color-line)]"
+      <img
+        src={appLogoUrl}
+        alt={tile.label}
+        width={68}
+        height={68}
+        className="h-[68px] w-[68px] border border-[var(--color-line)] bg-[var(--color-paper-2)] object-contain"
       />
       <span className="font-[var(--font-mono)] text-[10px] tracking-[0.16em] text-[var(--color-muted-foreground)] uppercase">
         {tile.label}

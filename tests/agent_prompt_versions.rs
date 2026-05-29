@@ -112,7 +112,6 @@ impl Harness {
                 pool.clone(),
                 clock.clone(),
             )),
-            oauth_sessions: std::sync::Arc::new(patom_rs::mcp::oauth::OAuthSessionMap::new()),
             oauth_redirect_base: Arc::from("http://localhost:8080"),
             web_base_url: None,
             thread_stream,

@@ -692,7 +692,7 @@ src/
 migrations/            paired up/down SQL migrations
 tests/                 integration tests (#[sqlx::test] against real Postgres)
 web/                   Bun + React frontend
-doc/                   this document, ADRs, operational runbooks, pitch_demo
+doc/                   this document, ADRs, operational runbooks, marketing plan
 ```
 
 ### Reading order for a new contributor
@@ -703,4 +703,4 @@ doc/                   this document, ADRs, operational runbooks, pitch_demo
 4. The migration(s) the subsystem owns.
 5. The source.
 
-The product story — what the architecture is in service of — lives in [`pitch_demo.md`](./pitch_demo.md): five role-named agents in a fictional digital agency, with worked scenarios that exercise every load-bearing primitive (per-agent memory, per-agent tool scoping, autonomous wake-ups, multi-agent communication, Slack bridge).
+The product story — what the architecture is in service of — lives in [`marketing.md`](./marketing.md): Patom marketing itself with five role-named agents (strategist, technical-writer, social-writer, designer, community-manager) that exercise every load-bearing primitive: per-agent memory, per-agent tool scoping, autonomous wake-ups (the Friday-fires planning beat), and multi-agent communication (strategist fans out to writers + designer).

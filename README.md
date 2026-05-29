@@ -226,7 +226,7 @@ All four gates (`fmt`, `clippy`, `check`, `test`) must be green before a PR land
 - [`CLAUDE.md`](./CLAUDE.md) — engineering rules. Binding, not advisory. Read before reading any module.
 - [`doc/ARCHITECTURE.md`](./doc/ARCHITECTURE.md) — how the system is built, end to end.
 - [`doc/adr/`](./doc/adr/) — architecture decision records (the *why* behind each load-bearing choice).
-- [`doc/pitch_demo.md`](./doc/pitch_demo.md) — a worked example of a five-agent agency.
+- [`doc/marketing.md`](./doc/marketing.md) — the worked example: Patom marketing itself, with five role-named agents covering strategy, long-form, social, design, and community.
 - [`doc/operations/`](./doc/operations/) — operator runbooks (Slack setup, known integration issues).
 - [`migrations/`](./migrations) — the canonical schema.
 

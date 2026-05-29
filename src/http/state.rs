@@ -10,7 +10,7 @@ use crate::auth::{
 };
 use crate::clock::SharedClock;
 use crate::http::MembershipCache;
-use crate::mcp::oauth::{OAuthSessionMap, SharedMcpOAuthPendingStore};
+use crate::mcp::oauth::SharedMcpOAuthPendingStore;
 use crate::mcp::{
     McpRefreshTrigger, SharedMcpCatalogStore, SharedMcpCredentialStore, SharedMcpServerStore,
     TestConnectRateLimiter,
@@ -69,11 +69,6 @@ pub struct AppState {
     /// `GET /oauth/callback`. Postgres-backed so the callback can land
     /// on any replica.
     pub mcp_oauth_pending: SharedMcpOAuthPendingStore,
-    /// Per-process cache for `(server_id, org_id)`-keyed
-    /// `AuthorizationManager` instances. Empty in v1 — managers are
-    /// built fresh on every connect — and reserved for a future
-    /// refresh-dedup optimization.
-    pub oauth_sessions: Arc<OAuthSessionMap>,
     /// Public-facing base URL Patom tells vendors to redirect back to.
     /// E.g. `https://patom.example/mcp-oauth/callback` is built by
     /// appending the canonical path to this base.

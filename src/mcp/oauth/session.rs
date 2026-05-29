@@ -29,11 +29,10 @@
 //! Multi-replica safety: `AuthorizationManager`s are constructed fresh
 //! per request — all durable state (`StoredCredentials`,
 //! `StoredAuthorizationState`) is in Postgres via the adapters in
-//! [`super::credential_adapter`] and [`super::state_adapter`]. The
-//! in-process [`OAuthSessionMap`] cache is a future optimization seam
-//! (one `Arc<Mutex<AuthorizationManager>>` per `(server_id, org_id)`
-//! to dedupe concurrent refreshes within one replica); for now we
-//! construct fresh each connect.
+//! [`super::credential_adapter`] and [`super::state_adapter`]. Refresh
+//! dedup within one connection is owned by rmcp's `AuthClient`
+//! (internal `Arc<Mutex<AuthorizationManager>>`); patom holds no
+//! in-process cache of its own.
 
 use std::collections::HashMap;
 
@@ -50,19 +49,6 @@ use crate::mcp::types::McpServerId;
 use super::credential_adapter::PatomCredentialStore;
 use super::errors::OAuthError;
 use super::state_adapter::PatomStateStore;
-
-/// In-process cache slot for future per-`(server_id, org_id)` manager
-/// dedup. Empty today (we build fresh on every connect); typed up so the
-/// app-state wiring is stable when the dedup arrives.
-#[derive(Debug, Default)]
-pub struct OAuthSessionMap;
-
-impl OAuthSessionMap {
-    #[must_use]
-    pub fn new() -> Self {
-        Self
-    }
-}
 
 /// Build an `AuthorizationManager` for `(server_id, org_id)` bound to
 /// `base_url`. Used by the registry's connect path; rmcp's `AuthClient`
