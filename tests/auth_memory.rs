@@ -38,24 +38,22 @@ use tower::ServiceExt;
 
 mod common;
 use common::auth::{SeededPrincipal, seed_principal};
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
 struct AuthMemoryHarness {
     state: AppState,
     agents: SharedAgentStore,
     memory_store: SharedMemoryStore,
     primary: SeededPrincipal,
+    seed_agent_id: patom_rs::agents::AgentId,
     #[allow(dead_code)]
     refresher: McpRefresher,
-    #[allow(dead_code)]
-    db: TestDb,
 }
 
 impl AuthMemoryHarness {
-    async fn new() -> Self {
-        let db = TestDb::fresh().await;
+    async fn new(pool: &PgPool) -> Self {
+        let seed = seed_tenant(pool).await;
         let clock = SystemClock::shared();
-        let pool: PgPool = db.pool.clone();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
@@ -92,9 +90,9 @@ impl AuthMemoryHarness {
         let oauth = common::auth::test_oauth();
         let users = common::auth::user_store(pool.clone());
         // Fresh principal in its own org — disjoint from
-        // `db.default_org_id` (whose seeded default agent is the
+        // `seed.org_id` (whose seeded default agent is the
         // cross-org bait for the isolation test).
-        let primary = seed_principal(&pool, &jwt).await;
+        let primary = seed_principal(pool, &jwt).await;
 
         let state = AppState {
             queue,
@@ -142,8 +140,8 @@ impl AuthMemoryHarness {
             agents,
             memory_store,
             primary,
+            seed_agent_id: seed.agent_id,
             refresher,
-            db,
         }
     }
 
@@ -188,9 +186,9 @@ impl AuthMemoryHarness {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unauthenticated_get_memory_returns_401() {
-    let h = AuthMemoryHarness::new().await;
+#[sqlx::test]
+async fn unauthenticated_get_memory_returns_401(pool: PgPool) {
+    let h = AuthMemoryHarness::new(&pool).await;
     let app = router(h.state.clone());
     // The path-scoped agent id needn't exist — the auth layer rejects
     // before the handler runs.
@@ -198,7 +196,7 @@ async fn unauthenticated_get_memory_returns_401() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri(format!("/api/agents/{}/memory", h.db.default_agent_id))
+                .uri(format!("/api/agents/{}/memory", h.seed_agent_id))
                 .body(axum::body::Body::empty())
                 .expect("request"),
         )
@@ -207,17 +205,17 @@ async fn unauthenticated_get_memory_returns_401() {
     assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn authenticated_caller_cannot_see_cross_org_agents_memory() {
-    let h = AuthMemoryHarness::new().await;
-    // `db.default_agent_id` belongs to `db.default_org_id` — the
+#[sqlx::test]
+async fn authenticated_caller_cannot_see_cross_org_agents_memory(pool: PgPool) {
+    let h = AuthMemoryHarness::new(&pool).await;
+    // `seed_agent_id` belongs to `seed.org_id` — the
     // primary principal is not a member, so the agent gate 404s.
     let app = router(h.state.clone());
     let res = app
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri(format!("/api/agents/{}/memory", h.db.default_agent_id))
+                .uri(format!("/api/agents/{}/memory", h.seed_agent_id))
                 .header("cookie", h.primary.cookie_header())
                 .body(axum::body::Body::empty())
                 .expect("request"),
@@ -227,9 +225,9 @@ async fn authenticated_caller_cannot_see_cross_org_agents_memory() {
     assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cross_org_isolation_filters_to_caller_org() {
-    let h = AuthMemoryHarness::new().await;
+#[sqlx::test]
+async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
+    let h = AuthMemoryHarness::new(&pool).await;
 
     // A second principal in a different org. Each org owns one agent
     // with one memory row.

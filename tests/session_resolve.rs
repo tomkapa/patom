@@ -14,22 +14,23 @@ use patom_rs::clock::SystemClock;
 use patom_rs::runtime::PromptRequestId;
 use patom_rs::session::{PgSessionStore, SessionStore};
 use patom_rs::types::Participant;
+use sqlx::PgPool;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
-fn store(db: &TestDb) -> Arc<PgSessionStore> {
-    Arc::new(PgSessionStore::new(db.pool.clone(), SystemClock::shared()))
+fn store(pool: &PgPool) -> Arc<PgSessionStore> {
+    Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()))
 }
 
 /// Create a real agent row so FK-bearing inserts (sessions / session_messages)
 /// can reference it. Returns the [`Participant::Agent`] wrapping its id.
-async fn fresh_agent(db: &TestDb, name: &str) -> Participant {
+async fn fresh_agent(pool: &PgPool, seed: &common::pg::Seed, name: &str) -> Participant {
     let store: SharedAgentStore =
-        common::pg::shared_agent_store(db.pool.clone(), SystemClock::shared());
+        common::pg::shared_agent_store(pool.clone(), SystemClock::shared());
     let record = store
         .create(NewAgent {
-            org_id: db.default_org_id,
+            org_id: seed.org_id,
             name: AgentName::try_from(name).expect("name"),
             system_prompt: AgentSystemPrompt::try_from("test prompt").expect("prompt"),
             description: patom_rs::agents::AgentDescription::try_from("test desc").expect("desc"),
@@ -43,89 +44,75 @@ async fn fresh_agent(db: &TestDb, name: &str) -> Participant {
     Participant::agent(record.id)
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn same_pair_same_dag_returns_same_session() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn same_pair_same_dag_returns_same_session(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let root = PromptRequestId::new();
     let a = Participant::Human;
-    let b = Participant::agent(db.default_agent_id);
+    let b = Participant::agent(seed.agent_id);
 
     let first = store
-        .resolve_or_create_for_pair(root, a, b, None, db.default_org_id, db.default_user_id)
+        .resolve_or_create_for_pair(root, a, b, None, seed.org_id, seed.user_id)
         .await
         .expect("first");
     let second = store
-        .resolve_or_create_for_pair(root, a, b, None, db.default_org_id, db.default_user_id)
+        .resolve_or_create_for_pair(root, a, b, None, seed.org_id, seed.user_id)
         .await
         .expect("second");
     assert_eq!(first, second, "upsert is idempotent on same key");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn reversed_pair_canonicalises_to_same_session() {
+#[sqlx::test]
+async fn reversed_pair_canonicalises_to_same_session(pool: PgPool) {
     // Caller may pass `(a, b)` either way round; the store canonicalises so
     // both orderings hit the same `sessions_dag_pair_unique` index entry.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let root = PromptRequestId::new();
     let h = Participant::Human;
-    let a = Participant::agent(db.default_agent_id);
+    let a = Participant::agent(seed.agent_id);
 
     let forward = store
-        .resolve_or_create_for_pair(root, h, a, None, db.default_org_id, db.default_user_id)
+        .resolve_or_create_for_pair(root, h, a, None, seed.org_id, seed.user_id)
         .await
         .expect("forward");
     let reversed = store
-        .resolve_or_create_for_pair(root, a, h, None, db.default_org_id, db.default_user_id)
+        .resolve_or_create_for_pair(root, a, h, None, seed.org_id, seed.user_id)
         .await
         .expect("reversed");
     assert_eq!(forward, reversed);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn different_dags_get_distinct_sessions() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
-    let pair = (Participant::Human, Participant::agent(db.default_agent_id));
+#[sqlx::test]
+async fn different_dags_get_distinct_sessions(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let pair = (Participant::Human, Participant::agent(seed.agent_id));
 
     let dag_a = PromptRequestId::new();
     let dag_b = PromptRequestId::new();
     let s_a = store
-        .resolve_or_create_for_pair(
-            dag_a,
-            pair.0,
-            pair.1,
-            None,
-            db.default_org_id,
-            db.default_user_id,
-        )
+        .resolve_or_create_for_pair(dag_a, pair.0, pair.1, None, seed.org_id, seed.user_id)
         .await
         .expect("dag_a");
     let s_b = store
-        .resolve_or_create_for_pair(
-            dag_b,
-            pair.0,
-            pair.1,
-            None,
-            db.default_org_id,
-            db.default_user_id,
-        )
+        .resolve_or_create_for_pair(dag_b, pair.0, pair.1, None, seed.org_id, seed.user_id)
         .await
         .expect("dag_b");
     assert_ne!(s_a, s_b, "DAG isolation: same pair, different roots");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn parent_session_is_recorded() {
+#[sqlx::test]
+async fn parent_session_is_recorded(pool: PgPool) {
     // Forked sessions (e.g. agent A spawns conversation with agent B) carry
     // their parent so the agent loop can auto-load it on the receiver's
     // first turn.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let root = PromptRequestId::new();
-    let agent_a = Participant::agent(db.default_agent_id);
-    let agent_b = fresh_agent(&db, "second").await;
+    let agent_a = Participant::agent(seed.agent_id);
+    let agent_b = fresh_agent(&pool, &seed, "second").await;
 
     let parent_id = store
         .resolve_or_create_for_pair(
@@ -133,8 +120,8 @@ async fn parent_session_is_recorded() {
             Participant::Human,
             agent_a,
             None,
-            db.default_org_id,
-            db.default_user_id,
+            seed.org_id,
+            seed.user_id,
         )
         .await
         .expect("parent");
@@ -144,8 +131,8 @@ async fn parent_session_is_recorded() {
             agent_a,
             agent_b,
             Some(parent_id),
-            db.default_org_id,
-            db.default_user_id,
+            seed.org_id,
+            seed.user_id,
         )
         .await
         .expect("child");
@@ -156,15 +143,15 @@ async fn parent_session_is_recorded() {
     assert_eq!(root_parent, None, "root session has no parent");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn participants_are_returned_in_canonical_order() {
+#[sqlx::test]
+async fn participants_are_returned_in_canonical_order(pool: PgPool) {
     // Agent < Human by canonical_cmp (matches SQL string-compare on the
     // *_kind columns), so participants() returns (Agent(_), Human)
     // regardless of which side the caller passed first.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let root = PromptRequestId::new();
-    let agent_p = Participant::agent(db.default_agent_id);
+    let agent_p = Participant::agent(seed.agent_id);
 
     let id = store
         .resolve_or_create_for_pair(
@@ -172,8 +159,8 @@ async fn participants_are_returned_in_canonical_order() {
             Participant::Human,
             agent_p,
             None,
-            db.default_org_id,
-            db.default_user_id,
+            seed.org_id,
+            seed.user_id,
         )
         .await
         .expect("session");
@@ -182,19 +169,19 @@ async fn participants_are_returned_in_canonical_order() {
     assert_eq!(b, Participant::Human);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn root_request_id_round_trips() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn root_request_id_round_trips(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let root = PromptRequestId::new();
     let id = store
         .resolve_or_create_for_pair(
             root,
             Participant::Human,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             None,
-            db.default_org_id,
-            db.default_user_id,
+            seed.org_id,
+            seed.user_id,
         )
         .await
         .expect("session");
@@ -202,19 +189,19 @@ async fn root_request_id_round_trips() {
     assert_eq!(resolved, root);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn self_session_is_rejected() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn self_session_is_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let root = PromptRequestId::new();
     let err = store
         .resolve_or_create_for_pair(
             root,
-            Participant::agent(db.default_agent_id),
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
+            Participant::agent(seed.agent_id),
             None,
-            db.default_org_id,
-            db.default_user_id,
+            seed.org_id,
+            seed.user_id,
         )
         .await
         .expect_err("self-session forbidden");

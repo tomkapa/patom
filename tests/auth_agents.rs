@@ -30,7 +30,7 @@ use tower::ServiceExt;
 
 mod common;
 use common::auth::{SeededPrincipal, seed_principal};
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
 struct AuthAgentsHarness {
     state: AppState,
@@ -38,15 +38,12 @@ struct AuthAgentsHarness {
     primary: SeededPrincipal,
     #[allow(dead_code)]
     refresher: McpRefresher,
-    #[allow(dead_code)]
-    db: TestDb,
 }
 
 impl AuthAgentsHarness {
-    async fn new() -> Self {
-        let db = TestDb::fresh().await;
+    async fn new(pool: &PgPool) -> Self {
+        let _seed = seed_tenant(pool).await;
         let clock = SystemClock::shared();
-        let pool: PgPool = db.pool.clone();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
@@ -84,10 +81,10 @@ impl AuthAgentsHarness {
         let oauth = common::auth::test_oauth();
         let users = common::auth::user_store(pool.clone());
         // Fresh principal in its *own* org — distinct from the seeded
-        // `db.default_org_id` (which already has the `test-default`
+        // `_seed` org (which already has the `test-default`
         // agent). The primary principal's org has no agents yet, which
         // is the right baseline for the empty-list assertion below.
-        let primary = seed_principal(&pool, &jwt).await;
+        let primary = seed_principal(pool, &jwt).await;
 
         let state = AppState {
             queue,
@@ -135,7 +132,6 @@ impl AuthAgentsHarness {
             agents,
             primary,
             refresher,
-            db,
         }
     }
 
@@ -158,9 +154,9 @@ impl AuthAgentsHarness {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unauthenticated_get_agents_returns_401() {
-    let h = AuthAgentsHarness::new().await;
+#[sqlx::test]
+async fn unauthenticated_get_agents_returns_401(pool: PgPool) {
+    let h = AuthAgentsHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -175,9 +171,9 @@ async fn unauthenticated_get_agents_returns_401() {
     assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn authenticated_new_user_sees_empty_list() {
-    let h = AuthAgentsHarness::new().await;
+#[sqlx::test]
+async fn authenticated_new_user_sees_empty_list(pool: PgPool) {
+    let h = AuthAgentsHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -196,14 +192,14 @@ async fn authenticated_new_user_sees_empty_list() {
         .expect("collect");
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     // The primary principal's org is fresh; the seeded `test-default`
-    // belongs to `db.default_org_id`, which the primary is not a member
+    // belongs to `_seed.org_id`, which the primary is not a member
     // of — RLS filters it out.
     assert_eq!(json, serde_json::json!([]));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cross_org_isolation_filters_to_caller_org() {
-    let h = AuthAgentsHarness::new().await;
+#[sqlx::test]
+async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
+    let h = AuthAgentsHarness::new(&pool).await;
 
     // Second principal in a different org.
     let other = seed_principal(&h.state.pool, &h.state.jwt).await;

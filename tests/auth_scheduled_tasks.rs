@@ -35,38 +35,45 @@ use patom_rs::scheduling::{
     ScheduledTaskName, ScheduledTaskScheduler, SharedScheduledTaskStore, TimeOfDay, Timezone,
     Weekdays,
 };
+use sqlx::PgPool;
 
 mod common;
 use common::auth::seed_principal;
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
 struct AuthSchedHarness {
-    db: TestDb,
+    pool: PgPool,
     agents: SharedAgentStore,
     store: SharedScheduledTaskStore,
     queue: SharedPromptQueue,
     clock: patom_rs::clock::SharedClock,
+    default_agent_id: AgentId,
+    default_org_id: OrgId,
+    default_user_id: UserId,
 }
 
 impl AuthSchedHarness {
-    async fn new() -> Self {
-        let db = TestDb::fresh().await;
+    async fn new(pool: &PgPool) -> Self {
+        let seed = seed_tenant(pool).await;
         let clock = SystemClock::shared();
-        let agents = common::pg::shared_agent_store(db.pool.clone(), clock.clone());
+        let agents = common::pg::shared_agent_store(pool.clone(), clock.clone());
         let store: SharedScheduledTaskStore =
-            Arc::new(PgScheduledTaskStore::new(db.pool.clone(), clock.clone()));
-        let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(db.pool.clone(), clock.clone()));
+            Arc::new(PgScheduledTaskStore::new(pool.clone(), clock.clone()));
+        let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         Self {
-            db,
+            pool: pool.clone(),
             agents,
             store,
             queue,
             clock,
+            default_agent_id: seed.agent_id,
+            default_org_id: seed.org_id,
+            default_user_id: seed.user_id,
         }
     }
 
     /// Mint a fresh agent under `org_id`. The seeded default agent in
-    /// `db.default_org_id` is the "primary" tenant's agent; tests that
+    /// `default_org_id` is the "primary" tenant's agent; tests that
     /// need a second org seed it via `seed_principal` and create an
     /// agent under it through this helper.
     async fn fresh_agent(&self, org_id: OrgId, name: &str) -> AgentId {
@@ -109,12 +116,12 @@ impl AuthSchedHarness {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn list_for_agent_is_per_owner_across_orgs() {
-    let h = AuthSchedHarness::new().await;
+#[sqlx::test]
+async fn list_for_agent_is_per_owner_across_orgs(pool: PgPool) {
+    let h = AuthSchedHarness::new(&pool).await;
 
-    // Second org + agent (the seeded `db.default_org_id` is the first).
-    let other = seed_principal(&h.db.pool, &common::auth::test_jwt(h.clock.clone())).await;
+    // Second org + agent (the seeded `default_org_id` is the first).
+    let other = seed_principal(&h.pool, &common::auth::test_jwt(h.clock.clone())).await;
     let other_agent = h.fresh_agent(other.org_id, "beta").await;
 
     // One task per agent.
@@ -122,9 +129,9 @@ async fn list_for_agent_is_per_owner_across_orgs() {
     let primary_task = h
         .store
         .create(AuthSchedHarness::build_task(
-            h.db.default_agent_id,
-            h.db.default_org_id,
-            h.db.default_user_id,
+            h.default_agent_id,
+            h.default_org_id,
+            h.default_user_id,
             "primary",
             due_at,
         ))
@@ -147,14 +154,14 @@ async fn list_for_agent_is_per_owner_across_orgs() {
     // Primary owner sees only their task.
     let primary_rows = h
         .store
-        .list_for_agent(h.db.default_agent_id)
+        .list_for_agent(h.default_agent_id)
         .await
         .expect("list primary");
     let primary_ids: Vec<_> = primary_rows.iter().map(|r| r.id).collect();
     assert_eq!(primary_ids, vec![primary_task]);
     // Round-trip tenancy off the row.
-    assert_eq!(primary_rows[0].org_id, h.db.default_org_id);
-    assert_eq!(primary_rows[0].created_by_user_id, h.db.default_user_id);
+    assert_eq!(primary_rows[0].org_id, h.default_org_id);
+    assert_eq!(primary_rows[0].created_by_user_id, h.default_user_id);
 
     // Other owner sees only their task.
     let other_rows = h
@@ -168,19 +175,19 @@ async fn list_for_agent_is_per_owner_across_orgs() {
     assert_eq!(other_rows[0].created_by_user_id, other.user_id);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn parity_trigger_rejects_mismatched_org_id() {
+#[sqlx::test]
+async fn parity_trigger_rejects_mismatched_org_id(pool: PgPool) {
     // The `scheduled_tasks_enforce_org` trigger (migration 19) raises
     // when `scheduled_tasks.org_id` does not match the owning agent's
     // `agents.org_id`. Issue a raw INSERT under a privileged tx (RLS
     // would otherwise hide the cross-org row before the trigger fires)
     // and assert the error surface contains the trigger's message.
-    let h = AuthSchedHarness::new().await;
-    let other = seed_principal(&h.db.pool, &common::auth::test_jwt(h.clock.clone())).await;
+    let h = AuthSchedHarness::new(&pool).await;
+    let other = seed_principal(&h.pool, &common::auth::test_jwt(h.clock.clone())).await;
 
-    // Owning agent is in `db.default_org_id`; we try to pin the task to
+    // Owning agent is in `default_org_id`; we try to pin the task to
     // `other.org_id` — the trigger must reject.
-    let mut tx = begin_privileged(&h.db.pool).await.expect("begin");
+    let mut tx = begin_privileged(&h.pool).await.expect("begin");
     let now = Utc::now();
     let res = sqlx::query(
         "INSERT INTO scheduled_tasks
@@ -190,9 +197,9 @@ async fn parity_trigger_rejects_mismatched_org_id() {
          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, 'active', $9, $9)",
     )
     .bind(ScheduledTaskId::new())
-    .bind(h.db.default_agent_id)
+    .bind(h.default_agent_id)
     .bind(other.org_id) // <- WRONG: doesn't match agent's org
-    .bind(h.db.default_user_id)
+    .bind(h.default_user_id)
     .bind("mismatch")
     .bind("body")
     .bind(serde_json::json!({
@@ -213,25 +220,25 @@ async fn parity_trigger_rejects_mismatched_org_id() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn scheduler_fires_both_orgs_in_one_privileged_tick() {
+#[sqlx::test]
+async fn scheduler_fires_both_orgs_in_one_privileged_tick(pool: PgPool) {
     // Two due tasks in two different orgs. The scheduler scans
     // cross-tenant via `begin_privileged`, then enqueues each
     // `prompt_requests` row with the task's stored `org_id`. After
     // shutdown, both rows must be present in `prompt_requests` with
     // their owning task's `org_id` verbatim — and no row may carry the
     // wrong org (cross-tenant smear).
-    let h = AuthSchedHarness::new().await;
-    let other = seed_principal(&h.db.pool, &common::auth::test_jwt(h.clock.clone())).await;
+    let h = AuthSchedHarness::new(&pool).await;
+    let other = seed_principal(&h.pool, &common::auth::test_jwt(h.clock.clone())).await;
     let other_agent = h.fresh_agent(other.org_id, "beta").await;
 
     let due_at = Utc::now() - ChronoDuration::seconds(30);
     let primary_task = h
         .store
         .create(AuthSchedHarness::build_task(
-            h.db.default_agent_id,
-            h.db.default_org_id,
-            h.db.default_user_id,
+            h.default_agent_id,
+            h.default_org_id,
+            h.default_user_id,
             "primary-due",
             due_at,
         ))
@@ -270,7 +277,7 @@ async fn scheduler_fires_both_orgs_in_one_privileged_tick() {
             "SELECT idempotency_key, org_id FROM prompt_requests \
              WHERE idempotency_key LIKE 'sched-%'",
         )
-        .fetch_all(&h.db.pool)
+        .fetch_all(&h.pool)
         .await
         .expect("poll");
         for (key, org_id) in rows {
@@ -289,7 +296,7 @@ async fn scheduler_fires_both_orgs_in_one_privileged_tick() {
 
     assert_eq!(
         primary_org,
-        Some(h.db.default_org_id.as_uuid()),
+        Some(h.default_org_id.as_uuid()),
         "primary task enqueued under its own org"
     );
     assert_eq!(

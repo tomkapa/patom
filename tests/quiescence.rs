@@ -16,12 +16,13 @@ use patom_rs::runtime::{
     WorkerId,
 };
 use patom_rs::types::{Participant, Prompt};
+use sqlx::PgPool;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
-fn queue(db: &TestDb) -> Arc<PgPromptQueue> {
-    Arc::new(PgPromptQueue::new(db.pool.clone(), SystemClock::shared()))
+fn queue(pool: &PgPool) -> Arc<PgPromptQueue> {
+    Arc::new(PgPromptQueue::new(pool.clone(), SystemClock::shared()))
 }
 
 async fn enqueue_root(
@@ -47,18 +48,12 @@ async fn enqueue_root(
     .request_id()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn pending_row_keeps_dag_live() {
-    let db = TestDb::fresh().await;
-    let q = queue(&db);
-    let dag = PgDagBudget::new(db.pool.clone());
-    let root = enqueue_root(
-        &q,
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+#[sqlx::test]
+async fn pending_row_keeps_dag_live(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let q = queue(&pool);
+    let dag = PgDagBudget::new(pool.clone());
+    let root = enqueue_root(&q, seed.agent_id, seed.org_id, seed.user_id).await;
 
     assert!(
         !dag.quiescent(root).await.expect("query"),
@@ -66,18 +61,12 @@ async fn pending_row_keeps_dag_live() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn processing_row_keeps_dag_live() {
-    let db = TestDb::fresh().await;
-    let q = queue(&db);
-    let dag = PgDagBudget::new(db.pool.clone());
-    let root = enqueue_root(
-        &q,
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+#[sqlx::test]
+async fn processing_row_keeps_dag_live(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let q = queue(&pool);
+    let dag = PgDagBudget::new(pool.clone());
+    let root = enqueue_root(&q, seed.agent_id, seed.org_id, seed.user_id).await;
     // Claim moves the row from pending → processing without finishing it.
     let _ = q
         .claim_next_session(WorkerId::new())
@@ -90,18 +79,12 @@ async fn processing_row_keeps_dag_live() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn done_row_drains_dag() {
-    let db = TestDb::fresh().await;
-    let q = queue(&db);
-    let dag = PgDagBudget::new(db.pool.clone());
-    let root = enqueue_root(
-        &q,
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+#[sqlx::test]
+async fn done_row_drains_dag(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let q = queue(&pool);
+    let dag = PgDagBudget::new(pool.clone());
+    let root = enqueue_root(&q, seed.agent_id, seed.org_id, seed.user_id).await;
     let claim = q
         .claim_next_session(WorkerId::new())
         .await
@@ -114,32 +97,26 @@ async fn done_row_drains_dag() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unknown_root_is_quiescent() {
+#[sqlx::test]
+async fn unknown_root_is_quiescent(pool: PgPool) {
     // EXISTS over an empty match set is FALSE → quiescent = TRUE. Useful
     // for the worker's quiescence trigger when a synthetic test root has no
     // `prompt_requests` rows at all.
-    let db = TestDb::fresh().await;
-    let dag = PgDagBudget::new(db.pool.clone());
+    let _seed = seed_tenant(&pool).await;
+    let dag = PgDagBudget::new(pool.clone());
     let phantom = PromptRequestId::new();
     assert!(dag.quiescent(phantom).await.expect("query"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn second_pending_row_still_blocks_quiescence() {
+#[sqlx::test]
+async fn second_pending_row_still_blocks_quiescence(pool: PgPool) {
     // Multi-prompt on the same DAG: while one row is done, another is still
     // pending → DAG is non-quiescent. Confirms the EXISTS scope is the
     // entire DAG, not a single receipt.
-    let db = TestDb::fresh().await;
-    let q = queue(&db);
-    let dag = PgDagBudget::new(db.pool.clone());
-    let root = enqueue_root(
-        &q,
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let seed = seed_tenant(&pool).await;
+    let q = queue(&pool);
+    let dag = PgDagBudget::new(pool.clone());
+    let root = enqueue_root(&q, seed.agent_id, seed.org_id, seed.user_id).await;
 
     // Claim & mark done the first row.
     let claim = q
@@ -154,12 +131,12 @@ async fn second_pending_row_still_blocks_quiescence() {
     q.enqueue(NewPromptRequest {
         session: Some(session),
         sender: Participant::Human,
-        receiver_agent_id: db.default_agent_id,
+        receiver_agent_id: seed.agent_id,
         parent_session: None,
         content: Prompt::try_from("again").expect("prompt"),
         idempotency_key: IdempotencyKey::try_from("second").expect("key"),
-        org_id: db.default_org_id,
-        created_by_user_id: db.default_user_id,
+        org_id: seed.org_id,
+        created_by_user_id: seed.user_id,
         kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
     })
     .await

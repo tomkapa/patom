@@ -1,0 +1,128 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings are errors everywhere (CLAUDE.md §7).
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ── Lint gates that need no database ────────────────────────────────────
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ── Test suite against a real Postgres (CLAUDE.md §3) ───────────────────
+  test:
+    name: test (sqlx)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # pgvector image: the `vector` + `citext` extensions the migrations
+        # enable are available out of the box. `#[sqlx::test]` creates a fresh
+        # database per test (default search_path = public), so migration 1's
+        # `CREATE EXTENSION` self-provisions every test DB — no init script.
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: patom
+          POSTGRES_PASSWORD: patom
+          POSTGRES_DB: patom
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U patom -d patom"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    env:
+      # `#[sqlx::test]` reads this to create per-test databases under the
+      # service container.
+      DATABASE_URL: postgres://patom:patom@localhost:5432/patom
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --all-features
+
+  # ── Forward + reverse migration round-trip (CLAUDE.md §14) ──────────────
+  migrations:
+    name: migration round-trip
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: patom
+          POSTGRES_PASSWORD: patom
+          POSTGRES_DB: patom
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U patom -d patom"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://patom:patom@localhost:5432/patom
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features postgres,rustls --locked
+      - name: up → revert-all → up (proves every .down.sql reverses)
+        run: |
+          set -uo pipefail
+          sqlx migrate run
+          # `revert` undoes one step; loop until none remain. Migration 1 is an
+          # irreversible init (no .down.sql), so revert stops there with
+          # "No migrations available to revert" — that is the expected floor,
+          # not a failure. Any non-zero exit before that is a broken .down.sql.
+          # 100 is a safe cap over the 52 migrations (§5).
+          for _ in $(seq 1 100); do
+            out=$(sqlx migrate revert 2>&1); rc=$?
+            echo "$out"
+            if echo "$out" | grep -q "No migrations available to revert"; then
+              break
+            fi
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::a .down.sql failed to reverse"
+              exit 1
+            fi
+          done
+          sqlx migrate run
+
+  # ── Supply-chain gates (CLAUDE.md §8) ───────────────────────────────────
+  supply-chain:
+    name: deny + audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+      - name: cargo audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit

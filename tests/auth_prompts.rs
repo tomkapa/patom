@@ -34,7 +34,7 @@ use uuid::Uuid;
 
 mod common;
 use common::auth::{SeededPrincipal, seed_principal};
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
 struct AuthPromptsHarness {
     state: AppState,
@@ -42,15 +42,12 @@ struct AuthPromptsHarness {
     primary: SeededPrincipal,
     #[allow(dead_code)]
     refresher: McpRefresher,
-    #[allow(dead_code)]
-    db: TestDb,
 }
 
 impl AuthPromptsHarness {
-    async fn new() -> Self {
-        let db = TestDb::fresh().await;
+    async fn new(pool: &PgPool) -> Self {
+        let seed = seed_tenant(pool).await;
         let clock = SystemClock::shared();
-        let pool: PgPool = db.pool.clone();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
@@ -87,12 +84,11 @@ impl AuthPromptsHarness {
         let jwt = common::auth::test_jwt(clock.clone());
         let oauth = common::auth::test_oauth();
         let users = common::auth::user_store(pool.clone());
-        // Primary principal pinned to the seeded `default_org_id` so
+        // Primary principal pinned to the seeded `seed.org_id` so
         // the route's `agents.default_id_for(active_org_id)` fallback
         // resolves to the seeded default agent without needing a
         // per-test create.
-        let primary =
-            common::auth::principal_for_default_org(db.default_user_id, db.default_org_id, &jwt);
+        let primary = common::auth::principal_for_default_org(seed.user_id, seed.org_id, &jwt);
 
         let state = AppState {
             queue: queue.clone(),
@@ -140,14 +136,13 @@ impl AuthPromptsHarness {
             agents,
             primary,
             refresher,
-            db,
         }
     }
 
     /// Seed an agent owned by `org_id`. Used by the cross-org test so
     /// each principal has its own receiver — otherwise the enqueue
     /// against the seeded default agent (which lives in
-    /// `db.default_org_id`) would 4xx for the second principal.
+    /// `seed.org_id`) would 4xx for the second principal.
     async fn seed_agent(
         &self,
         org_id: patom_rs::auth::OrgId,
@@ -170,9 +165,9 @@ impl AuthPromptsHarness {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unauthenticated_post_prompt_returns_401() {
-    let h = AuthPromptsHarness::new().await;
+#[sqlx::test]
+async fn unauthenticated_post_prompt_returns_401(pool: PgPool) {
+    let h = AuthPromptsHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -194,9 +189,9 @@ async fn unauthenticated_post_prompt_returns_401() {
     assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn authenticated_post_prompt_returns_202_with_request_id() {
-    let h = AuthPromptsHarness::new().await;
+#[sqlx::test]
+async fn authenticated_post_prompt_returns_202_with_request_id(pool: PgPool) {
+    let h = AuthPromptsHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -239,11 +234,11 @@ async fn authenticated_post_prompt_returns_202_with_request_id() {
     assert_eq!(json.get("status").and_then(|v| v.as_str()), Some("pending"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cross_org_cancel_returns_404_and_leaves_row_uncancelled() {
-    let h = AuthPromptsHarness::new().await;
+#[sqlx::test]
+async fn cross_org_cancel_returns_404_and_leaves_row_uncancelled(pool: PgPool) {
+    let h = AuthPromptsHarness::new(&pool).await;
     // Distinct second principal in their own org. The seeded default
-    // agent belongs to `db.default_org_id`, so the second principal
+    // agent belongs to `seed.org_id`, so the second principal
     // needs their own agent to enqueue against.
     let other = seed_principal(&h.state.pool, &h.state.jwt).await;
     let _other_agent = h.seed_agent(other.org_id, "beta").await;
@@ -341,9 +336,9 @@ async fn cross_org_cancel_returns_404_and_leaves_row_uncancelled() {
 // whose `X-CSRF-Token` header doesn't match the `patom_csrf` cookie.
 // Safe methods (GET) bypass the middleware entirely.
 
-#[tokio::test(flavor = "multi_thread")]
-async fn post_without_csrf_header_returns_403() {
-    let h = AuthPromptsHarness::new().await;
+#[sqlx::test]
+async fn post_without_csrf_header_returns_403(pool: PgPool) {
+    let h = AuthPromptsHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -367,9 +362,9 @@ async fn post_without_csrf_header_returns_403() {
     assert_eq!(res.status(), axum::http::StatusCode::FORBIDDEN);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn post_with_mismatched_csrf_header_returns_403() {
-    let h = AuthPromptsHarness::new().await;
+#[sqlx::test]
+async fn post_with_mismatched_csrf_header_returns_403(pool: PgPool) {
+    let h = AuthPromptsHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -393,12 +388,12 @@ async fn post_with_mismatched_csrf_header_returns_403() {
     assert_eq!(res.status(), axum::http::StatusCode::FORBIDDEN);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn get_without_csrf_passes_through() {
+#[sqlx::test]
+async fn get_without_csrf_passes_through(pool: PgPool) {
     // GET is exempt from the CSRF middleware — it's not a state-
     // changing method. /agents is a tenant-scoped GET that exercises
     // the same `private` subtree as the POST cases above.
-    let h = AuthPromptsHarness::new().await;
+    let h = AuthPromptsHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(

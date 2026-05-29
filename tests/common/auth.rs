@@ -150,11 +150,10 @@ pub fn shared_clock() -> SharedClock {
     SystemClock::shared()
 }
 
-/// Mint a [`SeededPrincipal`] for the `(default_user_id, default_org_id)`
-/// pair already seeded by [`super::pg::TestDb::fresh`]. Use this when a
-/// test needs an HTTP cookie whose `active_org_id` lines up with
-/// `db.default_agent_id` — the only org that has a seeded default agent
-/// in the test schema.
+/// Mint a [`SeededPrincipal`] for a `(user_id, org_id)` pair already seeded
+/// by [`super::pg::seed_tenant`]. Use this when a test needs an HTTP cookie
+/// whose `active_org_id` lines up with the seeded `agent_id` — the only org
+/// that has a seeded default agent in a freshly-migrated test database.
 #[must_use]
 pub fn principal_for_default_org(
     user_id: UserId,

@@ -33,11 +33,11 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::{Seed, seed_tenant};
 
 /// Seed a second org `(org_b, user_b)` into the test schema and a
 /// default agent for it. Returns `(org_id, user_id, agent_id)`. The
-/// schema is the same one `TestDb::fresh` minted; we just splice in
+/// schema is the same one `seed_tenant` minted; we just splice in
 /// another tenant alongside the seeded one.
 async fn seed_second_org(pool: &PgPool) -> (OrgId, UserId, patom_rs::agents::AgentId) {
     let now = chrono::Utc::now();
@@ -100,24 +100,20 @@ async fn seed_second_org(pool: &PgPool) -> (OrgId, UserId, patom_rs::agents::Age
 /// baseline of 1. Returns the session id.
 async fn seed_session_in_org_a(
     sessions: &dyn SessionStore,
-    db: &TestDb,
+    pool: &PgPool,
+    seed: &Seed,
 ) -> (SessionId, PromptRequestId) {
-    let session = common::pg::human_to_agent_session(
-        sessions,
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
-    let request_id =
-        common::pg::seed_prompt_request(&db.pool, session, db.default_agent_id, db.default_org_id)
+    let session =
+        common::pg::human_to_agent_session(sessions, seed.agent_id, seed.org_id, seed.user_id)
             .await;
+    let request_id =
+        common::pg::seed_prompt_request(pool, session, seed.agent_id, seed.org_id).await;
     sessions
         .append_for_user(
-            db.default_user_id,
+            seed.user_id,
             session,
             MessageSender::Human,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             ChatMessage::User(vec![patom_rs::provider::UserContent::Text(
                 "seed".to_string(),
             )]),
@@ -138,14 +134,14 @@ async fn message_count(pool: &PgPool, session: SessionId) -> i64 {
     count
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn worker_write_to_foreign_org_session_fails_under_rls() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn worker_write_to_foreign_org_session_fails_under_rls(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let sessions: Arc<dyn SessionStore> =
-        Arc::new(PgSessionStore::new(db.pool.clone(), SystemClock::shared()));
-    let (_, user_b, _) = seed_second_org(&db.pool).await;
-    let (session, request_id) = seed_session_in_org_a(sessions.as_ref(), &db).await;
-    assert_eq!(message_count(&db.pool, session).await, 1);
+        Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
+    let (_, user_b, _) = seed_second_org(&pool).await;
+    let (session, request_id) = seed_session_in_org_a(sessions.as_ref(), &pool, &seed).await;
+    assert_eq!(message_count(&pool, session).await, 1);
 
     // Cross-tenant write: user B claims to act on a session owned by
     // org A. Under RLS the WITH CHECK on `session_messages.org_id`
@@ -156,7 +152,7 @@ async fn worker_write_to_foreign_org_session_fails_under_rls() {
             user_b,
             session,
             MessageSender::Human,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             ChatMessage::User(vec![patom_rs::provider::UserContent::Text(
                 "foreign".to_string(),
             )]),
@@ -168,28 +164,28 @@ async fn worker_write_to_foreign_org_session_fails_under_rls() {
         "cross-org append must be rejected by RLS, got {result:?}",
     );
     assert_eq!(
-        message_count(&db.pool, session).await,
+        message_count(&pool, session).await,
         1,
         "row count must not have changed",
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn worker_write_under_correct_user_succeeds() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn worker_write_under_correct_user_succeeds(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let sessions: Arc<dyn SessionStore> =
-        Arc::new(PgSessionStore::new(db.pool.clone(), SystemClock::shared()));
-    let (session, request_id) = seed_session_in_org_a(sessions.as_ref(), &db).await;
-    assert_eq!(message_count(&db.pool, session).await, 1);
+        Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
+    let (session, request_id) = seed_session_in_org_a(sessions.as_ref(), &pool, &seed).await;
+    assert_eq!(message_count(&pool, session).await, 1);
 
     // Same operation with the legitimate principal succeeds and the
     // row count advances.
     sessions
         .append_for_user(
-            db.default_user_id,
+            seed.user_id,
             session,
             MessageSender::Human,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             ChatMessage::User(vec![patom_rs::provider::UserContent::Text(
                 "legit".to_string(),
             )]),
@@ -197,5 +193,5 @@ async fn worker_write_under_correct_user_succeeds() {
         )
         .await
         .expect("legitimate append succeeds");
-    assert_eq!(message_count(&db.pool, session).await, 2);
+    assert_eq!(message_count(&pool, session).await, 2);
 }

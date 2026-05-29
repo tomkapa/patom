@@ -21,9 +21,10 @@ use patom_rs::runtime::{
 };
 use patom_rs::session::{PgSessionStore, SharedSessionStore};
 use patom_rs::types::{Participant, Prompt};
+use sqlx::PgPool;
 
 mod common;
-use common::pg::{TestDb, human_to_agent_session};
+use common::pg::{human_to_agent_session, seed_tenant};
 
 async fn enqueue_reflection_row(
     queue: &SharedPromptQueue,
@@ -51,21 +52,15 @@ async fn enqueue_reflection_row(
     queue.enqueue(req).await.expect("enqueue").request_id()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn claim_returns_reflection_kind_and_payload() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn claim_returns_reflection_kind_and_payload(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = SystemClock::shared();
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(db.pool.clone(), clock));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock));
 
-    let session = human_to_agent_session(
-        sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let session =
+        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     // The reflection's `since_turn_id` references a real prompt row to
     // satisfy the JSON payload's UUID — any id works since the worker
     // does not dereference it during a claim.
@@ -73,11 +68,11 @@ async fn claim_returns_reflection_kind_and_payload() {
     let _ = enqueue_reflection_row(
         &queue,
         session,
-        db.default_agent_id,
+        seed.agent_id,
         since,
         "k1",
-        db.default_org_id,
-        db.default_user_id,
+        seed.org_id,
+        seed.user_id,
     )
     .await;
 
@@ -99,26 +94,19 @@ async fn claim_returns_reflection_kind_and_payload() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn per_agent_serialization_skips_session_with_in_flight_reflection() {
+#[sqlx::test]
+async fn per_agent_serialization_skips_session_with_in_flight_reflection(pool: PgPool) {
     // A reflection row in `processing` for agent X must lock out any
     // other claim against agent X — even on a different session of the
     // same agent. This protects the journal from concurrent reflection
     // mutations.
-    let db = TestDb::fresh().await;
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = SystemClock::shared();
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(db.pool.clone(), clock));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock));
 
-    let agent_id = db.default_agent_id;
-    let s1 = human_to_agent_session(
-        sessions.as_ref(),
-        agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let agent_id = seed.agent_id;
+    let s1 = human_to_agent_session(sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
 
     // Enqueue + claim the first reflection — it goes to `processing`
     // and holds a lease.
@@ -128,8 +116,8 @@ async fn per_agent_serialization_skips_session_with_in_flight_reflection() {
         agent_id,
         PromptRequestId::new(),
         "k1",
-        db.default_org_id,
-        db.default_user_id,
+        seed.org_id,
+        seed.user_id,
     )
     .await;
     let first = queue
@@ -148,8 +136,8 @@ async fn per_agent_serialization_skips_session_with_in_flight_reflection() {
             Participant::Human,
             Participant::agent(agent_id),
             None,
-            db.default_org_id,
-            db.default_user_id,
+            seed.org_id,
+            seed.user_id,
         )
         .await
         .expect("s2");
@@ -160,8 +148,8 @@ async fn per_agent_serialization_skips_session_with_in_flight_reflection() {
         None,
         Prompt::try_from("hello").expect("p"),
         IdempotencyKey::try_from("normal-k").expect("k"),
-        db.default_org_id,
-        db.default_user_id,
+        seed.org_id,
+        seed.user_id,
     );
     let outcome = queue.enqueue(normal).await.expect("enqueue normal");
     let claim = queue
@@ -181,8 +169,8 @@ async fn per_agent_serialization_skips_session_with_in_flight_reflection() {
         agent_id,
         PromptRequestId::new(),
         "k2",
-        db.default_org_id,
-        db.default_user_id,
+        seed.org_id,
+        seed.user_id,
     )
     .await;
     let second = queue
@@ -195,26 +183,19 @@ async fn per_agent_serialization_skips_session_with_in_flight_reflection() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn scheduler_tick_enqueues_for_idle_session_with_unprocessed_turns() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn scheduler_tick_enqueues_for_idle_session_with_unprocessed_turns(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = SystemClock::shared();
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(db.pool.clone(), clock.clone()));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
 
     // Mint a session, append one message back-dated past the idle
     // threshold so the scheduler's "idle" predicate fires immediately.
-    let session = human_to_agent_session(
-        sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let session =
+        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let request_id =
-        common::pg::seed_prompt_request(&db.pool, session, db.default_agent_id, db.default_org_id)
-            .await;
+        common::pg::seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
     let stale_ts = Utc::now() - chrono::Duration::seconds(60 * 60);
     sqlx::query(
         "INSERT INTO session_messages
@@ -231,17 +212,17 @@ async fn scheduler_tick_enqueues_for_idle_session_with_unprocessed_turns() {
         "role": "user",
         "contents": [{"kind": "text", "value": "old message"}]
     }))
-    .bind(db.default_agent_id)
+    .bind(seed.agent_id)
     .bind(stale_ts)
-    .bind(db.default_org_id)
-    .execute(&db.pool)
+    .bind(seed.org_id)
+    .execute(&pool)
     .await
     .expect("seed message");
 
     // Spawn the scheduler with a tight poll cadence so the test does
     // not have to wait the production 60s. We only need one tick.
     let scheduler = ReflectionScheduler::spawn_with_cadence(
-        db.pool.clone(),
+        pool.clone(),
         queue.clone(),
         clock,
         Duration::from_millis(100),
@@ -261,7 +242,7 @@ async fn scheduler_tick_enqueues_for_idle_session_with_unprocessed_turns() {
              LIMIT 1",
         )
         .bind(session.as_uuid().to_string())
-        .fetch_optional(&db.pool)
+        .fetch_optional(&pool)
         .await
         .expect("query");
         if row.is_some() {
@@ -277,20 +258,14 @@ async fn scheduler_tick_enqueues_for_idle_session_with_unprocessed_turns() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn scheduler_does_not_duplicate_pending_reflection() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn scheduler_does_not_duplicate_pending_reflection(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = SystemClock::shared();
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(db.pool.clone(), clock));
-    let session = human_to_agent_session(
-        sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock));
+    let session =
+        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let since = PromptRequestId::new();
 
     // Pre-seed a reflection row in `pending`. The scheduler's predicate
@@ -299,11 +274,11 @@ async fn scheduler_does_not_duplicate_pending_reflection() {
     let _ = enqueue_reflection_row(
         &queue,
         session,
-        db.default_agent_id,
+        seed.agent_id,
         since,
         "preseeded",
-        db.default_org_id,
-        db.default_user_id,
+        seed.org_id,
+        seed.user_id,
     )
     .await;
     let count_before: (i64,) = sqlx::query_as(
@@ -311,7 +286,7 @@ async fn scheduler_does_not_duplicate_pending_reflection() {
          WHERE session_id = $1 AND kind = 'reflection'",
     )
     .bind(session)
-    .fetch_one(&db.pool)
+    .fetch_one(&pool)
     .await
     .expect("count");
     assert_eq!(count_before.0, 1);
@@ -319,8 +294,7 @@ async fn scheduler_does_not_duplicate_pending_reflection() {
     // Now back-date a message so the scheduler would otherwise enqueue
     // a fresh reflection. The dedup predicate must keep the count at 1.
     let request_id =
-        common::pg::seed_prompt_request(&db.pool, session, db.default_agent_id, db.default_org_id)
-            .await;
+        common::pg::seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
     sqlx::query(
         "INSERT INTO session_messages
              (session_id, seq, request_id, body,
@@ -336,15 +310,15 @@ async fn scheduler_does_not_duplicate_pending_reflection() {
         "role": "user",
         "contents": [{"kind": "text", "value": "older"}]
     }))
-    .bind(db.default_agent_id)
+    .bind(seed.agent_id)
     .bind(Utc::now() - chrono::Duration::seconds(60 * 60))
-    .bind(db.default_org_id)
-    .execute(&db.pool)
+    .bind(seed.org_id)
+    .execute(&pool)
     .await
     .expect("seed message");
 
     let scheduler = ReflectionScheduler::spawn_with_cadence(
-        db.pool.clone(),
+        pool.clone(),
         queue,
         SystemClock::shared(),
         Duration::from_millis(100),
@@ -358,7 +332,7 @@ async fn scheduler_does_not_duplicate_pending_reflection() {
          WHERE session_id = $1 AND kind = 'reflection'",
     )
     .bind(session)
-    .fetch_one(&db.pool)
+    .fetch_one(&pool)
     .await
     .expect("count after");
     assert_eq!(
@@ -367,27 +341,21 @@ async fn scheduler_does_not_duplicate_pending_reflection() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn scheduler_skips_session_whose_seed_turn_is_reflection() {
+#[sqlx::test]
+async fn scheduler_skips_session_whose_seed_turn_is_reflection(pool: PgPool) {
     // Regression: the scheduler used to find every agent-participant session
     // including the off-DAG sessions it had just minted for reflection jobs,
     // which produced reflections of reflections of reflections ad nauseam.
     // The fix filters candidates to sessions whose seed prompt_request has
     // `kind = 'normal'`.
-    let db = TestDb::fresh().await;
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = SystemClock::shared();
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(db.pool.clone(), clock.clone()));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
 
-    let agent_id = db.default_agent_id;
-    let session = human_to_agent_session(
-        sessions.as_ref(),
-        agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let agent_id = seed.agent_id;
+    let session =
+        human_to_agent_session(sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
 
     // Insert a seed prompt_request whose id matches the session's
     // root_request_id and whose kind is 'reflection' — i.e. the shape of
@@ -395,7 +363,7 @@ async fn scheduler_skips_session_whose_seed_turn_is_reflection() {
     let root_id: uuid::Uuid =
         sqlx::query_scalar("SELECT root_request_id FROM sessions WHERE id = $1")
             .bind(session)
-            .fetch_one(&db.pool)
+            .fetch_one(&pool)
             .await
             .expect("fetch root");
     let now = chrono::Utc::now();
@@ -419,8 +387,8 @@ async fn scheduler_skips_session_whose_seed_turn_is_reflection() {
         "data": { "session_id": session, "up_to_turn_id": root_id }
     }))
     .bind(now)
-    .bind(db.default_org_id)
-    .execute(&db.pool)
+    .bind(seed.org_id)
+    .execute(&pool)
     .await
     .expect("seed reflection-kind root request");
 
@@ -443,13 +411,13 @@ async fn scheduler_skips_session_whose_seed_turn_is_reflection() {
     }))
     .bind(agent_id)
     .bind(Utc::now() - chrono::Duration::seconds(60 * 60))
-    .bind(db.default_org_id)
-    .execute(&db.pool)
+    .bind(seed.org_id)
+    .execute(&pool)
     .await
     .expect("seed message");
 
     let scheduler = ReflectionScheduler::spawn_with_cadence(
-        db.pool.clone(),
+        pool.clone(),
         queue,
         clock,
         Duration::from_millis(100),
@@ -469,7 +437,7 @@ async fn scheduler_skips_session_whose_seed_turn_is_reflection() {
            AND session_id <> $1",
     )
     .bind(session)
-    .fetch_one(&db.pool)
+    .fetch_one(&pool)
     .await
     .expect("count");
     assert_eq!(

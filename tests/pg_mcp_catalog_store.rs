@@ -18,14 +18,15 @@ use patom_rs::mcp::{
     CatalogUpsert, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName, McpCatalogId,
     McpCatalogStore, McpError, McpHttpUrl, McpTransport, PgMcpCatalogStore,
 };
+use sqlx::PgPool;
 use uuid::Uuid;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
-fn store(db: &TestDb) -> Arc<PgMcpCatalogStore> {
+fn store(pool: &PgPool) -> Arc<PgMcpCatalogStore> {
     let _ = SystemClock::shared();
-    Arc::new(PgMcpCatalogStore::new(db.pool.clone()))
+    Arc::new(PgMcpCatalogStore::new(pool.clone()))
 }
 
 fn cat(s: &str) -> McpCatalogId {
@@ -48,7 +49,7 @@ fn http_transport(url: &str) -> McpTransport {
 
 /// Seed a second organisation in the test schema so isolation tests
 /// have somewhere to put a rival row.
-async fn seed_second_org(db: &TestDb) -> OrgId {
+async fn seed_second_org(pool: &PgPool) -> OrgId {
     let org_id = OrgId::new();
     let user_id = UserId::new();
     let now = Utc::now();
@@ -62,7 +63,7 @@ async fn seed_second_org(db: &TestDb) -> OrgId {
     .bind(&user_email)
     .bind("Rival User")
     .bind(now)
-    .execute(&db.pool)
+    .execute(pool)
     .await
     .expect("seed rival user");
     sqlx::query(
@@ -74,7 +75,7 @@ async fn seed_second_org(db: &TestDb) -> OrgId {
     .bind("Rival Org")
     .bind(&org_slug)
     .bind(now)
-    .execute(&db.pool)
+    .execute(pool)
     .await
     .expect("seed rival org");
     sqlx::query(
@@ -84,21 +85,21 @@ async fn seed_second_org(db: &TestDb) -> OrgId {
     .bind(org_id)
     .bind(user_id)
     .bind(now)
-    .execute(&db.pool)
+    .execute(pool)
     .await
     .expect("seed rival membership");
     org_id
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn ensure_inserts_new_org_scoped_row() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn ensure_inserts_new_org_scoped_row(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let now = Utc::now();
 
     let stored = store
         .ensure_org_scoped(CatalogUpsert {
-            org_id: db.default_org_id,
+            org_id: seed.org_id,
             id: &cat("pencil"),
             display_name: &name("Pencil"),
             description: &description("Local Pencil MCP via SSE bridge."),
@@ -111,33 +112,33 @@ async fn ensure_inserts_new_org_scoped_row() {
     assert!(matches!(stored, McpAuthKind::None));
 
     let row = store
-        .get_for_org(db.default_org_id, &cat("pencil"))
+        .get_for_org(seed.org_id, &cat("pencil"))
         .await
         .expect("get_for_org")
         .expect("row exists");
     assert_eq!(row.id.as_str(), "pencil");
-    assert_eq!(row.org_id, Some(db.default_org_id));
+    assert_eq!(row.org_id, Some(seed.org_id));
     assert_eq!(row.display_name.as_str(), "Pencil");
     assert_eq!(row.description.as_str(), "Local Pencil MCP via SSE bridge.");
     assert!(matches!(row.auth_kind, McpAuthKind::None));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn ensure_does_not_mutate_existing_row() {
+#[sqlx::test]
+async fn ensure_does_not_mutate_existing_row(pool: PgPool) {
     // Regression: a second `ensure_org_scoped` call with different
     // metadata must leave the original row untouched and return the
     // *stored* auth_kind, not the requested one. The earlier
     // upsert-with-DO-UPDATE behaviour silently mutated catalog rows
     // even when the caller's parallel mcp_servers insert was about to
     // 409 — a failed request leaking state.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let t0 = Utc::now();
     let id = cat("pencil");
 
     let first_kind = store
         .ensure_org_scoped(CatalogUpsert {
-            org_id: db.default_org_id,
+            org_id: seed.org_id,
             id: &id,
             display_name: &name("Pencil"),
             description: &description("first"),
@@ -152,7 +153,7 @@ async fn ensure_does_not_mutate_existing_row() {
     let t1 = t0 + chrono::Duration::seconds(1);
     let second_kind = store
         .ensure_org_scoped(CatalogUpsert {
-            org_id: db.default_org_id,
+            org_id: seed.org_id,
             id: &id,
             display_name: &name("Pencil Local"),
             description: &description("second"),
@@ -167,7 +168,7 @@ async fn ensure_does_not_mutate_existing_row() {
     assert!(matches!(second_kind, McpAuthKind::None));
 
     let row = store
-        .get_for_org(db.default_org_id, &id)
+        .get_for_org(seed.org_id, &id)
         .await
         .expect("get_for_org")
         .expect("row exists");
@@ -178,18 +179,18 @@ async fn ensure_does_not_mutate_existing_row() {
     assert_eq!(url.as_str(), "http://localhost:8000/sse");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn ensure_rejects_collision_with_global_id() {
+#[sqlx::test]
+async fn ensure_rejects_collision_with_global_id(pool: PgPool) {
     // `notion` is seeded as a global row by migration 30. A tenant
     // attempting to register their own `notion` must fail with
     // `CatalogIdShadowsGlobal` instead of silently shadowing the
     // built-in.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
     let err = store
         .ensure_org_scoped(CatalogUpsert {
-            org_id: db.default_org_id,
+            org_id: seed.org_id,
             id: &cat("notion"),
             display_name: &name("Self-hosted Notion"),
             description: &description("Our mirror."),
@@ -205,19 +206,19 @@ async fn ensure_rejects_collision_with_global_id() {
     ));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn ensure_isolates_orgs() {
+#[sqlx::test]
+async fn ensure_isolates_orgs(pool: PgPool) {
     // Same `id` for two different orgs is allowed (each gets a
     // tenant-custom row); neither leaks into the other's view.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
-    let other_org = seed_second_org(&db).await;
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let other_org = seed_second_org(&pool).await;
     let id = cat("internal-search");
     let now = Utc::now();
 
     store
         .ensure_org_scoped(CatalogUpsert {
-            org_id: db.default_org_id,
+            org_id: seed.org_id,
             id: &id,
             display_name: &name("Default Org Search"),
             description: &description("default"),
@@ -241,7 +242,7 @@ async fn ensure_isolates_orgs() {
         .expect("rival ensure");
 
     let from_default = store
-        .get_for_org(db.default_org_id, &id)
+        .get_for_org(seed.org_id, &id)
         .await
         .expect("get_for_org default")
         .expect("row exists");
@@ -252,20 +253,20 @@ async fn ensure_isolates_orgs() {
         .expect("row exists");
     assert_eq!(from_default.display_name.as_str(), "Default Org Search");
     assert_eq!(from_rival.display_name.as_str(), "Rival Org Search");
-    assert_eq!(from_default.org_id, Some(db.default_org_id));
+    assert_eq!(from_default.org_id, Some(seed.org_id));
     assert_eq!(from_rival.org_id, Some(other_org));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn builtin_gmail_entry_carries_default_scope() {
+#[sqlx::test]
+async fn builtin_gmail_entry_carries_default_scope(pool: PgPool) {
     // Migration 38 seeds Gmail's default scope set on the built-in
     // catalog row. start_oauth falls back to this when the FE's POST
     // body doesn't override — without it Google rejects the authorize
     // request with `Missing required parameter: scope`.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let gmail = store
-        .get_for_org(db.default_org_id, &cat("gmail"))
+        .get_for_org(seed.org_id, &cat("gmail"))
         .await
         .expect("get_for_org gmail")
         .expect("gmail row exists");
@@ -280,14 +281,14 @@ async fn builtin_gmail_entry_carries_default_scope() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn builtin_gcal_entry_carries_default_scope() {
+#[sqlx::test]
+async fn builtin_gcal_entry_carries_default_scope(pool: PgPool) {
     // Calendar mirror of the Gmail check — exercises the same migration
     // 38 path on the second seeded entry.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let gcal = store
-        .get_for_org(db.default_org_id, &cat("gcal"))
+        .get_for_org(seed.org_id, &cat("gcal"))
         .await
         .expect("get_for_org gcal")
         .expect("gcal row exists");
@@ -302,15 +303,15 @@ async fn builtin_gcal_entry_carries_default_scope() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn builtin_notion_entry_has_no_default_scope() {
+#[sqlx::test]
+async fn builtin_notion_entry_has_no_default_scope(pool: PgPool) {
     // DCR vendors leave default_scope NULL — the AS supplies its own
     // scope set at registration. This lock guards against an
     // over-eager future migration accidentally populating these.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let notion = store
-        .get_for_org(db.default_org_id, &cat("notion"))
+        .get_for_org(seed.org_id, &cat("notion"))
         .await
         .expect("get_for_org notion")
         .expect("notion row exists");
@@ -321,16 +322,16 @@ async fn builtin_notion_entry_has_no_default_scope() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn builtin_github_entry_points_at_official_remote_mcp_server() {
+#[sqlx::test]
+async fn builtin_github_entry_points_at_official_remote_mcp_server(pool: PgPool) {
     // Migration 49 seeds the GitHub catalog row aimed at the official
     // remote MCP server at api.githubcopilot.com. Pin the transport URL
     // and auth_kind here so a future migration cannot silently retarget
     // the row (e.g. at a self-hosted mirror) without breaking this lock.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let github = store
-        .get_for_org(db.default_org_id, &cat("github"))
+        .get_for_org(seed.org_id, &cat("github"))
         .await
         .expect("get_for_org github")
         .expect("github row exists");
@@ -339,17 +340,17 @@ async fn builtin_github_entry_points_at_official_remote_mcp_server() {
     assert_eq!(url.as_str(), "https://api.githubcopilot.com/mcp/");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn builtin_github_entry_carries_default_scope() {
+#[sqlx::test]
+async fn builtin_github_entry_carries_default_scope(pool: PgPool) {
     // Migration 49 seeds the GitHub scope set on the built-in row. Without
     // it `start_oauth` would dispatch an authorize request with no `scope`
     // parameter — GitHub returns an empty token (no tools accessible) on
     // that path. Pin the four scopes the MCP server's default toolset
     // filters against.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let github = store
-        .get_for_org(db.default_org_id, &cat("github"))
+        .get_for_org(seed.org_id, &cat("github"))
         .await
         .expect("get_for_org github")
         .expect("github row exists");
@@ -362,16 +363,16 @@ async fn builtin_github_entry_carries_default_scope() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn builtin_github_entry_has_no_authorize_extra_params() {
+#[sqlx::test]
+async fn builtin_github_entry_has_no_authorize_extra_params(pool: PgPool) {
     // GitHub's authorize endpoint is vanilla RFC 6749 §4.1 — no Google-
     // shaped `access_type=offline` / `prompt=consent` quirk required.
     // This lock guards against a future migration accidentally adding
     // params that GitHub's AS would reject.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
     let github = store
-        .get_for_org(db.default_org_id, &cat("github"))
+        .get_for_org(seed.org_id, &cat("github"))
         .await
         .expect("get_for_org github")
         .expect("github row exists");

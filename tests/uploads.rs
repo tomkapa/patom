@@ -34,7 +34,7 @@ use tower::ServiceExt;
 
 mod common;
 use common::auth::{SeededPrincipal, seed_principal};
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
 const BOUNDARY: &str = "----patom-test-boundary";
 
@@ -64,18 +64,17 @@ fn pad(prefix: &[u8], total: usize) -> Vec<u8> {
 struct UploadsHarness {
     state: AppState,
     primary: SeededPrincipal,
+    pool: PgPool,
     #[allow(dead_code)]
     mcp_catalog: SharedMcpCatalogStore,
     #[allow(dead_code)]
     refresher: McpRefresher,
-    db: TestDb,
 }
 
 impl UploadsHarness {
-    async fn new_with_assets(assets: Option<SharedAssetStore>) -> Self {
-        let db = TestDb::fresh().await;
+    async fn new_with_assets(pool: PgPool, assets: Option<SharedAssetStore>) -> Self {
+        let _seed = seed_tenant(&pool).await;
         let clock = SystemClock::shared();
-        let pool: PgPool = db.pool.clone();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
@@ -159,23 +158,23 @@ impl UploadsHarness {
         Self {
             state,
             primary,
+            pool,
             mcp_catalog,
             refresher,
-            db,
         }
     }
 
     /// Build a harness with a wired in-memory store and hand back the
     /// concrete store handle so tests can assert against it.
-    async fn with_assets() -> (Self, Arc<InMemoryAssetStore>) {
+    async fn with_assets(pool: PgPool) -> (Self, Arc<InMemoryAssetStore>) {
         let inspect = Arc::new(InMemoryAssetStore::new("https://assets.test.invalid"));
         let shared: SharedAssetStore = inspect.clone();
-        let h = Self::new_with_assets(Some(shared)).await;
+        let h = Self::new_with_assets(pool, Some(shared)).await;
         (h, inspect)
     }
 
-    async fn without_assets() -> Self {
-        Self::new_with_assets(None).await
+    async fn without_assets(pool: PgPool) -> Self {
+        Self::new_with_assets(pool, None).await
     }
 
     /// Seed an org-scoped `mcp_catalog` row owned by `org`. Returns the
@@ -191,7 +190,7 @@ impl UploadsHarness {
         .bind(catalog_id)
         .bind(org.as_uuid())
         .bind(display)
-        .execute(&self.db.pool)
+        .execute(&self.pool)
         .await
         .expect("seed org-scoped catalog");
     }
@@ -202,7 +201,7 @@ impl UploadsHarness {
         sqlx::query("UPDATE org_members SET role = 'member' WHERE org_id = $1 AND user_id = $2")
             .bind(principal.org_id)
             .bind(principal.user_id)
-            .execute(&self.db.pool)
+            .execute(&self.pool)
             .await
             .expect("demote role");
     }
@@ -226,9 +225,9 @@ fn upload_request(
         .expect("request")
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn avatar_upload_happy_path_writes_store_and_db() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn avatar_upload_happy_path_writes_store_and_db(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     let app = router(h.state.clone());
     let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
     let req = upload_request("/api/uploads/avatar", &h.primary, body);
@@ -246,15 +245,15 @@ async fn avatar_upload_happy_path_writes_store_and_db() {
 
     let row: (Option<String>,) = sqlx::query_as("SELECT avatar_url FROM users WHERE id = $1")
         .bind(h.primary.user_id)
-        .fetch_one(&h.db.pool)
+        .fetch_one(&h.pool)
         .await
         .expect("read user");
     assert_eq!(row.0.as_deref(), Some(url));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn avatar_upload_oversize_returns_413() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn avatar_upload_oversize_returns_413(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     let app = router(h.state.clone());
     // Just past the 2 MiB cap. The outer RequestBodyLimitLayer (4 MiB)
     // permits this, so the framework error path is `DefaultBodyLimit`
@@ -267,9 +266,9 @@ async fn avatar_upload_oversize_returns_413() {
     assert!(store.is_empty().await);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn avatar_upload_magic_byte_mismatch_returns_400() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn avatar_upload_magic_byte_mismatch_returns_400(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     let app = router(h.state.clone());
     // PNG bytes, but the multipart field claims JPEG.
     let body = build_multipart("image/jpeg", &pad(PNG_HEADER, 256));
@@ -279,9 +278,9 @@ async fn avatar_upload_magic_byte_mismatch_returns_400() {
     assert!(store.is_empty().await);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn avatar_upload_svg_rejected_for_avatars() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn avatar_upload_svg_rejected_for_avatars(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     let app = router(h.state.clone());
     let body = build_multipart(
         "image/svg+xml",
@@ -293,9 +292,9 @@ async fn avatar_upload_svg_rejected_for_avatars() {
     assert!(store.is_empty().await);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn upload_routes_503_when_assets_unconfigured() {
-    let h = UploadsHarness::without_assets().await;
+#[sqlx::test]
+async fn upload_routes_503_when_assets_unconfigured(pool: PgPool) {
+    let h = UploadsHarness::without_assets(pool).await;
     let app = router(h.state.clone());
     let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
     let req = upload_request("/api/uploads/avatar", &h.primary, body);
@@ -303,9 +302,9 @@ async fn upload_routes_503_when_assets_unconfigured() {
     assert_eq!(res.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn mcp_catalog_icon_upload_owner_writes_store_and_db() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn mcp_catalog_icon_upload_owner_writes_store_and_db(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     h.seed_org_catalog(h.primary.org_id, "custom-tile", "Custom Tile")
         .await;
     let app = router(h.state.clone());
@@ -319,7 +318,7 @@ async fn mcp_catalog_icon_upload_owner_writes_store_and_db() {
         sqlx::query_as("SELECT icon_url FROM mcp_catalog WHERE id = $1 AND org_id = $2")
             .bind("custom-tile")
             .bind(h.primary.org_id.as_uuid())
-            .fetch_one(&h.db.pool)
+            .fetch_one(&h.pool)
             .await
             .expect("read mcp_catalog");
     assert!(
@@ -329,9 +328,9 @@ async fn mcp_catalog_icon_upload_owner_writes_store_and_db() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn mcp_catalog_icon_upload_rejects_builtin_id() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn mcp_catalog_icon_upload_rejects_builtin_id(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     // 'notion' is seeded as a built-in (org_id IS NULL) by migration 30.
     let app = router(h.state.clone());
     let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
@@ -341,9 +340,9 @@ async fn mcp_catalog_icon_upload_rejects_builtin_id() {
     assert!(store.is_empty().await);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn mcp_catalog_icon_upload_rejects_member_role() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn mcp_catalog_icon_upload_rejects_member_role(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     h.seed_org_catalog(h.primary.org_id, "tile-for-member", "Tile")
         .await;
     h.demote_to_member(&h.primary).await;
@@ -355,9 +354,9 @@ async fn mcp_catalog_icon_upload_rejects_member_role() {
     assert!(store.is_empty().await);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn mcp_catalog_icon_upload_unknown_id_returns_400() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn mcp_catalog_icon_upload_unknown_id_returns_400(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     let app = router(h.state.clone());
     let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
     let req = upload_request("/api/uploads/mcp-catalog/never-seeded", &h.primary, body);
@@ -367,9 +366,9 @@ async fn mcp_catalog_icon_upload_unknown_id_returns_400() {
     assert!(store.is_empty().await);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn workspace_avatar_upload_writes_store_and_db() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn workspace_avatar_upload_writes_store_and_db(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     let app = router(h.state.clone());
     let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
     let req = upload_request("/api/uploads/workspace-avatar", &h.primary, body);
@@ -388,15 +387,15 @@ async fn workspace_avatar_upload_writes_store_and_db() {
     let row: (Option<String>,) =
         sqlx::query_as("SELECT avatar_url FROM organizations WHERE id = $1")
             .bind(h.primary.org_id)
-            .fetch_one(&h.db.pool)
+            .fetch_one(&h.pool)
             .await
             .expect("read org");
     assert_eq!(row.0.as_deref(), Some(url));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn workspace_avatar_upload_rejects_member_role() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn workspace_avatar_upload_rejects_member_role(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     h.demote_to_member(&h.primary).await;
     let app = router(h.state.clone());
     let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
@@ -406,9 +405,9 @@ async fn workspace_avatar_upload_rejects_member_role() {
     assert!(store.is_empty().await);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn workspace_avatar_upload_svg_rejected() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn workspace_avatar_upload_svg_rejected(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     let app = router(h.state.clone());
     let body = build_multipart(
         "image/svg+xml",
@@ -420,9 +419,9 @@ async fn workspace_avatar_upload_svg_rejected() {
     assert!(store.is_empty().await);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn workspace_avatar_upload_503_when_assets_unconfigured() {
-    let h = UploadsHarness::without_assets().await;
+#[sqlx::test]
+async fn workspace_avatar_upload_503_when_assets_unconfigured(pool: PgPool) {
+    let h = UploadsHarness::without_assets(pool).await;
     let app = router(h.state.clone());
     let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
     let req = upload_request("/api/uploads/workspace-avatar", &h.primary, body);
@@ -430,9 +429,9 @@ async fn workspace_avatar_upload_503_when_assets_unconfigured() {
     assert_eq!(res.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn workspace_avatar_upload_oversize_returns_413() {
-    let (h, store) = UploadsHarness::with_assets().await;
+#[sqlx::test]
+async fn workspace_avatar_upload_oversize_returns_413(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
     let app = router(h.state.clone());
     let oversize = pad(PNG_HEADER, 2 * 1024 * 1024 + 1);
     let body = build_multipart("image/png", &oversize);

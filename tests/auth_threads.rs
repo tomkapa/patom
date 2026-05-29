@@ -31,7 +31,7 @@ use tower::ServiceExt;
 
 mod common;
 use common::auth::{SeededPrincipal, seed_principal};
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
 struct AuthThreadsHarness {
     state: AppState,
@@ -40,15 +40,12 @@ struct AuthThreadsHarness {
     primary: SeededPrincipal,
     #[allow(dead_code)]
     refresher: McpRefresher,
-    #[allow(dead_code)]
-    db: TestDb,
 }
 
 impl AuthThreadsHarness {
-    async fn new() -> Self {
-        let db = TestDb::fresh().await;
+    async fn new(pool: &PgPool) -> Self {
+        let _seed = seed_tenant(pool).await;
         let clock = SystemClock::shared();
-        let pool: PgPool = db.pool.clone();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
@@ -86,9 +83,9 @@ impl AuthThreadsHarness {
         let oauth = common::auth::test_oauth();
         let users = common::auth::user_store(pool.clone());
         // A fresh principal in its *own* org — distinct from the seeded
-        // `db.default_org_id`. Its org has no threads yet, which is the
+        // `_seed` org. Its org has no threads yet, which is the
         // baseline the empty-list assertion needs.
-        let primary = seed_principal(&pool, &jwt).await;
+        let primary = seed_principal(pool, &jwt).await;
 
         let state = AppState {
             queue: queue.clone(),
@@ -137,7 +134,6 @@ impl AuthThreadsHarness {
             agents,
             primary,
             refresher,
-            db,
         }
     }
 
@@ -187,9 +183,9 @@ impl AuthThreadsHarness {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unauthenticated_get_threads_returns_401() {
-    let h = AuthThreadsHarness::new().await;
+#[sqlx::test]
+async fn unauthenticated_get_threads_returns_401(pool: PgPool) {
+    let h = AuthThreadsHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -204,9 +200,9 @@ async fn unauthenticated_get_threads_returns_401() {
     assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn authenticated_new_user_sees_empty_list() {
-    let h = AuthThreadsHarness::new().await;
+#[sqlx::test]
+async fn authenticated_new_user_sees_empty_list(pool: PgPool) {
+    let h = AuthThreadsHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -227,9 +223,9 @@ async fn authenticated_new_user_sees_empty_list() {
     assert_eq!(json, serde_json::json!([]));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cross_org_isolation_filters_to_caller_org() {
-    let h = AuthThreadsHarness::new().await;
+#[sqlx::test]
+async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
+    let h = AuthThreadsHarness::new(&pool).await;
 
     // Mint a second principal in a different org and seed one thread
     // under each org.

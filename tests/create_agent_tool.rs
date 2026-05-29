@@ -21,7 +21,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 mod common;
-use common::pg::{TestDb, human_to_agent_session, shared_agent_store};
+use common::pg::{human_to_agent_session, seed_tenant, shared_agent_store};
+use sqlx::PgPool;
 
 struct Fixture {
     tool: CreateAgentTool,
@@ -31,33 +32,28 @@ struct Fixture {
     org_id: patom_rs::auth::OrgId,
 }
 
-async fn fixture(db: &TestDb) -> Fixture {
-    let agents = shared_agent_store(db.pool.clone(), SystemClock::shared());
+async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
+    let agents = shared_agent_store(pool.clone(), SystemClock::shared());
     let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), SystemClock::shared()));
-    let session = human_to_agent_session(
-        sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+        Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
+    let session =
+        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let request_id = PromptRequestId::new();
     let ctx = ToolCallContext {
         session_id: session,
-        viewer: Participant::agent(db.default_agent_id),
+        viewer: Participant::agent(seed.agent_id),
         root_request_id: request_id,
         request_id,
         kind_payload: RequestKindPayload::Normal {},
-        acting_user_id: db.default_user_id,
-        org_id: db.default_org_id,
+        acting_user_id: seed.user_id,
+        org_id: seed.org_id,
     };
     Fixture {
         tool: CreateAgentTool::new(agents.clone()),
         agents,
         ctx,
-        viewer_agent_id: db.default_agent_id,
-        org_id: db.default_org_id,
+        viewer_agent_id: seed.agent_id,
+        org_id: seed.org_id,
     }
 }
 
@@ -83,10 +79,10 @@ fn valid_input(name: &str) -> Value {
     })
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn happy_path_persists_record_with_is_default_false_and_empty_mcp() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn happy_path_persists_record_with_is_default_false_and_empty_mcp(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
 
     let out = f
         .tool
@@ -116,10 +112,10 @@ async fn happy_path_persists_record_with_is_default_false_and_empty_mcp() {
     assert_ne!(record.id, f.viewer_agent_id);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn allowlist_round_trips_on_persisted_record() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn allowlist_round_trips_on_persisted_record(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
 
     // After the catalog rekey, allowlist keys are stable catalog ids
     // (notion / linear / …) rather than per-tenant server UUIDs.
@@ -161,10 +157,10 @@ async fn allowlist_round_trips_on_persisted_record() {
     assert!(set_linear.iter().any(|n| n.as_str() == "issues.create"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn duplicate_name_case_insensitive_returns_invalid_input() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn duplicate_name_case_insensitive_returns_invalid_input(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
 
     f.tool
         .execute(valid_input("translator"), &f.ctx)
@@ -182,10 +178,10 @@ async fn duplicate_name_case_insensitive_returns_invalid_input() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn empty_name_is_rejected() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn empty_name_is_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let err = f
         .tool
         .execute(
@@ -204,10 +200,10 @@ async fn empty_name_is_rejected() {
     ));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn empty_description_is_rejected() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn empty_description_is_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let err = f
         .tool
         .execute(
@@ -226,10 +222,10 @@ async fn empty_description_is_rejected() {
     ));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn oversize_system_prompt_is_rejected() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn oversize_system_prompt_is_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let big = "x".repeat(70_000);
     let err = f
         .tool
@@ -249,10 +245,10 @@ async fn oversize_system_prompt_is_rejected() {
     ));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn non_agent_viewer_is_rejected() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn non_agent_viewer_is_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let err = f
         .tool
         .execute(valid_input("intern"), &human_ctx(&f))
@@ -264,10 +260,10 @@ async fn non_agent_viewer_is_rejected() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn is_default_is_rejected_by_schema() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn is_default_is_rejected_by_schema(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let err = f
         .tool
         .execute(

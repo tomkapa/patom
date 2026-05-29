@@ -12,26 +12,27 @@ use std::sync::Arc;
 use patom_rs::mcp::{
     ClientSource, McpCatalogId, McpCatalogStore, PgMcpCatalogStore, platform_env_keys,
 };
+use sqlx::PgPool;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
-fn store(db: &TestDb) -> Arc<PgMcpCatalogStore> {
-    Arc::new(PgMcpCatalogStore::new(db.pool.clone()))
+fn store(pool: &PgPool) -> Arc<PgMcpCatalogStore> {
+    Arc::new(PgMcpCatalogStore::new(pool.clone()))
 }
 
 fn cat(s: &str) -> McpCatalogId {
     McpCatalogId::try_from(s).expect("valid catalog id")
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn round_trips_client_source_and_alias() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn round_trips_client_source_and_alias(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
     // `gmail` is seeded by migration 50 with platform + alias='google'.
     let entry = store
-        .get_for_org(db.default_org_id, &cat("gmail"))
+        .get_for_org(seed.org_id, &cat("gmail"))
         .await
         .expect("query")
         .expect("gmail seeded");
@@ -41,7 +42,7 @@ async fn round_trips_client_source_and_alias() {
 
     // `github` is platform but uses its own client (no alias).
     let entry = store
-        .get_for_org(db.default_org_id, &cat("github"))
+        .get_for_org(seed.org_id, &cat("github"))
         .await
         .expect("query")
         .expect("github seeded");
@@ -50,7 +51,7 @@ async fn round_trips_client_source_and_alias() {
 
     // `notion` defaults to `dcr` (the column default).
     let entry = store
-        .get_for_org(db.default_org_id, &cat("notion"))
+        .get_for_org(seed.org_id, &cat("notion"))
         .await
         .expect("query")
         .expect("notion seeded");

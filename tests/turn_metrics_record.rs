@@ -38,11 +38,12 @@ use patom_rs::tools::ToolRegistry;
 use patom_rs::types::{Participant, Prompt};
 
 mod common;
-use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
+use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
+use sqlx::PgPool;
 
 /// Pluck the current prompt-version row id for `agent_id`. Seeded by
 /// migration 43 to v=1 for every agent — including the default one
-/// [`TestDb::fresh`] creates — so this is total under the harness.
+/// [`seed_tenant`] creates — so this is total under the harness.
 async fn current_prompt_version(
     pool: &sqlx::PgPool,
     agent_id: patom_rs::agents::AgentId,
@@ -83,35 +84,23 @@ fn fresh_row(
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn pg_store_records_a_row() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn pg_store_records_a_row(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), SystemClock::shared()));
-    let session = human_to_agent_session(
-        sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
-    let request_id =
-        seed_prompt_request(&db.pool, session, db.default_agent_id, db.default_org_id).await;
-    let pvid = current_prompt_version(&db.pool, db.default_agent_id).await;
+        Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
+    let session =
+        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
+    let pvid = current_prompt_version(&pool, seed.agent_id).await;
 
-    let store = PgTurnMetricsStore::new(db.pool.clone(), SystemClock::shared());
-    let row = fresh_row(
-        db.default_org_id,
-        session,
-        request_id,
-        db.default_agent_id,
-        pvid,
-    );
+    let store = PgTurnMetricsStore::new(pool.clone(), SystemClock::shared());
+    let row = fresh_row(seed.org_id, session, request_id, seed.agent_id, pvid);
     store.record(row).await.expect("record");
 
     let stored: (i32, i32, String, String) =
         sqlx::query_as("SELECT input_tokens, output_tokens, kind, stop_reason FROM turn_metrics")
-            .fetch_one(&db.pool)
+            .fetch_one(&pool)
             .await
             .expect("read back");
     assert_eq!(stored.0, 10);
@@ -120,25 +109,19 @@ async fn pg_store_records_a_row() {
     assert_eq!(stored.3, "end_turn");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn pg_store_trigger_rejects_org_mismatch() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn pg_store_trigger_rejects_org_mismatch(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), SystemClock::shared()));
-    let session = human_to_agent_session(
-        sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
-    let request_id =
-        seed_prompt_request(&db.pool, session, db.default_agent_id, db.default_org_id).await;
-    let pvid = current_prompt_version(&db.pool, db.default_agent_id).await;
+        Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
+    let session =
+        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
+    let pvid = current_prompt_version(&pool, seed.agent_id).await;
 
-    let store = PgTurnMetricsStore::new(db.pool.clone(), SystemClock::shared());
+    let store = PgTurnMetricsStore::new(pool.clone(), SystemClock::shared());
     let foreign = patom_rs::auth::OrgId::new();
-    let row = fresh_row(foreign, session, request_id, db.default_agent_id, pvid);
+    let row = fresh_row(foreign, session, request_id, seed.agent_id, pvid);
     let err = store.record(row).await.expect_err("trigger rejects");
     let msg = format!("{err}");
     assert!(
@@ -187,10 +170,10 @@ fn text_response(s: &str, usage: Usage) -> ChatResponse {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn agent_loop_records_one_row_per_provider_call() {
-    let db = TestDb::fresh().await;
-    let pvid = current_prompt_version(&db.pool, db.default_agent_id).await;
+#[sqlx::test]
+async fn agent_loop_records_one_row_per_provider_call(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let pvid = current_prompt_version(&pool, seed.agent_id).await;
 
     let provider = Arc::new(ScriptedProvider::new(vec![text_response(
         "hi back",
@@ -204,8 +187,7 @@ async fn agent_loop_records_one_row_per_provider_call() {
     let provider: SharedProvider = provider;
     let model = Model::try_from("test-model").expect("catalog");
     let clock = SystemClock::shared();
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let memory: SharedMemory = Arc::new(StaticMemory::new("test prompt"));
     let providers: SharedProviderRegistry = Arc::new(
         ProviderRegistry::builder()
@@ -213,32 +195,31 @@ async fn agent_loop_records_one_row_per_provider_call() {
             .build(),
     );
 
-    let store: SharedTurnMetricsStore = Arc::new(PgTurnMetricsStore::new(db.pool.clone(), clock));
+    let store: SharedTurnMetricsStore = Arc::new(PgTurnMetricsStore::new(pool.clone(), clock));
     let agent = AgentBuilder::new(providers, sessions, memory, model)
         .expect("builder")
         .with_builtin_tools(ToolRegistry::builder().build())
         .with_hooks(HookChain::new())
-        .with_turn_metrics(store, db.default_agent_id, pvid)
+        .with_turn_metrics(store, seed.agent_id, pvid)
         .build();
 
     let session = human_to_agent_session(
-        &PgSessionStore::new(db.pool.clone(), SystemClock::shared()),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
+        &PgSessionStore::new(pool.clone(), SystemClock::shared()),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
     )
     .await;
-    let request_id =
-        seed_prompt_request(&db.pool, session, db.default_agent_id, db.default_org_id).await;
+    let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
     let prompt = Prompt::try_from("hello").expect("prompt");
 
     agent
         .reply(
             session,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
             RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
@@ -250,7 +231,7 @@ async fn agent_loop_records_one_row_per_provider_call() {
         "SELECT input_tokens, output_tokens, cache_read_tokens, kind FROM turn_metrics WHERE request_id = $1",
     )
     .bind(request_id)
-    .fetch_one(&db.pool)
+    .fetch_one(&pool)
     .await
     .expect("one row recorded for the turn");
     assert_eq!(stored.0, 100);

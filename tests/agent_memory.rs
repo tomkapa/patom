@@ -27,10 +27,11 @@ use patom_rs::memory::{
 use patom_rs::prompts::Prompts;
 use patom_rs::session::{PgSessionStore, SharedSessionStore};
 use patom_rs::types::Participant;
+use sqlx::PgPool;
 
 mod common;
 use common::lang::StaticOrgLanguageResolver;
-use common::pg::{TestDb, human_to_agent_session};
+use common::pg::{human_to_agent_session, seed_tenant};
 use common::rule::StaticOrgRuleResolver;
 
 /// Marker substring used by the original ordering tests to confirm the
@@ -44,27 +45,28 @@ struct Fixture {
     store: SharedMemoryStore,
 }
 
-fn build_memory(db: &TestDb, clock: SharedClock) -> Fixture {
-    build_memory_with_rule(db, clock, None)
+fn build_memory(pool: &PgPool, seed: &common::pg::Seed, clock: SharedClock) -> Fixture {
+    build_memory_with_rule(pool, seed, clock, None)
 }
 
 fn build_memory_with_rule(
-    db: &TestDb,
+    pool: &PgPool,
+    seed: &common::pg::Seed,
     clock: SharedClock,
     rule: Option<OrganizationRule>,
 ) -> Fixture {
+    let _ = seed; // ids accessed via seed at call sites
     let embeddings = common::embedding::FakeEmbeddingProvider::shared();
-    let agents: SharedAgentStore = common::pg::shared_agent_store(db.pool.clone(), clock.clone());
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
-    let prompt_cache = AgentPromptCache::new(8, Duration::from_secs(60), clock.clone());
-    let names_cache = AgentNamesCache::new(16, Duration::from_secs(60), clock.clone());
+    let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let prompt_cache = AgentPromptCache::new(8, Duration::from_mins(1), clock.clone());
+    let names_cache = AgentNamesCache::new(16, Duration::from_mins(1), clock.clone());
     let store: SharedMemoryStore = Arc::new(PgMemoryStore::new(
-        db.pool.clone(),
+        pool.clone(),
         clock.clone(),
         embeddings.clone(),
     ));
-    let session_cache = SessionMemoryCache::new(16, Duration::from_secs(60), clock.clone());
+    let session_cache = SessionMemoryCache::new(16, Duration::from_mins(1), clock.clone());
     let loader =
         MemorySectionLoader::new(store.clone(), sessions.clone(), embeddings, session_cache);
     let prompts = Arc::new(Prompts::load());
@@ -88,20 +90,20 @@ fn build_memory_with_rule(
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn assembles_core_then_role_in_order() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn assembles_core_then_role_in_order(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = Arc::new(TestClock::new());
-    let f = build_memory(&db, clock);
+    let f = build_memory(&pool, &seed, clock);
 
     let session = human_to_agent_session(
         f.sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
     )
     .await;
-    let viewer = Participant::agent(db.default_agent_id);
+    let viewer = Participant::agent(seed.agent_id);
     let prompt = f
         .memory
         .system_prompt(
@@ -128,12 +130,12 @@ async fn assembles_core_then_role_in_order() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn date_section_sits_between_role_and_memory() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn date_section_sits_between_role_and_memory(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = Arc::new(TestClock::new());
-    let f = build_memory(&db, clock);
-    let agent_id = db.default_agent_id;
+    let f = build_memory(&pool, &seed, clock);
+    let agent_id = seed.agent_id;
 
     // Seed one memory so `<memory>` actually appears — the ordering check
     // requires both anchors to be present.
@@ -149,13 +151,8 @@ async fn date_section_sits_between_role_and_memory() {
         .await
         .expect("write");
 
-    let session = human_to_agent_session(
-        f.sessions.as_ref(),
-        agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let session =
+        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
     let prompt = f
         .memory
         .system_prompt(
@@ -192,24 +189,24 @@ async fn date_section_sits_between_role_and_memory() {
     assert!(body.ends_with(", UTC)"), "date body tagged UTC: {body:?}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn empty_memory_skips_memory_section() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn empty_memory_skips_memory_section(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = Arc::new(TestClock::new());
-    let f = build_memory(&db, clock);
+    let f = build_memory(&pool, &seed, clock);
 
     let session = human_to_agent_session(
         f.sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
     )
     .await;
     let prompt = f
         .memory
         .system_prompt(
             session,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             &patom_rs::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -221,12 +218,12 @@ async fn empty_memory_skips_memory_section() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn renders_memory_section_after_role() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn renders_memory_section_after_role(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = Arc::new(TestClock::new());
-    let f = build_memory(&db, clock);
-    let agent_id = db.default_agent_id;
+    let f = build_memory(&pool, &seed, clock);
+    let agent_id = seed.agent_id;
 
     f.store
         .apply(MemoryMutation::Write {
@@ -240,13 +237,8 @@ async fn renders_memory_section_after_role() {
         .await
         .expect("write");
 
-    let session = human_to_agent_session(
-        f.sessions.as_ref(),
-        agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let session =
+        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
     let prompt = f
         .memory
         .system_prompt(
@@ -271,23 +263,18 @@ async fn renders_memory_section_after_role() {
     assert!(s.contains("### Self"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn frozen_during_session_returns_identical_prompt() {
+#[sqlx::test]
+async fn frozen_during_session_returns_identical_prompt(pool: PgPool) {
     // The composed memory section must be cached for the session's
     // lifetime so the prompt prefix stays stable across turns. Adding a
     // memory between two `system_prompt` calls in the same session must
     // not change the second call's output.
-    let db = TestDb::fresh().await;
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = Arc::new(TestClock::new());
-    let f = build_memory(&db, clock);
-    let agent_id = db.default_agent_id;
-    let session = human_to_agent_session(
-        f.sessions.as_ref(),
-        agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let f = build_memory(&pool, &seed, clock);
+    let agent_id = seed.agent_id;
+    let session =
+        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
     let viewer = Participant::agent(agent_id);
 
     let first = f
@@ -333,12 +320,12 @@ async fn frozen_during_session_returns_identical_prompt() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn resolve_handle_round_trips_to_memory_id() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn resolve_handle_round_trips_to_memory_id(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = Arc::new(TestClock::new());
-    let f = build_memory(&db, clock);
-    let agent_id = db.default_agent_id;
+    let f = build_memory(&pool, &seed, clock);
+    let agent_id = seed.agent_id;
 
     let outcome = f
         .store
@@ -353,13 +340,8 @@ async fn resolve_handle_round_trips_to_memory_id() {
         .await
         .expect("write");
 
-    let session = human_to_agent_session(
-        f.sessions.as_ref(),
-        agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let session =
+        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
     // Compose the section so the handle map is populated.
     let _ = f
         .memory
@@ -398,29 +380,29 @@ async fn resolve_handle_round_trips_to_memory_id() {
     assert_eq!(missing, None);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cache_serves_within_ttl_then_refreshes_after_expiry() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn cache_serves_within_ttl_then_refreshes_after_expiry(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let clock = Arc::new(TestClock::new());
     let shared: SharedClock = clock.clone();
 
-    let agents: SharedAgentStore = common::pg::shared_agent_store(db.pool.clone(), shared.clone());
-    let cache = AgentPromptCache::new(8, Duration::from_secs(60), shared.clone());
+    let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), shared.clone());
+    let cache = AgentPromptCache::new(8, Duration::from_mins(1), shared.clone());
 
     let first = cache
-        .get_or_load(db.default_agent_id, &agents)
+        .get_or_load(seed.agent_id, &agents)
         .await
         .expect("load");
     assert_eq!(first.as_str(), "test default prompt");
 
     agents
         .update(
-            db.default_agent_id,
+            seed.agent_id,
             AgentUpdate {
                 system_prompt: Some(
                     AgentSystemPrompt::try_from("rolled-out v2").expect("valid prompt"),
                 ),
-                edited_by: Some(db.default_user_id),
+                edited_by: Some(seed.user_id),
                 ..AgentUpdate::default()
             },
         )
@@ -429,37 +411,37 @@ async fn cache_serves_within_ttl_then_refreshes_after_expiry() {
 
     clock.advance(Duration::from_secs(30));
     let still_cached = cache
-        .get_or_load(db.default_agent_id, &agents)
+        .get_or_load(seed.agent_id, &agents)
         .await
         .expect("cached");
     assert_eq!(still_cached.as_str(), "test default prompt");
 
     clock.advance(Duration::from_secs(31));
     let refreshed = cache
-        .get_or_load(db.default_agent_id, &agents)
+        .get_or_load(seed.agent_id, &agents)
         .await
         .expect("refreshed");
     assert_eq!(refreshed.as_str(), "rolled-out v2");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn org_rule_block_sits_between_core_and_role() {
+#[sqlx::test]
+async fn org_rule_block_sits_between_core_and_role(pool: PgPool) {
     // When the org has a rule, `<organization-rule>` slots in between
     // `</core>` and `<role>` — the cache-friendly position the renderer
     // commits to (see `src/memory/agent.rs`'s module doc).
-    let db = TestDb::fresh().await;
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = Arc::new(TestClock::new());
     let rule = OrganizationRule::try_from("Cite file:line on every claim.").expect("valid");
-    let f = build_memory_with_rule(&db, clock, Some(rule.clone()));
+    let f = build_memory_with_rule(&pool, &seed, clock, Some(rule.clone()));
 
     let session = human_to_agent_session(
         f.sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
     )
     .await;
-    let viewer = Participant::agent(db.default_agent_id);
+    let viewer = Participant::agent(seed.agent_id);
     let prompt = f
         .memory
         .system_prompt(
@@ -484,22 +466,22 @@ async fn org_rule_block_sits_between_core_and_role() {
     assert!(s.contains(rule.as_str()), "rule body present");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn org_rule_block_omitted_when_unset() {
+#[sqlx::test]
+async fn org_rule_block_omitted_when_unset(pool: PgPool) {
     // When the org has no rule, the tag never appears — empty configs
     // don't waste prompt budget or hand the model an empty envelope.
-    let db = TestDb::fresh().await;
+    let seed = seed_tenant(&pool).await;
     let clock: SharedClock = Arc::new(TestClock::new());
-    let f = build_memory_with_rule(&db, clock, None);
+    let f = build_memory_with_rule(&pool, &seed, clock, None);
 
     let session = human_to_agent_session(
         f.sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
     )
     .await;
-    let viewer = Participant::agent(db.default_agent_id);
+    let viewer = Participant::agent(seed.agent_id);
     let prompt = f
         .memory
         .system_prompt(
@@ -518,15 +500,15 @@ async fn org_rule_block_omitted_when_unset() {
     assert!(!s.contains(ORG_RULE_TAG_CLOSE), "no dangling close tag");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn pg_memory_store_underlying_constructs() {
+#[sqlx::test]
+async fn pg_memory_store_underlying_constructs(pool: PgPool) {
     // Smoke: building the store + cache via the public types matches the
     // app.rs wiring. Catches an export regression more directly than
     // the integration tests do.
-    let db = TestDb::fresh().await;
+    let _seed = seed_tenant(&pool).await;
     let clock: SharedClock = SystemClock::shared();
     let _store: SharedMemoryStore = Arc::new(PgMemoryStore::new(
-        db.pool.clone(),
+        pool.clone(),
         clock.clone(),
         common::embedding::FakeEmbeddingProvider::shared(),
     ));

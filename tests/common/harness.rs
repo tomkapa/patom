@@ -7,10 +7,10 @@
 //! assert the new multi-agent contracts (send_message round-trip, ping-pong
 //! guard, quiescence-Done on root, dag-budget rejection).
 //!
-//! Holds an `Arc<TestDb>` so the schema survives until the harness is
-//! dropped. Worker pool is spawned with a single worker for deterministic
-//! ordering during assertions; tests that need parallelism can build their
-//! own pool.
+//! Built on the `PgPool` injected by `#[sqlx::test]` (which owns the
+//! per-test database lifecycle). Worker pool is spawned with a single worker
+//! for deterministic ordering during assertions; tests that need parallelism
+//! can build their own pool.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,8 +36,9 @@ use patom_rs::runtime::{
 use patom_rs::session::{PgSessionStore, SharedSessionStore};
 use patom_rs::tools::system::SendMessageTool;
 use patom_rs::tools::{ToolBox, ToolRegistry};
+use sqlx::PgPool;
 
-use super::pg::TestDb;
+use super::pg::seed_tenant;
 
 /// Provider that replays a fixed script of [`ChatResponse`]s — one per
 /// `send` call. Tests pre-record what the model "says" each turn.
@@ -77,8 +78,8 @@ impl LlmProvider for ScriptedProvider {
     }
 }
 
-/// All the live handles the test will poke. Drop reaps the schema (via
-/// `TestDb`) after the worker pool winds down.
+/// All the live handles the test will poke. The per-test database is owned
+/// and reaped by `#[sqlx::test]`, not this struct.
 pub struct WorkerHarness {
     pub queue: Arc<PgPromptQueue>,
     pub hub: Arc<PgResponseHub>,
@@ -92,33 +93,29 @@ pub struct WorkerHarness {
     /// sessions created via this harness to the test principal.
     pub default_user_id: patom_rs::auth::UserId,
     pub workers: WorkerPoolHandle,
-    /// Held only so its `Drop` reaps the schema at end-of-scope.
-    #[allow(dead_code)]
-    pub db: TestDb,
 }
 
 /// Build a single-worker harness with a [`SendMessageTool`] registered in
-/// the agent's tool box. The provider is the script of model responses; the
+/// the agent's tool box. The `pool` is the freshly-migrated database injected
+/// by `#[sqlx::test]`; the provider is the script of model responses; the
 /// agent_id is the seeded default agent.
-pub async fn build_harness(provider: Arc<ScriptedProvider>) -> WorkerHarness {
-    let db = TestDb::fresh().await;
+pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> WorkerHarness {
+    let seed = seed_tenant(&pool).await;
     let clock = SystemClock::shared();
 
-    let queue_impl = Arc::new(PgPromptQueue::new(db.pool.clone(), clock.clone()));
+    let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
     let queue = queue_impl.clone();
     let leases = queue_impl.clone();
 
-    let hub = Arc::new(PgResponseHub::new(db.pool.clone(), clock.clone()));
+    let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let sink = hub.clone();
 
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
-    let agent_store: SharedAgentStore =
-        super::pg::shared_agent_store(db.pool.clone(), clock.clone());
-    let dag: SharedDagBudget = Arc::new(PgDagBudget::new(db.pool.clone()));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let agent_store: SharedAgentStore = super::pg::shared_agent_store(pool.clone(), clock.clone());
+    let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
     let memory_store: patom_rs::memory::SharedMemoryStore =
         Arc::new(patom_rs::memory::PgMemoryStore::new(
-            db.pool.clone(),
+            pool.clone(),
             clock.clone(),
             super::embedding::FakeEmbeddingProvider::shared(),
         ));
@@ -173,25 +170,21 @@ pub async fn build_harness(provider: Arc<ScriptedProvider>) -> WorkerHarness {
         agents_registry,
         sessions.clone(),
         dag.clone(),
-        db.pool.clone(),
+        pool.clone(),
         memory_store,
         clock.clone(),
         cfg,
     )
     .spawn();
 
-    let default_agent_id = db.default_agent_id;
-    let default_org_id = db.default_org_id;
-    let default_user_id = db.default_user_id;
     WorkerHarness {
         queue,
         hub,
         sessions,
         dag,
-        default_agent_id,
-        default_org_id,
-        default_user_id,
+        default_agent_id: seed.agent_id,
+        default_org_id: seed.org_id,
+        default_user_id: seed.user_id,
         workers,
-        db,
     }
 }
