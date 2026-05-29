@@ -33,4 +33,11 @@ pub enum OAuthError {
     /// callback that arrives without a pending row).
     #[error("misconfigured: {0}")]
     Misconfigured(String),
+
+    /// A bounded I/O await tripped its `tokio::time::timeout`. The
+    /// `&'static str` names the operation (`"discover_metadata"`,
+    /// `"AuthorizationManager::new"`, …) so logs can pinpoint which
+    /// step blocked.
+    #[error("timeout: {0}")]
+    Timeout(&'static str),
 }

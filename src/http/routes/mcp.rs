@@ -2045,6 +2045,10 @@ fn map_oauth_err(err: OAuthError) -> HttpError {
             tracing::warn!(error = %err, "mcp.oauth.misconfigured");
             HttpError::BadRequest(err.to_string())
         }
+        OAuthError::Timeout(_) => {
+            tracing::warn!(error = %err, "mcp.oauth.upstream_timeout");
+            HttpError::BadRequest(err.to_string())
+        }
         OAuthError::Mcp(e) => HttpError::Mcp(e),
     }
 }

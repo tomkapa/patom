@@ -50,6 +50,25 @@ use super::credential_adapter::PatomCredentialStore;
 use super::errors::OAuthError;
 use super::state_adapter::PatomStateStore;
 
+/// Per-CLAUDE.md §5 every network await is wrapped. This helper bounds an
+/// rmcp-returning future by [`super::super::limits::MCP_CONNECT_TIMEOUT`]
+/// (10 s — the same outer bound the registry's connect path already uses,
+/// see [`crate::mcp::registry`]) and maps both the timeout and the inner
+/// rmcp error into `OAuthError`. `op` is a low-cardinality name that names
+/// the wrapped step so logs and traces can pinpoint which await tripped.
+async fn bounded<T, F>(op: &'static str, fut: F) -> Result<T, OAuthError>
+where
+    F: std::future::Future<Output = Result<T, rmcp::transport::auth::AuthError>>,
+{
+    // `Box::pin` the future on the heap so the enclosing future stays
+    // under clippy's `large_futures` threshold — rmcp's `OAuthState`
+    // machine alone is ~16 KiB and trips the lint otherwise.
+    tokio::time::timeout(crate::mcp::limits::MCP_CONNECT_TIMEOUT, Box::pin(fut))
+        .await
+        .map_err(|_| OAuthError::Timeout(op))?
+        .map_err(OAuthError::from)
+}
+
 /// Build an `AuthorizationManager` for `(server_id, org_id)` bound to
 /// `base_url`. Used by the registry's connect path; rmcp's `AuthClient`
 /// wraps the returned manager and handles bearer injection + refresh.
@@ -63,9 +82,11 @@ pub async fn build_manager_for_request(
     http: reqwest::Client,
     credentials: SharedMcpCredentialStore,
 ) -> Result<AuthorizationManager, OAuthError> {
-    let mut manager = AuthorizationManager::new(base_url)
-        .await
-        .map_err(OAuthError::from)?;
+    let mut manager = bounded(
+        "AuthorizationManager::new[connect]",
+        AuthorizationManager::new(base_url),
+    )
+    .await?;
     manager.with_client(http).map_err(OAuthError::from)?;
     manager.set_credential_store(PatomCredentialStore::new(server_id, org_id, credentials));
     Ok(manager)
@@ -170,16 +191,19 @@ async fn start_platform(
             id = catalog.id,
         ))
     })?;
-    let mut manager = AuthorizationManager::new(server_url)
-        .await
-        .map_err(OAuthError::from)?;
+    let mut manager = bounded(
+        "AuthorizationManager::new[start_platform]",
+        AuthorizationManager::new(server_url),
+    )
+    .await?;
     manager.with_client(http).map_err(OAuthError::from)?;
     manager.set_credential_store(PatomCredentialStore::new(server_id, org_id, credentials));
     manager.set_state_store(state_store);
-    let metadata = manager
-        .discover_metadata()
-        .await
-        .map_err(OAuthError::from)?;
+    let metadata = bounded(
+        "discover_metadata[start_platform]",
+        manager.discover_metadata(),
+    )
+    .await?;
     manager.set_metadata(metadata);
     let config = OAuthClientConfig::new(
         env_creds.client_id.expose().to_owned(),
@@ -188,10 +212,11 @@ async fn start_platform(
     .with_client_secret(env_creds.client_secret.expose().to_owned())
     .with_scopes(scopes.iter().map(|s| (*s).to_owned()).collect());
     manager.configure_client(config).map_err(OAuthError::from)?;
-    manager
-        .get_authorization_url(scopes)
-        .await
-        .map_err(OAuthError::from)
+    bounded(
+        "get_authorization_url[platform]",
+        manager.get_authorization_url(scopes),
+    )
+    .await
 }
 
 /// DCR branch: rmcp's `OAuthState::new` registers a client dynamically
@@ -220,9 +245,11 @@ async fn start_dcr(
     // before discovery + DCR fire. OAuthState::new doesn't expose a
     // store-injection seam; emulating its body is the documented
     // workaround.
-    let mut manager = AuthorizationManager::new(server_url)
-        .await
-        .map_err(OAuthError::from)?;
+    let mut manager = bounded(
+        "AuthorizationManager::new[start_dcr]",
+        AuthorizationManager::new(server_url),
+    )
+    .await?;
     manager.with_client(http).map_err(OAuthError::from)?;
     manager.set_credential_store(PatomCredentialStore::new(
         server_id,
@@ -231,10 +258,11 @@ async fn start_dcr(
     ));
     manager.set_state_store(state_store);
     let mut state = OAuthState::Unauthorized(manager);
-    state
-        .start_authorization(scopes, redirect_uri, Some("Patom"))
-        .await
-        .map_err(OAuthError::from)?;
+    bounded(
+        "state.start_authorization[dcr]",
+        state.start_authorization(scopes, redirect_uri, Some("Patom")),
+    )
+    .await?;
     let OAuthState::Session(session) = state else {
         return Err(OAuthError::Misconfigured(
             "DCR start_authorization returned unexpected OAuthState variant".into(),
@@ -302,9 +330,11 @@ pub async fn handle_callback(
     credentials: SharedMcpCredentialStore,
     state_store: PatomStateStore,
 ) -> Result<(), OAuthError> {
-    let mut manager = AuthorizationManager::new(server_url)
-        .await
-        .map_err(OAuthError::from)?;
+    let mut manager = bounded(
+        "AuthorizationManager::new[callback]",
+        AuthorizationManager::new(server_url),
+    )
+    .await?;
     manager.with_client(http).map_err(OAuthError::from)?;
     manager.set_credential_store(PatomCredentialStore::new(
         server_id,
@@ -312,10 +342,7 @@ pub async fn handle_callback(
         credentials.clone(),
     ));
     manager.set_state_store(state_store);
-    let metadata = manager
-        .discover_metadata()
-        .await
-        .map_err(OAuthError::from)?;
+    let metadata = bounded("discover_metadata[callback]", manager.discover_metadata()).await?;
     manager.set_metadata(metadata);
 
     // Re-configure the client identically to the start path so rmcp's
@@ -332,10 +359,11 @@ pub async fn handle_callback(
     .await?;
 
     let session = AuthorizationSession::for_scope_upgrade(manager, String::new(), redirect_uri);
-    session
-        .handle_callback(code, state)
-        .await
-        .map_err(OAuthError::from)?;
+    bounded(
+        "session.handle_callback",
+        session.handle_callback(code, state),
+    )
+    .await?;
     Ok(())
 }
 
