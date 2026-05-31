@@ -145,3 +145,55 @@ jobs:
           tool: cargo-audit
       - name: cargo audit
         run: cargo audit
+
+  # ── sqlx offline cache drift-guard ──────────────────────────────────────
+  # The container image builds with SQLX_OFFLINE=true (no DB). If anyone adds or
+  # changes a compile-time query!/query_as! macro without committing the regenerated
+  # .sqlx cache, `prepare --check` fails here — before the image build would break.
+  sqlx-offline:
+    name: sqlx offline check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: patom
+          POSTGRES_PASSWORD: patom
+          POSTGRES_DB: patom
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U patom -d patom"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://patom:patom@localhost:5432/patom
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli
+      - name: apply migrations (so macros can typecheck against the schema)
+        run: sqlx migrate run
+      - name: verify committed .sqlx is in sync
+        run: cargo sqlx prepare --check
+
+  # ── Frontend: typecheck + production build (the SPA baked into the image) ─
+  web:
+    name: web typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: bun install
+        working-directory: web
+        run: bun install --frozen-lockfile
+      - name: typecheck
+        working-directory: web
+        run: bun run typecheck
+      - name: build
+        working-directory: web
+        run: bun run build

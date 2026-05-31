@@ -1,0 +1,57 @@
+# Postgres-specific allows. The namespace-wide default-deny + allow-dns come from
+# the patom chart (distinct names, additive). 5432 ingress only from the app and
+# the backup job; the backup job also needs egress to Postgres + R2.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-postgres
+  labels:
+    {{- include "postgres.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    {{- include "postgres.selectorLabels" . | nindent 4 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: patom
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+              app.kubernetes.io/component: backup
+      ports:
+        - { protocol: TCP, port: {{ .Values.service.port }} }
+{{- if .Values.backup.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-backup
+  labels:
+    {{- include "postgres.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+      app.kubernetes.io/component: backup
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "postgres.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.service.port }} }
+    # R2 upload over HTTPS (exclude private ranges).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - { protocol: TCP, port: 443 }
+{{- end }}
