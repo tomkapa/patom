@@ -81,3 +81,29 @@ pub const DETECTED_LOCALE_MAX_LEN: usize = 32;
 /// Maximum bytes accepted for an organization display name.
 /// Mirrors the migration 14 `organizations.name` CHECK (1..=200).
 pub const MAX_ORG_NAME_BYTES: usize = 200;
+
+/// Maximum byte length of `PATOM_COOKIE_DOMAIN` (the shared cookie
+/// `Domain` attribute, e.g. `.patom.app`).
+///
+/// RFC 1035 caps a fully-qualified DNS name at 253 octets; we accept a
+/// leading-dot cross-subdomain form (`.patom.app`) so the session and
+/// CSRF cookies are visible to both the apex marketing site and the
+/// `app.` subdomain. Unset (the default) omits the attribute entirely,
+/// preserving the host-only localhost-dev behavior.
+pub const COOKIE_DOMAIN_MAX_LEN: usize = 253;
+
+/// Maximum bytes of a single DNS label inside `PATOM_COOKIE_DOMAIN`
+/// (the dot-separated segments of e.g. `app.patom.app`).
+///
+/// RFC 1035 §2.3.4 caps a label at 63 octets. `CookieDomain`'s validator
+/// rejects any longer segment at the boundary.
+pub const COOKIE_DOMAIN_LABEL_MAX_LEN: usize = 63;
+
+/// Maximum number of CORS allowlist origins accepted in
+/// `PATOM_CORS_ALLOWED_ORIGINS`.
+///
+/// The marketing apex needs exactly one origin (`https://patom.app`);
+/// the cap leaves headroom for a staging/preview origin or two while
+/// rejecting a runaway comma-separated list that would bloat every
+/// preflight's allow-origin matching.
+pub const MAX_CORS_ALLOWED_ORIGINS: usize = 8;

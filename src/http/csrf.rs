@@ -25,6 +25,7 @@ use oauth2::CsrfToken;
 use thiserror::Error;
 use tracing::error;
 
+use crate::auth::CookieDomain;
 use crate::auth::limits::{CSRF_COOKIE_NAME, CSRF_HEADER_NAME, CSRF_TOKEN_MAX_LEN};
 
 /// Errors raised by the CSRF middleware.
@@ -59,23 +60,41 @@ pub(super) fn mint_csrf_token() -> String {
 /// for the session cookie; `ttl_secs` keeps the CSRF cookie aligned
 /// with the session JWT so they expire together. NOT HttpOnly — the
 /// SPA must read this value via `document.cookie`.
-pub(super) fn build_csrf_cookie(token: String, secure: bool, ttl_secs: i64) -> Cookie<'static> {
-    csrf_cookie_with(token, secure, ttl_secs)
+pub(super) fn build_csrf_cookie(
+    token: String,
+    secure: bool,
+    ttl_secs: i64,
+    domain: Option<&CookieDomain>,
+) -> Cookie<'static> {
+    csrf_cookie_with(token, secure, ttl_secs, domain)
 }
 
 /// Build an expired CSRF cookie. Pairs with logout — the session cookie
-/// expires the same way, see `me::logout`.
-pub(super) fn build_expired_csrf_cookie(secure: bool) -> Cookie<'static> {
-    csrf_cookie_with(String::new(), secure, 0)
+/// expires the same way, see `me::logout`. The `domain` MUST match the
+/// live cookie's `Domain` or the browser keys the expiry cookie
+/// separately and never clears the session.
+pub(super) fn build_expired_csrf_cookie(
+    secure: bool,
+    domain: Option<&CookieDomain>,
+) -> Cookie<'static> {
+    csrf_cookie_with(String::new(), secure, 0, domain)
 }
 
-fn csrf_cookie_with(value: String, secure: bool, ttl_secs: i64) -> Cookie<'static> {
+fn csrf_cookie_with(
+    value: String,
+    secure: bool,
+    ttl_secs: i64,
+    domain: Option<&CookieDomain>,
+) -> Cookie<'static> {
     let mut cookie = Cookie::new(CSRF_COOKIE_NAME, value);
     cookie.set_http_only(false);
     cookie.set_path("/");
     cookie.set_same_site(SameSite::Lax);
     cookie.set_secure(secure);
     cookie.set_max_age(CookieDuration::seconds(ttl_secs));
+    if let Some(d) = domain {
+        cookie.set_domain(d.as_str().to_owned());
+    }
     cookie
 }
 
@@ -164,5 +183,31 @@ mod tests {
             t.chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         );
+    }
+
+    #[test]
+    fn csrf_cookie_sets_domain_when_configured() {
+        let domain = CookieDomain::try_from(".patom.app").expect("valid");
+        let cookie = build_csrf_cookie("tok".to_string(), true, 3600, Some(&domain));
+        // `Cookie::domain()` normalizes away the RFC-6265 leading dot.
+        assert_eq!(cookie.domain(), Some("patom.app"));
+        // Unchanged invariants travel with the Domain.
+        assert_eq!(cookie.http_only(), Some(false));
+        assert_eq!(cookie.same_site(), Some(SameSite::Lax));
+    }
+
+    #[test]
+    fn csrf_cookie_omits_domain_when_unset() {
+        let cookie = build_csrf_cookie("tok".to_string(), true, 3600, None);
+        assert!(cookie.domain().is_none());
+    }
+
+    #[test]
+    fn expired_csrf_cookie_carries_domain_and_zero_max_age() {
+        let domain = CookieDomain::try_from(".patom.app").expect("valid");
+        let cookie = build_expired_csrf_cookie(true, Some(&domain));
+        // Both must hold or logout fails to clear the shared cookie.
+        assert_eq!(cookie.domain(), Some("patom.app"));
+        assert_eq!(cookie.max_age(), Some(CookieDuration::seconds(0)));
     }
 }

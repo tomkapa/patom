@@ -125,6 +125,8 @@ impl AuthMemoryHarness {
             users,
             clock: clock.clone(),
             cookie_secure: false,
+            cookie_domain: None,
+            cors_allowed_origins: Vec::new(),
             memberships: std::sync::Arc::new(patom::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),

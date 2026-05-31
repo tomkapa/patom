@@ -8,6 +8,7 @@
 //! - Tenant-context helpers ([`TenantTx`], [`PrivilegedTx`], [`run_as_user`],
 //!   [`run_privileged`]).
 
+mod cookie_domain;
 mod error;
 mod jwt;
 mod language;
@@ -20,6 +21,7 @@ mod pg_store;
 mod store;
 mod types;
 
+pub use cookie_domain::CookieDomain;
 pub use error::AuthError;
 pub use jwt::{JwtClaims, JwtSigner};
 pub use language::Language;

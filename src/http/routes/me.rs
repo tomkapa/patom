@@ -90,6 +90,7 @@ async fn me(
             mint_csrf_token(),
             state.cookie_secure(),
             state.jwt.ttl_secs(),
+            state.cookie_domain(),
         ))
     } else {
         jar
@@ -131,9 +132,16 @@ async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
     cookie.set_same_site(SameSite::Lax);
     cookie.set_secure(state.cookie_secure());
     cookie.set_max_age(CookieDuration::seconds(0));
-    let jar = jar
-        .add(cookie)
-        .add(build_expired_csrf_cookie(state.cookie_secure()));
+    // The expiry cookie MUST carry the same Domain as the live session
+    // cookie, or the browser treats them as distinct cookies and the
+    // session survives logout.
+    if let Some(d) = state.cookie_domain() {
+        cookie.set_domain(d.as_str().to_owned());
+    }
+    let jar = jar.add(cookie).add(build_expired_csrf_cookie(
+        state.cookie_secure(),
+        state.cookie_domain(),
+    ));
     (StatusCode::NO_CONTENT, jar).into_response()
 }
 
@@ -154,11 +162,17 @@ async fn switch_org(
         .await?
         .ok_or(AuthError::NotMember(req.org_id))?;
     let token = state.jwt.mint(principal.user_id, req.org_id)?;
-    let session_cookie = build_session_cookie(token, state.cookie_secure(), state.jwt.ttl_secs());
+    let session_cookie = build_session_cookie(
+        token,
+        state.cookie_secure(),
+        state.jwt.ttl_secs(),
+        state.cookie_domain(),
+    );
     let csrf_cookie = build_csrf_cookie(
         mint_csrf_token(),
         state.cookie_secure(),
         state.jwt.ttl_secs(),
+        state.cookie_domain(),
     );
     let jar = jar.add(session_cookie).add(csrf_cookie);
     Ok((

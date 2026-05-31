@@ -6,7 +6,8 @@ use sqlx::PgPool;
 use crate::agents::SharedAgentStore;
 use crate::assets::SharedAssetStore;
 use crate::auth::{
-    GoogleOAuth, JwtSigner, SharedOrgLanguageResolver, SharedOrgRuleResolver, SharedUserStore,
+    CookieDomain, GoogleOAuth, JwtSigner, SharedOrgLanguageResolver, SharedOrgRuleResolver,
+    SharedUserStore,
 };
 use crate::clock::SharedClock;
 use crate::http::MembershipCache;
@@ -104,6 +105,15 @@ pub struct AppState {
     /// local-dev (plain http://localhost), on in any prod-shaped
     /// deployment. Sourced from [`crate::config::AuthSettings`].
     pub cookie_secure: bool,
+    /// Shared cookie `Domain` for the session + CSRF cookies. `Some`
+    /// (e.g. `.patom.app`) shares them across the apex marketing site and
+    /// the `app.` subdomain; `None` keeps them host-only (localhost dev).
+    /// Sourced from [`crate::config::AuthSettings`].
+    pub cookie_domain: Option<CookieDomain>,
+    /// Cross-origin allowlist for the `/api` subtree (e.g.
+    /// `https://patom.app`). Empty disables the CORS layer. Sourced from
+    /// [`crate::config::AuthSettings`].
+    pub cors_allowed_origins: Vec<String>,
     /// `(user_id, org_id) → role` lookup cache. Cuts the per-request
     /// membership round-trip down to a Mutex lookup for repeat callers.
     pub memberships: Arc<MembershipCache>,
@@ -147,5 +157,12 @@ impl AppState {
     #[must_use]
     pub fn cookie_secure(&self) -> bool {
         self.cookie_secure
+    }
+
+    /// Accessor for the shared cookie `Domain`. `None` when unset, which
+    /// the cookie builders translate to "omit the `Domain` attribute".
+    #[must_use]
+    pub fn cookie_domain(&self) -> Option<&CookieDomain> {
+        self.cookie_domain.as_ref()
     }
 }
