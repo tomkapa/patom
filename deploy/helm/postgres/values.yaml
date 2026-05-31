@@ -36,7 +36,7 @@ backup:
   # imageTag is CI-managed (release.yml bumps it to the build SHA alongside the
   # app tag) so the backup image is pinned, not floating on :latest.
   image: ghcr.io/tomkapa/patom-backup
-  imageTag: 313f9f1093d5
+  imageTag: 1359e9b16a2e
   r2:
     # MUST be a dedicated PRIVATE bucket (NOT PATOM_R2_BUCKET, which is public-read
     # for avatars). DB dumps hold tenant data + MASTER_KEK-encrypted secrets.
