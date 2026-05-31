@@ -1,4 +1,4 @@
-//! Behaviour tests for [`patom_rs::memory::AgentMemory`] + the underlying
+//! Behaviour tests for [`patom::memory::AgentMemory`] + the underlying
 //! caches and composer (doc/memory.md §1.3).
 //!
 //! Proves the assembled `system` prompt has the expected
@@ -12,21 +12,21 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use patom_rs::agents::{
+use patom::agents::{
     AgentNamesCache, AgentPromptCache, AgentSystemPrompt, AgentUpdate, SharedAgentStore,
 };
-use patom_rs::auth::OrganizationRule;
-use patom_rs::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
-use patom_rs::clock::{SharedClock, SystemClock, TestClock};
-use patom_rs::memory::{
+use patom::auth::OrganizationRule;
+use patom::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
+use patom::clock::{SharedClock, SystemClock, TestClock};
+use patom::memory::{
     AgentMemory, CORE_TAG_CLOSE, CORE_TAG_OPEN, DATE_TAG_CLOSE, DATE_TAG_OPEN, MEMORY_TAG_CLOSE,
     MEMORY_TAG_OPEN, Memory, MemoryContent, MemoryHandle, MemoryKind, MemoryMutation,
     MemorySectionLoader, MemoryState, MutationSource, ORG_RULE_TAG_CLOSE, ORG_RULE_TAG_OPEN,
     PgMemoryStore, ROLE_TAG_CLOSE, ROLE_TAG_OPEN, SessionMemoryCache, SharedMemoryStore,
 };
-use patom_rs::prompts::Prompts;
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
-use patom_rs::types::Participant;
+use patom::prompts::Prompts;
+use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::types::Participant;
 use sqlx::PgPool;
 
 mod common;
@@ -109,7 +109,7 @@ async fn assembles_core_then_role_in_order(pool: PgPool) {
         .system_prompt(
             session,
             viewer,
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");
@@ -158,7 +158,7 @@ async fn date_section_sits_between_role_and_memory(pool: PgPool) {
         .system_prompt(
             session,
             Participant::agent(agent_id),
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");
@@ -207,7 +207,7 @@ async fn empty_memory_skips_memory_section(pool: PgPool) {
         .system_prompt(
             session,
             Participant::agent(seed.agent_id),
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");
@@ -244,7 +244,7 @@ async fn renders_memory_section_after_role(pool: PgPool) {
         .system_prompt(
             session,
             Participant::agent(agent_id),
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");
@@ -282,7 +282,7 @@ async fn frozen_during_session_returns_identical_prompt(pool: PgPool) {
         .system_prompt(
             session,
             viewer,
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("first");
@@ -304,7 +304,7 @@ async fn frozen_during_session_returns_identical_prompt(pool: PgPool) {
         .system_prompt(
             session,
             viewer,
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("second");
@@ -348,7 +348,7 @@ async fn resolve_handle_round_trips_to_memory_id(pool: PgPool) {
         .system_prompt(
             session,
             Participant::agent(agent_id),
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("compose");
@@ -359,7 +359,7 @@ async fn resolve_handle_round_trips_to_memory_id(pool: PgPool) {
         .resolve_handle(
             session,
             agent_id,
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
             handle,
         )
         .await
@@ -372,7 +372,7 @@ async fn resolve_handle_round_trips_to_memory_id(pool: PgPool) {
         .resolve_handle(
             session,
             agent_id,
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
             stranger,
         )
         .await
@@ -447,7 +447,7 @@ async fn org_rule_block_sits_between_core_and_role(pool: PgPool) {
         .system_prompt(
             session,
             viewer,
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");
@@ -487,7 +487,7 @@ async fn org_rule_block_omitted_when_unset(pool: PgPool) {
         .system_prompt(
             session,
             viewer,
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
         .expect("system prompt");

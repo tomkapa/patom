@@ -18,12 +18,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use patom_rs::provider::{
+use patom::provider::{
     AssistantContent, ChatMessage, ChatResponse, StopReason, ToolCall, ToolCallId, UserContent,
 };
-use patom_rs::runtime::queue::PromptQueue as _;
-use patom_rs::runtime::{IdempotencyKey, NewPromptRequest, ResponseChunk, StreamEvent};
-use patom_rs::types::{Participant, Prompt, ToolName};
+use patom::runtime::queue::PromptQueue as _;
+use patom::runtime::{IdempotencyKey, NewPromptRequest, ResponseChunk, StreamEvent};
+use patom::types::{Participant, Prompt, ToolName};
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -75,7 +75,7 @@ async fn send_message_human_publishes_agent_message_on_root_stream(pool: PgPool)
             idempotency_key: IdempotencyKey::try_from("k-human").expect("key"),
             org_id: h.default_org_id,
             created_by_user_id: h.default_user_id,
-            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue")
@@ -132,7 +132,7 @@ async fn send_message_human_keeps_tool_call_and_result_adjacent(pool: PgPool) {
             idempotency_key: IdempotencyKey::try_from("k-adjacent").expect("key"),
             org_id: h.default_org_id,
             created_by_user_id: h.default_user_id,
-            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue");
@@ -207,7 +207,7 @@ async fn followup_prompt_publishes_agent_message_on_open_sink(pool: PgPool) {
             idempotency_key: IdempotencyKey::try_from("k-first").expect("key"),
             org_id: h.default_org_id,
             created_by_user_id: h.default_user_id,
-            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue first");
@@ -225,7 +225,7 @@ async fn followup_prompt_publishes_agent_message_on_open_sink(pool: PgPool) {
             idempotency_key: IdempotencyKey::try_from("k-second").expect("key"),
             org_id: h.default_org_id,
             created_by_user_id: h.default_user_id,
-            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue second");
@@ -247,10 +247,10 @@ async fn followup_prompt_publishes_agent_message_on_open_sink(pool: PgPool) {
 
 async fn drain_chunks(
     h: &common::harness::WorkerHarness,
-    id: patom_rs::runtime::PromptRequestId,
+    id: patom::runtime::PromptRequestId,
     deadline: Duration,
 ) -> Vec<ResponseChunk> {
-    let source: patom_rs::runtime::SharedResponseSource = h.hub.clone();
+    let source: patom::runtime::SharedResponseSource = h.hub.clone();
     let mut stream = source.subscribe(id, None).await.expect("subscribe");
     let mut got = Vec::new();
     let until = std::time::Instant::now() + deadline;

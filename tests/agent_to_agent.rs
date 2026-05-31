@@ -40,28 +40,28 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
 
-use patom_rs::agent_core::AgentBuilder;
-use patom_rs::agents::{
+use patom::agent_core::AgentBuilder;
+use patom::agents::{
     AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL, AgentFactory, AgentId, AgentName,
     AgentSystemPrompt, CachedAgents, NewAgent, SharedAgentStore, SharedAgents,
 };
-use patom_rs::clock::SystemClock;
-use patom_rs::hook::HookChain;
-use patom_rs::memory::{SharedMemory, StaticMemory};
-use patom_rs::provider::{
+use patom::clock::SystemClock;
+use patom::hook::HookChain;
+use patom::memory::{SharedMemory, StaticMemory};
+use patom::provider::{
     AssistantContent, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError, ProviderId,
     ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, ToolCall, ToolCallId,
 };
-use patom_rs::runtime::queue::PromptQueue as _;
-use patom_rs::runtime::{
+use patom::runtime::queue::PromptQueue as _;
+use patom::runtime::{
     IdempotencyKey, LeaseTiming, NewPromptRequest, PgDagBudget, PgPromptQueue, PgResponseHub,
     PgThreadStream, PromptRequestId, RequestStatus, ResponseChunk, SharedDagBudget,
     SharedThreadStream, ThreadStreamEvent, WorkerConfig, WorkerPool, WorkerPoolHandle,
 };
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
-use patom_rs::tools::system::SendMessageTool;
-use patom_rs::tools::{ToolBox, ToolRegistry};
-use patom_rs::types::{Participant, Prompt, ToolName};
+use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::tools::system::SendMessageTool;
+use patom::tools::{ToolBox, ToolRegistry};
+use patom::types::{Participant, Prompt, ToolName};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 
@@ -150,12 +150,12 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
                 "You translate phrases into French. Reply via send_message.",
             )
             .expect("prompt"),
-            description: patom_rs::agents::AgentDescription::try_from(
+            description: patom::agents::AgentDescription::try_from(
                 "Translates phrases between English and other languages.",
             )
             .expect("desc"),
             is_default: false,
-            allowed_mcp_tools: patom_rs::agents::AllowedMcpTools::empty(),
+            allowed_mcp_tools: patom::agents::AllowedMcpTools::empty(),
             model: None,
             edited_by: None,
         })
@@ -267,10 +267,10 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
         AGENT_PROMPT_CACHE_TTL,
         clock.clone(),
     ));
-    let memory_store_for_pool: patom_rs::memory::SharedMemoryStore =
-        Arc::new(patom_rs::memory::PgMemoryStore::new(
+    let memory_store_for_pool: patom::memory::SharedMemoryStore =
+        Arc::new(patom::memory::PgMemoryStore::new(
             pool.clone(),
-            patom_rs::clock::SystemClock::shared(),
+            patom::clock::SystemClock::shared(),
             common::embedding::FakeEmbeddingProvider::shared(),
         ));
 
@@ -323,7 +323,7 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
             idempotency_key: IdempotencyKey::try_from("a2a-root").expect("key"),
             org_id: seed.org_id,
             created_by_user_id: seed.user_id,
-            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue root");

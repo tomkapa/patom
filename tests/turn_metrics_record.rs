@@ -19,23 +19,23 @@ use async_trait::async_trait;
 use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
-use patom_rs::agent_core::AgentBuilder;
-use patom_rs::agent_core::turn_metrics::{
+use patom::agent_core::AgentBuilder;
+use patom::agent_core::turn_metrics::{
     DurationMs, InputTokens, OutputTokens, PgTurnMetricsStore, SharedTurnMetricsStore,
     StopReasonLabel, TurnMetricsRow, TurnMetricsStore,
 };
-use patom_rs::agents::prompt_versions::PromptVersionId;
-use patom_rs::clock::SystemClock;
-use patom_rs::hook::HookChain;
-use patom_rs::memory::{SharedMemory, StaticMemory};
-use patom_rs::provider::{
+use patom::agents::prompt_versions::PromptVersionId;
+use patom::clock::SystemClock;
+use patom::hook::HookChain;
+use patom::memory::{SharedMemory, StaticMemory};
+use patom::provider::{
     AssistantContent, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError,
     ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, Usage,
 };
-use patom_rs::runtime::{PromptRequestId, RequestKindPayload};
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
-use patom_rs::tools::ToolRegistry;
-use patom_rs::types::{Participant, Prompt};
+use patom::runtime::{PromptRequestId, RequestKindPayload};
+use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::tools::ToolRegistry;
+use patom::types::{Participant, Prompt};
 
 mod common;
 use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
@@ -46,7 +46,7 @@ use sqlx::PgPool;
 /// [`seed_tenant`] creates — so this is total under the harness.
 async fn current_prompt_version(
     pool: &sqlx::PgPool,
-    agent_id: patom_rs::agents::AgentId,
+    agent_id: patom::agents::AgentId,
 ) -> PromptVersionId {
     sqlx::query_scalar::<_, PromptVersionId>(
         "SELECT id FROM agent_prompt_versions \
@@ -59,10 +59,10 @@ async fn current_prompt_version(
 }
 
 fn fresh_row(
-    org_id: patom_rs::auth::OrgId,
-    session_id: patom_rs::session::SessionId,
+    org_id: patom::auth::OrgId,
+    session_id: patom::session::SessionId,
     request_id: PromptRequestId,
-    agent_id: patom_rs::agents::AgentId,
+    agent_id: patom::agents::AgentId,
     prompt_version_id: PromptVersionId,
 ) -> TurnMetricsRow {
     TurnMetricsRow {
@@ -71,9 +71,9 @@ fn fresh_row(
         session_id,
         agent_id,
         prompt_version_id,
-        kind: patom_rs::runtime::RequestKind::Normal,
+        kind: patom::runtime::RequestKind::Normal,
         model: Model::try_from("test-model").expect("catalog"),
-        provider: patom_rs::provider::ProviderId::Anthropic,
+        provider: patom::provider::ProviderId::Anthropic,
         input_tokens: InputTokens::try_from(10u32).expect("fits"),
         output_tokens: OutputTokens::try_from(20u32).expect("fits"),
         cache_creation_tokens: None,
@@ -120,7 +120,7 @@ async fn pg_store_trigger_rejects_org_mismatch(pool: PgPool) {
     let pvid = current_prompt_version(&pool, seed.agent_id).await;
 
     let store = PgTurnMetricsStore::new(pool.clone(), SystemClock::shared());
-    let foreign = patom_rs::auth::OrgId::new();
+    let foreign = patom::auth::OrgId::new();
     let row = fresh_row(foreign, session, request_id, seed.agent_id, pvid);
     let err = store.record(row).await.expect_err("trigger rejects");
     let msg = format!("{err}");
@@ -219,7 +219,7 @@ async fn agent_loop_records_one_row_per_provider_call(pool: PgPool) {
             Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
+            patom::auth::Caller::new(seed.user_id, seed.org_id),
             RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,

@@ -2576,7 +2576,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
-name = "patom-rs"
+name = "patom"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
@@ -2608,7 +2608,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "patom-rs",
+ "patom",
  "rand 0.8.6",
  "reqwest 0.13.3",
  "rmcp",

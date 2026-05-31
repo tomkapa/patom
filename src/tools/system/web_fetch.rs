@@ -19,7 +19,7 @@ use super::super::url::{FetchUrl, UrlError, check_host};
 /// matches `text/html`, and `application/xhtml+xml` covers the rare strict case.
 const HTML_MIME_PREFIXES: [&str; 2] = ["text/html", "application/xhtml+xml"];
 
-const FETCH_USER_AGENT: &str = concat!("patom-rs/", env!("CARGO_PKG_VERSION"));
+const FETCH_USER_AGENT: &str = concat!("patom/", env!("CARGO_PKG_VERSION"));
 const FETCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Fetch the body of a single HTTPS URL.

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# Multi-stage build for patom-rs. Built in CI, never on the prod node (the linker
+# Multi-stage build for patom. Built in CI, never on the prod node (the linker
 # OOMs at 4 GB). Three stages: bun SPA → rust release binary (SQLX_OFFLINE) →
 # distroless runtime. See deploy plan / CLAUDE.md.
 
@@ -27,7 +27,7 @@ ENV CARGO_TERM_COLOR=never \
 # caches independently of source churn (matters for CI layer caching).
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs \
- && cargo build --release --locked --bin patom-rs || true
+ && cargo build --release --locked --bin patom || true
 RUN rm -rf src
 # Real sources. `.sqlx/` is the committed offline query-macro cache (see ENV note).
 # `migrations/` is embedded at COMPILE time by sqlx::migrate!("./migrations"), so the
@@ -37,8 +37,8 @@ COPY migrations ./migrations
 COPY src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release --locked --bin patom-rs \
- && cp /app/target/release/patom-rs /usr/local/bin/patom-rs
+    cargo build --release --locked --bin patom \
+ && cp /app/target/release/patom /usr/local/bin/patom
 
 ###########################  Stage 3: runtime  ##########################
 # distroless/cc: glibc + libgcc + ca-certificates, no shell/pkg-manager. Works
@@ -46,10 +46,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # TLS to the LLM/embedding/search/R2 APIs.
 FROM gcr.io/distroless/cc-debian12:nonroot
 WORKDIR /app
-COPY --from=builder /usr/local/bin/patom-rs /usr/local/bin/patom-rs
+COPY --from=builder /usr/local/bin/patom /usr/local/bin/patom
 COPY --from=web    /web/dist                ./web/dist
 ENV HTTP_ADDR=0.0.0.0:8080 \
     PATOM_WEB_DIST=/app/web/dist
 EXPOSE 8080
 USER nonroot:nonroot                    # uid 65532
-ENTRYPOINT ["/usr/local/bin/patom-rs"]
+ENTRYPOINT ["/usr/local/bin/patom"]

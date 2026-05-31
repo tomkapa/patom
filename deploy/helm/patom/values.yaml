@@ -1,7 +1,7 @@
 # Patom app chart values. The image.tag is rewritten by CI on every push to main
 # (see .github/workflows/release.yml); ArgoCD syncs the change.
 image:
-  repository: ghcr.io/tomkapa/patom-rs
+  repository: ghcr.io/tomkapa/patom
   tag: latest            # CI-managed
   pullPolicy: IfNotPresent
 

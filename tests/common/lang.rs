@@ -12,11 +12,11 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use patom_rs::agents::AgentId;
-use patom_rs::auth::{
+use patom::agents::AgentId;
+use patom::auth::{
     Language, LanguageResolverError, OrgLanguageResolver, SharedOrgLanguageResolver,
 };
-use patom_rs::prompts::Prompts;
+use patom::prompts::Prompts;
 
 #[derive(Debug)]
 pub struct StaticOrgLanguageResolver {

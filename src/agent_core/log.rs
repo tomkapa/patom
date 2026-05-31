@@ -1,7 +1,7 @@
 //! Per-turn DEBUG logging of assistant blocks and tool results.
 //!
 //! Mirrors what the SSE observer streams. Demoted off the default INFO
-//! console — investigate with `RUST_LOG=patom_rs=debug`.
+//! console — investigate with `RUST_LOG=patom=debug`.
 
 use tracing::{debug, info};
 

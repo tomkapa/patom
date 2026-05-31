@@ -12,18 +12,18 @@
 
 use std::sync::Arc;
 
-use patom_rs::agents::{
+use patom::agents::{
     AgentDescription, AgentName, AgentSystemPrompt, AllowedMcpTools, NewAgent, SharedAgentStore,
 };
-use patom_rs::auth::OrgId;
-use patom_rs::clock::SystemClock;
-use patom_rs::http::{AppState, router};
-use patom_rs::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
-use patom_rs::runtime::{
+use patom::auth::OrgId;
+use patom::clock::SystemClock;
+use patom::http::{AppState, router};
+use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
+use patom::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
     SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream,
 };
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom::session::{PgSessionStore, SharedSessionStore};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -60,8 +60,8 @@ impl AuthAgentsHarness {
 
         let mcp_store: SharedMcpServerStore =
             Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
-        let mcp_catalog: patom_rs::mcp::SharedMcpCatalogStore =
-            Arc::new(patom_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
+        let mcp_catalog: patom::mcp::SharedMcpCatalogStore =
+            Arc::new(patom::mcp::PgMcpCatalogStore::new(pool.clone()));
         let mcp_registry = McpRegistry::new(mcp_store.clone(), clock.clone());
         let (refresher, mcp_refresh) = McpRefresher::spawn(mcp_registry);
 
@@ -70,8 +70,8 @@ impl AuthAgentsHarness {
                 .await
                 .expect("spawn thread stream");
 
-        let memory_store: patom_rs::memory::SharedMemoryStore =
-            Arc::new(patom_rs::memory::PgMemoryStore::new(
+        let memory_store: patom::memory::SharedMemoryStore =
+            Arc::new(patom::memory::PgMemoryStore::new(
                 pool.clone(),
                 clock.clone(),
                 common::embedding::FakeEmbeddingProvider::shared(),
@@ -97,15 +97,15 @@ impl AuthAgentsHarness {
             mcp_store,
             mcp_catalog,
             mcp_refresh,
-            mcp_credentials: std::sync::Arc::new(patom_rs::mcp::PgMcpCredentialStore::new(
+            mcp_credentials: std::sync::Arc::new(patom::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
                 clock.clone(),
-                std::sync::Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                std::sync::Arc::new(patom::crypto::OrgEncryptor::for_test([0u8; 32])),
             )),
-            mcp_test_rate: patom_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
+            mcp_test_rate: patom::mcp::TestConnectRateLimiter::new(clock.clone()),
             platform_oauth_clients: std::sync::Arc::new(std::collections::HashMap::new()),
             mcp_oauth_pending: std::sync::Arc::new(
-                patom_rs::mcp::oauth::PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()),
+                patom::mcp::oauth::PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()),
             ),
             oauth_redirect_base: std::sync::Arc::from("http://localhost:8080"),
             web_base_url: None,
@@ -116,15 +116,15 @@ impl AuthAgentsHarness {
             users,
             clock: clock.clone(),
             cookie_secure: false,
-            memberships: std::sync::Arc::new(patom_rs::http::MembershipCache::new(clock.clone())),
+            memberships: std::sync::Arc::new(patom::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
             rule_resolver: common::rule::empty_resolver(),
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets: None,
-            orgs: std::sync::Arc::new(patom_rs::orgs::PgOrgStore::new(pool.clone())),
-            mailer: std::sync::Arc::new(patom_rs::orgs::LogMailer),
+            orgs: std::sync::Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
+            mailer: std::sync::Arc::new(patom::orgs::LogMailer),
         };
 
         Self {

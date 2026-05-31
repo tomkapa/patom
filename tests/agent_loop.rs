@@ -12,18 +12,18 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use patom_rs::agent_core::AgentBuilder;
-use patom_rs::clock::SystemClock;
-use patom_rs::hook::HookChain;
-use patom_rs::memory::{SharedMemory, StaticMemory};
-use patom_rs::provider::{
+use patom::agent_core::AgentBuilder;
+use patom::clock::SystemClock;
+use patom::hook::HookChain;
+use patom::memory::{SharedMemory, StaticMemory};
+use patom::provider::{
     AssistantContent, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError, ProviderId,
     ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, ToolCall, ToolCallId,
 };
-use patom_rs::runtime::PromptRequestId;
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
-use patom_rs::tools::{SharedTool, Tool, ToolCallContext, ToolError, ToolRegistry};
-use patom_rs::types::{Participant, Prompt, ToolName};
+use patom::runtime::PromptRequestId;
+use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::tools::{SharedTool, Tool, ToolCallContext, ToolError, ToolRegistry};
+use patom::types::{Participant, Prompt, ToolName};
 use sqlx::PgPool;
 
 mod common;
@@ -35,7 +35,7 @@ use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
 async fn fresh_session(
     pool: &PgPool,
     seed: &common::pg::Seed,
-) -> (patom_rs::session::SessionId, PromptRequestId) {
+) -> (patom::session::SessionId, PromptRequestId) {
     let store = PgSessionStore::new(pool.clone(), SystemClock::shared());
     let session = human_to_agent_session(&store, seed.agent_id, seed.org_id, seed.user_id).await;
     let request = seed_prompt_request(pool, session, seed.agent_id, seed.org_id).await;
@@ -154,7 +154,7 @@ fn build(
     seed: &common::pg::Seed,
     provider: Arc<ScriptedProvider>,
     tools: Vec<SharedTool>,
-) -> patom_rs::Agent {
+) -> patom::Agent {
     build_with_model(
         pool,
         seed,
@@ -170,7 +170,7 @@ fn build_with_model(
     provider: Arc<ScriptedProvider>,
     tools: Vec<SharedTool>,
     model: Model,
-) -> patom_rs::Agent {
+) -> patom::Agent {
     let provider: SharedProvider = provider;
     let clock = SystemClock::shared();
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock));
@@ -209,8 +209,8 @@ async fn returns_text_when_no_tool_call(pool: PgPool) {
             Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
-            patom_rs::runtime::RequestKindPayload::Normal {},
+            patom::auth::Caller::new(seed.user_id, seed.org_id),
+            patom::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
@@ -239,8 +239,8 @@ async fn runs_tool_then_returns_text(pool: PgPool) {
             Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
-            patom_rs::runtime::RequestKindPayload::Normal {},
+            patom::auth::Caller::new(seed.user_id, seed.org_id),
+            patom::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
@@ -269,8 +269,8 @@ async fn unknown_tool_does_not_loop_forever(pool: PgPool) {
             Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
-            patom_rs::runtime::RequestKindPayload::Normal {},
+            patom::auth::Caller::new(seed.user_id, seed.org_id),
+            patom::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
@@ -300,14 +300,14 @@ async fn cancellation_short_circuits(pool: PgPool) {
             Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
-            patom_rs::runtime::RequestKindPayload::Normal {},
+            patom::auth::Caller::new(seed.user_id, seed.org_id),
+            patom::runtime::RequestKindPayload::Normal {},
             cancel,
             None,
         )
         .await
         .expect_err("cancelled");
-    matches!(err, patom_rs::AgentError::Cancelled);
+    matches!(err, patom::AgentError::Cancelled);
 }
 
 #[sqlx::test]
@@ -328,8 +328,8 @@ async fn provider_specs_match_registered_tools(pool: PgPool) {
             Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
-            patom_rs::runtime::RequestKindPayload::Normal {},
+            patom::auth::Caller::new(seed.user_id, seed.org_id),
+            patom::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
@@ -363,8 +363,8 @@ async fn agent_carries_its_model_into_the_provider_call(pool: PgPool) {
             Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
-            patom_rs::runtime::RequestKindPayload::Normal {},
+            patom::auth::Caller::new(seed.user_id, seed.org_id),
+            patom::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
@@ -417,8 +417,8 @@ async fn registry_routes_model_to_its_catalog_provider(pool: PgPool) {
             Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
-            patom_rs::runtime::RequestKindPayload::Normal {},
+            patom::auth::Caller::new(seed.user_id, seed.org_id),
+            patom::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )

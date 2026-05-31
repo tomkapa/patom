@@ -18,27 +18,27 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use patom_rs::agent_core::turn_metrics::{
+use patom::agent_core::turn_metrics::{
     DurationMs, InputTokens, OutputTokens, PgTurnMetricsStore, StopReasonLabel, TurnMetricsRow,
     TurnMetricsStore,
 };
-use patom_rs::agents::prompt_versions::PromptVersionId;
-use patom_rs::agents::{AgentId, SharedAgentStore};
-use patom_rs::auth::{OrgId, UserId};
-use patom_rs::clock::{SharedClock, SystemClock};
-use patom_rs::http::{AppState, router};
-use patom_rs::mcp::{
+use patom::agents::prompt_versions::PromptVersionId;
+use patom::agents::{AgentId, SharedAgentStore};
+use patom::auth::{OrgId, UserId};
+use patom::clock::{SharedClock, SystemClock};
+use patom::http::{AppState, router};
+use patom::mcp::{
     ConnectionStatus, McpCatalogId, McpHttpUrl, McpRefresher, McpRegistry, McpServerCreate,
     McpServerId, McpTransport, PgMcpServerStore, SharedMcpServerStore,
 };
-use patom_rs::provider::{AssistantContent, ChatMessage};
-use patom_rs::runtime::{
+use patom::provider::{AssistantContent, ChatMessage};
+use patom::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, PromptRequestId, SharedDagBudget,
     SharedLeaseManager, SharedPromptQueue, SharedResponseSink, SharedResponseSource,
     SharedThreadStream,
 };
-use patom_rs::session::{PgSessionStore, SessionId, SharedSessionStore};
-use patom_rs::tools::ToolCallRowId;
+use patom::session::{PgSessionStore, SessionId, SharedSessionStore};
+use patom::tools::ToolCallRowId;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -80,8 +80,8 @@ impl Harness {
 
         let mcp_store: SharedMcpServerStore =
             Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
-        let mcp_catalog: patom_rs::mcp::SharedMcpCatalogStore =
-            Arc::new(patom_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
+        let mcp_catalog: patom::mcp::SharedMcpCatalogStore =
+            Arc::new(patom::mcp::PgMcpCatalogStore::new(pool.clone()));
         let mcp_registry = McpRegistry::new(mcp_store.clone(), clock.clone());
         let (refresher, mcp_refresh) = McpRefresher::spawn(mcp_registry);
 
@@ -90,8 +90,8 @@ impl Harness {
                 .await
                 .expect("spawn thread stream");
 
-        let memory_store: patom_rs::memory::SharedMemoryStore =
-            Arc::new(patom_rs::memory::PgMemoryStore::new(
+        let memory_store: patom::memory::SharedMemoryStore =
+            Arc::new(patom::memory::PgMemoryStore::new(
                 pool.clone(),
                 clock.clone(),
                 common::embedding::FakeEmbeddingProvider::shared(),
@@ -111,14 +111,14 @@ impl Harness {
             mcp_store: mcp_store.clone(),
             mcp_catalog,
             mcp_refresh,
-            mcp_credentials: Arc::new(patom_rs::mcp::PgMcpCredentialStore::new(
+            mcp_credentials: Arc::new(patom::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
                 clock.clone(),
-                Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                Arc::new(patom::crypto::OrgEncryptor::for_test([0u8; 32])),
             )),
-            mcp_test_rate: patom_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
+            mcp_test_rate: patom::mcp::TestConnectRateLimiter::new(clock.clone()),
             platform_oauth_clients: std::sync::Arc::new(std::collections::HashMap::new()),
-            mcp_oauth_pending: Arc::new(patom_rs::mcp::oauth::PgMcpOAuthPendingStore::new(
+            mcp_oauth_pending: Arc::new(patom::mcp::oauth::PgMcpOAuthPendingStore::new(
                 pool.clone(),
                 clock.clone(),
             )),
@@ -131,15 +131,15 @@ impl Harness {
             users,
             clock: clock.clone(),
             cookie_secure: false,
-            memberships: Arc::new(patom_rs::http::MembershipCache::new(clock.clone())),
+            memberships: Arc::new(patom::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
             rule_resolver: common::rule::empty_resolver(),
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets: None,
-            orgs: Arc::new(patom_rs::orgs::PgOrgStore::new(pool.clone())),
-            mailer: Arc::new(patom_rs::orgs::LogMailer),
+            orgs: Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
+            mailer: Arc::new(patom::orgs::LogMailer),
         };
 
         Self {
@@ -211,9 +211,9 @@ async fn record_turn_metrics(
         session_id: session,
         agent_id: agent,
         prompt_version_id: pvid,
-        kind: patom_rs::runtime::RequestKind::Normal,
-        model: patom_rs::provider::Model::try_from("test-model").expect("catalog"),
-        provider: patom_rs::provider::ProviderId::Anthropic,
+        kind: patom::runtime::RequestKind::Normal,
+        model: patom::provider::Model::try_from("test-model").expect("catalog"),
+        provider: patom::provider::ProviderId::Anthropic,
         input_tokens: InputTokens::try_from(100u32).expect("fits"),
         output_tokens: OutputTokens::try_from(42u32).expect("fits"),
         cache_creation_tokens: None,
@@ -336,10 +336,10 @@ async fn fetches_turn_detail_with_reasoning_and_tool_calls(pool: PgPool) {
         .sessions
         .append(
             session,
-            patom_rs::types::MessageSender::Agent {
+            patom::types::MessageSender::Agent {
                 agent_id: h.seed.agent_id,
             },
-            patom_rs::types::Participant::Human,
+            patom::types::Participant::Human,
             ChatMessage::Assistant(vec![
                 AssistantContent::Reasoning("thinking step 1".into()),
                 AssistantContent::Text("hello".into()),
@@ -509,15 +509,15 @@ async fn returns_404_for_cross_org_request(pool: PgPool) {
     // primary principal's cookie.
     let foreign_agent = h
         .agents
-        .create(patom_rs::agents::NewAgent {
+        .create(patom::agents::NewAgent {
             org_id: foreign.org_id,
-            name: patom_rs::agents::AgentName::try_from("Eve").expect("name"),
-            system_prompt: patom_rs::agents::AgentSystemPrompt::try_from("you are eve")
+            name: patom::agents::AgentName::try_from("Eve").expect("name"),
+            system_prompt: patom::agents::AgentSystemPrompt::try_from("you are eve")
                 .expect("prompt"),
-            description: patom_rs::agents::AgentDescription::try_from("foreign agent")
+            description: patom::agents::AgentDescription::try_from("foreign agent")
                 .expect("desc"),
             is_default: false,
-            allowed_mcp_tools: patom_rs::agents::AllowedMcpTools::default(),
+            allowed_mcp_tools: patom::agents::AllowedMcpTools::default(),
             model: None,
             edited_by: None,
         })

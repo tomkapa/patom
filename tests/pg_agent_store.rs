@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`patom_rs::agents::PgAgentStore`]: idempotent
+//! Trait-contract tests for [`patom::agents::PgAgentStore`]: idempotent
 //! seeding, default lookup, missing-agent error, and read round-trip.
 
 #![allow(clippy::expect_used)]
@@ -7,14 +7,14 @@ use std::sync::Arc;
 
 use std::collections::BTreeMap;
 
-use patom_rs::agents::{
+use patom::agents::{
     AgentDescription, AgentId, AgentName, AgentStore, AgentStoreError, AgentSystemPrompt,
     AgentUpdate, AllowedMcpTools, DefaultAgentSeed, NewAgent, PgAgentStore,
 };
-use patom_rs::auth::OrgId;
-use patom_rs::clock::SystemClock;
-use patom_rs::mcp::McpCatalogId;
-use patom_rs::session::PgSessionStore;
+use patom::auth::OrgId;
+use patom::clock::SystemClock;
+use patom::mcp::McpCatalogId;
+use patom::session::PgSessionStore;
 use sqlx::PgPool;
 
 mod common;
@@ -288,7 +288,7 @@ async fn create_default_allowed_mcp_tools_is_empty(pool: PgPool) {
 
 #[sqlx::test]
 async fn create_with_explicit_allowed_mcp_tools_round_trips(pool: PgPool) {
-    use patom_rs::agents::ToolScope;
+    use patom::agents::ToolScope;
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
@@ -326,7 +326,7 @@ async fn create_with_explicit_allowed_mcp_tools_round_trips(pool: PgPool) {
 
 #[sqlx::test]
 async fn update_replaces_allowed_mcp_tools(pool: PgPool) {
-    use patom_rs::agents::ToolScope;
+    use patom::agents::ToolScope;
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 

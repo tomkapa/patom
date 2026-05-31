@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`patom_rs::memory::PgMemoryStore`]:
+//! Trait-contract tests for [`patom::memory::PgMemoryStore`]:
 //!
 //! - journal append correctness
 //! - materialized-view consistency
@@ -13,14 +13,14 @@
 
 use std::sync::Arc;
 
-use patom_rs::clock::SystemClock;
-use patom_rs::memory::{
+use patom::clock::SystemClock;
+use patom::memory::{
     MemoryContent, MemoryEventPayload, MemoryId, MemoryKind, MemoryMutation, MemoryState,
     MemoryStore, MemoryStoreError, MutationKind, MutationSource, MutationSourceKind, PgMemoryStore,
     ResolutionOutcome, ResolutionReason, SearchFilter, run_librarian_sweep,
 };
-use patom_rs::provider::embed_one;
-use patom_rs::runtime::{PromptRequestId, RequestKind};
+use patom::provider::embed_one;
+use patom::runtime::{PromptRequestId, RequestKind};
 use sqlx::PgPool;
 
 mod common;
@@ -421,9 +421,9 @@ async fn prompt_requests_kind_defaults_to_normal(pool: PgPool) {
     // existing rows continue to dispatch as `Normal`.
     let seed = seed_tenant(&pool).await;
 
-    let session_store = patom_rs::session::PgSessionStore::new(
+    let session_store = patom::session::PgSessionStore::new(
         pool.clone(),
-        patom_rs::clock::SystemClock::shared(),
+        patom::clock::SystemClock::shared(),
     );
     let session =
         human_to_agent_session(&session_store, seed.agent_id, seed.org_id, seed.user_id).await;
@@ -446,7 +446,7 @@ async fn prompt_requests_kind_defaults_to_normal(pool: PgPool) {
 
 #[sqlx::test]
 async fn record_validation_promotes_state(pool: PgPool) {
-    use patom_rs::memory::ValidationOrigin;
+    use patom::memory::ValidationOrigin;
 
     let seed = seed_tenant(&pool).await;
     let s = store(&pool);
@@ -847,7 +847,7 @@ async fn set_pinned_toggles_protection(pool: PgPool) {
 async fn seed_contradiction(
     s: &Arc<PgMemoryStore>,
     seed: &common::pg::Seed,
-) -> patom_rs::memory::ContradictionEventId {
+) -> patom::memory::ContradictionEventId {
     let a = s
         .apply(MemoryMutation::Write {
             agent: seed.agent_id,
@@ -956,7 +956,7 @@ async fn resolve_contradiction_is_idempotent(pool: PgPool) {
 #[test]
 fn resolution_reason_rejects_empty_and_oversize() {
     assert!(ResolutionReason::try_from(String::new()).is_err());
-    let max = patom_rs::memory::CONTRADICTION_REASON_MAX_BYTES;
+    let max = patom::memory::CONTRADICTION_REASON_MAX_BYTES;
     let ok = "x".repeat(max);
     assert!(ResolutionReason::try_from(ok).is_ok());
     let too_long = "x".repeat(max + 1);

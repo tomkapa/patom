@@ -12,8 +12,8 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use patom_rs::agents::AgentId;
-use patom_rs::auth::{OrgRuleResolver, OrganizationRule, RuleResolverError, SharedOrgRuleResolver};
+use patom::agents::AgentId;
+use patom::auth::{OrgRuleResolver, OrganizationRule, RuleResolverError, SharedOrgRuleResolver};
 
 #[derive(Debug)]
 pub struct StaticOrgRuleResolver {

@@ -25,7 +25,7 @@ docker-compose.yml
 .claude
 .playwright-mcp
 
-# Tests are not compiled by `cargo build --bin patom-rs`
+# Tests are not compiled by `cargo build --bin patom`
 tests
 
 # Docs / design / misc — not needed to build

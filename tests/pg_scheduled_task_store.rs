@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`patom_rs::scheduling::PgScheduledTaskStore`]:
+//! Trait-contract tests for [`patom::scheduling::PgScheduledTaskStore`]:
 //! create + list round-trip, ownership-checked cancel, claim_due filter
 //! ordering, record_fired state advancement, and per-owner cap counting.
 //!
@@ -12,10 +12,10 @@ use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use chrono_tz::Asia::Bangkok;
-use patom_rs::agents::{AgentId, AgentName, AgentStore, AgentSystemPrompt, NewAgent};
-use patom_rs::clock::SystemClock;
-use patom_rs::runtime::PromptRequestId;
-use patom_rs::scheduling::{
+use patom::agents::{AgentId, AgentName, AgentStore, AgentSystemPrompt, NewAgent};
+use patom::clock::SystemClock;
+use patom::runtime::PromptRequestId;
+use patom::scheduling::{
     NewScheduledTask, PgScheduledTaskStore, ScheduleSpec, ScheduledPrompt, ScheduledTaskError,
     ScheduledTaskName, ScheduledTaskState, ScheduledTaskStore, TimeOfDay, Timezone, Weekday,
     Weekdays,
@@ -37,8 +37,8 @@ fn store(pool: &PgPool) -> Arc<PgScheduledTaskStore> {
 /// different owner pass it explicitly via the longer-form constructor.
 struct Tenancy {
     owner: AgentId,
-    org_id: patom_rs::auth::OrgId,
-    user_id: patom_rs::auth::UserId,
+    org_id: patom::auth::OrgId,
+    user_id: patom::auth::UserId,
 }
 
 impl Tenancy {
@@ -65,9 +65,9 @@ async fn extra_agent(pool: &PgPool, seed: &common::pg::Seed, name: &str) -> Agen
         org_id: seed.org_id,
         name: AgentName::try_from(name).expect("valid name"),
         system_prompt: AgentSystemPrompt::try_from("p").expect("valid prompt"),
-        description: patom_rs::agents::AgentDescription::try_from("p").expect("desc"),
+        description: patom::agents::AgentDescription::try_from("p").expect("desc"),
         is_default: false,
-        allowed_mcp_tools: patom_rs::agents::AllowedMcpTools::empty(),
+        allowed_mcp_tools: patom::agents::AllowedMcpTools::empty(),
         model: None,
         edited_by: None,
     };
@@ -235,7 +235,7 @@ async fn cancel_returns_not_found_for_missing_id(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
-    let phantom = patom_rs::scheduling::ScheduledTaskId::new();
+    let phantom = patom::scheduling::ScheduledTaskId::new();
     let err = store
         .cancel(phantom, seed.agent_id)
         .await
@@ -367,7 +367,7 @@ async fn insert_with_next_run(
     t: &Tenancy,
     name: &str,
     next_run_at: chrono::DateTime<Utc>,
-) -> patom_rs::scheduling::ScheduledTaskId {
+) -> patom::scheduling::ScheduledTaskId {
     let payload = NewScheduledTask {
         owner_agent_id: t.owner,
         org_id: t.org_id,

@@ -9,13 +9,13 @@
 
 use std::sync::Arc;
 
-use patom_rs::clock::SystemClock;
-use patom_rs::runtime::queue::PromptQueue as _;
-use patom_rs::runtime::{
+use patom::clock::SystemClock;
+use patom::runtime::queue::PromptQueue as _;
+use patom::runtime::{
     DagBudget, IdempotencyKey, NewPromptRequest, PgDagBudget, PgPromptQueue, PromptRequestId,
     WorkerId,
 };
-use patom_rs::types::{Participant, Prompt};
+use patom::types::{Participant, Prompt};
 use sqlx::PgPool;
 
 mod common;
@@ -27,9 +27,9 @@ fn queue(pool: &PgPool) -> Arc<PgPromptQueue> {
 
 async fn enqueue_root(
     q: &Arc<PgPromptQueue>,
-    agent_id: patom_rs::agents::AgentId,
-    org_id: patom_rs::auth::OrgId,
-    user_id: patom_rs::auth::UserId,
+    agent_id: patom::agents::AgentId,
+    org_id: patom::auth::OrgId,
+    user_id: patom::auth::UserId,
 ) -> PromptRequestId {
     q.enqueue(NewPromptRequest {
         session: None,
@@ -41,7 +41,7 @@ async fn enqueue_root(
             .expect("key"),
         org_id,
         created_by_user_id: user_id,
-        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom::runtime::RequestKindPayload::Normal {},
     })
     .await
     .expect("enqueue")
@@ -137,7 +137,7 @@ async fn second_pending_row_still_blocks_quiescence(pool: PgPool) {
         idempotency_key: IdempotencyKey::try_from("second").expect("key"),
         org_id: seed.org_id,
         created_by_user_id: seed.user_id,
-        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom::runtime::RequestKindPayload::Normal {},
     })
     .await
     .expect("second enqueue");

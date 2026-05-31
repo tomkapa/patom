@@ -17,13 +17,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use patom_rs::provider::{AssistantContent, ChatResponse, StopReason};
-use patom_rs::runtime::queue::PromptQueue as _;
-use patom_rs::runtime::{
+use patom::provider::{AssistantContent, ChatResponse, StopReason};
+use patom::runtime::queue::PromptQueue as _;
+use patom::runtime::{
     FailureReason, IdempotencyKey, MAX_PINGPONG_RETRIES, NewPromptRequest, RequestStatus,
     RequestStatusView,
 };
-use patom_rs::types::{Participant, Prompt};
+use patom::types::{Participant, Prompt};
 use sqlx::PgPool;
 
 mod common;
@@ -62,7 +62,7 @@ async fn agent_text_without_send_message_parks_as_no_egress(pool: PgPool) {
             idempotency_key: IdempotencyKey::try_from("k1").expect("key"),
             org_id: h.default_org_id,
             created_by_user_id: h.default_user_id,
-            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue")
@@ -90,7 +90,7 @@ async fn agent_text_without_send_message_parks_as_no_egress(pool: PgPool) {
 
 async fn await_terminal(
     h: &common::harness::WorkerHarness,
-    id: patom_rs::runtime::PromptRequestId,
+    id: patom::runtime::PromptRequestId,
     deadline: Duration,
 ) -> RequestStatusView {
     let until = std::time::Instant::now() + deadline;

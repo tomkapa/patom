@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/tomtran/patom-rs">
+  <a href="https://github.com/tomkapa/patom">
     <img src="./doc/assets/banner.png" alt="Patom" width="100%" />
   </a>
 </p>

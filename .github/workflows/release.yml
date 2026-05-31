@@ -43,8 +43,8 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ghcr.io/tomkapa/patom-rs:${{ steps.vars.outputs.sha }}
-            ghcr.io/tomkapa/patom-rs:latest
+            ghcr.io/tomkapa/patom:${{ steps.vars.outputs.sha }}
+            ghcr.io/tomkapa/patom:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

@@ -15,19 +15,19 @@
 
 use std::sync::Arc;
 
-use patom_rs::assets::{InMemoryAssetStore, SharedAssetStore};
-use patom_rs::auth::OrgId;
-use patom_rs::clock::SystemClock;
-use patom_rs::http::{AppState, router};
-use patom_rs::mcp::{
+use patom::assets::{InMemoryAssetStore, SharedAssetStore};
+use patom::auth::OrgId;
+use patom::clock::SystemClock;
+use patom::http::{AppState, router};
+use patom::mcp::{
     McpRefresher, McpRegistry, PgMcpCatalogStore, PgMcpServerStore, SharedMcpCatalogStore,
     SharedMcpServerStore,
 };
-use patom_rs::runtime::{
+use patom::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
     SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream,
 };
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
+use patom::session::{PgSessionStore, SharedSessionStore};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -99,8 +99,8 @@ impl UploadsHarness {
                 .await
                 .expect("spawn thread stream");
 
-        let memory_store: patom_rs::memory::SharedMemoryStore =
-            Arc::new(patom_rs::memory::PgMemoryStore::new(
+        let memory_store: patom::memory::SharedMemoryStore =
+            Arc::new(patom::memory::PgMemoryStore::new(
                 pool.clone(),
                 clock.clone(),
                 common::embedding::FakeEmbeddingProvider::shared(),
@@ -124,14 +124,14 @@ impl UploadsHarness {
             mcp_store: mcp_store.clone(),
             mcp_catalog: mcp_catalog.clone(),
             mcp_refresh,
-            mcp_credentials: Arc::new(patom_rs::mcp::PgMcpCredentialStore::new(
+            mcp_credentials: Arc::new(patom::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
                 clock.clone(),
-                Arc::new(patom_rs::crypto::OrgEncryptor::for_test([0u8; 32])),
+                Arc::new(patom::crypto::OrgEncryptor::for_test([0u8; 32])),
             )),
-            mcp_test_rate: patom_rs::mcp::TestConnectRateLimiter::new(clock.clone()),
+            mcp_test_rate: patom::mcp::TestConnectRateLimiter::new(clock.clone()),
             platform_oauth_clients: std::sync::Arc::new(std::collections::HashMap::new()),
-            mcp_oauth_pending: Arc::new(patom_rs::mcp::oauth::PgMcpOAuthPendingStore::new(
+            mcp_oauth_pending: Arc::new(patom::mcp::oauth::PgMcpOAuthPendingStore::new(
                 pool.clone(),
                 clock.clone(),
             )),
@@ -144,15 +144,15 @@ impl UploadsHarness {
             users,
             clock: clock.clone(),
             cookie_secure: false,
-            memberships: Arc::new(patom_rs::http::MembershipCache::new(clock.clone())),
+            memberships: Arc::new(patom::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
             rule_resolver: common::rule::empty_resolver(),
             web_dist: std::path::PathBuf::from("."),
             slack: None,
             assets,
-            orgs: std::sync::Arc::new(patom_rs::orgs::PgOrgStore::new(pool.clone())),
-            mailer: std::sync::Arc::new(patom_rs::orgs::LogMailer),
+            orgs: std::sync::Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
+            mailer: std::sync::Arc::new(patom::orgs::LogMailer),
         };
 
         Self {

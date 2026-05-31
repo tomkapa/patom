@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 
-use patom_rs::{Settings, app, observability};
+use patom::{Settings, app, observability};
 
 #[tokio::main]
 async fn main() -> Result<()> {

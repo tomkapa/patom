@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 
-use patom_rs::agents::{AgentName, AgentSystemPrompt, NewAgent, SharedAgentStore};
-use patom_rs::clock::SystemClock;
-use patom_rs::runtime::PromptRequestId;
-use patom_rs::session::{PgSessionStore, SessionStore};
-use patom_rs::types::Participant;
+use patom::agents::{AgentName, AgentSystemPrompt, NewAgent, SharedAgentStore};
+use patom::clock::SystemClock;
+use patom::runtime::PromptRequestId;
+use patom::session::{PgSessionStore, SessionStore};
+use patom::types::Participant;
 use sqlx::PgPool;
 
 mod common;
@@ -33,9 +33,9 @@ async fn fresh_agent(pool: &PgPool, seed: &common::pg::Seed, name: &str) -> Part
             org_id: seed.org_id,
             name: AgentName::try_from(name).expect("name"),
             system_prompt: AgentSystemPrompt::try_from("test prompt").expect("prompt"),
-            description: patom_rs::agents::AgentDescription::try_from("test desc").expect("desc"),
+            description: patom::agents::AgentDescription::try_from("test desc").expect("desc"),
             is_default: false,
-            allowed_mcp_tools: patom_rs::agents::AllowedMcpTools::empty(),
+            allowed_mcp_tools: patom::agents::AllowedMcpTools::empty(),
             model: None,
             edited_by: None,
         })
@@ -205,5 +205,5 @@ async fn self_session_is_rejected(pool: PgPool) {
         )
         .await
         .expect_err("self-session forbidden");
-    assert!(matches!(err, patom_rs::session::SessionError::SelfSession));
+    assert!(matches!(err, patom::session::SessionError::SelfSession));
 }
