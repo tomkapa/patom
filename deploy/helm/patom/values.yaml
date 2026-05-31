@@ -2,7 +2,7 @@
 # (see .github/workflows/release.yml); ArgoCD syncs the change.
 image:
   repository: ghcr.io/tomkapa/patom
-  tag: 1359e9b16a2e # CI-managed
+  tag: 6ad682e2f3ff # CI-managed
   pullPolicy: IfNotPresent
 imagePullSecrets:
   - name: ghcr-pull-secret
