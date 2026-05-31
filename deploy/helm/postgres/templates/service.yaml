@@ -13,29 +13,3 @@ spec:
     - name: postgres
       port: {{ .Values.service.port }}
       targetPort: postgres
-{{- if .Values.adminAccess.enabled }}
----
-# Admin Service — NodePort, so Postgres is reachable on a real port bound to the
-# node's interfaces (including tailscale0). Connect from a workstation over
-# Tailscale at <node-tailnet-ip>:<nodePort>. NodePort is used instead of ClusterIP
-# because externally-originated packets entering via the Tailscale subnet route
-# don't traverse kube-proxy's ClusterIP DNAT cleanly (rp_filter / missing SNAT),
-# whereas a NodePort is a normal listening socket on the node. No subnet route or
-# service-CIDR advertisement needed. Pair with the adminAccess NetworkPolicy.
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ .Values.service.name }}-admin
-  labels:
-    {{- include "postgres.labels" . | nindent 4 }}
-    app.kubernetes.io/component: admin
-spec:
-  type: NodePort
-  selector:
-    {{- include "postgres.selectorLabels" . | nindent 4 }}
-  ports:
-    - name: postgres
-      port: {{ .Values.service.port }}
-      targetPort: postgres
-      nodePort: {{ .Values.adminAccess.nodePort }}
-{{- end }}

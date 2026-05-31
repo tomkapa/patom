@@ -12,20 +12,6 @@ externalSecret:
 service:
   name: patom-postgres
   port: 5432
-# Direct DB access from a workstation over the Tailscale subnet route. Adds a
-# routable ClusterIP admin Service + a NetworkPolicy allowing the cluster/node
-# CIDRs (k3s SNATs external→ClusterIP traffic to the node's pod IP). Edge access
-# is still gated by Tailscale — only tailnet devices can reach the service IP.
-adminAccess:
-  enabled: true
-  # NodePort bound on the node's interfaces (incl. tailscale0). Connect from a
-  # tailnet device at <node-tailnet-ip>:<nodePort>. Must be in 30000-32767.
-  nodePort: 30432
-  # kube-proxy SNATs NodePort traffic to the node's pod-network IP, so the pod
-  # sees the cluster CIDRs as the source — allow those via ipBlock.
-  sourceCIDRs:
-    - "10.42.0.0/16" # pod CIDR
-    - "10.43.0.0/16" # service CIDR
 persistence:
   storageClass: hcloud-volumes
   size: 10Gi

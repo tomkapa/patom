@@ -22,32 +22,6 @@ spec:
               app.kubernetes.io/component: backup
       ports:
         - { protocol: TCP, port: {{ .Values.service.port }} }
-{{- if .Values.adminAccess.enabled }}
----
-# Admin ingress for workstation access via the Tailscale subnet route. k3s SNATs
-# external→ClusterIP traffic to the node's pod-network IP, so the Postgres pod
-# sees the source as the cluster/node CIDRs (NOT the workstation's tailnet IP).
-# We therefore allow the configured CIDRs via ipBlock. Access is still gated at
-# the network edge by Tailscale (only tailnet devices can reach the service IP).
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-admin-to-postgres
-  labels:
-    {{- include "postgres.labels" . | nindent 4 }}
-spec:
-  podSelector:
-    {{- include "postgres.selectorLabels" . | nindent 4 }}
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        {{- range .Values.adminAccess.sourceCIDRs }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
-      ports:
-        - { protocol: TCP, port: {{ .Values.service.port }} }
-{{- end }}
 {{- if .Values.backup.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
