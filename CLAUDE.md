@@ -211,8 +211,8 @@ Growing-on-demand structures inside a worker hot path are banned — use a bound
 
 ## 10. No string concatenation into SQL. Ever.
 
-- Prefer `sqlx::query!` / `sqlx::query_as!` — compile-time checked against the live schema.
-- Runtime queries use bound parameters: `sqlx::query("SELECT ... WHERE id = $1").bind(id)`. `format!` into a query string is a review-blocking bug.
+- Use runtime `sqlx` with bound parameters: `sqlx::query("SELECT ... WHERE id = $1").bind(id)`, mapped via `#[derive(sqlx::FromRow)]` + `TryFrom<Row>` at the boundary (§1). `format!` into a query string is a review-blocking bug.
+- Do not use the compile-time `query!` / `query_as!` macros. Drift is caught by the `#[sqlx::test]` suite (§3).
 - Dynamic identifiers (table, column, sort key) pass through an allowlist — match a domain enum to a `&'static str`. Never an interpolated value.
 - RLS (SPEC §Tenancy) defends against a missing `WHERE tenant_id`; this rule defends against injection.
 

@@ -86,10 +86,11 @@ rmcp = { version = "1.7", default-features = false, features = ["auth", "client"
 sse-stream = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# §8 (zero-dep bias): de-facto compile-time-checked Postgres driver for tokio. A
-# hand-rolled pool + protocol implementation is many thousands of LOC and a known
-# footgun; sqlx is actively maintained and lets us use `query!` / `query_as!` so SQL
-# drift from the schema fails the build (CLAUDE.md §10). Owner: runtime/, session/.
+# §8 (zero-dep bias): de-facto async Postgres driver for tokio. A hand-rolled pool +
+# protocol implementation is many thousands of LOC and a known footgun; sqlx is
+# actively maintained. We use it via bound parameters + `#[derive(FromRow)]`/`Type`
+# (the `macros` feature is for those derives, not the compile-time query! macros —
+# see CLAUDE.md §10). Owner: runtime/, session/.
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",

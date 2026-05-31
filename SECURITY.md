@@ -44,7 +44,7 @@ Patom's security model has a few load-bearing invariants. Reports that demonstra
 2. **Per-agent tool scoping.** An agent must not be able to invoke a tool that isn't in its `allowed_mcp_servers` / `allowed_mcp_tools`. The scoping is enforced in `src/mcp/scoped.rs` and must hold across every code path — including reflection, scheduled tasks, and `send_message` fan-out.
 3. **Per-agent memory scoping.** One agent's memory must not leak into another agent's render, even within the same org and session.
 4. **MCP credential confidentiality.** Upstream OAuth tokens and bearer tokens are envelope-encrypted per-org. Plaintext must never appear in logs, traces, error messages, or panic backtraces.
-5. **SQL injection.** All queries go through `sqlx` bound parameters or compile-time checked `query!` / `query_as!`. Any `format!`-into-SQL is a vulnerability (see [`CLAUDE.md`](./CLAUDE.md) §10).
+5. **SQL injection.** All queries go through `sqlx` bound parameters. Any `format!`-into-SQL is a vulnerability (see [`CLAUDE.md`](./CLAUDE.md) §10).
 6. **Webhook signature verification.** Slack and any future webhook source must be verified with constant-time HMAC compare before any side effect.
 7. **Cookie / session safety.** Session JWTs use HS256 with a configured secret; CSRF is enforced on state-changing routes.
 8. **Asset upload boundary.** Uploaded bytes are magic-byte sniffed before being handed to R2; SVG / HTML masquerading as `image/png` is a vulnerability.

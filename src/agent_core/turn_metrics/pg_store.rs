@@ -58,36 +58,30 @@ impl TurnMetricsStore for PgTurnMetricsStore {
         let created_at = self.now();
 
         run_privileged::<(), TurnRecorderError>(&self.pool, async |tx| {
-            // §3: compile-time-checked query. The bind expressions keep the same
-            // newtype Encode/Type impls the runtime form relied on; the macro adds
-            // schema verification against the committed `.sqlx` cache (SQLX_OFFLINE).
-            sqlx::query!(
+            sqlx::query(
                 "INSERT INTO turn_metrics \
                      (request_id, org_id, session_id, agent_id, prompt_version_id, \
                       kind, model, provider, \
                       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, \
                       duration_ms, stop_reason, started_at, created_at) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
-                // query! infers the bare Postgres type per column, so newtypes are
-                // passed via their primitive accessor (as_uuid/as_str). The encode
-                // is byte-identical to the prior .bind(newtype) form.
-                row.request_id.as_uuid(),
-                row.org_id.as_uuid(),
-                row.session_id.as_uuid(),
-                row.agent_id.as_uuid(),
-                row.prompt_version_id.as_uuid(),
-                row.kind.as_str(),
-                row.model.as_str(),
-                row.provider.as_str(),
-                row.input_tokens.get(),
-                row.output_tokens.get(),
-                row.cache_creation_tokens.map(InputTokens::get),
-                row.cache_read_tokens.map(InputTokens::get),
-                row.duration_ms.get(),
-                row.stop_reason.as_str(),
-                row.started_at,
-                created_at,
             )
+            .bind(row.request_id)
+            .bind(row.org_id)
+            .bind(row.session_id)
+            .bind(row.agent_id)
+            .bind(row.prompt_version_id)
+            .bind(row.kind.as_str())
+            .bind(row.model)
+            .bind(row.provider.as_str())
+            .bind(row.input_tokens.get())
+            .bind(row.output_tokens.get())
+            .bind(row.cache_creation_tokens.map(InputTokens::get))
+            .bind(row.cache_read_tokens.map(InputTokens::get))
+            .bind(row.duration_ms.get())
+            .bind(row.stop_reason.as_str())
+            .bind(row.started_at)
+            .bind(created_at)
             .execute(&mut **tx)
             .await?;
             Ok(())
