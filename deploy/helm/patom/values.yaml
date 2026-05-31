@@ -2,7 +2,7 @@
 # (see .github/workflows/release.yml); ArgoCD syncs the change.
 image:
   repository: ghcr.io/tomkapa/patom
-  tag: 51b0d5fdedfe # CI-managed
+  tag: ce77bf332225 # CI-managed
   pullPolicy: IfNotPresent
 imagePullSecrets:
   - name: ghcr-pull-secret
@@ -37,7 +37,6 @@ env:
   PATOM_R2_PUBLIC_HOST: "https://asset.patom.app"
   PATOM_R2_BUCKET: "patom"
   PATOM_GENAI_CAPTURE_CONTENT: 1
-
 resources:
   requests:
     cpu: 150m
