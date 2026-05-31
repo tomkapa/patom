@@ -29,10 +29,11 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::{Seed, seed_tenant};
 
 struct PromptsHarness {
-    db: TestDb,
+    seed: Seed,
+    pool: PgPool,
     queue: SharedPromptQueue,
     agents: SharedAgentStore,
     state: AppState,
@@ -45,10 +46,9 @@ struct PromptsHarness {
 }
 
 impl PromptsHarness {
-    async fn new() -> Self {
-        let db = TestDb::fresh().await;
+    async fn new(pool: PgPool) -> Self {
+        let seed = seed_tenant(&pool).await;
         let clock: SharedClock = SystemClock::shared();
-        let pool: PgPool = db.pool.clone();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
@@ -84,12 +84,11 @@ impl PromptsHarness {
         let jwt = common::auth::test_jwt(clock.clone());
         let oauth = common::auth::test_oauth();
         let users = common::auth::user_store(pool.clone());
-        // Pin the principal to the same org as `db.default_agent_id` so
+        // Pin the principal to the same org as `seed.agent_id` so
         // the `default_id_for(principal.active_org_id)` fallback in the
         // route resolves to the seeded default. The cross-org isolation
         // path is exercised in `tests/auth_agents.rs`.
-        let seeded =
-            common::auth::principal_for_default_org(db.default_user_id, db.default_org_id, &jwt);
+        let seeded = common::auth::principal_for_default_org(seed.user_id, seed.org_id, &jwt);
         let state = AppState {
             queue: queue.clone(),
             leases,
@@ -132,7 +131,8 @@ impl PromptsHarness {
         };
 
         Self {
-            db,
+            seed,
+            pool,
             queue,
             agents,
             state,
@@ -144,7 +144,7 @@ impl PromptsHarness {
     async fn create_agent(&self, name: &str) -> patom_rs::agents::AgentId {
         self.agents
             .create(NewAgent {
-                org_id: self.db.default_org_id,
+                org_id: self.seed.org_id,
                 name: AgentName::try_from(name).expect("name"),
                 system_prompt: AgentSystemPrompt::try_from("test prompt").expect("prompt"),
                 description: patom_rs::agents::AgentDescription::try_from("test agent")
@@ -196,9 +196,9 @@ async fn post_json(
 /// Previously the route blindly fell back to `agents.default_id()`, the
 /// worker rejected the prompt with
 /// `agent X is not a participant of session Y`, and the run errored out.
-#[tokio::test(flavor = "multi_thread")]
-async fn followup_with_session_id_routes_to_session_agent() {
-    let h = PromptsHarness::new().await;
+#[sqlx::test]
+async fn followup_with_session_id_routes_to_session_agent(pool: PgPool) {
+    let h = PromptsHarness::new(pool).await;
 
     // The session is bound to a non-default agent — exactly the DM scenario
     // that exposed the bug ("when I reply thread in thread detail in direct
@@ -216,8 +216,8 @@ async fn followup_with_session_id_routes_to_session_agent() {
             parent_session: None,
             content: Prompt::try_from("hi").expect("prompt"),
             idempotency_key: IdempotencyKey::try_from("k-root").expect("key"),
-            org_id: h.db.default_org_id,
-            created_by_user_id: h.db.default_user_id,
+            org_id: h.seed.org_id,
+            created_by_user_id: h.seed.user_id,
             kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
         })
         .await
@@ -244,14 +244,14 @@ async fn followup_with_session_id_routes_to_session_agent() {
     let row: (Uuid,) =
         sqlx::query_as("SELECT receiver_agent_id FROM prompt_requests WHERE id = $1::uuid")
             .bind(request_id_str)
-            .fetch_one(&h.db.pool)
+            .fetch_one(&h.pool)
             .await
             .expect("fetch new row");
     assert_eq!(
         row.0,
         translator.as_uuid(),
         "follow-up should route to the session's translator, not the seeded default {}",
-        h.db.default_agent_id.as_uuid(),
+        h.seed.agent_id.as_uuid(),
     );
 
     // Sanity: a follow-up that *also* names a different agent_id is still
@@ -262,7 +262,7 @@ async fn followup_with_session_id_routes_to_session_agent() {
         "/api/prompts",
         serde_json::json!({
             "session_id": session_id.as_uuid(),
-            "agent_id": h.db.default_agent_id.as_uuid(),
+            "agent_id": h.seed.agent_id.as_uuid(),
             "content": "follow-up 2",
             "idempotency_key": Uuid::new_v4().to_string(),
         }),
@@ -274,7 +274,7 @@ async fn followup_with_session_id_routes_to_session_agent() {
     let row: (Uuid,) =
         sqlx::query_as("SELECT receiver_agent_id FROM prompt_requests WHERE id = $1::uuid")
             .bind(request_id_str)
-            .fetch_one(&h.db.pool)
+            .fetch_one(&h.pool)
             .await
             .expect("fetch new row");
     assert_eq!(
@@ -286,9 +286,9 @@ async fn followup_with_session_id_routes_to_session_agent() {
 
 /// New session with no `agent_id` falls back to the seeded default — the
 /// only path the legacy behavior is still correct on.
-#[tokio::test(flavor = "multi_thread")]
-async fn new_session_without_agent_id_uses_default() {
-    let h = PromptsHarness::new().await;
+#[sqlx::test]
+async fn new_session_without_agent_id_uses_default(pool: PgPool) {
+    let h = PromptsHarness::new(pool).await;
 
     let (status, body) = post_json(
         h.state.clone(),
@@ -306,8 +306,8 @@ async fn new_session_without_agent_id_uses_default() {
     let row: (Uuid,) =
         sqlx::query_as("SELECT receiver_agent_id FROM prompt_requests WHERE id = $1::uuid")
             .bind(request_id_str)
-            .fetch_one(&h.db.pool)
+            .fetch_one(&h.pool)
             .await
             .expect("fetch new row");
-    assert_eq!(row.0, h.db.default_agent_id.as_uuid());
+    assert_eq!(row.0, h.seed.agent_id.as_uuid());
 }

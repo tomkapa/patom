@@ -20,7 +20,7 @@ use crate::clock::SharedClock;
 
 use super::limits::{MCP_TEST_CONNECT_BUCKETS_MAX, MCP_TEST_CONNECT_PER_MIN};
 
-const WINDOW: Duration = Duration::from_secs(60);
+const WINDOW: Duration = Duration::from_mins(1);
 
 struct Bucket {
     /// Timestamps of recent admits, oldest first. Capped at

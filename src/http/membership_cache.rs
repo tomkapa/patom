@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn cap_evicts_when_exceeded() {
         let clock = Arc::new(TestClock::new());
-        let cache = MembershipCache::with_params(clock, 2, std::time::Duration::from_secs(60));
+        let cache = MembershipCache::with_params(clock, 2, std::time::Duration::from_mins(1));
         let user = UserId::new();
         let org_a = OrgId::new();
         let org_b = OrgId::new();

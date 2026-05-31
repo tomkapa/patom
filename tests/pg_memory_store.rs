@@ -21,13 +21,14 @@ use patom_rs::memory::{
 };
 use patom_rs::provider::embed_one;
 use patom_rs::runtime::{PromptRequestId, RequestKind};
+use sqlx::PgPool;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
 
-fn store(db: &TestDb) -> Arc<PgMemoryStore> {
+fn store(pool: &PgPool) -> Arc<PgMemoryStore> {
     Arc::new(PgMemoryStore::new(
-        db.pool.clone(),
+        pool.clone(),
         SystemClock::shared(),
         common::embedding::FakeEmbeddingProvider::shared(),
     ))
@@ -38,14 +39,14 @@ fn content(s: &str) -> MemoryContent {
 }
 
 fn write(
-    db: &TestDb,
+    seed: &common::pg::Seed,
     kind: MemoryKind,
     body: &str,
     state: MemoryState,
     pinned: bool,
 ) -> MemoryMutation {
     MemoryMutation::Write {
-        agent: db.default_agent_id,
+        agent: seed.agent_id,
         kind,
         content: content(body),
         state,
@@ -54,14 +55,14 @@ fn write(
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn write_appends_event_and_materialised_row() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn write_appends_event_and_materialised_row(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let outcome = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Identity,
             "I default to terse replies.",
             MemoryState::Held,
@@ -72,13 +73,13 @@ async fn write_appends_event_and_materialised_row() {
 
     let row = outcome.row.expect("write returns row");
     assert_eq!(row.id, outcome.memory_id);
-    assert_eq!(row.agent_id, db.default_agent_id);
+    assert_eq!(row.agent_id, seed.agent_id);
     assert_eq!(row.kind, MemoryKind::Identity);
     assert_eq!(row.state, MemoryState::Held);
     assert!(!row.pinned);
     assert_eq!(row.content.as_str(), "I default to terse replies.");
 
-    let events = s.list_events(db.default_agent_id).await.expect("events");
+    let events = s.list_events(seed.agent_id).await.expect("events");
     assert_eq!(events.len(), 1);
     let ev = &events[0];
     assert_eq!(ev.id, outcome.event_id);
@@ -91,19 +92,19 @@ async fn write_appends_event_and_materialised_row() {
     assert_eq!(*kind, MemoryKind::Identity);
     assert_eq!(ev.source.kind(), MutationSourceKind::Operator);
 
-    let listed = s.list(db.default_agent_id).await.expect("list");
+    let listed = s.list(seed.agent_id).await.expect("list");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, outcome.memory_id);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn update_records_before_and_after_content() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn update_records_before_and_after_content(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let first = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Other,
             "translator is fast on European languages",
             MemoryState::Tentative,
@@ -114,7 +115,7 @@ async fn update_records_before_and_after_content() {
 
     let updated = s
         .apply(MemoryMutation::Update {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             target: first.memory_id,
             content: content("translator is fast on Romance languages"),
             state: MemoryState::Tentative,
@@ -130,7 +131,7 @@ async fn update_records_before_and_after_content() {
         "translator is fast on Romance languages"
     );
 
-    let events = s.list_events(db.default_agent_id).await.expect("events");
+    let events = s.list_events(seed.agent_id).await.expect("events");
     assert_eq!(events.len(), 2);
     let upd = &events[1];
     assert_eq!(upd.mutation_kind(), MutationKind::Update);
@@ -141,14 +142,14 @@ async fn update_records_before_and_after_content() {
     assert_eq!(after.as_str(), "translator is fast on Romance languages");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn forget_removes_materialised_but_journal_keeps_event() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn forget_removes_materialised_but_journal_keeps_event(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let written = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Procedure,
             "ask one focused clarifying question",
             MemoryState::Held,
@@ -159,7 +160,7 @@ async fn forget_removes_materialised_but_journal_keeps_event() {
 
     let forget = s
         .apply(MemoryMutation::Forget {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             target: written.memory_id,
             source: MutationSource::Librarian,
         })
@@ -172,7 +173,7 @@ async fn forget_removes_materialised_but_journal_keeps_event() {
         "row should be gone from materialised view"
     );
 
-    let events = s.list_events(db.default_agent_id).await.expect("events");
+    let events = s.list_events(seed.agent_id).await.expect("events");
     assert_eq!(events.len(), 2);
     let f = &events[1];
     assert_eq!(f.mutation_kind(), MutationKind::Forget);
@@ -183,15 +184,15 @@ async fn forget_removes_materialised_but_journal_keeps_event() {
     assert_eq!(f.source.kind(), MutationSourceKind::Librarian);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn update_unknown_id_is_not_found() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn update_unknown_id_is_not_found(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let stranger = MemoryId::new();
     let err = s
         .apply(MemoryMutation::Update {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             target: stranger,
             content: content("nope"),
             state: MemoryState::Tentative,
@@ -202,14 +203,14 @@ async fn update_unknown_id_is_not_found() {
     assert!(matches!(err, MemoryStoreError::NotFound { .. }));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn pinned_row_rejects_agent_update_but_accepts_operator_override() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn pinned_row_rejects_agent_update_but_accepts_operator_override(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let pinned = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Identity,
             "operator pinned identity",
             MemoryState::Core,
@@ -220,7 +221,7 @@ async fn pinned_row_rejects_agent_update_but_accepts_operator_override() {
 
     let agent_err = s
         .apply(MemoryMutation::Update {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             target: pinned.memory_id,
             content: content("agent attempt"),
             state: MemoryState::Tentative,
@@ -235,7 +236,7 @@ async fn pinned_row_rejects_agent_update_but_accepts_operator_override() {
 
     let _ok = s
         .apply(MemoryMutation::Update {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             target: pinned.memory_id,
             content: content("operator override"),
             state: MemoryState::Core,
@@ -245,15 +246,15 @@ async fn pinned_row_rejects_agent_update_but_accepts_operator_override() {
         .expect("operator override succeeds");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[sqlx::test]
 #[allow(clippy::too_many_lines)] // mixed-mutation scenario + embedding regression check
-async fn rebuild_materialized_reproduces_live_view() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+async fn rebuild_materialized_reproduces_live_view(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let a = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Identity,
             "first",
             MemoryState::Held,
@@ -263,7 +264,7 @@ async fn rebuild_materialized_reproduces_live_view() {
         .expect("a");
     let _b = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Other,
             "second",
             MemoryState::Tentative,
@@ -273,7 +274,7 @@ async fn rebuild_materialized_reproduces_live_view() {
         .expect("b");
     let c = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Procedure,
             "third",
             MemoryState::Held,
@@ -283,7 +284,7 @@ async fn rebuild_materialized_reproduces_live_view() {
         .expect("c");
 
     s.apply(MemoryMutation::Update {
-        agent: db.default_agent_id,
+        agent: seed.agent_id,
         target: a.memory_id,
         content: content("first revised"),
         state: MemoryState::Tentative,
@@ -293,7 +294,7 @@ async fn rebuild_materialized_reproduces_live_view() {
     .expect("update");
 
     s.apply(MemoryMutation::Forget {
-        agent: db.default_agent_id,
+        agent: seed.agent_id,
         target: c.memory_id,
         source: MutationSource::Operator,
     })
@@ -301,14 +302,14 @@ async fn rebuild_materialized_reproduces_live_view() {
     .expect("forget");
 
     let live_ids: Vec<MemoryId> = s
-        .list(db.default_agent_id)
+        .list(seed.agent_id)
         .await
         .expect("list")
         .iter()
         .map(|r| r.id)
         .collect();
     let live_contents: Vec<String> = s
-        .list(db.default_agent_id)
+        .list(seed.agent_id)
         .await
         .expect("list")
         .into_iter()
@@ -326,7 +327,7 @@ async fn rebuild_materialized_reproduces_live_view() {
         .await
         .expect("embed probe");
     let pre_hits = s
-        .search_by_embedding(db.default_agent_id, &probe, 8, SearchFilter::default())
+        .search_by_embedding(seed.agent_id, &probe, 8, SearchFilter::default())
         .await
         .expect("pre search");
     assert!(
@@ -334,19 +335,19 @@ async fn rebuild_materialized_reproduces_live_view() {
         "fake embedder + live writes should match at least one row before rebuild"
     );
 
-    s.rebuild_materialized(db.default_agent_id)
+    s.rebuild_materialized(seed.agent_id)
         .await
         .expect("rebuild");
 
     let rebuilt_ids: Vec<MemoryId> = s
-        .list(db.default_agent_id)
+        .list(seed.agent_id)
         .await
         .expect("list2")
         .iter()
         .map(|r| r.id)
         .collect();
     let rebuilt_contents: Vec<String> = s
-        .list(db.default_agent_id)
+        .list(seed.agent_id)
         .await
         .expect("list2")
         .into_iter()
@@ -357,7 +358,7 @@ async fn rebuild_materialized_reproduces_live_view() {
     assert_eq!(live_contents, rebuilt_contents);
 
     let post_hits = s
-        .search_by_embedding(db.default_agent_id, &probe, 8, SearchFilter::default())
+        .search_by_embedding(seed.agent_id, &probe, 8, SearchFilter::default())
         .await
         .expect("post search");
     let pre_ids: Vec<MemoryId> = pre_hits.iter().map(|h| h.row.id).collect();
@@ -368,17 +369,17 @@ async fn rebuild_materialized_reproduces_live_view() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn concurrent_writes_are_independent() {
+#[sqlx::test]
+async fn concurrent_writes_are_independent(pool: PgPool) {
     // Different (agent, target) tuples must not contend; the journal is
     // append-only and each write mints a fresh memory id, so two parallel
     // writers should both succeed without retries.
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let s1 = s.clone();
     let s2 = s.clone();
-    let agent = db.default_agent_id;
+    let agent = seed.agent_id;
 
     let h1 = tokio::spawn(async move {
         s1.apply(MemoryMutation::Write {
@@ -411,34 +412,27 @@ async fn concurrent_writes_are_independent() {
     assert_eq!(listed.len(), 2);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn prompt_requests_kind_defaults_to_normal() {
+#[sqlx::test]
+async fn prompt_requests_kind_defaults_to_normal(pool: PgPool) {
     // Pre-existing inserters do not specify `kind` or `kind_payload`; the
     // column defaults backfill `'normal'` and the empty `Normal` payload
     // so the worker dispatches them on the existing reply path. This
     // locks in the migration-safety invariant called out in §2.1:
     // existing rows continue to dispatch as `Normal`.
-    let db = TestDb::fresh().await;
+    let seed = seed_tenant(&pool).await;
 
     let session_store = patom_rs::session::PgSessionStore::new(
-        db.pool.clone(),
+        pool.clone(),
         patom_rs::clock::SystemClock::shared(),
     );
-    let session = common::pg::human_to_agent_session(
-        &session_store,
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
-    let id =
-        common::pg::seed_prompt_request(&db.pool, session, db.default_agent_id, db.default_org_id)
-            .await;
+    let session =
+        human_to_agent_session(&session_store, seed.agent_id, seed.org_id, seed.user_id).await;
+    let id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
 
     let (kind, payload): (RequestKind, serde_json::Value) =
         sqlx::query_as("SELECT kind, kind_payload FROM prompt_requests WHERE id = $1")
             .bind(id)
-            .fetch_one(&db.pool)
+            .fetch_one(&pool)
             .await
             .expect("fetch");
 
@@ -450,17 +444,17 @@ async fn prompt_requests_kind_defaults_to_normal() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn record_validation_promotes_state() {
+#[sqlx::test]
+async fn record_validation_promotes_state(pool: PgPool) {
     use patom_rs::memory::ValidationOrigin;
 
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     // Tentative write via operator path so the source_turn_id FK is NULL.
     let outcome = s
         .apply(MemoryMutation::Write {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             kind: MemoryKind::Identity,
             content: content("Tabs over spaces"),
             state: MemoryState::Tentative,
@@ -473,7 +467,7 @@ async fn record_validation_promotes_state() {
     // First validation promotes Tentative -> Held.
     let row = s
         .record_validation(
-            db.default_agent_id,
+            seed.agent_id,
             outcome.memory_id,
             ValidationOrigin::Operator,
             Some("operator endorsement"),
@@ -485,7 +479,7 @@ async fn record_validation_promotes_state() {
     // Second validation promotes Held -> Validated.
     let row = s
         .record_validation(
-            db.default_agent_id,
+            seed.agent_id,
             outcome.memory_id,
             ValidationOrigin::Operator,
             None,
@@ -495,17 +489,17 @@ async fn record_validation_promotes_state() {
     assert_eq!(row.state, MemoryState::Validated);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn mature_promotes_long_lived_tentative_to_held() {
+#[sqlx::test]
+async fn mature_promotes_long_lived_tentative_to_held(pool: PgPool) {
     // Tentative row past the maturation window with no unresolved
     // contradiction promotes to Held; last_validated_at stays put (the
     // validation clock is reserved for independent signals).
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let outcome = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Identity,
             "I default to terse replies",
             MemoryState::Tentative,
@@ -520,7 +514,7 @@ async fn mature_promotes_long_lived_tentative_to_held() {
     // Cutoff in the future treats every row as "old enough".
     let future = chrono::Utc::now() + chrono::Duration::seconds(1);
     let promoted = s
-        .mature_tentative(db.default_agent_id, future)
+        .mature_tentative(seed.agent_id, future)
         .await
         .expect("mature");
     assert_eq!(promoted, 1);
@@ -533,7 +527,7 @@ async fn mature_promotes_long_lived_tentative_to_held() {
     );
 
     // Journal carries an Update event with state=Held and Librarian source.
-    let events = s.list_events(db.default_agent_id).await.expect("events");
+    let events = s.list_events(seed.agent_id).await.expect("events");
     let last = events.last().expect("at least one event");
     assert_eq!(last.mutation_kind(), MutationKind::Update);
     let MemoryEventPayload::Update {
@@ -551,14 +545,14 @@ async fn mature_promotes_long_lived_tentative_to_held() {
     assert_eq!(last.source.kind(), MutationSourceKind::Librarian);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn mature_skips_recent_tentative() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn mature_skips_recent_tentative(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let outcome = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Identity,
             "fresh tentative",
             MemoryState::Tentative,
@@ -570,7 +564,7 @@ async fn mature_skips_recent_tentative() {
     // Cutoff in the past — every row is "too young" to promote.
     let past = chrono::Utc::now() - chrono::Duration::days(30);
     let promoted = s
-        .mature_tentative(db.default_agent_id, past)
+        .mature_tentative(seed.agent_id, past)
         .await
         .expect("mature");
     assert_eq!(promoted, 0);
@@ -579,16 +573,16 @@ async fn mature_skips_recent_tentative() {
     assert_eq!(row.state, MemoryState::Tentative);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn mature_skips_rows_with_unresolved_contradiction() {
+#[sqlx::test]
+async fn mature_skips_rows_with_unresolved_contradiction(pool: PgPool) {
     // A tentative row entangled in an unresolved contradiction stays put.
     // The resolution turn is the path forward, not passive maturation.
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let a = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Identity,
             "ship on Friday",
             MemoryState::Tentative,
@@ -598,7 +592,7 @@ async fn mature_skips_rows_with_unresolved_contradiction() {
         .expect("a");
     let b = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Identity,
             "don't ship on Friday",
             MemoryState::Tentative,
@@ -607,13 +601,13 @@ async fn mature_skips_rows_with_unresolved_contradiction() {
         .await
         .expect("b");
 
-    s.record_contradiction(db.default_agent_id, a.memory_id, b.memory_id, "test")
+    s.record_contradiction(seed.agent_id, a.memory_id, b.memory_id, "test")
         .await
         .expect("contradiction");
 
     let future = chrono::Utc::now() + chrono::Duration::seconds(1);
     let promoted = s
-        .mature_tentative(db.default_agent_id, future)
+        .mature_tentative(seed.agent_id, future)
         .await
         .expect("mature");
     assert_eq!(promoted, 0);
@@ -624,18 +618,18 @@ async fn mature_skips_rows_with_unresolved_contradiction() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn librarian_sweep_dedup_does_not_emit_validation() {
+#[sqlx::test]
+async fn librarian_sweep_dedup_does_not_emit_validation(pool: PgPool) {
     // Two identical-content rows trip dedup (similarity = 1 from the fake
     // embedding). The sweep merges them — the loser is forgotten — but
     // does NOT emit a `validation_events` row: cross-session re-emergence
     // is too contaminated by memory loading to count as independent
     // evidence (doc/memory.md §1.7).
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     s.apply(write(
-        &db,
+        &seed,
         MemoryKind::Identity,
         "I prefer terse replies.",
         MemoryState::Held,
@@ -644,7 +638,7 @@ async fn librarian_sweep_dedup_does_not_emit_validation() {
     .await
     .expect("a");
     s.apply(write(
-        &db,
+        &seed,
         MemoryKind::Identity,
         "I prefer terse replies.",
         MemoryState::Held,
@@ -654,15 +648,15 @@ async fn librarian_sweep_dedup_does_not_emit_validation() {
     .expect("b");
 
     let now = chrono::Utc::now();
-    let report = run_librarian_sweep(s.as_ref(), db.default_agent_id, now)
+    let report = run_librarian_sweep(s.as_ref(), seed.agent_id, now)
         .await
         .expect("sweep");
     assert_eq!(report.deduped, 1, "one duplicate should be merged");
 
     let validation_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM validation_events WHERE agent_id = $1")
-            .bind(db.default_agent_id)
-            .fetch_one(&db.pool)
+            .bind(seed.agent_id)
+            .fetch_one(&pool)
             .await
             .expect("count validation_events");
     assert_eq!(
@@ -671,14 +665,14 @@ async fn librarian_sweep_dedup_does_not_emit_validation() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn mature_skips_pinned_rows() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn mature_skips_pinned_rows(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let outcome = s
         .apply(write(
-            &db,
+            &seed,
             MemoryKind::Identity,
             "pinned tentative",
             MemoryState::Tentative,
@@ -689,7 +683,7 @@ async fn mature_skips_pinned_rows() {
 
     let future = chrono::Utc::now() + chrono::Duration::seconds(1);
     let promoted = s
-        .mature_tentative(db.default_agent_id, future)
+        .mature_tentative(seed.agent_id, future)
         .await
         .expect("mature");
     assert_eq!(promoted, 0);
@@ -698,14 +692,14 @@ async fn mature_skips_pinned_rows() {
     assert_eq!(row.state, MemoryState::Tentative);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn revert_event_undoes_write() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn revert_event_undoes_write(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let outcome = s
         .apply(MemoryMutation::Write {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             kind: MemoryKind::Identity,
             content: content("Ephemeral"),
             state: MemoryState::Tentative,
@@ -716,20 +710,20 @@ async fn revert_event_undoes_write() {
         .expect("write");
 
     let revert = s
-        .revert_event(db.default_agent_id, outcome.event_id)
+        .revert_event(seed.agent_id, outcome.event_id)
         .await
         .expect("revert");
     assert!(revert.is_none(), "row removed by revert");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn evict_overflow_drops_below_quota() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn evict_overflow_drops_below_quota(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     for i in 0..5 {
         s.apply(MemoryMutation::Write {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             kind: MemoryKind::Identity,
             content: content(&format!("memory {i}")),
             state: MemoryState::Tentative,
@@ -740,23 +734,20 @@ async fn evict_overflow_drops_below_quota() {
         .expect("write");
     }
 
-    let evicted = s
-        .evict_overflow(db.default_agent_id, 3)
-        .await
-        .expect("evict");
+    let evicted = s.evict_overflow(seed.agent_id, 3).await.expect("evict");
     assert_eq!(evicted.len(), 2);
-    let listed = s.list(db.default_agent_id).await.expect("list");
+    let listed = s.list(seed.agent_id).await.expect("list");
     assert_eq!(listed.len(), 3);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn decay_demotes_old_validated() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn decay_demotes_old_validated(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let outcome = s
         .apply(MemoryMutation::Write {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             kind: MemoryKind::Identity,
             content: content("decaying"),
             state: MemoryState::Validated,
@@ -769,7 +760,7 @@ async fn decay_demotes_old_validated() {
     // Cutoff in the future demotes everything Validated.
     let future = chrono::Utc::now() + chrono::Duration::seconds(1);
     let n = s
-        .decay_validated(db.default_agent_id, future)
+        .decay_validated(seed.agent_id, future)
         .await
         .expect("decay");
     assert_eq!(n, 1);
@@ -777,14 +768,14 @@ async fn decay_demotes_old_validated() {
     assert_eq!(row.state, MemoryState::Held);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn record_contradiction_is_idempotent() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn record_contradiction_is_idempotent(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let a = s
         .apply(MemoryMutation::Write {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             kind: MemoryKind::Identity,
             content: content("ship on Friday"),
             state: MemoryState::Held,
@@ -795,7 +786,7 @@ async fn record_contradiction_is_idempotent() {
         .expect("a");
     let b = s
         .apply(MemoryMutation::Write {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             kind: MemoryKind::Identity,
             content: content("don't ship on Friday"),
             state: MemoryState::Held,
@@ -806,24 +797,24 @@ async fn record_contradiction_is_idempotent() {
         .expect("b");
 
     let id1 = s
-        .record_contradiction(db.default_agent_id, a.memory_id, b.memory_id, "test")
+        .record_contradiction(seed.agent_id, a.memory_id, b.memory_id, "test")
         .await
         .expect("c1");
     let id2 = s
-        .record_contradiction(db.default_agent_id, a.memory_id, b.memory_id, "again")
+        .record_contradiction(seed.agent_id, a.memory_id, b.memory_id, "again")
         .await
         .expect("c2");
     assert_eq!(id1, id2);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn set_pinned_toggles_protection() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
+#[sqlx::test]
+async fn set_pinned_toggles_protection(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
 
     let outcome = s
         .apply(MemoryMutation::Write {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             kind: MemoryKind::Identity,
             content: content("invariant"),
             state: MemoryState::Held,
@@ -834,7 +825,7 @@ async fn set_pinned_toggles_protection() {
         .expect("w");
 
     let row = s
-        .set_pinned(db.default_agent_id, outcome.memory_id, true)
+        .set_pinned(seed.agent_id, outcome.memory_id, true)
         .await
         .expect("pin");
     assert!(row.pinned);
@@ -842,7 +833,7 @@ async fn set_pinned_toggles_protection() {
     // Agent path now rejects.
     let err = s
         .apply(MemoryMutation::Update {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             target: outcome.memory_id,
             content: content("changed"),
             state: MemoryState::Tentative,
@@ -855,11 +846,11 @@ async fn set_pinned_toggles_protection() {
 
 async fn seed_contradiction(
     s: &Arc<PgMemoryStore>,
-    db: &TestDb,
+    seed: &common::pg::Seed,
 ) -> patom_rs::memory::ContradictionEventId {
     let a = s
         .apply(MemoryMutation::Write {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             kind: MemoryKind::Identity,
             content: content("ship on Friday"),
             state: MemoryState::Held,
@@ -870,7 +861,7 @@ async fn seed_contradiction(
         .expect("a");
     let b = s
         .apply(MemoryMutation::Write {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             kind: MemoryKind::Identity,
             content: content("don't ship on Friday"),
             state: MemoryState::Held,
@@ -879,22 +870,22 @@ async fn seed_contradiction(
         })
         .await
         .expect("b");
-    s.record_contradiction(db.default_agent_id, a.memory_id, b.memory_id, "test")
+    s.record_contradiction(seed.agent_id, a.memory_id, b.memory_id, "test")
         .await
         .expect("contradiction")
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn resolve_contradiction_mutation_close_links_event() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
-    let id = seed_contradiction(&s, &db).await;
+#[sqlx::test]
+async fn resolve_contradiction_mutation_close_links_event(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+    let id = seed_contradiction(&s, &seed).await;
 
     // Mint a memory event to point at — any apply produces one.
     // Use Operator source so we don't need to seed a prompt_requests row.
     let event = s
         .apply(MemoryMutation::Write {
-            agent: db.default_agent_id,
+            agent: seed.agent_id,
             kind: MemoryKind::Procedure,
             content: content("revised procedure"),
             state: MemoryState::Tentative,
@@ -914,11 +905,11 @@ async fn resolve_contradiction_mutation_close_links_event() {
     assert_eq!(row.resolution_reason, None);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn resolve_contradiction_no_action_close_persists_reason() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
-    let id = seed_contradiction(&s, &db).await;
+#[sqlx::test]
+async fn resolve_contradiction_no_action_close_persists_reason(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+    let id = seed_contradiction(&s, &seed).await;
 
     let reason = ResolutionReason::try_from(
         "Both memories are correct in different contexts; no mutation needed.".to_string(),
@@ -937,11 +928,11 @@ async fn resolve_contradiction_no_action_close_persists_reason() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn resolve_contradiction_is_idempotent() {
-    let db = TestDb::fresh().await;
-    let s = store(&db);
-    let id = seed_contradiction(&s, &db).await;
+#[sqlx::test]
+async fn resolve_contradiction_is_idempotent(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+    let id = seed_contradiction(&s, &seed).await;
 
     let reason = ResolutionReason::try_from("first close".to_string()).expect("reason");
     s.resolve_contradiction(id, ResolutionOutcome::NoAction { reason })

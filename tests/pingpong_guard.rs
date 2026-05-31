@@ -24,6 +24,7 @@ use patom_rs::runtime::{
     RequestStatusView,
 };
 use patom_rs::types::{Participant, Prompt};
+use sqlx::PgPool;
 
 mod common;
 use common::harness::{ScriptedProvider, build_harness};
@@ -36,8 +37,8 @@ fn text(s: &str) -> ChatResponse {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn agent_text_without_send_message_parks_as_no_egress() {
+#[sqlx::test]
+async fn agent_text_without_send_message_parks_as_no_egress(pool: PgPool) {
     // The agent returns text every turn — the worker should treat each one
     // as a non-delivery and ultimately fail with `NoEgress`. The initial
     // reply plus `MAX_PINGPONG_RETRIES` retries gives `cap + 1` total
@@ -48,7 +49,7 @@ async fn agent_text_without_send_message_parks_as_no_egress() {
         script.push(text(&format!("private thought #{i}")));
     }
     let provider = Arc::new(ScriptedProvider::new(script));
-    let h = build_harness(provider.clone()).await;
+    let h = build_harness(pool, provider.clone()).await;
 
     let request_id = h
         .queue

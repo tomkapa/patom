@@ -16,7 +16,7 @@ pub const MAX_PENDING_PER_SESSION: u32 = 32;
 
 /// Outer fence on a single turn (provider call + tool calls + persistence). Above this
 /// the worker abandons the turn so a stuck call can never hold a lease forever.
-pub const MAX_TURN_DURATION: Duration = Duration::from_secs(180);
+pub const MAX_TURN_DURATION: Duration = Duration::from_mins(3);
 
 /// Lease lifetime granted at claim time. Sized so the heartbeat cadence
 /// (`LEASE_TTL / 3`) still leaves >1 chance to renew before expiry under normal load.

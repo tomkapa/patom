@@ -4,7 +4,8 @@
 //! * streaming guarantees (text before done, exactly-once Text)
 //! * idempotent enqueue
 //!
-//! Each test owns its own schema via [`TestDb::fresh`] so they can run in parallel.
+//! Each test gets its own freshly-migrated database via `#[sqlx::test]` so
+//! they can run in parallel with full isolation.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -37,9 +38,10 @@ use patom_rs::session::{PgSessionStore, SharedSessionStore};
 use patom_rs::tools::system::SendMessageTool;
 use patom_rs::tools::{ToolBox, ToolRegistry};
 use patom_rs::types::Prompt;
+use sqlx::PgPool;
 
 mod common;
-use common::pg::{TestDb, human_to_agent_session};
+use common::pg::{human_to_agent_session, seed_tenant};
 
 #[derive(Debug)]
 struct ScriptedProvider {
@@ -96,9 +98,6 @@ fn send_message_human_response(content: &str, call_id: &str) -> ChatResponse {
 }
 
 struct Harness {
-    /// Held only so its `Drop` reaps the schema at end-of-scope.
-    #[allow(dead_code)]
-    db: TestDb,
     queue: Arc<PgPromptQueue>,
     hub: Arc<PgResponseHub>,
     sessions: SharedSessionStore,
@@ -108,13 +107,12 @@ struct Harness {
     pool: patom_rs::runtime::WorkerPoolHandle,
 }
 
-async fn build_harness(provider: Arc<ScriptedProvider>) -> Harness {
-    let db = TestDb::fresh().await;
+async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness {
+    let seed = seed_tenant(&pool).await;
     let clock = SystemClock::shared();
-    let queue_impl = Arc::new(PgPromptQueue::new(db.pool.clone(), clock.clone()));
-    let hub = Arc::new(PgResponseHub::new(db.pool.clone(), clock.clone()));
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
+    let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
+    let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
 
     let provider: SharedProvider = provider;
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
@@ -124,9 +122,8 @@ async fn build_harness(provider: Arc<ScriptedProvider>) -> Harness {
             .insert(ProviderId::Anthropic, provider)
             .build(),
     );
-    let agent_store: SharedAgentStore =
-        common::pg::shared_agent_store(db.pool.clone(), clock.clone());
-    let dag: SharedDagBudget = Arc::new(PgDagBudget::new(db.pool.clone()));
+    let agent_store: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
+    let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
     // The worker's ping-pong guard requires every successful turn to call
     // send_message, so test scripts must invoke it.
     let registry = ToolRegistry::builder()
@@ -154,7 +151,7 @@ async fn build_harness(provider: Arc<ScriptedProvider>) -> Harness {
     ));
     let memory_store_for_pool: patom_rs::memory::SharedMemoryStore =
         Arc::new(patom_rs::memory::PgMemoryStore::new(
-            db.pool.clone(),
+            pool.clone(),
             clock.clone(),
             common::embedding::FakeEmbeddingProvider::shared(),
         ));
@@ -167,14 +164,14 @@ async fn build_harness(provider: Arc<ScriptedProvider>) -> Harness {
         idle_poll: Duration::from_millis(20),
         cancel_poll: Duration::from_millis(50),
     };
-    let pool = WorkerPool::new(
+    let worker_pool = WorkerPool::new(
         queue_impl.clone(),
         queue_impl.clone(),
         hub.clone(),
         agents_registry,
         sessions.clone(),
         dag,
-        db.pool.clone(),
+        pool.clone(),
         memory_store_for_pool,
         clock.clone(),
         cfg,
@@ -182,14 +179,13 @@ async fn build_harness(provider: Arc<ScriptedProvider>) -> Harness {
     .spawn();
 
     Harness {
-        default_agent_id: db.default_agent_id,
-        default_org_id: db.default_org_id,
-        default_user_id: db.default_user_id,
-        db,
+        default_agent_id: seed.agent_id,
+        default_org_id: seed.org_id,
+        default_user_id: seed.user_id,
         queue: queue_impl,
         hub,
         sessions,
-        pool,
+        pool: worker_pool,
     }
 }
 
@@ -282,8 +278,8 @@ async fn await_terminal_status(
     queue.status(id).await.expect("status").status
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn round_trip_publishes_done_chunk() {
+#[sqlx::test]
+async fn round_trip_publishes_done_chunk(pool: PgPool) {
     let provider = Arc::new(ScriptedProvider {
         responses: vec![
             send_message_human_response("hello back", "call-1"),
@@ -295,7 +291,7 @@ async fn round_trip_publishes_done_chunk() {
         cursor: AtomicUsize::new(0),
         delay: Duration::ZERO,
     });
-    let h = build_harness(provider).await;
+    let h = build_harness(pool, provider).await;
     let id = h
         .queue
         .enqueue(req_root(
@@ -322,14 +318,14 @@ async fn round_trip_publishes_done_chunk() {
     h.pool.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cancellation_finishes_inflight_and_skips_next_turn() {
+#[sqlx::test]
+async fn cancellation_finishes_inflight_and_skips_next_turn(pool: PgPool) {
     let provider = Arc::new(ScriptedProvider {
         responses: vec![text_response("first reply"), text_response("second reply")],
         cursor: AtomicUsize::new(0),
         delay: Duration::from_millis(150),
     });
-    let h = build_harness(provider).await;
+    let h = build_harness(pool, provider).await;
     let s = human_to_agent_session(
         h.sessions.as_ref(),
         h.default_agent_id,
@@ -383,8 +379,8 @@ async fn cancellation_finishes_inflight_and_skips_next_turn() {
     h.pool.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn streaming_emits_text_before_done() {
+#[sqlx::test]
+async fn streaming_emits_text_before_done(pool: PgPool) {
     let provider = Arc::new(ScriptedProvider {
         responses: vec![
             send_message_human_response("payload", "call-1"),
@@ -393,7 +389,7 @@ async fn streaming_emits_text_before_done() {
         cursor: AtomicUsize::new(0),
         delay: Duration::ZERO,
     });
-    let h = build_harness(provider).await;
+    let h = build_harness(pool, provider).await;
     let id = h
         .queue
         .enqueue(req_root(
@@ -433,14 +429,14 @@ async fn streaming_emits_text_before_done() {
     h.pool.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn mid_turn_cancellation_aborts_in_flight_turn() {
+#[sqlx::test]
+async fn mid_turn_cancellation_aborts_in_flight_turn(pool: PgPool) {
     let provider = Arc::new(ScriptedProvider {
         responses: vec![text_response("never delivered")],
         cursor: AtomicUsize::new(0),
         delay: Duration::from_secs(2),
     });
-    let h = build_harness(provider).await;
+    let h = build_harness(pool, provider).await;
     let s = human_to_agent_session(
         h.sessions.as_ref(),
         h.default_agent_id,
@@ -487,14 +483,14 @@ async fn mid_turn_cancellation_aborts_in_flight_turn() {
     h.pool.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn idempotent_repeat_returns_same_request_id() {
+#[sqlx::test]
+async fn idempotent_repeat_returns_same_request_id(pool: PgPool) {
     let provider = Arc::new(ScriptedProvider {
         responses: vec![text_response("ok")],
         cursor: AtomicUsize::new(0),
         delay: Duration::ZERO,
     });
-    let h = build_harness(provider).await;
+    let h = build_harness(pool, provider).await;
     let s = human_to_agent_session(
         h.sessions.as_ref(),
         h.default_agent_id,

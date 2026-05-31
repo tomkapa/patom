@@ -25,6 +25,7 @@ use patom_rs::runtime::queue::PromptQueue as _;
 use patom_rs::runtime::{IdempotencyKey, NewPromptRequest, ResponseChunk, StreamEvent};
 use patom_rs::types::{Participant, Prompt, ToolName};
 use serde_json::json;
+use sqlx::PgPool;
 
 mod common;
 use common::harness::{ScriptedProvider, build_harness};
@@ -52,8 +53,8 @@ fn final_text(s: &str) -> ChatResponse {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn send_message_human_publishes_agent_message_on_root_stream() {
+#[sqlx::test]
+async fn send_message_human_publishes_agent_message_on_root_stream(pool: PgPool) {
     let provider = Arc::new(ScriptedProvider::new(vec![
         // Turn 1: model calls send_message(Human, "hello human").
         send_message_call("hello human"),
@@ -61,7 +62,7 @@ async fn send_message_human_publishes_agent_message_on_root_stream() {
         // the worker accepts the success path — no ping-pong retry.
         final_text("(internal close-out)"),
     ]));
-    let h = build_harness(provider).await;
+    let h = build_harness(pool, provider).await;
 
     let request_id = h
         .queue
@@ -112,13 +113,13 @@ async fn send_message_human_publishes_agent_message_on_root_stream() {
 /// responding to each 'tool_call_id'`. This test pins that the persisted
 /// session keeps the tool_call and tool_result adjacent, so a follow-up
 /// turn replays a valid history.
-#[tokio::test(flavor = "multi_thread")]
-async fn send_message_human_keeps_tool_call_and_result_adjacent() {
+#[sqlx::test]
+async fn send_message_human_keeps_tool_call_and_result_adjacent(pool: PgPool) {
     let provider = Arc::new(ScriptedProvider::new(vec![
         send_message_call("hello human"),
         final_text("(internal close-out)"),
     ]));
-    let h = build_harness(provider).await;
+    let h = build_harness(pool, provider).await;
 
     let outcome = h
         .queue
@@ -183,8 +184,8 @@ async fn send_message_human_keeps_tool_call_and_result_adjacent() {
 /// back as `is_error: true`, and the agent's outbound message was
 /// silently dropped from the live stream. Post-fix the chunk lands on the
 /// current claim's request id (an open sink), so the user's UI sees it.
-#[tokio::test(flavor = "multi_thread")]
-async fn followup_prompt_publishes_agent_message_on_open_sink() {
+#[sqlx::test]
+async fn followup_prompt_publishes_agent_message_on_open_sink(pool: PgPool) {
     let provider = Arc::new(ScriptedProvider::new(vec![
         // Prompt #1
         send_message_call("hello human"),
@@ -193,7 +194,7 @@ async fn followup_prompt_publishes_agent_message_on_open_sink() {
         send_message_call("hello again"),
         final_text("(internal close-out 2)"),
     ]));
-    let h = build_harness(provider).await;
+    let h = build_harness(pool, provider).await;
 
     let first = h
         .queue

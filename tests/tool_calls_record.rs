@@ -27,7 +27,8 @@ use patom_rs::tools::{
 use patom_rs::types::ToolName;
 
 mod common;
-use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
+use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
+use sqlx::PgPool;
 
 fn fresh_row(
     org_id: OrgId,
@@ -53,7 +54,7 @@ fn fresh_row(
     }
 }
 
-async fn seed_mcp_server(db: &TestDb) -> McpServerId {
+async fn seed_mcp_server(pool: &PgPool, seed: &common::pg::Seed) -> McpServerId {
     let id = McpServerId::new();
     let now = Utc::now();
     sqlx::query(
@@ -66,10 +67,10 @@ async fn seed_mcp_server(db: &TestDb) -> McpServerId {
                  NULL, NULL, NULL, NULL, $3, $3, $4)",
     )
     .bind(id)
-    .bind(db.default_org_id)
+    .bind(seed.org_id)
     .bind(now)
-    .bind(db.default_user_id)
-    .execute(&db.pool)
+    .bind(seed.user_id)
+    .execute(pool)
     .await
     .expect("seed mcp server");
     id
@@ -86,47 +87,35 @@ async fn count_rows(pool: &sqlx::PgPool) -> i64 {
 /// it. Every test in this file starts from this pair before exercising
 /// the recorder.
 async fn setup_session_and_request(
-    db: &TestDb,
+    pool: &PgPool,
+    seed: &common::pg::Seed,
 ) -> (
     patom_rs::session::SessionId,
     patom_rs::runtime::PromptRequestId,
 ) {
     let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), SystemClock::shared()));
-    let session = human_to_agent_session(
-        sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
-    let request_id =
-        seed_prompt_request(&db.pool, session, db.default_agent_id, db.default_org_id).await;
+        Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
+    let session =
+        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let request_id = seed_prompt_request(pool, session, seed.agent_id, seed.org_id).await;
     (session, request_id)
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn records_generic_row_without_mcp_server() {
-    let db = TestDb::fresh().await;
-    let (session, request_id) = setup_session_and_request(&db).await;
+#[sqlx::test]
+async fn records_generic_row_without_mcp_server(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let (session, request_id) = setup_session_and_request(&pool, &seed).await;
 
-    let store = PgToolCallStore::new(db.pool.clone(), SystemClock::shared());
-    let row = fresh_row(
-        db.default_org_id,
-        session,
-        request_id,
-        db.default_agent_id,
-        None,
-        false,
-    );
+    let store = PgToolCallStore::new(pool.clone(), SystemClock::shared());
+    let row = fresh_row(seed.org_id, session, request_id, seed.agent_id, None, false);
     store.record(row).await.expect("record");
 
-    let count = count_rows(&db.pool).await;
+    let count = count_rows(&pool).await;
     assert_eq!(count, 1);
 
     let stored: (Option<McpServerId>, String, bool, i32) =
         sqlx::query_as("SELECT mcp_server_id, tool_name, is_error, duration_ms FROM tool_calls")
-            .fetch_one(&db.pool)
+            .fetch_one(&pool)
             .await
             .expect("read back");
     assert_eq!(stored.0, None);
@@ -135,18 +124,18 @@ async fn records_generic_row_without_mcp_server() {
     assert_eq!(stored.3, 42);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn records_mcp_tagged_row_indexable_by_server_and_agent() {
-    let db = TestDb::fresh().await;
-    let (session, request_id) = setup_session_and_request(&db).await;
-    let mcp = seed_mcp_server(&db).await;
+#[sqlx::test]
+async fn records_mcp_tagged_row_indexable_by_server_and_agent(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let (session, request_id) = setup_session_and_request(&pool, &seed).await;
+    let mcp = seed_mcp_server(&pool, &seed).await;
 
-    let store = PgToolCallStore::new(db.pool.clone(), SystemClock::shared());
+    let store = PgToolCallStore::new(pool.clone(), SystemClock::shared());
     let mut row = fresh_row(
-        db.default_org_id,
+        seed.org_id,
         session,
         request_id,
-        db.default_agent_id,
+        seed.agent_id,
         Some(mcp),
         true,
     );
@@ -162,7 +151,7 @@ async fn records_mcp_tagged_row_indexable_by_server_and_agent() {
            AND mcp_server_id IS NOT NULL",
     )
     .bind(mcp)
-    .fetch_one(&db.pool)
+    .fetch_one(&pool)
     .await
     .expect("per connection");
     assert_eq!(per_connection, 1);
@@ -172,28 +161,21 @@ async fn records_mcp_tagged_row_indexable_by_server_and_agent() {
          WHERE agent_id = $1
            AND mcp_server_id IS NOT NULL",
     )
-    .bind(db.default_agent_id)
-    .fetch_one(&db.pool)
+    .bind(seed.agent_id)
+    .fetch_one(&pool)
     .await
     .expect("per agent");
     assert_eq!(per_agent, 1);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn org_trigger_rejects_mismatched_org_id() {
-    let db = TestDb::fresh().await;
-    let (session, request_id) = setup_session_and_request(&db).await;
+#[sqlx::test]
+async fn org_trigger_rejects_mismatched_org_id(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let (session, request_id) = setup_session_and_request(&pool, &seed).await;
 
-    let store = PgToolCallStore::new(db.pool.clone(), SystemClock::shared());
+    let store = PgToolCallStore::new(pool.clone(), SystemClock::shared());
     let foreign_org = OrgId::new();
-    let row = fresh_row(
-        foreign_org,
-        session,
-        request_id,
-        db.default_agent_id,
-        None,
-        false,
-    );
+    let row = fresh_row(foreign_org, session, request_id, seed.agent_id, None, false);
 
     let err = store.record(row).await.expect_err("trigger rejects");
     let msg = format!("{err}");
@@ -203,20 +185,13 @@ async fn org_trigger_rejects_mismatched_org_id() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn rls_hides_rows_from_non_member_principal() {
-    let db = TestDb::fresh().await;
-    let (session, request_id) = setup_session_and_request(&db).await;
+#[sqlx::test]
+async fn rls_hides_rows_from_non_member_principal(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let (session, request_id) = setup_session_and_request(&pool, &seed).await;
 
-    let store = PgToolCallStore::new(db.pool.clone(), SystemClock::shared());
-    let row = fresh_row(
-        db.default_org_id,
-        session,
-        request_id,
-        db.default_agent_id,
-        None,
-        false,
-    );
+    let store = PgToolCallStore::new(pool.clone(), SystemClock::shared());
+    let row = fresh_row(seed.org_id, session, request_id, seed.agent_id, None, false);
     store.record(row).await.expect("record");
 
     // A user that is not a member of `default_org_id` sees zero rows.
@@ -229,11 +204,11 @@ async fn rls_hides_rows_from_non_member_principal() {
     )
     .bind(outsider)
     .bind(format!("outsider-{outsider}@example.invalid"))
-    .execute(&db.pool)
+    .execute(&pool)
     .await
     .expect("seed outsider user");
 
-    let count = patom_rs::auth::run_as_user::<i64, sqlx::Error>(&db.pool, outsider, async |tx| {
+    let count = patom_rs::auth::run_as_user::<i64, sqlx::Error>(&pool, outsider, async |tx| {
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls")
             .fetch_one(&mut **tx)
             .await?;
@@ -244,30 +219,29 @@ async fn rls_hides_rows_from_non_member_principal() {
     assert_eq!(count, 0, "RLS must hide rows from a non-member principal");
 
     // The owning principal still sees the row.
-    let count =
-        patom_rs::auth::run_as_user::<i64, sqlx::Error>(&db.pool, db.default_user_id, async |tx| {
-            let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls")
-                .fetch_one(&mut **tx)
-                .await?;
-            Ok(n)
-        })
-        .await
-        .expect("read as owner");
+    let count = patom_rs::auth::run_as_user::<i64, sqlx::Error>(&pool, seed.user_id, async |tx| {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls")
+            .fetch_one(&mut **tx)
+            .await?;
+        Ok(n)
+    })
+    .await
+    .expect("read as owner");
     assert_eq!(count, 1);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn records_error_row_with_message() {
-    let db = TestDb::fresh().await;
-    let (session, request_id) = setup_session_and_request(&db).await;
-    let mcp = seed_mcp_server(&db).await;
+#[sqlx::test]
+async fn records_error_row_with_message(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let (session, request_id) = setup_session_and_request(&pool, &seed).await;
+    let mcp = seed_mcp_server(&pool, &seed).await;
 
-    let store = PgToolCallStore::new(db.pool.clone(), SystemClock::shared());
+    let store = PgToolCallStore::new(pool.clone(), SystemClock::shared());
     let row = fresh_row(
-        db.default_org_id,
+        seed.org_id,
         session,
         request_id,
-        db.default_agent_id,
+        seed.agent_id,
         Some(mcp),
         true,
     );
@@ -275,17 +249,17 @@ async fn records_error_row_with_message() {
 
     let stored: (bool, Option<String>) =
         sqlx::query_as("SELECT is_error, error_message FROM tool_calls")
-            .fetch_one(&db.pool)
+            .fetch_one(&pool)
             .await
             .expect("read back");
     assert!(stored.0);
     assert_eq!(stored.1.as_deref(), Some("boom"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn db_check_rejects_error_message_on_successful_row() {
-    let db = TestDb::fresh().await;
-    let (session, request_id) = setup_session_and_request(&db).await;
+#[sqlx::test]
+async fn db_check_rejects_error_message_on_successful_row(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let (session, request_id) = setup_session_and_request(&pool, &seed).await;
 
     // Bypass the recorder (which has its own assert!) and hit the DB CHECK
     // directly so we're sure the migration enforces the invariant.
@@ -300,12 +274,12 @@ async fn db_check_rejects_error_message_on_successful_row() {
                  FALSE, 'should be rejected', $6)",
     )
     .bind(id)
-    .bind(db.default_org_id)
+    .bind(seed.org_id)
     .bind(session)
     .bind(request_id)
-    .bind(db.default_agent_id)
+    .bind(seed.agent_id)
     .bind(now)
-    .execute(&db.pool)
+    .execute(&pool)
     .await
     .expect_err("CHECK rejects error_message on success row");
     let msg = format!("{err}");

@@ -1,5 +1,6 @@
-//! Trait-contract tests for [`patom_rs::session::PgSessionStore`]. Each test owns its
-//! own schema via `TestDb::fresh` so they can run in parallel.
+//! Trait-contract tests for [`patom_rs::session::PgSessionStore`]. Each test
+//! gets its own freshly-migrated database via `#[sqlx::test]`, so they run in
+//! parallel with full isolation.
 
 #![allow(clippy::expect_used)]
 
@@ -11,28 +12,23 @@ use patom_rs::provider::{ChatMessage, UserContent};
 use patom_rs::runtime::PromptRequestId;
 use patom_rs::session::{PgSessionStore, SessionError, SessionId, SessionStore};
 use patom_rs::types::{MessageSender, Participant};
+use sqlx::PgPool;
 
 mod common;
-use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
+use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
 
-fn store(db: &TestDb) -> Arc<PgSessionStore> {
-    Arc::new(PgSessionStore::new(db.pool.clone(), SystemClock::shared()))
+fn store(pool: &PgPool) -> Arc<PgSessionStore> {
+    Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()))
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn create_append_snapshot_roundtrip() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn create_append_snapshot_roundtrip(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
-    let agent = Participant::agent(db.default_agent_id);
-    let id = human_to_agent_session(
-        store.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
-    let req = seed_prompt_request(&db.pool, id, db.default_agent_id, db.default_org_id).await;
+    let agent = Participant::agent(seed.agent_id);
+    let id = human_to_agent_session(store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let req = seed_prompt_request(&pool, id, seed.agent_id, seed.org_id).await;
     store
         .append(
             id,
@@ -64,13 +60,13 @@ async fn create_append_snapshot_roundtrip() {
     assert!(matches!(&contents[0], UserContent::Text(t) if t == "hi"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn missing_session_is_not_found() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn missing_session_is_not_found(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
     let id = SessionId::new();
-    let viewer = Participant::agent(db.default_agent_id);
+    let viewer = Participant::agent(seed.agent_id);
     let err = store.snapshot(id, viewer).await.expect_err("absent");
     assert!(matches!(err, SessionError::NotFound(_)));
 
@@ -90,23 +86,17 @@ async fn missing_session_is_not_found() {
     assert!(matches!(err, SessionError::NotFound(_)));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn enforces_message_cap() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn enforces_message_cap(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let store = Arc::new(PgSessionStore::with_caps(
-        db.pool.clone(),
+        pool.clone(),
         SystemClock::shared(),
         2,
     ));
-    let id = human_to_agent_session(
-        store.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
-    let req = seed_prompt_request(&db.pool, id, db.default_agent_id, db.default_org_id).await;
-    let agent = Participant::agent(db.default_agent_id);
+    let id = human_to_agent_session(store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let req = seed_prompt_request(&pool, id, seed.agent_id, seed.org_id).await;
+    let agent = Participant::agent(seed.agent_id);
     for _ in 0..2 {
         store
             .append(
@@ -132,19 +122,13 @@ async fn enforces_message_cap() {
     assert!(matches!(err, SessionError::MessageCapExceeded { .. }));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn delete_cascades_messages() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
-    let id = human_to_agent_session(
-        store.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
-    let req = seed_prompt_request(&db.pool, id, db.default_agent_id, db.default_org_id).await;
-    let agent = Participant::agent(db.default_agent_id);
+#[sqlx::test]
+async fn delete_cascades_messages(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let id = human_to_agent_session(store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let req = seed_prompt_request(&pool, id, seed.agent_id, seed.org_id).await;
+    let agent = Participant::agent(seed.agent_id);
     store
         .append(
             id,
@@ -161,10 +145,10 @@ async fn delete_cascades_messages() {
     assert!(matches!(err, SessionError::NotFound(_)));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn create_with_unknown_agent_returns_agent_not_found() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn create_with_unknown_agent_returns_agent_not_found(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
     // Random uuid that does not exist in the agents table — the FK on
     // participant_*_agent_id should reject the insert and surface as
@@ -177,48 +161,36 @@ async fn create_with_unknown_agent_returns_agent_not_found() {
             Participant::Human,
             Participant::agent(phantom),
             None,
-            db.default_org_id,
-            db.default_user_id,
+            seed.org_id,
+            seed.user_id,
         )
         .await
         .expect_err("fk");
     assert!(matches!(err, SessionError::AgentNotFound(_)));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn participants_round_trip_through_session() {
+#[sqlx::test]
+async fn participants_round_trip_through_session(pool: PgPool) {
     // Canonical order is Agent < Human (matches SQL CHECK).
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
-    let id = human_to_agent_session(
-        store.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let id = human_to_agent_session(store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let (a, b) = store.participants(id).await.expect("resolve");
-    assert_eq!(a, Participant::agent(db.default_agent_id));
+    assert_eq!(a, Participant::agent(seed.agent_id));
     assert_eq!(b, Participant::Human);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn snapshot_renders_messages_from_viewer_perspective() {
+#[sqlx::test]
+async fn snapshot_renders_messages_from_viewer_perspective(pool: PgPool) {
     // sender == viewer => Assistant; otherwise => User. This is the central
     // contract of the new viewer-mapped snapshot.
-    let db = TestDb::fresh().await;
-    let store = store(&db);
-    let agent = Participant::agent(db.default_agent_id);
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let agent = Participant::agent(seed.agent_id);
 
-    let id = human_to_agent_session(
-        store.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
-    let req = seed_prompt_request(&db.pool, id, db.default_agent_id, db.default_org_id).await;
+    let id = human_to_agent_session(store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let req = seed_prompt_request(&pool, id, seed.agent_id, seed.org_id).await;
     // Human → Agent: text prompt.
     store
         .append(

@@ -61,7 +61,7 @@ const SLACK_SCOPES: &str =
 
 /// State token lifetime — long enough for a user to complete the
 /// Slack consent screen, short enough that a leaked state is useless.
-const STATE_TTL: Duration = Duration::from_secs(60 * 10);
+const STATE_TTL: Duration = Duration::from_mins(10);
 
 pub fn private_router() -> Router<AppState> {
     Router::new()

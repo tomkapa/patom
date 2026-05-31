@@ -25,8 +25,7 @@ pub trait Clock: fmt::Debug + Send + Sync + 'static {
         let secs = self
             .now_wall()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         i64::try_from(secs).unwrap_or(0)
     }
 }

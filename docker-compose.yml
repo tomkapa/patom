@@ -15,6 +15,10 @@ services:
       retries: 30
     volumes:
       - patom_pg_data:/var/lib/postgresql/data
+      # Provision the cluster-global `patom_app` role on first cluster init so
+      # concurrent `#[sqlx::test]` runs don't race on the tenancy migration's
+      # CREATE ROLE. Runs once when the data volume is empty; see ci/init-roles.sql.
+      - ./ci/init-roles.sql:/docker-entrypoint-initdb.d/00-roles.sql:ro
 
 volumes:
   patom_pg_data:

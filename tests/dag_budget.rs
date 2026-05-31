@@ -16,28 +16,29 @@ use patom_rs::runtime::{
     PromptRequestId,
 };
 use patom_rs::types::{Participant, Prompt};
+use sqlx::PgPool;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
 /// Mint a fresh DAG anchor by enqueuing a brand-new request (`session: None`)
 /// — the queue creates the session and seeds `prompt_request_dags` in one
 /// transaction. Returns the root_request_id (== the new request's id).
-async fn seed_dag(db: &TestDb) -> PromptRequestId {
+async fn seed_dag(pool: &PgPool, seed: &common::pg::Seed) -> PromptRequestId {
     // Unique idempotency key per call so two seed_dag invocations in the
     // same test don't collapse onto one row.
-    let queue = Arc::new(PgPromptQueue::new(db.pool.clone(), SystemClock::shared()));
+    let queue = Arc::new(PgPromptQueue::new(pool.clone(), SystemClock::shared()));
     let outcome = queue
         .enqueue(NewPromptRequest {
             session: None,
             sender: Participant::Human,
-            receiver_agent_id: db.default_agent_id,
+            receiver_agent_id: seed.agent_id,
             parent_session: None,
             content: Prompt::try_from("hi").expect("prompt"),
             idempotency_key: IdempotencyKey::try_from(format!("dag-seed-{}", uuid::Uuid::new_v4()))
                 .expect("key"),
-            org_id: db.default_org_id,
-            created_by_user_id: db.default_user_id,
+            org_id: seed.org_id,
+            created_by_user_id: seed.user_id,
             kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
         })
         .await
@@ -48,21 +49,21 @@ async fn seed_dag(db: &TestDb) -> PromptRequestId {
 /// Force a small budget cap on the seeded DAG row. The default
 /// `MAX_DAG_TURNS = 64` is too many to bump in a unit test; we shrink the
 /// cap directly so cap behaviour is exercised in two bumps.
-async fn shrink_cap(db: &TestDb, root: PromptRequestId, cap: i64) {
+async fn shrink_cap(pool: &PgPool, root: PromptRequestId, cap: i64) {
     sqlx::query("UPDATE prompt_request_dags SET turns_cap = $1 WHERE root_request_id = $2")
         .bind(cap)
         .bind(root)
-        .execute(&db.pool)
+        .execute(pool)
         .await
         .expect("shrink cap");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn bump_succeeds_while_under_cap() {
-    let db = TestDb::fresh().await;
-    let dag = PgDagBudget::new(db.pool.clone());
-    let root = seed_dag(&db).await;
-    shrink_cap(&db, root, 3).await;
+#[sqlx::test]
+async fn bump_succeeds_while_under_cap(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let dag = PgDagBudget::new(pool.clone());
+    let root = seed_dag(&pool, &seed).await;
+    shrink_cap(&pool, root, 3).await;
 
     let first = dag.bump_or_fail(root).await.expect("first");
     assert_eq!(first.turns_used, 1);
@@ -73,12 +74,12 @@ async fn bump_succeeds_while_under_cap() {
     assert_eq!(third.turns_used, 3);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn bump_at_cap_returns_dag_budget_exceeded() {
-    let db = TestDb::fresh().await;
-    let dag = PgDagBudget::new(db.pool.clone());
-    let root = seed_dag(&db).await;
-    shrink_cap(&db, root, 1).await;
+#[sqlx::test]
+async fn bump_at_cap_returns_dag_budget_exceeded(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let dag = PgDagBudget::new(pool.clone());
+    let root = seed_dag(&pool, &seed).await;
+    shrink_cap(&pool, root, 1).await;
 
     dag.bump_or_fail(root).await.expect("first under cap");
     let err = dag.bump_or_fail(root).await.expect_err("at cap");
@@ -95,10 +96,10 @@ async fn bump_at_cap_returns_dag_budget_exceeded() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn bump_unknown_root_returns_dag_not_found() {
-    let db = TestDb::fresh().await;
-    let dag = PgDagBudget::new(db.pool.clone());
+#[sqlx::test]
+async fn bump_unknown_root_returns_dag_not_found(pool: PgPool) {
+    let _seed = seed_tenant(&pool).await;
+    let dag = PgDagBudget::new(pool.clone());
     // No seed — pure synthetic id; no row in prompt_request_dags.
     let phantom = PromptRequestId::new();
     let err = dag.bump_or_fail(phantom).await.expect_err("phantom");
@@ -108,16 +109,16 @@ async fn bump_unknown_root_returns_dag_not_found() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn bumps_are_independent_across_dags() {
+#[sqlx::test]
+async fn bumps_are_independent_across_dags(pool: PgPool) {
     // Two seeded DAGs with their own caps. A bump on one cannot affect the
     // other's turns_used — the row's PK is `root_request_id`.
-    let db = TestDb::fresh().await;
-    let dag = PgDagBudget::new(db.pool.clone());
-    let root_a = seed_dag(&db).await;
-    let root_b = seed_dag(&db).await;
-    shrink_cap(&db, root_a, 5).await;
-    shrink_cap(&db, root_b, 5).await;
+    let seed = seed_tenant(&pool).await;
+    let dag = PgDagBudget::new(pool.clone());
+    let root_a = seed_dag(&pool, &seed).await;
+    let root_b = seed_dag(&pool, &seed).await;
+    shrink_cap(&pool, root_a, 5).await;
+    shrink_cap(&pool, root_b, 5).await;
 
     dag.bump_or_fail(root_a).await.expect("a1");
     dag.bump_or_fail(root_a).await.expect("a2");

@@ -24,24 +24,21 @@ use patom_rs::runtime::PromptRequestId;
 use patom_rs::session::{PgSessionStore, SharedSessionStore};
 use patom_rs::tools::{SharedTool, Tool, ToolCallContext, ToolError, ToolRegistry};
 use patom_rs::types::{Participant, Prompt, ToolName};
+use sqlx::PgPool;
 
 mod common;
-use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
+use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
 
 /// Create a fresh human-to-default-agent session and a stub `prompt_requests`
 /// row bound to it. Returns both ids — `agent.reply` needs the request_id and
 /// `session_messages.request_id` FK-references it on every append.
-async fn fresh_session(db: &TestDb) -> (patom_rs::session::SessionId, PromptRequestId) {
-    let store = PgSessionStore::new(db.pool.clone(), SystemClock::shared());
-    let session = human_to_agent_session(
-        &store,
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
-    let request =
-        seed_prompt_request(&db.pool, session, db.default_agent_id, db.default_org_id).await;
+async fn fresh_session(
+    pool: &PgPool,
+    seed: &common::pg::Seed,
+) -> (patom_rs::session::SessionId, PromptRequestId) {
+    let store = PgSessionStore::new(pool.clone(), SystemClock::shared());
+    let session = human_to_agent_session(&store, seed.agent_id, seed.org_id, seed.user_id).await;
+    let request = seed_prompt_request(pool, session, seed.agent_id, seed.org_id).await;
     (session, request)
 }
 
@@ -152,9 +149,15 @@ fn tool_call_response(name: &str, id: &str) -> ChatResponse {
     }
 }
 
-fn build(db: &TestDb, provider: Arc<ScriptedProvider>, tools: Vec<SharedTool>) -> patom_rs::Agent {
+fn build(
+    pool: &PgPool,
+    seed: &common::pg::Seed,
+    provider: Arc<ScriptedProvider>,
+    tools: Vec<SharedTool>,
+) -> patom_rs::Agent {
     build_with_model(
-        db,
+        pool,
+        seed,
         provider,
         tools,
         Model::try_from("test-model").expect("catalog"),
@@ -162,14 +165,15 @@ fn build(db: &TestDb, provider: Arc<ScriptedProvider>, tools: Vec<SharedTool>) -
 }
 
 fn build_with_model(
-    db: &TestDb,
+    pool: &PgPool,
+    seed: &common::pg::Seed,
     provider: Arc<ScriptedProvider>,
     tools: Vec<SharedTool>,
     model: Model,
 ) -> patom_rs::Agent {
     let provider: SharedProvider = provider;
     let clock = SystemClock::shared();
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(db.pool.clone(), clock));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock));
     let memory: SharedMemory = Arc::new(StaticMemory::new("test prompt"));
     let providers: SharedProviderRegistry = Arc::new(
         ProviderRegistry::builder()
@@ -180,6 +184,7 @@ fn build_with_model(
     for t in tools {
         builder.register(t);
     }
+    let _ = seed; // ids accessed via seed at call sites; pool drives sessions
     AgentBuilder::new(providers, sessions, memory, model)
         .expect("builder")
         .with_builtin_tools(builder.build())
@@ -187,24 +192,24 @@ fn build_with_model(
         .build()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn returns_text_when_no_tool_call() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn returns_text_when_no_tool_call(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let provider = Arc::new(ScriptedProvider::new(vec![text_response(
         "hi back",
         StopReason::EndTurn,
     )]));
-    let agent = build(&db, provider.clone(), vec![]);
+    let agent = build(&pool, &seed, provider.clone(), vec![]);
 
-    let (session, request_id) = fresh_session(&db).await;
+    let (session, request_id) = fresh_session(&pool, &seed).await;
     let prompt = Prompt::try_from("hello").expect("prompt");
     let reply = agent
         .reply(
             session,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
             patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
@@ -216,25 +221,25 @@ async fn returns_text_when_no_tool_call() {
     assert_eq!(provider.calls(), 1);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn runs_tool_then_returns_text() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn runs_tool_then_returns_text(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let provider = Arc::new(ScriptedProvider::new(vec![
         tool_call_response("counter", "call-1"),
         text_response("done", StopReason::EndTurn),
     ]));
     let counter = Arc::new(CountingTool::new("counter"));
-    let agent = build(&db, provider.clone(), vec![counter.clone()]);
+    let agent = build(&pool, &seed, provider.clone(), vec![counter.clone()]);
 
-    let (session, request_id) = fresh_session(&db).await;
+    let (session, request_id) = fresh_session(&pool, &seed).await;
     let prompt = Prompt::try_from("use the tool").expect("prompt");
     let reply = agent
         .reply(
             session,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
             patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
@@ -247,24 +252,24 @@ async fn runs_tool_then_returns_text() {
     assert_eq!(provider.calls(), 2, "two turns: tool call, then final");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unknown_tool_does_not_loop_forever() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn unknown_tool_does_not_loop_forever(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let provider = Arc::new(ScriptedProvider::new(vec![
         tool_call_response("missing-tool", "call-x"),
         text_response("recovered", StopReason::EndTurn),
     ]));
-    let agent = build(&db, provider.clone(), vec![]);
+    let agent = build(&pool, &seed, provider.clone(), vec![]);
 
-    let (session, request_id) = fresh_session(&db).await;
+    let (session, request_id) = fresh_session(&pool, &seed).await;
     let prompt = Prompt::try_from("try the missing tool").expect("prompt");
     let reply = agent
         .reply(
             session,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
             patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
@@ -275,16 +280,16 @@ async fn unknown_tool_does_not_loop_forever() {
     assert_eq!(reply.final_text(), "recovered");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cancellation_short_circuits() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn cancellation_short_circuits(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let provider = Arc::new(ScriptedProvider::new(vec![text_response(
         "never used",
         StopReason::EndTurn,
     )]));
-    let agent = build(&db, provider, vec![]);
+    let agent = build(&pool, &seed, provider, vec![]);
 
-    let (session, request_id) = fresh_session(&db).await;
+    let (session, request_id) = fresh_session(&pool, &seed).await;
     let prompt = Prompt::try_from("cancel me").expect("prompt");
     let cancel = CancellationToken::new();
     cancel.cancel();
@@ -292,10 +297,10 @@ async fn cancellation_short_circuits() {
     let err = agent
         .reply(
             session,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
             patom_rs::runtime::RequestKindPayload::Normal {},
             cancel,
             None,
@@ -305,25 +310,25 @@ async fn cancellation_short_circuits() {
     matches!(err, patom_rs::AgentError::Cancelled);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn provider_specs_match_registered_tools() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn provider_specs_match_registered_tools(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let provider = Arc::new(ScriptedProvider::new(vec![text_response(
         "ok",
         StopReason::EndTurn,
     )]));
     let counter = Arc::new(CountingTool::new("counter"));
-    let agent = build(&db, provider.clone(), vec![counter]);
+    let agent = build(&pool, &seed, provider.clone(), vec![counter]);
 
-    let (session, request_id) = fresh_session(&db).await;
+    let (session, request_id) = fresh_session(&pool, &seed).await;
     let prompt = Prompt::try_from("hi").expect("prompt");
     let _ = agent
         .reply(
             session,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
             patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
@@ -336,29 +341,29 @@ async fn provider_specs_match_registered_tools() {
     assert_eq!(req.tools[0].name.as_str(), "counter");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn agent_carries_its_model_into_the_provider_call() {
+#[sqlx::test]
+async fn agent_carries_its_model_into_the_provider_call(pool: PgPool) {
     // Per-agent model selection: the model the agent was constructed with
     // should land verbatim in `ChatRequest::model`. Sanity-checks the
     // Agent::call_provider routing path under the new closed-catalog model
     // type — request.model.as_str() must match the catalog name.
-    let db = TestDb::fresh().await;
+    let seed = seed_tenant(&pool).await;
     let provider = Arc::new(ScriptedProvider::new(vec![text_response(
         "ok",
         StopReason::EndTurn,
     )]));
     let model = Model::try_from("test-model-openai").expect("catalog");
-    let agent = build_with_model(&db, provider.clone(), vec![], model);
+    let agent = build_with_model(&pool, &seed, provider.clone(), vec![], model);
 
-    let (session, request_id) = fresh_session(&db).await;
+    let (session, request_id) = fresh_session(&pool, &seed).await;
     let prompt = Prompt::try_from("hi").expect("prompt");
     let _ = agent
         .reply(
             session,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
             patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
@@ -371,13 +376,13 @@ async fn agent_carries_its_model_into_the_provider_call() {
     assert_eq!(req.model.provider(), ProviderId::Openai);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn registry_routes_model_to_its_catalog_provider() {
+#[sqlx::test]
+async fn registry_routes_model_to_its_catalog_provider(pool: PgPool) {
     // Two scripted providers registered under different ProviderIds: only
     // the one matching the model's catalog provider should be called. The
     // other one staying at zero calls proves we're routing, not just
     // grabbing the first thing in the registry.
-    let db = TestDb::fresh().await;
+    let seed = seed_tenant(&pool).await;
     let anthropic_provider = Arc::new(ScriptedProvider::new(vec![text_response(
         "anthropic-served",
         StopReason::EndTurn,
@@ -396,7 +401,7 @@ async fn registry_routes_model_to_its_catalog_provider() {
             .build(),
     );
     let clock = SystemClock::shared();
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(db.pool.clone(), clock));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock));
     let memory: SharedMemory = Arc::new(StaticMemory::new("test prompt"));
     let agent = AgentBuilder::new(providers, sessions, memory, model)
         .expect("builder")
@@ -404,15 +409,15 @@ async fn registry_routes_model_to_its_catalog_provider() {
         .with_hooks(HookChain::new())
         .build();
 
-    let (session, request_id) = fresh_session(&db).await;
+    let (session, request_id) = fresh_session(&pool, &seed).await;
     let prompt = Prompt::try_from("hi").expect("prompt");
     let reply = agent
         .reply(
             session,
-            Participant::agent(db.default_agent_id),
+            Participant::agent(seed.agent_id),
             vec![prompt],
             request_id,
-            patom_rs::auth::Caller::new(db.default_user_id, db.default_org_id),
+            patom_rs::auth::Caller::new(seed.user_id, seed.org_id),
             patom_rs::runtime::RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,

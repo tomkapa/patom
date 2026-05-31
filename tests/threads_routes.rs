@@ -33,13 +33,13 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::{Seed, seed_tenant};
 
 /// Minimal HTTP harness wired with every collaborator the threads routes
 /// touch, plus the live `PgThreadStream` so G3 NOTIFY round-trips through
 /// the real listener task.
 struct ThreadsHarness {
-    db: TestDb,
+    seed: Seed,
     queue: SharedPromptQueue,
     sink: SharedResponseSink,
     thread_stream: SharedThreadStream,
@@ -57,10 +57,9 @@ impl ThreadsHarness {
     // Composition root for a single integration test harness: 100+ lines
     // of wiring without branching, mirrors `app.rs::Collaborators::new`.
     #[allow(clippy::too_many_lines)]
-    async fn new() -> Self {
-        let db = TestDb::fresh().await;
+    async fn new(pool: PgPool) -> Self {
+        let seed = seed_tenant(&pool).await;
         let clock: SharedClock = SystemClock::shared();
-        let pool: PgPool = db.pool.clone();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
@@ -138,18 +137,14 @@ impl ThreadsHarness {
             mailer: std::sync::Arc::new(patom_rs::orgs::LogMailer),
         };
 
-        // The threads we enqueue belong to `db.default_org_id`, so the
+        // The threads we enqueue belong to `seed.org_id`, so the
         // principal we mint must be a member of that same org —
         // otherwise the new RLS policies on `sessions` /
         // `session_messages` filter every row out of the response.
-        let seeded = common::auth::principal_for_default_org(
-            db.default_user_id,
-            db.default_org_id,
-            &state.jwt,
-        );
+        let seeded = common::auth::principal_for_default_org(seed.user_id, seed.org_id, &state.jwt);
 
         Self {
-            db,
+            seed,
             queue,
             sink,
             thread_stream,
@@ -166,12 +161,12 @@ async fn enqueue_human_root(harness: &ThreadsHarness, content: &str, key: &str) 
         .enqueue(NewPromptRequest {
             session: None,
             sender: Participant::Human,
-            receiver_agent_id: harness.db.default_agent_id,
+            receiver_agent_id: harness.seed.agent_id,
             parent_session: None,
             content: Prompt::try_from(content).expect("prompt"),
             idempotency_key: IdempotencyKey::try_from(key).expect("key"),
-            org_id: harness.db.default_org_id,
-            created_by_user_id: harness.db.default_user_id,
+            org_id: harness.seed.org_id,
+            created_by_user_id: harness.seed.user_id,
             kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
         })
         .await
@@ -179,9 +174,9 @@ async fn enqueue_human_root(harness: &ThreadsHarness, content: &str, key: &str) 
         .request_id()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn list_threads_returns_one_row_per_human_root() {
-    let h = ThreadsHarness::new().await;
+#[sqlx::test]
+async fn list_threads_returns_one_row_per_human_root(pool: PgPool) {
+    let h = ThreadsHarness::new(pool).await;
     let r1 = enqueue_human_root(&h, "first", "k-1").await;
     let r2 = enqueue_human_root(&h, "second", "k-2").await;
 
@@ -220,9 +215,9 @@ async fn list_threads_returns_one_row_per_human_root() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn thread_messages_returns_empty_for_fresh_dag() {
-    let h = ThreadsHarness::new().await;
+#[sqlx::test]
+async fn thread_messages_returns_empty_for_fresh_dag(pool: PgPool) {
+    let h = ThreadsHarness::new(pool).await;
     let root = enqueue_human_root(&h, "hello", "k-1").await;
 
     let app = router(h.state.clone());
@@ -253,14 +248,14 @@ async fn thread_messages_returns_empty_for_fresh_dag() {
 /// produced it, and the G2 read endpoint surfaces it on the wire so the FE
 /// can dedupe optimistic / live / persisted bubbles by identity (no text
 /// matching). See `doc/thread_panel_refactor_export.md` for the rationale.
-#[tokio::test(flavor = "multi_thread")]
-async fn thread_messages_includes_request_id_per_row() {
-    let h = ThreadsHarness::new().await;
+#[sqlx::test]
+async fn thread_messages_includes_request_id_per_row(pool: PgPool) {
+    let h = ThreadsHarness::new(pool).await;
     let root = enqueue_human_root(&h, "hello", "k-1").await;
 
     // Stand up the human↔agent session bound to the enqueued DAG root, then
     // append one human turn carrying the same request_id the queue minted.
-    let agent = Participant::agent(h.db.default_agent_id);
+    let agent = Participant::agent(h.seed.agent_id);
     let session = h
         .state
         .sessions
@@ -269,8 +264,8 @@ async fn thread_messages_includes_request_id_per_row() {
             Participant::Human,
             agent,
             None,
-            h.db.default_org_id,
-            h.db.default_user_id,
+            h.seed.org_id,
+            h.seed.user_id,
         )
         .await
         .expect("create session");
@@ -312,9 +307,9 @@ async fn thread_messages_includes_request_id_per_row() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn notify_drives_thread_stream_subscriber() {
-    let h = ThreadsHarness::new().await;
+#[sqlx::test]
+async fn notify_drives_thread_stream_subscriber(pool: PgPool) {
+    let h = ThreadsHarness::new(pool).await;
     let root = enqueue_human_root(&h, "hi", "k-1").await;
 
     // Subscribe to the live fan-in stream BEFORE publishing so the slot is
@@ -341,7 +336,7 @@ async fn notify_drives_thread_stream_subscriber() {
         ThreadStreamEvent::Item(ev) => {
             assert_eq!(ev.request_id, root);
             assert!(matches!(ev.chunk, ResponseChunk::Text { .. }));
-            assert_eq!(ev.from_agent, h.db.default_agent_id);
+            assert_eq!(ev.from_agent, h.seed.agent_id);
         }
         ThreadStreamEvent::Stalled => panic!("unexpected stalled event"),
     }

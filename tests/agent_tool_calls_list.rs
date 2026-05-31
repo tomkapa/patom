@@ -31,10 +31,10 @@ use tower::ServiceExt;
 
 mod common;
 use common::auth::{SeededPrincipal, principal_for_default_org, seed_principal};
-use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
+use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
 
 struct Harness {
-    db: TestDb,
+    seed: common::pg::Seed,
     state: AppState,
     primary: SeededPrincipal,
     #[allow(dead_code)]
@@ -45,10 +45,9 @@ struct Harness {
 }
 
 impl Harness {
-    async fn new() -> Self {
-        let db = TestDb::fresh().await;
+    async fn new(pool: PgPool) -> Self {
+        let seed = seed_tenant(&pool).await;
         let clock: SharedClock = SystemClock::shared();
-        let pool: PgPool = db.pool.clone();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
@@ -84,7 +83,7 @@ impl Harness {
         let jwt = common::auth::test_jwt(clock.clone());
         let oauth = common::auth::test_oauth();
         let users = common::auth::user_store(pool.clone());
-        let primary = principal_for_default_org(db.default_user_id, db.default_org_id, &jwt);
+        let primary = principal_for_default_org(seed.user_id, seed.org_id, &jwt);
         let state = AppState {
             queue,
             leases,
@@ -128,7 +127,7 @@ impl Harness {
         };
 
         Self {
-            db,
+            seed,
             state,
             primary,
             agents,
@@ -237,38 +236,28 @@ async fn http_get(
     (status, json)
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn lists_tool_calls_for_agent_across_connections_with_server_alias() {
-    let h = Harness::new().await;
-    let notion = h
-        .seed_mcp(h.db.default_org_id, h.db.default_user_id, "notion")
-        .await;
-    let linear = h
-        .seed_mcp(h.db.default_org_id, h.db.default_user_id, "linear")
-        .await;
+#[sqlx::test]
+async fn lists_tool_calls_for_agent_across_connections_with_server_alias(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let notion = h.seed_mcp(h.seed.org_id, h.seed.user_id, "notion").await;
+    let linear = h.seed_mcp(h.seed.org_id, h.seed.user_id, "linear").await;
 
     let session = human_to_agent_session(
         h.state.sessions.as_ref(),
-        h.db.default_agent_id,
-        h.db.default_org_id,
-        h.db.default_user_id,
+        h.seed.agent_id,
+        h.seed.org_id,
+        h.seed.user_id,
     )
     .await;
-    let request = seed_prompt_request(
-        &h.state.pool,
-        session,
-        h.db.default_agent_id,
-        h.db.default_org_id,
-    )
-    .await;
+    let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
 
     let now = Utc::now();
     let base = ToolCallSeed {
         pool: &h.state.pool,
-        org: h.db.default_org_id,
+        org: h.seed.org_id,
         session,
         request,
-        agent: h.db.default_agent_id,
+        agent: h.seed.agent_id,
         mcp_server: Some(notion),
         tool_name: "",
         started_at: now,
@@ -298,7 +287,7 @@ async fn lists_tool_calls_for_agent_across_connections_with_server_alias() {
     })
     .await;
 
-    let uri = format!("/api/agents/{}/tool-calls", h.db.default_agent_id.as_uuid());
+    let uri = format!("/api/agents/{}/tool-calls", h.seed.agent_id.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK);
 
@@ -330,40 +319,32 @@ async fn lists_tool_calls_for_agent_across_connections_with_server_alias() {
     assert_eq!(body["next_cursor"], serde_json::Value::Null);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn excludes_non_mcp_tool_calls() {
+#[sqlx::test]
+async fn excludes_non_mcp_tool_calls(pool: PgPool) {
     // System tools (send_message, search_agents, …) record audit rows with
     // a null mcp_server_id. The per-agent "Recent activity" panel only
     // surfaces MCP traffic, so the endpoint must filter those rows out at
     // the SQL level — otherwise the cursor cap shrinks unpredictably and
     // mixed payloads leak through.
-    let h = Harness::new().await;
-    let notion = h
-        .seed_mcp(h.db.default_org_id, h.db.default_user_id, "notion")
-        .await;
+    let h = Harness::new(pool).await;
+    let notion = h.seed_mcp(h.seed.org_id, h.seed.user_id, "notion").await;
 
     let session = human_to_agent_session(
         h.state.sessions.as_ref(),
-        h.db.default_agent_id,
-        h.db.default_org_id,
-        h.db.default_user_id,
+        h.seed.agent_id,
+        h.seed.org_id,
+        h.seed.user_id,
     )
     .await;
-    let request = seed_prompt_request(
-        &h.state.pool,
-        session,
-        h.db.default_agent_id,
-        h.db.default_org_id,
-    )
-    .await;
+    let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
 
     let now = Utc::now();
     let base = ToolCallSeed {
         pool: &h.state.pool,
-        org: h.db.default_org_id,
+        org: h.seed.org_id,
         session,
         request,
-        agent: h.db.default_agent_id,
+        agent: h.seed.agent_id,
         mcp_server: None,
         tool_name: "",
         started_at: now,
@@ -390,7 +371,7 @@ async fn excludes_non_mcp_tool_calls() {
     })
     .await;
 
-    let uri = format!("/api/agents/{}/tool-calls", h.db.default_agent_id.as_uuid());
+    let uri = format!("/api/agents/{}/tool-calls", h.seed.agent_id.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK);
 
@@ -400,19 +381,17 @@ async fn excludes_non_mcp_tool_calls() {
     assert_eq!(items[0]["mcp_server_catalog_id"].as_str(), Some("notion"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn excludes_calls_from_other_agents() {
+#[sqlx::test]
+async fn excludes_calls_from_other_agents(pool: PgPool) {
     // Two agents in the same org: only the queried agent's rows come back,
     // even though both write to the same MCP server.
-    let h = Harness::new().await;
-    let server = h
-        .seed_mcp(h.db.default_org_id, h.db.default_user_id, "shared")
-        .await;
+    let h = Harness::new(pool).await;
+    let server = h.seed_mcp(h.seed.org_id, h.seed.user_id, "shared").await;
 
     let other_agent = h
         .agents
         .create(patom_rs::agents::NewAgent {
-            org_id: h.db.default_org_id,
+            org_id: h.seed.org_id,
             name: patom_rs::agents::AgentName::try_from("Bob").expect("name"),
             system_prompt: patom_rs::agents::AgentSystemPrompt::try_from("you are bob")
                 .expect("prompt"),
@@ -428,26 +407,20 @@ async fn excludes_calls_from_other_agents() {
 
     let session = human_to_agent_session(
         h.state.sessions.as_ref(),
-        h.db.default_agent_id,
-        h.db.default_org_id,
-        h.db.default_user_id,
+        h.seed.agent_id,
+        h.seed.org_id,
+        h.seed.user_id,
     )
     .await;
-    let request = seed_prompt_request(
-        &h.state.pool,
-        session,
-        h.db.default_agent_id,
-        h.db.default_org_id,
-    )
-    .await;
+    let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
 
     let now = Utc::now();
     insert_tool_call(ToolCallSeed {
         pool: &h.state.pool,
-        org: h.db.default_org_id,
+        org: h.seed.org_id,
         session,
         request,
-        agent: h.db.default_agent_id,
+        agent: h.seed.agent_id,
         mcp_server: Some(server),
         tool_name: "mine",
         started_at: now,
@@ -457,7 +430,7 @@ async fn excludes_calls_from_other_agents() {
     .await;
     insert_tool_call(ToolCallSeed {
         pool: &h.state.pool,
-        org: h.db.default_org_id,
+        org: h.seed.org_id,
         session,
         request,
         agent: other_agent,
@@ -469,7 +442,7 @@ async fn excludes_calls_from_other_agents() {
     })
     .await;
 
-    let uri = format!("/api/agents/{}/tool-calls", h.db.default_agent_id.as_uuid());
+    let uri = format!("/api/agents/{}/tool-calls", h.seed.agent_id.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK);
 
@@ -478,36 +451,28 @@ async fn excludes_calls_from_other_agents() {
     assert_eq!(items[0]["tool_name"], "mine");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cursor_pagination_walks_backward_in_time() {
-    let h = Harness::new().await;
-    let server = h
-        .seed_mcp(h.db.default_org_id, h.db.default_user_id, "paged")
-        .await;
+#[sqlx::test]
+async fn cursor_pagination_walks_backward_in_time(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let server = h.seed_mcp(h.seed.org_id, h.seed.user_id, "paged").await;
     let session = human_to_agent_session(
         h.state.sessions.as_ref(),
-        h.db.default_agent_id,
-        h.db.default_org_id,
-        h.db.default_user_id,
+        h.seed.agent_id,
+        h.seed.org_id,
+        h.seed.user_id,
     )
     .await;
-    let request = seed_prompt_request(
-        &h.state.pool,
-        session,
-        h.db.default_agent_id,
-        h.db.default_org_id,
-    )
-    .await;
+    let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
 
     let base = Utc::now();
     for i in 0..5_i64 {
         let name = format!("tool_{i}");
         insert_tool_call(ToolCallSeed {
             pool: &h.state.pool,
-            org: h.db.default_org_id,
+            org: h.seed.org_id,
             session,
             request,
-            agent: h.db.default_agent_id,
+            agent: h.seed.agent_id,
             mcp_server: Some(server),
             tool_name: &name,
             started_at: base - chrono::Duration::seconds(i),
@@ -519,7 +484,7 @@ async fn cursor_pagination_walks_backward_in_time() {
 
     let uri = format!(
         "/api/agents/{}/tool-calls?limit=2",
-        h.db.default_agent_id.as_uuid()
+        h.seed.agent_id.as_uuid()
     );
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK);
@@ -534,7 +499,7 @@ async fn cursor_pagination_walks_backward_in_time() {
 
     let uri = format!(
         "/api/agents/{}/tool-calls?limit=2&before={}",
-        h.db.default_agent_id.as_uuid(),
+        h.seed.agent_id.as_uuid(),
         cursor,
     );
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
@@ -548,7 +513,7 @@ async fn cursor_pagination_walks_backward_in_time() {
     let cursor = body["next_cursor"].as_str().expect("cursor").to_owned();
     let uri = format!(
         "/api/agents/{}/tool-calls?limit=2&before={}",
-        h.db.default_agent_id.as_uuid(),
+        h.seed.agent_id.as_uuid(),
         cursor,
     );
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
@@ -559,9 +524,9 @@ async fn cursor_pagination_walks_backward_in_time() {
     assert_eq!(body["next_cursor"], serde_json::Value::Null);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cross_org_agent_returns_404() {
-    let h = Harness::new().await;
+#[sqlx::test]
+async fn cross_org_agent_returns_404(pool: PgPool) {
+    let h = Harness::new(pool).await;
     // Seed an agent under a *different* org. The primary principal must
     // not see existence — same shape as `read_agent` cross-org access.
     let foreign = seed_principal(&h.state.pool, &h.state.jwt).await;
@@ -587,9 +552,9 @@ async fn cross_org_agent_returns_404() {
     assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unauthenticated_request_returns_401() {
-    let h = Harness::new().await;
+#[sqlx::test]
+async fn unauthenticated_request_returns_401(pool: PgPool) {
+    let h = Harness::new(pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(

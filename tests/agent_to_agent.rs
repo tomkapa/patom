@@ -62,10 +62,11 @@ use patom_rs::session::{PgSessionStore, SharedSessionStore};
 use patom_rs::tools::system::SendMessageTool;
 use patom_rs::tools::{ToolBox, ToolRegistry};
 use patom_rs::types::{Participant, Prompt, ToolName};
+use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
 /// Provider that dispatches to a per-agent script keyed by [`AgentId`].
 ///
@@ -132,19 +133,18 @@ fn end_turn(text: &'static str) -> ChatResponse {
 }
 
 #[allow(clippy::too_many_lines)] // single end-to-end scenario; splitting it would obscure the trace.
-#[tokio::test(flavor = "multi_thread")]
-async fn translator_delegation_round_trips_and_emits_root_done() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
     let clock = SystemClock::shared();
 
     // ── Agents — Coordinator is the seeded default; Translator is a fresh
     // row created against the live agents store. ─────────────────────────
-    let coordinator_id = db.default_agent_id;
-    let agent_store: SharedAgentStore =
-        common::pg::shared_agent_store(db.pool.clone(), clock.clone());
+    let coordinator_id = seed.agent_id;
+    let agent_store: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
     let translator_record = agent_store
         .create(NewAgent {
-            org_id: db.default_org_id,
+            org_id: seed.org_id,
             name: AgentName::try_from("translator").expect("name"),
             system_prompt: AgentSystemPrompt::try_from(
                 "You translate phrases into French. Reply via send_message.",
@@ -203,14 +203,13 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
     );
 
     // ── Pipeline collaborators ───────────────────────────────────────────
-    let queue_impl = Arc::new(PgPromptQueue::new(db.pool.clone(), clock.clone()));
+    let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
     let queue = queue_impl.clone();
     let leases = queue_impl.clone();
-    let hub: Arc<PgResponseHub> = Arc::new(PgResponseHub::new(db.pool.clone(), clock.clone()));
+    let hub: Arc<PgResponseHub> = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let sink = hub.clone();
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
-    let dag: SharedDagBudget = Arc::new(PgDagBudget::new(db.pool.clone()));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
     let model = Model::try_from("test-model").expect("catalog");
 
@@ -270,7 +269,7 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
     ));
     let memory_store_for_pool: patom_rs::memory::SharedMemoryStore =
         Arc::new(patom_rs::memory::PgMemoryStore::new(
-            db.pool.clone(),
+            pool.clone(),
             patom_rs::clock::SystemClock::shared(),
             common::embedding::FakeEmbeddingProvider::shared(),
         ));
@@ -296,7 +295,7 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
         agents_registry,
         sessions.clone(),
         dag.clone(),
-        db.pool.clone(),
+        pool.clone(),
         memory_store_for_pool,
         clock.clone(),
         cfg,
@@ -309,7 +308,7 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
     // the DAG (root, sub-agent fan-outs, the Coordinator's second-run reply
     // to the human) fan in here, routed by `prompt_requests.root_request_id`.
     let thread_stream: SharedThreadStream =
-        PgThreadStream::spawn(db.pool.clone(), CancellationToken::new())
+        PgThreadStream::spawn(pool.clone(), CancellationToken::new())
             .await
             .expect("spawn thread stream");
 
@@ -322,8 +321,8 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
             parent_session: None,
             content: Prompt::try_from("translate 'hello' to French please").expect("prompt"),
             idempotency_key: IdempotencyKey::try_from("a2a-root").expect("key"),
-            org_id: db.default_org_id,
-            created_by_user_id: db.default_user_id,
+            org_id: seed.org_id,
+            created_by_user_id: seed.user_id,
             kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
         })
         .await
@@ -386,11 +385,11 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
         "SELECT turns_used, turns_cap FROM prompt_request_dags WHERE root_request_id = $1",
     )
     .bind(root_id)
-    .fetch_one(&db.pool)
+    .fetch_one(&pool)
     .await
     .expect("dag row");
     assert_eq!(turns_used, 3, "three send_message bumps observed");
-    assert!(turns_cap > turns_used, "well under cap (cap={turns_cap})",);
+    assert!(turns_cap > turns_used, "well under cap (cap={turns_cap})");
 
     // Three sessions exist for the DAG — one per pair: (Human, Coordinator),
     // (Coordinator, Translator), and (Human, Translator) is NOT created
@@ -398,7 +397,7 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
     let session_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE root_request_id = $1")
             .bind(root_id)
-            .fetch_one(&db.pool)
+            .fetch_one(&pool)
             .await
             .expect("session count");
     assert_eq!(
@@ -406,7 +405,7 @@ async fn translator_delegation_round_trips_and_emits_root_done() {
         "expected exactly two sessions in the DAG (human↔coordinator, coordinator↔translator); got {session_count}",
     );
 
-    // Wind the worker pool down before TestDb drops the schema.
+    // Wind the worker pool down.
     workers.shutdown().await;
 }
 

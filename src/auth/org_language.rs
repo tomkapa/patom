@@ -37,7 +37,7 @@ const ORG_LANGUAGE_CACHE_CAP: usize = 256;
 /// TTL on the cached language. Matches the prompt cache's TTL (60s) so
 /// the two surfaces share one liveness window; the PATCH route forces an
 /// immediate invalidation rather than waiting for natural expiry.
-const ORG_LANGUAGE_CACHE_TTL: Duration = Duration::from_secs(60);
+const ORG_LANGUAGE_CACHE_TTL: Duration = Duration::from_mins(1);
 
 /// Resolver errors. Each variant maps cleanly onto a wire-visible failure
 /// the agent worker can surface in its existing `MemoryError` chain.

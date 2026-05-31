@@ -20,13 +20,14 @@ use patom_rs::scheduling::{
     ScheduledTaskName, ScheduledTaskState, ScheduledTaskStore, TimeOfDay, Timezone, Weekday,
     Weekdays,
 };
+use sqlx::PgPool;
 
 mod common;
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
-fn store(db: &TestDb) -> Arc<PgScheduledTaskStore> {
+fn store(pool: &PgPool) -> Arc<PgScheduledTaskStore> {
     Arc::new(PgScheduledTaskStore::new(
-        db.pool.clone(),
+        pool.clone(),
         SystemClock::shared(),
     ))
 }
@@ -41,27 +42,27 @@ struct Tenancy {
 }
 
 impl Tenancy {
-    fn default_for(db: &TestDb) -> Self {
+    fn default_for(seed: &common::pg::Seed) -> Self {
         Self {
-            owner: db.default_agent_id,
-            org_id: db.default_org_id,
-            user_id: db.default_user_id,
+            owner: seed.agent_id,
+            org_id: seed.org_id,
+            user_id: seed.user_id,
         }
     }
 
-    fn with_owner(db: &TestDb, owner: AgentId) -> Self {
+    fn with_owner(seed: &common::pg::Seed, owner: AgentId) -> Self {
         Self {
             owner,
-            org_id: db.default_org_id,
-            user_id: db.default_user_id,
+            org_id: seed.org_id,
+            user_id: seed.user_id,
         }
     }
 }
 
-async fn extra_agent(db: &TestDb, name: &str) -> AgentId {
-    let agents = common::pg::agent_store(db.pool.clone(), SystemClock::shared());
+async fn extra_agent(pool: &PgPool, seed: &common::pg::Seed, name: &str) -> AgentId {
+    let agents = common::pg::agent_store(pool.clone(), SystemClock::shared());
     let payload = NewAgent {
-        org_id: db.default_org_id,
+        org_id: seed.org_id,
         name: AgentName::try_from(name).expect("valid name"),
         system_prompt: AgentSystemPrompt::try_from("p").expect("valid prompt"),
         description: patom_rs::agents::AgentDescription::try_from("p").expect("desc"),
@@ -104,18 +105,18 @@ fn new_task(t: &Tenancy, name: &str, schedule: ScheduleSpec) -> NewScheduledTask
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn create_round_trips_once_schedule() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn create_round_trips_once_schedule(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
-    let t = Tenancy::default_for(&db);
+    let t = Tenancy::default_for(&seed);
     let payload = new_task(&t, "drafts due tomorrow", once_at(2030, 1, 1, 9));
     let row = store.create(payload).await.expect("create");
 
-    assert_eq!(row.owner_agent_id, db.default_agent_id);
-    assert_eq!(row.org_id, db.default_org_id);
-    assert_eq!(row.created_by_user_id, db.default_user_id);
+    assert_eq!(row.owner_agent_id, seed.agent_id);
+    assert_eq!(row.org_id, seed.org_id);
+    assert_eq!(row.created_by_user_id, seed.user_id);
     assert_eq!(row.name.as_str(), "drafts due tomorrow");
     assert_eq!(row.state, ScheduledTaskState::Active);
     assert!(row.next_run_at.is_some(), "Once in future has next_run_at");
@@ -129,12 +130,12 @@ async fn create_round_trips_once_schedule() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn create_round_trips_recurring_schedule() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn create_round_trips_recurring_schedule(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
-    let t = Tenancy::default_for(&db);
+    let t = Tenancy::default_for(&seed);
     let payload = new_task(&t, "morning email", recurring_workdays_05_bkk());
     let row = store.create(payload).await.expect("create");
 
@@ -149,13 +150,13 @@ async fn create_round_trips_recurring_schedule() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn list_for_agent_returns_only_own_active_rows() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
-    let other = extra_agent(&db, "other-agent").await;
-    let default_t = Tenancy::default_for(&db);
-    let other_t = Tenancy::with_owner(&db, other);
+#[sqlx::test]
+async fn list_for_agent_returns_only_own_active_rows(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let other = extra_agent(&pool, &seed, "other-agent").await;
+    let default_t = Tenancy::default_for(&seed);
+    let other_t = Tenancy::with_owner(&seed, other);
 
     // Two tasks for the default agent, one for the other agent.
     let mine_a = store
@@ -174,22 +175,19 @@ async fn list_for_agent_returns_only_own_active_rows() {
         .expect("ok")
         .id;
 
-    let rows = store
-        .list_for_agent(db.default_agent_id)
-        .await
-        .expect("list");
+    let rows = store.list_for_agent(seed.agent_id).await.expect("list");
     let ids: Vec<_> = rows.iter().map(|r| r.id).collect();
     assert_eq!(rows.len(), 2);
     assert!(ids.contains(&mine_a));
     assert!(ids.contains(&mine_b));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn list_excludes_cancelled_rows() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn list_excludes_cancelled_rows(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
-    let t = Tenancy::default_for(&db);
+    let t = Tenancy::default_for(&seed);
     let kept = store
         .create(new_task(&t, "kept", once_at(2030, 1, 1, 9)))
         .await
@@ -201,26 +199,20 @@ async fn list_excludes_cancelled_rows() {
         .expect("ok")
         .id;
 
-    store
-        .cancel(dropped, db.default_agent_id)
-        .await
-        .expect("cancel");
+    store.cancel(dropped, seed.agent_id).await.expect("cancel");
 
-    let rows = store
-        .list_for_agent(db.default_agent_id)
-        .await
-        .expect("list");
+    let rows = store.list_for_agent(seed.agent_id).await.expect("list");
     let ids: Vec<_> = rows.iter().map(|r| r.id).collect();
     assert_eq!(ids, vec![kept]);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cancel_rejects_cross_owner() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
-    let other = extra_agent(&db, "intruder").await;
+#[sqlx::test]
+async fn cancel_rejects_cross_owner(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let other = extra_agent(&pool, &seed, "intruder").await;
 
-    let t = Tenancy::default_for(&db);
+    let t = Tenancy::default_for(&seed);
     let task = store
         .create(new_task(&t, "t", once_at(2030, 1, 1, 9)))
         .await
@@ -233,54 +225,51 @@ async fn cancel_rejects_cross_owner() {
     assert!(matches!(err, ScheduledTaskError::NotFound(_)));
 
     // Original row still active — the failed cancel must not have flipped state.
-    let rows = store
-        .list_for_agent(db.default_agent_id)
-        .await
-        .expect("list");
+    let rows = store.list_for_agent(seed.agent_id).await.expect("list");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].state, ScheduledTaskState::Active);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cancel_returns_not_found_for_missing_id() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn cancel_returns_not_found_for_missing_id(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
     let phantom = patom_rs::scheduling::ScheduledTaskId::new();
     let err = store
-        .cancel(phantom, db.default_agent_id)
+        .cancel(phantom, seed.agent_id)
         .await
         .expect_err("missing");
     assert!(matches!(err, ScheduledTaskError::NotFound(_)));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cancel_is_idempotent_on_already_cancelled() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn cancel_is_idempotent_on_already_cancelled(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
-    let t = Tenancy::default_for(&db);
+    let t = Tenancy::default_for(&seed);
     let id = store
         .create(new_task(&t, "t", once_at(2030, 1, 1, 9)))
         .await
         .expect("ok")
         .id;
-    store.cancel(id, db.default_agent_id).await.expect("first");
+    store.cancel(id, seed.agent_id).await.expect("first");
     // Second call against an already-cancelled row is a no-op (Ok).
-    store.cancel(id, db.default_agent_id).await.expect("second");
+    store.cancel(id, seed.agent_id).await.expect("second");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn claim_due_returns_only_due_active_rows_in_order() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn claim_due_returns_only_due_active_rows_in_order(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
     let now = Utc::now();
     let earliest_due = now - ChronoDuration::seconds(120);
     let later_due = now - ChronoDuration::seconds(30);
     let future = now + ChronoDuration::days(7);
 
-    let t = Tenancy::default_for(&db);
+    let t = Tenancy::default_for(&seed);
     // Three rows: earliest due, later due, far-future (not due).
     let early = insert_with_next_run(&store, &t, "early", earliest_due).await;
     let later = insert_with_next_run(&store, &t, "later", later_due).await;
@@ -289,7 +278,7 @@ async fn claim_due_returns_only_due_active_rows_in_order() {
     // Cancelled row that is "due" — must be excluded.
     let cancelled = insert_with_next_run(&store, &t, "cxl", earliest_due).await;
     store
-        .cancel(cancelled, db.default_agent_id)
+        .cancel(cancelled, seed.agent_id)
         .await
         .expect("cancel");
 
@@ -298,12 +287,12 @@ async fn claim_due_returns_only_due_active_rows_in_order() {
     assert_eq!(ids, vec![early, later]);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn claim_due_respects_limit() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn claim_due_respects_limit(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
-    let t = Tenancy::default_for(&db);
+    let t = Tenancy::default_for(&seed);
     let now = Utc::now();
     let due = now - ChronoDuration::seconds(60);
     for i in 0..5 {
@@ -314,12 +303,12 @@ async fn claim_due_respects_limit() {
     assert_eq!(claimed.len(), 2);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn record_fired_advances_when_next_is_some() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn record_fired_advances_when_next_is_some(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
-    let t = Tenancy::default_for(&db);
+    let t = Tenancy::default_for(&seed);
     let now = Utc::now();
     let id = insert_with_next_run(&store, &t, "advance", now - ChronoDuration::seconds(10)).await;
     let request_id = PromptRequestId::new();
@@ -331,7 +320,7 @@ async fn record_fired_advances_when_next_is_some() {
         .expect("record_fired");
 
     let row = store
-        .list_for_agent(db.default_agent_id)
+        .list_for_agent(seed.agent_id)
         .await
         .expect("list")
         .into_iter()
@@ -346,12 +335,12 @@ async fn record_fired_advances_when_next_is_some() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn record_fired_marks_done_when_next_is_none() {
-    let db = TestDb::fresh().await;
-    let store = store(&db);
+#[sqlx::test]
+async fn record_fired_marks_done_when_next_is_none(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
 
-    let t = Tenancy::default_for(&db);
+    let t = Tenancy::default_for(&seed);
     let now = Utc::now();
     let id = insert_with_next_run(&store, &t, "exhausted", now - ChronoDuration::seconds(10)).await;
     let request_id = PromptRequestId::new();
@@ -362,10 +351,7 @@ async fn record_fired_marks_done_when_next_is_none() {
         .expect("record_fired");
 
     // list_for_agent filters to active rows only — Done row must not appear.
-    let rows = store
-        .list_for_agent(db.default_agent_id)
-        .await
-        .expect("list");
+    let rows = store.list_for_agent(seed.agent_id).await.expect("list");
     assert!(rows.iter().all(|r| r.id != id));
 
     // And the row must not be claimable any more.

@@ -35,7 +35,7 @@ use tower::ServiceExt;
 
 mod common;
 use common::auth::{SeededPrincipal, seed_principal};
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
 struct Harness {
     state: AppState,
@@ -43,15 +43,12 @@ struct Harness {
     primary: SeededPrincipal,
     #[allow(dead_code)]
     refresher: McpRefresher,
-    #[allow(dead_code)]
-    db: TestDb,
 }
 
 impl Harness {
-    async fn new() -> Self {
-        let db = TestDb::fresh().await;
+    async fn new(pool: PgPool) -> Self {
+        let _seed = seed_tenant(&pool).await;
         let clock = SystemClock::shared();
-        let pool: PgPool = db.pool.clone();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
@@ -137,7 +134,6 @@ impl Harness {
             agents,
             primary,
             refresher,
-            db,
         }
     }
 
@@ -250,9 +246,9 @@ async fn restore_version(
     (status, json)
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn list_returns_seeded_v1_then_v2_after_prompt_edit() {
-    let h = Harness::new().await;
+#[sqlx::test]
+async fn list_returns_seeded_v1_then_v2_after_prompt_edit(pool: PgPool) {
+    let h = Harness::new(pool).await;
     let id = h.seed_agent("atlas", "first prompt").await;
     let cookie = h.primary.cookie_header();
 
@@ -289,9 +285,9 @@ async fn list_returns_seeded_v1_then_v2_after_prompt_edit() {
     assert!(top["version"].as_u64().unwrap_or(0) >= 1);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn restore_appends_byte_identical_row_at_max_plus_one() {
-    let h = Harness::new().await;
+#[sqlx::test]
+async fn restore_appends_byte_identical_row_at_max_plus_one(pool: PgPool) {
+    let h = Harness::new(pool).await;
     let id = h.seed_agent("atlas", "original prompt").await;
     let cookie = h.primary.cookie_header();
 
@@ -346,9 +342,9 @@ async fn restore_appends_byte_identical_row_at_max_plus_one() {
     assert_eq!(oldest_again["version"], oldest["version"]);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn foreign_principal_gets_404_on_list_and_restore() {
-    let h = Harness::new().await;
+#[sqlx::test]
+async fn foreign_principal_gets_404_on_list_and_restore(pool: PgPool) {
+    let h = Harness::new(pool).await;
     let id = h.seed_agent("atlas", "original prompt").await;
     put_agent(
         &h,

@@ -28,7 +28,7 @@ use tower::ServiceExt;
 
 mod common;
 use common::auth::{SeededPrincipal, seed_principal};
-use common::pg::TestDb;
+use common::pg::seed_tenant;
 
 struct AuthMcpHarness {
     state: AppState,
@@ -36,15 +36,12 @@ struct AuthMcpHarness {
     primary: SeededPrincipal,
     #[allow(dead_code)]
     refresher: McpRefresher,
-    #[allow(dead_code)]
-    db: TestDb,
 }
 
 impl AuthMcpHarness {
-    async fn new() -> Self {
-        let db = TestDb::fresh().await;
+    async fn new(pool: &PgPool) -> Self {
+        let _seed = seed_tenant(pool).await;
         let clock = SystemClock::shared();
-        let pool: PgPool = db.pool.clone();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
@@ -79,7 +76,7 @@ impl AuthMcpHarness {
         let jwt = common::auth::test_jwt(clock.clone());
         let oauth = common::auth::test_oauth();
         let users = common::auth::user_store(pool.clone());
-        let primary = seed_principal(&pool, &jwt).await;
+        let primary = seed_principal(pool, &jwt).await;
 
         let mcp_catalog: patom_rs::mcp::SharedMcpCatalogStore =
             Arc::new(patom_rs::mcp::PgMcpCatalogStore::new(pool.clone()));
@@ -130,7 +127,6 @@ impl AuthMcpHarness {
             mcp_store,
             primary,
             refresher,
-            db,
         }
     }
 
@@ -151,7 +147,7 @@ impl AuthMcpHarness {
              ON CONFLICT DO NOTHING",
         )
         .bind(catalog_id_str)
-        .execute(&self.db.pool)
+        .execute(&self.state.pool)
         .await
         .expect("seed mcp_catalog");
         let catalog_id = McpCatalogId::try_from(catalog_id_str).expect("valid catalog id");
@@ -174,9 +170,9 @@ impl AuthMcpHarness {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unauthenticated_get_mcp_servers_returns_401() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn unauthenticated_get_mcp_servers_returns_401(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -191,9 +187,9 @@ async fn unauthenticated_get_mcp_servers_returns_401() {
     assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn authenticated_new_user_sees_empty_list() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn authenticated_new_user_sees_empty_list(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -214,15 +210,15 @@ async fn authenticated_new_user_sees_empty_list() {
     assert_eq!(json, serde_json::json!([]));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn list_mcp_servers_surfaces_creator_email() {
+#[sqlx::test]
+async fn list_mcp_servers_surfaces_creator_email(pool: PgPool) {
     // Regression: the tenant-scoped tx for `list_mcp_servers` runs as
     // `patom_app`, and migration 14 REVOKEs ALL on `users` from that role.
     // An earlier change tried to LEFT JOIN onto `users` from inside the
     // tenant-scoped SELECT, which raised "permission denied for table users"
     // and surfaced to the client as a 500 "auth error". Enrichment must
     // happen via the privileged user store after the tx commits.
-    let h = AuthMcpHarness::new().await;
+    let h = AuthMcpHarness::new(&pool).await;
     h.seed_mcp(h.primary.org_id, h.primary.user_id, "with-creator")
         .await;
 
@@ -257,9 +253,9 @@ async fn list_mcp_servers_surfaces_creator_email() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cross_org_isolation_filters_to_caller_org() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
 
     // Mint a *second* principal in a different org and seed one row in
     // each org via the privileged store.
@@ -322,9 +318,9 @@ async fn cross_org_isolation_filters_to_caller_org() {
     assert_eq!(aliases, vec!["theirs"]);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unauthenticated_test_connect_returns_401() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn unauthenticated_test_connect_returns_401(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -342,9 +338,9 @@ async fn unauthenticated_test_connect_returns_401() {
     assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn test_connect_against_dead_url_returns_failed_outcome() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn test_connect_against_dead_url_returns_failed_outcome(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -377,9 +373,9 @@ async fn test_connect_against_dead_url_returns_failed_outcome() {
     assert_eq!(count, 0);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn test_connect_rate_limits_per_user() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn test_connect_rate_limits_per_user(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let app = router(h.state.clone());
     let body = r#"{"config":{"type":"http","url":"http://127.0.0.1:1/"}}"#;
     let mut last_status = axum::http::StatusCode::OK;
@@ -405,9 +401,9 @@ async fn test_connect_rate_limits_per_user() {
     assert_eq!(last_status, axum::http::StatusCode::TOO_MANY_REQUESTS);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn create_with_credentials_seals_to_encrypted_table() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn create_with_credentials_seals_to_encrypted_table(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let app = router(h.state.clone());
     // Create a server *with* a secret-bearing header in one request.
     // Use a custom catalog id (not a built-in) so the full-form path
@@ -498,9 +494,9 @@ async fn create_with_credentials_seals_to_encrypted_table() {
     assert_eq!(row["credentials_kind"], serde_json::json!("static_headers"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn put_credentials_replaces_without_revealing_old_value() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn put_credentials_replaces_without_revealing_old_value(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     h.seed_mcp(h.primary.org_id, h.primary.user_id, "rotate")
         .await;
     let server_id: uuid::Uuid = sqlx::query_scalar(
@@ -570,9 +566,9 @@ async fn put_credentials_replaces_without_revealing_old_value() {
 /// scope rejected, …) the handler must redirect to the FE with
 /// `?status=failed&reason=…` so the Failed frame can render — not
 /// terminate the flow with a bare 400.
-#[tokio::test(flavor = "multi_thread")]
-async fn oauth_callback_vendor_error_redirects_with_failed_status() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn oauth_callback_vendor_error_redirects_with_failed_status(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -597,9 +593,9 @@ async fn oauth_callback_vendor_error_redirects_with_failed_status() {
 /// When `state` is missing the handler has nothing to consume and no
 /// `redirect_to` to honour; it must still bounce the user to a
 /// FE-friendly URL rather than 400.
-#[tokio::test(flavor = "multi_thread")]
-async fn oauth_callback_missing_state_redirects_to_root_failed() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn oauth_callback_missing_state_redirects_to_root_failed(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -625,9 +621,9 @@ async fn oauth_callback_missing_state_redirects_to_root_failed() {
 /// so we fall back to `/` for the redirect base. `reason=unknown_or_
 /// expired_state` lets the FE distinguish replay attempts from
 /// vendor-side errors.
-#[tokio::test(flavor = "multi_thread")]
-async fn oauth_callback_unknown_state_redirects_to_root_failed() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn oauth_callback_unknown_state_redirects_to_root_failed(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(
@@ -655,9 +651,9 @@ async fn oauth_callback_unknown_state_redirects_to_root_failed() {
 /// `"ok"` for a no-auth custom server — parking it in `auth_pending`
 /// would cause the refresher to skip it forever, since there's no
 /// OAuth callback to flip the bit.
-#[tokio::test(flavor = "multi_thread")]
-async fn custom_create_auto_upserts_catalog_entry() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn custom_create_auto_upserts_catalog_entry(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let app = router(h.state.clone());
     let body = serde_json::json!({
         "catalog_id": "pencil",
@@ -717,9 +713,9 @@ async fn custom_create_auto_upserts_catalog_entry() {
 /// the *server-row* uniqueness. Surfaces as `CatalogIdTaken` → 409.
 /// The catalog row must NOT be mutated by the second call — that
 /// would leak state on a request whose top-line response is a refusal.
-#[tokio::test(flavor = "multi_thread")]
-async fn custom_create_second_call_is_conflict_and_does_not_mutate_catalog() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn custom_create_second_call_is_conflict_and_does_not_mutate_catalog(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let first_body = serde_json::json!({
         "catalog_id": "pencil",
         "display_name": "Pencil",
@@ -805,9 +801,9 @@ async fn custom_create_second_call_is_conflict_and_does_not_mutate_catalog() {
 /// A custom create that picks a catalog_id matching a built-in (e.g.
 /// `notion`) is refused with 409, not silently shadowed. Prevents an
 /// operator from breaking their built-in Notion wiring by accident.
-#[tokio::test(flavor = "multi_thread")]
-async fn custom_create_rejects_shadowing_global_id() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn custom_create_rejects_shadowing_global_id(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let body = serde_json::json!({
         "catalog_id": "notion",
         "display_name": "Self-hosted Notion",
@@ -835,9 +831,9 @@ async fn custom_create_rejects_shadowing_global_id() {
 /// static headers — the refresher would publish it as `Ok` forever
 /// while every tool call 401s. The fix surfaces the mismatch up-front
 /// instead of letting it land silently.
-#[tokio::test(flavor = "multi_thread")]
-async fn oauth_catalog_with_inline_credentials_is_rejected() {
-    let h = AuthMcpHarness::new().await;
+#[sqlx::test]
+async fn oauth_catalog_with_inline_credentials_is_rejected(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
     let body = serde_json::json!({
         "catalog_id": "gmail",
         "credentials": {

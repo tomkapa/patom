@@ -31,8 +31,9 @@ use serde_json::json;
 
 mod common;
 use common::lang::StaticOrgLanguageResolver;
-use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
+use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
 use common::rule::StaticOrgRuleResolver;
+use sqlx::PgPool;
 
 struct Fixture {
     deps: MemoryToolDeps,
@@ -44,20 +45,19 @@ struct Fixture {
     org_id: patom_rs::auth::OrgId,
 }
 
-async fn fixture(db: &TestDb) -> Fixture {
+async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let clock: SharedClock = SystemClock::shared();
     let embeddings = common::embedding::FakeEmbeddingProvider::shared();
-    let agents: SharedAgentStore = common::pg::shared_agent_store(db.pool.clone(), clock.clone());
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
-    let prompt_cache = AgentPromptCache::new(8, Duration::from_secs(60), clock.clone());
-    let names_cache = AgentNamesCache::new(16, Duration::from_secs(60), clock.clone());
+    let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let prompt_cache = AgentPromptCache::new(8, Duration::from_mins(1), clock.clone());
+    let names_cache = AgentNamesCache::new(16, Duration::from_mins(1), clock.clone());
     let store: SharedMemoryStore = Arc::new(PgMemoryStore::new(
-        db.pool.clone(),
+        pool.clone(),
         clock.clone(),
         embeddings.clone(),
     ));
-    let session_cache = SessionMemoryCache::new(8, Duration::from_secs(60), clock.clone());
+    let session_cache = SessionMemoryCache::new(8, Duration::from_mins(1), clock.clone());
     let loader =
         MemorySectionLoader::new(store.clone(), sessions.clone(), embeddings, session_cache);
     let prompts = Arc::new(Prompts::load());
@@ -74,21 +74,16 @@ async fn fixture(db: &TestDb) -> Fixture {
         rule_resolver,
         clock,
     );
-    let session = human_to_agent_session(
-        sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+    let session =
+        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     Fixture {
         deps: MemoryToolDeps::new(loader.clone()),
         loader,
         store,
         session,
-        agent_id: db.default_agent_id,
-        user_id: db.default_user_id,
-        org_id: db.default_org_id,
+        agent_id: seed.agent_id,
+        user_id: seed.user_id,
+        org_id: seed.org_id,
     }
 }
 
@@ -104,12 +99,12 @@ fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn memory_write_creates_tentative_row() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn memory_write_creates_tentative_row(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let tool = MemoryWriteTool::new(f.deps.clone());
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
 
     let out = tool
         .execute(
@@ -129,10 +124,10 @@ async fn memory_write_creates_tentative_row() {
     assert!(!listed[0].pinned);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn memory_update_resolves_handle_and_resets_state() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn memory_update_resolves_handle_and_resets_state(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
 
     // Seed a memory at Held; the update tool should bring it back to
     // Tentative because the content changed.
@@ -151,7 +146,7 @@ async fn memory_update_resolves_handle_and_resets_state() {
 
     // Compose the section so the handle map is populated. We do this
     // through the same path the tool uses: a `resolve_handle` call.
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let _ = MemoryWriteTool::new(f.deps.clone()); // ensure deps usable
     let update = MemoryUpdateTool::new(f.deps.clone());
     // The tool resolves M-1 via the session cache it shares.
@@ -176,10 +171,10 @@ async fn memory_update_resolves_handle_and_resets_state() {
     assert_eq!(row.state, MemoryState::Tentative);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn memory_update_pinned_row_rejects_agent_call() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn memory_update_pinned_row_rejects_agent_call(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let _written = f
         .store
         .apply(MemoryMutation::Write {
@@ -194,7 +189,7 @@ async fn memory_update_pinned_row_rejects_agent_call() {
         .expect("seed pinned");
 
     let update = MemoryUpdateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let err = update
         .execute(
             json!({"handle": "M-1", "content": "agent attempt"}),
@@ -205,10 +200,10 @@ async fn memory_update_pinned_row_rejects_agent_call() {
     assert!(matches!(err, ToolError::InvalidInput(_)), "got {err:?}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn memory_validate_promotes_state_without_content_change() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn memory_validate_promotes_state_without_content_change(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let written = f
         .store
         .apply(MemoryMutation::Write {
@@ -223,7 +218,7 @@ async fn memory_validate_promotes_state_without_content_change() {
         .expect("seed");
 
     let validate = MemoryValidateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let out = validate
         .execute(
             json!({
@@ -248,10 +243,10 @@ async fn memory_validate_promotes_state_without_content_change() {
     assert_eq!(row.state, MemoryState::Held);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn memory_validate_rejects_pinned_row() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn memory_validate_rejects_pinned_row(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let _ = f
         .store
         .apply(MemoryMutation::Write {
@@ -266,7 +261,7 @@ async fn memory_validate_rejects_pinned_row() {
         .expect("seed pinned");
 
     let validate = MemoryValidateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let err = validate
         .execute(
             json!({"handle": "M-1", "evidence": "external source agrees"}),
@@ -277,10 +272,10 @@ async fn memory_validate_rejects_pinned_row() {
     assert!(matches!(err, ToolError::InvalidInput(_)), "got {err:?}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn memory_forget_removes_row() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn memory_forget_removes_row(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let written = f
         .store
         .apply(MemoryMutation::Write {
@@ -295,7 +290,7 @@ async fn memory_forget_removes_row() {
         .expect("seed");
 
     let forget = MemoryForgetTool::new(f.deps.clone());
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let out = forget
         .execute(json!({"handle": "M-1"}), &ctx(&f, request))
         .await
@@ -309,12 +304,12 @@ async fn memory_forget_removes_row() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unknown_handle_surfaces_invalid_input() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn unknown_handle_surfaces_invalid_input(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let update = MemoryUpdateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let err = update
         .execute(
             json!({"handle": "M-99", "content": "nope"}),
@@ -325,12 +320,12 @@ async fn unknown_handle_surfaces_invalid_input() {
     assert!(matches!(err, ToolError::InvalidInput(_)), "got {err:?}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn per_turn_cap_blocks_overflow_within_one_request_id() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn per_turn_cap_blocks_overflow_within_one_request_id(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let write = MemoryWriteTool::new(f.deps.clone());
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
 
     // The first MAX_MEMORY_MUTATIONS_PER_TURN writes succeed.
     for i in 0..MAX_MEMORY_MUTATIONS_PER_TURN {
@@ -355,7 +350,7 @@ async fn per_turn_cap_blocks_overflow_within_one_request_id() {
     );
 
     // A different request id has its own quota.
-    let new_req = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let new_req = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     write
         .execute(
             json!({"kind": "self", "content": "fresh turn"}),
@@ -365,10 +360,10 @@ async fn per_turn_cap_blocks_overflow_within_one_request_id() {
         .expect("fresh turn ok");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn handle_round_trips_through_session_cache() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn handle_round_trips_through_session_cache(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let store = f.store.clone();
     let written = store
         .apply(MemoryMutation::Write {
@@ -385,11 +380,11 @@ async fn handle_round_trips_through_session_cache() {
     // Resolve via the same loader the tools use; M-1 should map to the
     // seeded memory id.
     let agents: SharedAgentStore =
-        common::pg::shared_agent_store(db.pool.clone(), SystemClock::shared());
+        common::pg::shared_agent_store(pool.clone(), SystemClock::shared());
     let memory = AgentMemory::new(
         agents,
-        AgentPromptCache::new(2, Duration::from_secs(60), SystemClock::shared()),
-        AgentNamesCache::new(16, Duration::from_secs(60), SystemClock::shared()),
+        AgentPromptCache::new(2, Duration::from_mins(1), SystemClock::shared()),
+        AgentNamesCache::new(16, Duration::from_mins(1), SystemClock::shared()),
         f.loader.clone(),
         Arc::new(Prompts::load()),
         Arc::new(StaticOrgLanguageResolver::new(Language::En)),
@@ -467,14 +462,14 @@ async fn seed_pair_and_contradiction(
     (a.memory_id, b.memory_id, id)
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn memory_update_with_resolution_target_closes_contradiction() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn memory_update_with_resolution_target_closes_contradiction(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let (_, _, target) = seed_pair_and_contradiction(&f).await;
 
     let update = MemoryUpdateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let _ = update
         .execute(
             json!({"handle": "M-1", "content": "ship on Friday after standup"}),
@@ -497,14 +492,14 @@ async fn memory_update_with_resolution_target_closes_contradiction() {
     assert_eq!(row.resolution_reason, None);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn memory_forget_with_resolution_target_closes_contradiction() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn memory_forget_with_resolution_target_closes_contradiction(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let (_, _, target) = seed_pair_and_contradiction(&f).await;
 
     let forget = MemoryForgetTool::new(f.deps.clone());
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let _ = forget
         .execute(
             json!({"handle": "M-1"}),
@@ -524,14 +519,14 @@ async fn memory_forget_with_resolution_target_closes_contradiction() {
     assert_eq!(row.resolution_reason, None);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn memory_update_without_resolution_target_leaves_contradiction_open() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn memory_update_without_resolution_target_leaves_contradiction_open(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let (_, _, target) = seed_pair_and_contradiction(&f).await;
 
     let update = MemoryUpdateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let _ = update
         .execute(
             json!({"handle": "M-1", "content": "unrelated tweak"}),

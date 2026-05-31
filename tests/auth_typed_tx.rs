@@ -10,10 +10,11 @@
 mod common;
 
 use patom_rs::auth::{AuthError, OrgId, UserId, run_as_user, run_privileged};
+use sqlx::PgPool;
 use sqlx::Row as _;
 use uuid::Uuid;
 
-use crate::common::pg::TestDb;
+use common::pg::seed_tenant;
 
 #[derive(Debug, thiserror::Error)]
 enum TxTestError {
@@ -36,14 +37,14 @@ async fn current_app_user_id(conn: &mut sqlx::PgConnection) -> Option<Uuid> {
         .and_then(|v| Uuid::parse_str(&v).ok())
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_as_user_commits_on_ok_and_pins_app_user_id() {
-    let db = TestDb::fresh().await;
-    let user = db.default_user_id;
+#[sqlx::test]
+async fn run_as_user_commits_on_ok_and_pins_app_user_id(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let user = seed.user_id;
     let new_org = OrgId::new();
     let slug = format!("rc-{}", Uuid::new_v4().simple());
 
-    run_as_user::<(), AuthError>(&db.pool, user, async |tx| {
+    run_as_user::<(), AuthError>(&pool, user, async |tx| {
         // GUC is set inside the closure.
         let pinned = current_app_user_id(tx).await;
         assert_eq!(pinned, Some(user.as_uuid()));
@@ -69,20 +70,20 @@ async fn run_as_user_commits_on_ok_and_pins_app_user_id() {
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM organizations WHERE id = $1)")
             .bind(new_org)
-            .fetch_one(&db.pool)
+            .fetch_one(&pool)
             .await
             .expect("post-commit read");
     assert!(exists, "row should be visible after tenant commit");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_as_user_rolls_back_on_err() {
-    let db = TestDb::fresh().await;
-    let user = db.default_user_id;
+#[sqlx::test]
+async fn run_as_user_rolls_back_on_err(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let user = seed.user_id;
     let new_org = OrgId::new();
     let slug = format!("ru-{}", Uuid::new_v4().simple());
 
-    let res = run_as_user::<(), TxTestError>(&db.pool, user, async |tx| {
+    let res = run_as_user::<(), TxTestError>(&pool, user, async |tx| {
         sqlx::query(
             "INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at) \
              VALUES ($1, $2, $3, 'en', now(), now())",
@@ -101,19 +102,19 @@ async fn run_as_user_rolls_back_on_err() {
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM organizations WHERE id = $1)")
             .bind(new_org)
-            .fetch_one(&db.pool)
+            .fetch_one(&pool)
             .await
             .expect("post-rollback read");
     assert!(!exists, "row should not be visible after rollback");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_privileged_commits_on_ok_and_skips_app_user_id() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn run_privileged_commits_on_ok_and_skips_app_user_id(pool: PgPool) {
+    let _seed = seed_tenant(&pool).await;
     let new_org = OrgId::new();
     let slug = format!("pr-{}", Uuid::new_v4().simple());
 
-    run_privileged::<(), AuthError>(&db.pool, async |tx| {
+    run_privileged::<(), AuthError>(&pool, async |tx| {
         // `app.user_id` is not set under privileged.
         let pinned = current_app_user_id(tx).await;
         assert!(pinned.is_none(), "privileged tx should not set app.user_id");
@@ -135,19 +136,19 @@ async fn run_privileged_commits_on_ok_and_skips_app_user_id() {
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM organizations WHERE id = $1)")
             .bind(new_org)
-            .fetch_one(&db.pool)
+            .fetch_one(&pool)
             .await
             .expect("post-commit read");
     assert!(exists, "row should be visible after privileged commit");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_privileged_rolls_back_on_err() {
-    let db = TestDb::fresh().await;
+#[sqlx::test]
+async fn run_privileged_rolls_back_on_err(pool: PgPool) {
+    let _seed = seed_tenant(&pool).await;
     let new_org = OrgId::new();
     let slug = format!("pe-{}", Uuid::new_v4().simple());
 
-    let res = run_privileged::<(), TxTestError>(&db.pool, async |tx| {
+    let res = run_privileged::<(), TxTestError>(&pool, async |tx| {
         sqlx::query(
             "INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at) \
              VALUES ($1, $2, $3, 'en', now(), now())",
@@ -165,7 +166,7 @@ async fn run_privileged_rolls_back_on_err() {
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM organizations WHERE id = $1)")
             .bind(new_org)
-            .fetch_one(&db.pool)
+            .fetch_one(&pool)
             .await
             .expect("post-rollback read");
     assert!(
@@ -174,11 +175,11 @@ async fn run_privileged_rolls_back_on_err() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_as_user_acting_user_matches_input() {
-    let db = TestDb::fresh().await;
-    let user = db.default_user_id;
-    let observed: UserId = run_as_user::<_, AuthError>(&db.pool, user, async |tx| {
+#[sqlx::test]
+async fn run_as_user_acting_user_matches_input(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let user = seed.user_id;
+    let observed: UserId = run_as_user::<_, AuthError>(&pool, user, async |tx| {
         Ok::<UserId, AuthError>(tx.acting_user())
     })
     .await

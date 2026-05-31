@@ -28,7 +28,8 @@ use patom_rs::types::Participant;
 use serde_json::{Value, json};
 
 mod common;
-use common::pg::{TestDb, human_to_agent_session, seed_prompt_request};
+use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
+use sqlx::PgPool;
 
 struct Fixture {
     tool: TodoWriteTool,
@@ -39,27 +40,21 @@ struct Fixture {
     org_id: patom_rs::auth::OrgId,
 }
 
-async fn fixture(db: &TestDb) -> Fixture {
+async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let clock = SystemClock::shared();
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(db.pool.clone(), clock.clone()));
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let store: SharedSessionTodoStore =
-        Arc::new(PgSessionTodoStore::new(db.pool.clone(), clock.clone()));
-    let session = human_to_agent_session(
-        sessions.as_ref(),
-        db.default_agent_id,
-        db.default_org_id,
-        db.default_user_id,
-    )
-    .await;
+        Arc::new(PgSessionTodoStore::new(pool.clone(), clock.clone()));
+    let session =
+        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let tool = TodoWriteTool::new(TodoToolDeps::new(store.clone()));
     Fixture {
         tool,
         store,
         session,
-        agent_id: db.default_agent_id,
-        user_id: db.default_user_id,
-        org_id: db.default_org_id,
+        agent_id: seed.agent_id,
+        user_id: seed.user_id,
+        org_id: seed.org_id,
     }
 }
 
@@ -75,11 +70,11 @@ fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn writes_and_reads_back_through_store() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
-    let req = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+#[sqlx::test]
+async fn writes_and_reads_back_through_store(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let req = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
 
     let out = f
         .tool
@@ -107,11 +102,11 @@ async fn writes_and_reads_back_through_store() {
     assert_eq!(items[2].content.as_str(), "fix it");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn second_write_atomically_replaces_first() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
-    let req = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+#[sqlx::test]
+async fn second_write_atomically_replaces_first(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let req = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
 
     f.tool
         .execute(
@@ -148,11 +143,11 @@ async fn second_write_atomically_replaces_first() {
     assert!(!ids.contains(&"c"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn two_in_progress_items_are_refused() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
-    let req = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+#[sqlx::test]
+async fn two_in_progress_items_are_refused(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let req = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
 
     let err = f
         .tool
@@ -174,11 +169,11 @@ async fn two_in_progress_items_are_refused() {
     assert!(stored.is_empty());
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn list_above_cap_is_refused() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
-    let req = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+#[sqlx::test]
+async fn list_above_cap_is_refused(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let req = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
 
     let items: Vec<Value> = (0..=MAX_TODOS_PER_LIST)
         .map(|i| {
@@ -200,11 +195,11 @@ async fn list_above_cap_is_refused() {
     assert!(stored.is_empty());
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn per_turn_rate_cap_blocks_runaway_writes() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
-    let req = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+#[sqlx::test]
+async fn per_turn_rate_cap_blocks_runaway_writes(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let req = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let payload = json!({
         "items": [
             { "id": "a", "content": "x", "status": "pending" }
@@ -225,18 +220,18 @@ async fn per_turn_rate_cap_blocks_runaway_writes() {
     assert!(matches!(err, ToolError::InvalidInput(_)));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn list_is_isolated_to_its_session() {
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
+#[sqlx::test]
+async fn list_is_isolated_to_its_session(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
     let other_session = human_to_agent_session(
-        &PgSessionStore::new(db.pool.clone(), SystemClock::shared()),
+        &PgSessionStore::new(pool.clone(), SystemClock::shared()),
         f.agent_id,
         f.org_id,
         f.user_id,
     )
     .await;
-    let req = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let req = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     f.tool
         .execute(
             json!({"items": [{ "id": "a", "content": "only in session 1", "status": "pending" }]}),
@@ -249,14 +244,14 @@ async fn list_is_isolated_to_its_session() {
     assert!(other.is_empty(), "todos must not leak across sessions");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn list_survives_into_a_fresh_request() {
+#[sqlx::test]
+async fn list_survives_into_a_fresh_request(pool: PgPool) {
     // "Persists across re-runs" — a new prompt_request for the same
     // session must read back the prior list. This is the property the
     // user explicitly asked for.
-    let db = TestDb::fresh().await;
-    let f = fixture(&db).await;
-    let req_one = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let req_one = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     f.tool
         .execute(
             json!({"items": [{ "id": "carry", "content": "carry over", "status": "in_progress" }]}),
@@ -266,7 +261,7 @@ async fn list_survives_into_a_fresh_request() {
         .expect("write in turn 1");
 
     // Simulate a fresh turn: new request id, same session.
-    let _req_two = seed_prompt_request(&db.pool, f.session, f.agent_id, db.default_org_id).await;
+    let _req_two = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
     let carried = f.store.get(f.session).await.expect("get in turn 2");
     assert_eq!(carried.len(), 1);
     assert_eq!(carried.as_slice()[0].id.as_str(), "carry");
