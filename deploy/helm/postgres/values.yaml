@@ -12,7 +12,6 @@ externalSecret:
 service:
   name: patom-postgres
   port: 5432
-
 # Direct DB access from a workstation over the Tailscale subnet route. Adds a
 # routable ClusterIP admin Service + a NetworkPolicy allowing the cluster/node
 # CIDRs (k3s SNATs external→ClusterIP traffic to the node's pod IP). Edge access
@@ -25,9 +24,8 @@ adminAccess:
   # kube-proxy SNATs NodePort traffic to the node's pod-network IP, so the pod
   # sees the cluster CIDRs as the source — allow those via ipBlock.
   sourceCIDRs:
-    - "10.42.0.0/16"   # pod CIDR
-    - "10.43.0.0/16"   # service CIDR
-
+    - "10.42.0.0/16" # pod CIDR
+    - "10.43.0.0/16" # service CIDR
 persistence:
   storageClass: hcloud-volumes
   size: 10Gi
@@ -52,7 +50,7 @@ backup:
   # imageTag is CI-managed (release.yml bumps it to the build SHA alongside the
   # app tag) so the backup image is pinned, not floating on :latest.
   image: ghcr.io/tomkapa/patom-backup
-  imageTag: ce77bf332225
+  imageTag: 7864daa37746
   r2:
     # MUST be a dedicated PRIVATE bucket (NOT PATOM_R2_BUCKET, which is public-read
     # for avatars). DB dumps hold tenant data + MASTER_KEK-encrypted secrets.
