@@ -211,8 +211,8 @@ Growing-on-demand structures inside a worker hot path are banned — use a bound
 
 ## 10. No string concatenation into SQL. Ever.
 
-- All SQL uses runtime `sqlx` with bound parameters: `sqlx::query("SELECT ... WHERE id = $1").bind(id)`, mapped via `#[derive(sqlx::FromRow)]` + `TryFrom<Row>` at the boundary (§1). `format!` into a query string is a review-blocking bug.
-- We deliberately do **not** use the compile-time `query!` / `query_as!` macros. They require string-literal SQL (incompatible with the shared column-list consts) and a per-column `as "col: Type"` annotation for every newtype/enum — exactly the recurring boilerplate and per-column invariant §1 exists to avoid. Schema and type drift is caught by the real-Postgres `#[sqlx::test]` suite instead (§3), which is the contract regardless.
+- Use runtime `sqlx` with bound parameters: `sqlx::query("SELECT ... WHERE id = $1").bind(id)`, mapped via `#[derive(sqlx::FromRow)]` + `TryFrom<Row>` at the boundary (§1). `format!` into a query string is a review-blocking bug.
+- Do not use the compile-time `query!` / `query_as!` macros. Drift is caught by the `#[sqlx::test]` suite (§3).
 - Dynamic identifiers (table, column, sort key) pass through an allowlist — match a domain enum to a `&'static str`. Never an interpolated value.
 - RLS (SPEC §Tenancy) defends against a missing `WHERE tenant_id`; this rule defends against injection.
 
