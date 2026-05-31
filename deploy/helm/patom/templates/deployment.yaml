@@ -18,6 +18,7 @@ spec:
         {{- include "patom.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: patom
+      automountServiceAccountToken: false   # app doesn't call the k8s API
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

@@ -22,6 +22,15 @@ spec:
       containers:
         - name: postgres
           image: {{ .Values.image }}
+          # No readOnlyRootFilesystem: Postgres needs a writable data dir.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           # Leading "-" args make the entrypoint exec `postgres -c ...`.
           args:
             - "-c"

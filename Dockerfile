@@ -23,15 +23,13 @@ WORKDIR /app
 # .sqlx cache instead of a live DB, so the image build never needs Postgres.
 ENV CARGO_TERM_COLOR=never \
     SQLX_OFFLINE=true
-# Dependency pre-cache: build all deps against a stub main so the heavy layer
-# caches independently of source churn (matters for CI layer caching).
+# Dependency + build caching is handled by the BuildKit cache mounts below
+# (registry + target). A stub "warm-up" layer would be masked by the /app/target
+# cache mount, so it's omitted — the mounts make incremental CI builds fast.
+# `.sqlx/` is the committed offline query-macro cache (see ENV note). `migrations/`
+# is embedded at COMPILE time by sqlx::migrate!("./migrations"), so the runtime
+# image omits it.
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
-RUN mkdir src && echo 'fn main() {}' > src/main.rs \
- && cargo build --release --locked --bin patom || true
-RUN rm -rf src
-# Real sources. `.sqlx/` is the committed offline query-macro cache (see ENV note).
-# `migrations/` is embedded at COMPILE time by sqlx::migrate!("./migrations"), so the
-# runtime image omits it.
 COPY .sqlx ./.sqlx
 COPY migrations ./migrations
 COPY src ./src
