@@ -114,9 +114,10 @@ impl ThreadsHarness {
             )),
             mcp_test_rate: patom::mcp::TestConnectRateLimiter::new(clock.clone()),
             platform_oauth_clients: std::sync::Arc::new(std::collections::HashMap::new()),
-            mcp_oauth_pending: std::sync::Arc::new(
-                patom::mcp::oauth::PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()),
-            ),
+            mcp_oauth_pending: std::sync::Arc::new(patom::mcp::oauth::PgMcpOAuthPendingStore::new(
+                pool.clone(),
+                clock.clone(),
+            )),
             oauth_redirect_base: std::sync::Arc::from("http://localhost:8080"),
             web_base_url: None,
             thread_stream: thread_stream.clone(),

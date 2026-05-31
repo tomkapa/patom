@@ -114,9 +114,7 @@ async fn seed_session_in_org_a(
             session,
             MessageSender::Human,
             Participant::agent(seed.agent_id),
-            ChatMessage::User(vec![patom::provider::UserContent::Text(
-                "seed".to_string(),
-            )]),
+            ChatMessage::User(vec![patom::provider::UserContent::Text("seed".to_string())]),
             request_id,
         )
         .await

@@ -89,10 +89,7 @@ async fn count_rows(pool: &sqlx::PgPool) -> i64 {
 async fn setup_session_and_request(
     pool: &PgPool,
     seed: &common::pg::Seed,
-) -> (
-    patom::session::SessionId,
-    patom::runtime::PromptRequestId,
-) {
+) -> (patom::session::SessionId, patom::runtime::PromptRequestId) {
     let sessions: SharedSessionStore =
         Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
     let session =

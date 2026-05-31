@@ -108,9 +108,10 @@ impl AuthPromptsHarness {
             )),
             mcp_test_rate: patom::mcp::TestConnectRateLimiter::new(clock.clone()),
             platform_oauth_clients: std::sync::Arc::new(std::collections::HashMap::new()),
-            mcp_oauth_pending: std::sync::Arc::new(
-                patom::mcp::oauth::PgMcpOAuthPendingStore::new(pool.clone(), clock.clone()),
-            ),
+            mcp_oauth_pending: std::sync::Arc::new(patom::mcp::oauth::PgMcpOAuthPendingStore::new(
+                pool.clone(),
+                clock.clone(),
+            )),
             oauth_redirect_base: std::sync::Arc::from("http://localhost:8080"),
             web_base_url: None,
             thread_stream,
@@ -143,11 +144,7 @@ impl AuthPromptsHarness {
     /// each principal has its own receiver — otherwise the enqueue
     /// against the seeded default agent (which lives in
     /// `seed.org_id`) would 4xx for the second principal.
-    async fn seed_agent(
-        &self,
-        org_id: patom::auth::OrgId,
-        name: &str,
-    ) -> patom::agents::AgentId {
+    async fn seed_agent(&self, org_id: patom::auth::OrgId, name: &str) -> patom::agents::AgentId {
         self.agents
             .create(NewAgent {
                 org_id,

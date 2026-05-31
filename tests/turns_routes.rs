@@ -514,8 +514,7 @@ async fn returns_404_for_cross_org_request(pool: PgPool) {
             name: patom::agents::AgentName::try_from("Eve").expect("name"),
             system_prompt: patom::agents::AgentSystemPrompt::try_from("you are eve")
                 .expect("prompt"),
-            description: patom::agents::AgentDescription::try_from("foreign agent")
-                .expect("desc"),
+            description: patom::agents::AgentDescription::try_from("foreign agent").expect("desc"),
             is_default: false,
             allowed_mcp_tools: patom::agents::AllowedMcpTools::default(),
             model: None,

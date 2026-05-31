@@ -421,10 +421,8 @@ async fn prompt_requests_kind_defaults_to_normal(pool: PgPool) {
     // existing rows continue to dispatch as `Normal`.
     let seed = seed_tenant(&pool).await;
 
-    let session_store = patom::session::PgSessionStore::new(
-        pool.clone(),
-        patom::clock::SystemClock::shared(),
-    );
+    let session_store =
+        patom::session::PgSessionStore::new(pool.clone(), patom::clock::SystemClock::shared());
     let session =
         human_to_agent_session(&session_store, seed.agent_id, seed.org_id, seed.user_id).await;
     let id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;

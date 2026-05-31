@@ -62,6 +62,11 @@ jobs:
       # `#[sqlx::test]` reads this to create per-test databases under the
       # service container.
       DATABASE_URL: postgres://patom:patom@localhost:5432/patom
+      # Compile-time query!/query_as! macros verify against the committed .sqlx
+      # cache, NOT the live service DB (which has no tables until `#[sqlx::test]`
+      # migrates each per-test database at runtime). Without this, the macro
+      # probes an empty cluster and fails with `relation ... does not exist`.
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
