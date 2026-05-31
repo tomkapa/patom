@@ -61,6 +61,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Roles are cluster-global, so the tenancy migration's CREATE ROLE races
+      # when `#[sqlx::test]` migrates many fresh DBs concurrently. Provision the
+      # role once per cluster up front so that guard always skips. See
+      # ci/init-roles.sql for the full rationale.
+      - name: provision cluster-global role
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/init-roles.sql
       - name: cargo test
         run: cargo test --all-features
 
