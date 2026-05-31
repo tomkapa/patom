@@ -265,7 +265,7 @@ async fn release_clears_lease_so_others_can_claim(pool: PgPool) {
     q.mark_done(&claim.receipt()).await.expect("done");
     q.release(&claim.lease).await.expect("release");
 
-    let session_store = PgSessionStore::new(f.pool.clone(), patom_rs::clock::SystemClock::shared());
+    let session_store = PgSessionStore::new(f.pool.clone(), f.clock.clone());
     let s2 = human_to_agent_session(
         &session_store,
         f.seed.agent_id,
