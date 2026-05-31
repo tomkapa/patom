@@ -22,7 +22,9 @@ pub(super) mod turns;
 mod uploads;
 
 use axum::Router;
+use axum::http::{HeaderName, HeaderValue, Method, header};
 use axum::middleware;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -31,6 +33,47 @@ use super::auth_layer::require_principal;
 use super::csrf::require_csrf;
 use super::limits::REQUEST_BODY_LIMIT_BYTES;
 use super::state::AppState;
+
+/// Build the credentialed CORS layer for the `/api` subtree from the
+/// configured origin allowlist, or `None` when no origins are set.
+///
+/// `None` preserves the same-origin-only default (the app SPA shares an
+/// origin with the API, so it needs no CORS). `Some` is used so the apex
+/// marketing site (`https://patom.app`) can read `app.patom.app/api/me`
+/// with `credentials: 'include'` and toggle its Sign in ↔ Open app nav.
+///
+/// Credentials forbid a wildcard origin, so the allowlist is an explicit
+/// list. The allowed header set mirrors the SPA's contract: JSON bodies
+/// (`Content-Type`) and the CSRF echo header
+/// ([`crate::auth::limits::CSRF_HEADER_NAME`], lowercased — CORS header
+/// matching is case-insensitive).
+fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
+    if origins.is_empty() {
+        return None;
+    }
+    let parsed: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
+    // Every origin came from `parse_origin` (canonical ASCII), so this
+    // only trips on a programmer error upstream.
+    assert_eq!(
+        parsed.len(),
+        origins.len(),
+        "validated CORS origin failed to parse as a header value"
+    );
+    assert!(!parsed.is_empty());
+    Some(
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(parsed))
+            .allow_credentials(true)
+            .allow_methods([Method::GET, Method::POST])
+            .allow_headers([
+                header::CONTENT_TYPE,
+                HeaderName::from_static("x-csrf-token"),
+            ]),
+    )
+}
 
 pub fn router(state: AppState) -> Router {
     let public = Router::new()
@@ -76,6 +119,17 @@ pub fn router(state: AppState) -> Router {
             require_principal,
         ));
 
+    // CORS sits OUTERMOST relative to the auth/CSRF route layers: a
+    // preflight `OPTIONS` carries no session cookie and no CSRF header,
+    // so it must be short-circuited by the CORS layer before
+    // `require_principal` would 401 it. `.layer` wraps the already-built
+    // private router (including its route layers), giving that ordering.
+    // `None` (no allowlist) leaves the subtree same-origin only.
+    let private = match build_cors_layer(&state.cors_allowed_origins) {
+        Some(cors) => private.layer(cors),
+        None => private,
+    };
+
     // Misses fall to `index.html` so React Router resolves deep links.
     // Missing files at boot are intentionally not validated — surfacing
     // as 404s catches a broken deploy at the smoke test instead of at
@@ -90,4 +144,85 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(REQUEST_BODY_LIMIT_BYTES))
         .layer(TraceLayer::new_for_http())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    /// Minimal router applying the real `build_cors_layer` output to a
+    /// stand-in `/api/me`. Exercises the production helper without a
+    /// DB-backed `AppState` (preflight is pre-auth anyway).
+    fn cors_router(origins: &[String]) -> Router {
+        let r = Router::new().route("/api/me", get(|| async { "ok" }));
+        match build_cors_layer(origins) {
+            Some(cors) => r.layer(cors),
+            None => r,
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_echoes_allowed_origin_with_credentials() {
+        let router = cors_router(&["https://patom.app".to_string()]);
+        let req = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/api/me")
+            .header("origin", "https://patom.app")
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "x-csrf-token")
+            .body(Body::empty())
+            .expect("request");
+        let res = router.oneshot(req).await.expect("response");
+        // Preflight is short-circuited (no auth) with a 2xx.
+        assert!(res.status().is_success());
+        let h = res.headers();
+        assert_eq!(
+            h.get("access-control-allow-origin").expect("acao"),
+            "https://patom.app"
+        );
+        assert_eq!(
+            h.get("access-control-allow-credentials").expect("acac"),
+            "true"
+        );
+        let methods = h
+            .get("access-control-allow-methods")
+            .expect("methods")
+            .to_str()
+            .expect("ascii");
+        assert!(methods.contains("POST"), "methods: {methods}");
+        let headers = h
+            .get("access-control-allow-headers")
+            .expect("headers")
+            .to_str()
+            .expect("ascii")
+            .to_ascii_lowercase();
+        assert!(headers.contains("x-csrf-token"), "headers: {headers}");
+    }
+
+    #[tokio::test]
+    async fn disallowed_origin_is_not_echoed() {
+        let router = cors_router(&["https://patom.app".to_string()]);
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/api/me")
+            .header("origin", "https://evil.test")
+            .body(Body::empty())
+            .expect("request");
+        let res = router.oneshot(req).await.expect("response");
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            res.headers().get("access-control-allow-origin").is_none(),
+            "evil origin must not be echoed"
+        );
+    }
+
+    #[test]
+    fn empty_allowlist_disables_cors() {
+        assert!(build_cors_layer(&[]).is_none());
+        assert!(build_cors_layer(&["https://patom.app".to_string()]).is_some());
+    }
 }

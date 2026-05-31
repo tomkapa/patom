@@ -9,6 +9,8 @@ use config::{Config, ConfigError, Environment};
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::auth::CookieDomain;
+use crate::auth::limits::MAX_CORS_ALLOWED_ORIGINS;
 use crate::provider::{Model, ProviderId};
 use crate::types::SecretString;
 
@@ -45,6 +47,15 @@ pub enum SettingsError {
 
     #[error("auth: PATOM_WEB_BASE_URL is not a valid origin: {raw:?} ({reason})")]
     InvalidWebBaseUrl { raw: String, reason: &'static str },
+
+    #[error("auth: PATOM_COOKIE_DOMAIN is not a valid cookie domain: {raw:?} ({reason})")]
+    InvalidCookieDomain { raw: String, reason: &'static str },
+
+    #[error("auth: PATOM_CORS_ALLOWED_ORIGINS entry is not a valid origin: {raw:?} ({reason})")]
+    InvalidCorsOrigin { raw: String, reason: &'static str },
+
+    #[error("auth: PATOM_CORS_ALLOWED_ORIGINS has too many entries: max {max}, got {got}")]
+    TooManyCorsOrigins { max: usize, got: usize },
 
     #[error(
         "slack: partial configuration; set all of PATOM_SLACK_SIGNING_SECRET, \
@@ -287,6 +298,19 @@ pub struct AuthSettings {
     /// same-origin prod deployments where BE and FE share an origin.
     /// Sourced from `PATOM_WEB_BASE_URL`.
     pub web_base_url: Option<String>,
+    /// Shared cookie `Domain` for the session + CSRF cookies. When set
+    /// (e.g. `.patom.app`) the cookies are visible across the apex
+    /// marketing site and the `app.` subdomain so the landing page can
+    /// read the logged-in state. `None` (the localhost-dev default)
+    /// omits the attribute, keeping cookies host-only. Sourced from
+    /// `PATOM_COOKIE_DOMAIN`.
+    pub cookie_domain: Option<CookieDomain>,
+    /// Cross-origin allowlist for the `/api` subtree, e.g.
+    /// `https://patom.app`. Each entry is a canonical origin
+    /// (`scheme://host[:port]`, no path). Empty (the default) means no
+    /// CORS layer is attached — same-origin app traffic is unaffected.
+    /// Sourced from `PATOM_CORS_ALLOWED_ORIGINS` (comma-separated).
+    pub cors_allowed_origins: Vec<String>,
 }
 
 /// Embedding-provider settings — `EMBEDDING_API_KEY` /
@@ -412,6 +436,15 @@ struct RawSettings {
     // instead of the BE host (dev: FE on Vite/Bun, BE on 8080).
     #[serde(default)]
     patom_web_base_url: Option<String>,
+    // Optional shared cookie Domain (e.g. `.patom.app`). Validated into
+    // a `CookieDomain` in `TryFrom`; `None` omits the attribute.
+    #[serde(default)]
+    patom_cookie_domain: Option<String>,
+    // Optional comma-separated CORS origin allowlist for `/api`
+    // (e.g. `https://patom.app`). Each entry validated via `parse_origin`
+    // in `TryFrom`; `None`/empty means no CORS layer.
+    #[serde(default)]
+    patom_cors_allowed_origins: Option<String>,
     #[serde(default = "default_web_dist")]
     patom_web_dist: PathBuf,
 
@@ -483,6 +516,48 @@ fn parse_web_base_url(raw: &str) -> Result<String, SettingsError> {
         raw: raw.to_owned(),
         reason,
     })
+}
+
+/// Collapse a boundary [`crate::types::ParseError`] into a `&'static str`
+/// reason for a config-error variant. The newtype's own validation
+/// carries the actionable detail; config just needs a stable, static
+/// blurb to render next to the offending raw value.
+fn parse_error_reason(e: &crate::types::ParseError) -> &'static str {
+    use crate::types::ParseError;
+    match e {
+        ParseError::Empty { .. } => "empty",
+        ParseError::TooLong { .. } => "too long",
+        ParseError::OutOfRange { detail, .. } | ParseError::Malformed { detail, .. } => detail,
+    }
+}
+
+/// Parse the comma-separated `PATOM_CORS_ALLOWED_ORIGINS` list into
+/// canonical origins. Blank entries (a trailing comma, double comma) are
+/// skipped; each surviving entry must be an http(s) origin with no path.
+/// The list is bounded by [`MAX_CORS_ALLOWED_ORIGINS`] (§5).
+fn parse_cors_allowed_origins(raw: &str) -> Result<Vec<String>, SettingsError> {
+    let entries: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if entries.len() > MAX_CORS_ALLOWED_ORIGINS {
+        return Err(SettingsError::TooManyCorsOrigins {
+            max: MAX_CORS_ALLOWED_ORIGINS,
+            got: entries.len(),
+        });
+    }
+    entries
+        .into_iter()
+        .map(|entry| {
+            parse_origin(entry, &["http", "https"]).map_err(|reason| {
+                SettingsError::InvalidCorsOrigin {
+                    raw: entry.to_owned(),
+                    reason,
+                }
+            })
+        })
+        .collect()
 }
 
 fn default_timezone_raw() -> String {
@@ -562,6 +637,19 @@ impl TryFrom<RawSettings> for Settings {
             Some(raw_url) => Some(parse_web_base_url(&raw_url)?),
             None => None,
         };
+        let cookie_domain = match raw.patom_cookie_domain {
+            Some(raw_domain) => Some(CookieDomain::try_from(raw_domain.as_str()).map_err(|e| {
+                SettingsError::InvalidCookieDomain {
+                    raw: raw_domain.clone(),
+                    reason: parse_error_reason(&e),
+                }
+            })?),
+            None => None,
+        };
+        let cors_allowed_origins = match raw.patom_cors_allowed_origins {
+            Some(raw_list) => parse_cors_allowed_origins(&raw_list)?,
+            None => Vec::new(),
+        };
         let auth = AuthSettings {
             jwt_secret: raw.patom_jwt_secret,
             google_client_id: raw.google_client_id,
@@ -576,6 +664,8 @@ impl TryFrom<RawSettings> for Settings {
             master_kek: raw.patom_master_kek,
             oauth_redirect_base: raw.patom_oauth_redirect_base,
             web_base_url,
+            cookie_domain,
+            cors_allowed_origins,
         };
         let slack = match (
             raw.patom_slack_signing_secret,
@@ -719,6 +809,8 @@ mod tests {
             patom_master_kek: secret("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
             patom_oauth_redirect_base: "http://localhost:8080".to_string(),
             patom_web_base_url: None,
+            patom_cookie_domain: None,
+            patom_cors_allowed_origins: None,
             patom_web_dist: default_web_dist(),
             patom_slack_signing_secret: None,
             patom_slack_client_id: None,
@@ -811,6 +903,79 @@ mod tests {
         raw.anthropic_api_key = Some(secret("sk-ant"));
         let s = Settings::try_from(raw).expect("valid");
         assert_eq!(s.default_timezone, Tz::UTC);
+    }
+
+    #[test]
+    fn cookie_domain_unset_is_none() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        let s = Settings::try_from(raw).expect("valid");
+        assert!(s.auth.cookie_domain.is_none());
+        assert!(s.auth.cors_allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn valid_cookie_domain_is_parsed() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_cookie_domain = Some(".patom.app".to_string());
+        let s = Settings::try_from(raw).expect("valid");
+        let domain = s.auth.cookie_domain.expect("some");
+        assert_eq!(domain.as_str(), ".patom.app");
+    }
+
+    #[test]
+    fn malformed_cookie_domain_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_cookie_domain = Some("https://patom.app".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::InvalidCookieDomain { .. }));
+    }
+
+    #[test]
+    fn valid_cors_origins_are_parsed_and_canonicalized() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_cors_allowed_origins =
+            Some("https://patom.app/ , https://www.patom.app".to_string());
+        let s = Settings::try_from(raw).expect("valid");
+        // Trailing slash stripped to a canonical origin; blank entries dropped.
+        assert_eq!(
+            s.auth.cors_allowed_origins,
+            vec![
+                "https://patom.app".to_string(),
+                "https://www.patom.app".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_cors_origin_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_cors_allowed_origins = Some("https://patom.app/login".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::InvalidCorsOrigin { .. }));
+    }
+
+    #[test]
+    fn too_many_cors_origins_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        let list = (0..=MAX_CORS_ALLOWED_ORIGINS)
+            .map(|i| format!("https://h{i}.patom.app"))
+            .collect::<Vec<_>>()
+            .join(",");
+        raw.patom_cors_allowed_origins = Some(list);
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(
+            err,
+            SettingsError::TooManyCorsOrigins {
+                max: MAX_CORS_ALLOWED_ORIGINS,
+                ..
+            }
+        ));
     }
 
     #[test]

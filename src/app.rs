@@ -838,6 +838,8 @@ pub async fn build_server(
         users: pieces.users,
         clock: pieces.clock.clone(),
         cookie_secure: settings.auth.cookie_secure,
+        cookie_domain: settings.auth.cookie_domain.clone(),
+        cors_allowed_origins: settings.auth.cors_allowed_origins.clone(),
         memberships,
         prompts: pieces.prompts,
         language_resolver: pieces.language_resolver,

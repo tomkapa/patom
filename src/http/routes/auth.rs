@@ -24,7 +24,7 @@ use cookie::time::Duration as CookieDuration;
 use serde::Deserialize;
 use tracing::info;
 
-use crate::auth::{Language, LocaleHint, OAuthStateRow, limits::COOKIE_NAME};
+use crate::auth::{CookieDomain, Language, LocaleHint, OAuthStateRow, limits::COOKIE_NAME};
 
 use super::super::csrf::{build_csrf_cookie, mint_csrf_token};
 use super::super::error::HttpError;
@@ -197,11 +197,17 @@ async fn callback(
         patom.user.new = upserted.is_new_user,
     );
 
-    let session_cookie = build_session_cookie(token, state.cookie_secure(), state.jwt.ttl_secs());
+    let session_cookie = build_session_cookie(
+        token,
+        state.cookie_secure(),
+        state.jwt.ttl_secs(),
+        state.cookie_domain(),
+    );
     let csrf_cookie = build_csrf_cookie(
         mint_csrf_token(),
         state.cookie_secure(),
         state.jwt.ttl_secs(),
+        state.cookie_domain(),
     );
     let jar = jar.add(session_cookie).add(csrf_cookie);
     let dest = consumed.redirect_to.unwrap_or_else(|| "/".to_owned());
@@ -210,13 +216,21 @@ async fn callback(
     Ok((jar, Redirect::to(&dest)).into_response())
 }
 
-pub(super) fn build_session_cookie(token: String, secure: bool, ttl_secs: i64) -> Cookie<'static> {
+pub(super) fn build_session_cookie(
+    token: String,
+    secure: bool,
+    ttl_secs: i64,
+    domain: Option<&CookieDomain>,
+) -> Cookie<'static> {
     let mut cookie = Cookie::new(COOKIE_NAME, token);
     cookie.set_http_only(true);
     cookie.set_path("/");
     cookie.set_same_site(SameSite::Lax);
     cookie.set_secure(secure);
     cookie.set_max_age(CookieDuration::seconds(ttl_secs));
+    if let Some(d) = domain {
+        cookie.set_domain(d.as_str().to_owned());
+    }
     cookie
 }
 
@@ -231,5 +245,34 @@ pub(super) fn sanitize_return_to(raw: &str) -> Option<String> {
         Some(raw.to_owned())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_cookie_sets_domain_when_configured() {
+        let domain = CookieDomain::try_from(".patom.app").expect("valid");
+        let cookie = build_session_cookie("jwt".to_string(), true, 3600, Some(&domain));
+        // `Cookie::domain()` normalizes away the RFC-6265 leading dot.
+        assert_eq!(cookie.domain(), Some("patom.app"));
+        // HttpOnly invariant must survive the Domain addition.
+        assert_eq!(cookie.http_only(), Some(true));
+    }
+
+    #[test]
+    fn session_cookie_omits_domain_when_unset() {
+        let cookie = build_session_cookie("jwt".to_string(), false, 3600, None);
+        assert!(cookie.domain().is_none());
+        assert_eq!(cookie.secure(), Some(false));
+    }
+
+    #[test]
+    fn sanitize_return_to_rejects_absolute_and_protocol_relative() {
+        assert!(sanitize_return_to("/agents").is_some());
+        assert!(sanitize_return_to("https://evil.test").is_none());
+        assert!(sanitize_return_to("//evil.test").is_none());
     }
 }
