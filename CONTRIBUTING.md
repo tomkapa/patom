@@ -65,7 +65,7 @@ Long version: [`CLAUDE.md`](./CLAUDE.md). Highlights you will trip over otherwis
 5. **Every loop has a bound. Every channel is bounded. Every I/O `await` has a timeout.** Limits live in `<module>/limits.rs` with a doc comment explaining the number.
 6. **`unwrap()` and `panic!` outside tests are banned.** `expect("invariant: …")` is allowed as a named assertion when the invariant is established within the function.
 7. **One error type per module.** `thiserror` enum; `anyhow` only in `main.rs`. `Box<dyn Error>` across a module boundary is banned.
-8. **No string concatenation into SQL.** Use `sqlx::query!` / bound parameters. Dynamic identifiers go through an allowlist.
+8. **No string concatenation into SQL.** Use `sqlx` bound parameters. Dynamic identifiers go through an allowlist.
 9. **Tests own the clock.** Production code takes a `Clock`; tests use a deterministic fake.
 10. **Zero-dep bias.** Adding a runtime dep requires a paragraph in the PR explaining why we can't do <200 LOC in-tree, and who owns the upgrade cadence.
 11. **Strictest clippy.** Workspace lints are in `Cargo.toml`. CI runs with `-D warnings`. Fix the code or justify the lint inline with a PR-anchored comment.

@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 #
 # Multi-stage build for patom. Built in CI, never on the prod node (the linker
-# OOMs at 4 GB). Three stages: bun SPA → rust release binary (SQLX_OFFLINE) →
-# distroless runtime. See deploy plan / CLAUDE.md.
+# OOMs at 4 GB). Three stages: bun SPA → rust release binary → distroless
+# runtime. See deploy plan / CLAUDE.md.
 
 ###########################  Stage 1: web SPA  ###########################
 # glibc bun image (oven/bun:1-debian) avoids esbuild musl edge cases.
@@ -19,18 +19,15 @@ RUN bun run build                       # build.ts -> /web/dist
 # rustup-based image so rust-toolchain.toml's pinned channel is honored.
 FROM rust:1-bookworm AS builder
 WORKDIR /app
-# SQLX_OFFLINE: compile-time query!/query_as! macros check against the committed
-# .sqlx cache instead of a live DB, so the image build never needs Postgres.
-ENV CARGO_TERM_COLOR=never \
-    SQLX_OFFLINE=true
+# All SQL goes through runtime sqlx (bound params + FromRow), so the build needs
+# no database — there are no compile-time query macros to verify against a schema.
+ENV CARGO_TERM_COLOR=never
 # Dependency + build caching is handled by the BuildKit cache mounts below
 # (registry + target). A stub "warm-up" layer would be masked by the /app/target
 # cache mount, so it's omitted — the mounts make incremental CI builds fast.
-# `.sqlx/` is the committed offline query-macro cache (see ENV note). `migrations/`
-# is embedded at COMPILE time by sqlx::migrate!("./migrations"), so the runtime
-# image omits it.
+# `migrations/` is embedded at COMPILE time by sqlx::migrate!("./migrations"), so
+# the runtime image omits it.
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
-COPY .sqlx ./.sqlx
 COPY migrations ./migrations
 COPY src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

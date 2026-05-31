@@ -5,10 +5,10 @@
 .vscode/
 *.swp
 .claude/settings.local.json
-# sqlx offline-prepare cache (`cargo sqlx prepare`). COMMITTED (not ignored) so the
-# container build runs with SQLX_OFFLINE=true and needs no database. Regenerate after
-# adding/changing any compile-time query!/query_as! macro: `cargo sqlx prepare`
-# (commit the .sqlx diff). The CI `sqlx-offline` job enforces it stays in sync.
+# sqlx offline-prepare cache. We use only runtime sqlx (bound params + FromRow),
+# so there are no compile-time query macros and no committed cache; ignore any
+# `cargo sqlx prepare` output a contributor generates locally.
+.sqlx/
 
 # web/ — Bun-based frontend. node_modules and build output stay out of git;
 # bun.lockb is checked in for reproducible installs.

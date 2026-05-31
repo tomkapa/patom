@@ -1,5 +1,5 @@
 # Keep the build context small and the image clean. The Rust build needs
-# Cargo.*, rust-toolchain.toml, src/, migrations/, .sqlx/; the web stage needs
+# Cargo.*, rust-toolchain.toml, src/, migrations/; the web stage needs
 # web/ (minus node_modules + dist). Everything below is excluded.
 
 # Rust build artifacts (the big one)
