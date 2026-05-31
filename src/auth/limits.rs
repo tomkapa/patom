@@ -92,6 +92,13 @@ pub const MAX_ORG_NAME_BYTES: usize = 200;
 /// preserving the host-only localhost-dev behavior.
 pub const COOKIE_DOMAIN_MAX_LEN: usize = 253;
 
+/// Maximum bytes of a single DNS label inside `PATOM_COOKIE_DOMAIN`
+/// (the dot-separated segments of e.g. `app.patom.app`).
+///
+/// RFC 1035 §2.3.4 caps a label at 63 octets. `CookieDomain`'s validator
+/// rejects any longer segment at the boundary.
+pub const COOKIE_DOMAIN_LABEL_MAX_LEN: usize = 63;
+
 /// Maximum number of CORS allowlist origins accepted in
 /// `PATOM_CORS_ALLOWED_ORIGINS`.
 ///

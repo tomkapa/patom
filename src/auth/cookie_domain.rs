@@ -19,10 +19,7 @@ use std::sync::Arc;
 
 use crate::types::ParseError;
 
-use super::limits::COOKIE_DOMAIN_MAX_LEN;
-
-/// Maximum bytes of a single DNS label (RFC 1035 §2.3.4).
-const LABEL_MAX_LEN: usize = 63;
+use super::limits::{COOKIE_DOMAIN_LABEL_MAX_LEN, COOKIE_DOMAIN_MAX_LEN};
 
 /// Validated cookie `Domain` attribute.
 ///
@@ -66,7 +63,7 @@ fn validate_dns_name(name: &str) -> Result<(), &'static str> {
         if label.is_empty() {
             return Err("empty label (leading, trailing, or doubled dot)");
         }
-        if label.len() > LABEL_MAX_LEN {
+        if label.len() > COOKIE_DOMAIN_LABEL_MAX_LEN {
             return Err("label exceeds 63 bytes");
         }
         if label.starts_with('-') || label.ends_with('-') {
