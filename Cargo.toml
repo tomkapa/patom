@@ -193,13 +193,16 @@ subtle = { version = "2", default-features = false }
 # user-avatar and MCP-catalog-logo uploads. The signing protocol alone
 # (canonical request, string-to-sign, chunked payload hashing) is firmly over
 # the 200-LOC bar and a known footgun; the SDK is the upstream-maintained
-# reference. We disable defaults and re-enable only `rt-tokio` + `rustls` so
-# we stay on a single TLS stack with `reqwest`/`sqlx` and don't pull in
-# `hyper-tls`/`openssl`. `aws-config` builds the credential + endpoint
-# resolution chain; `aws-credential-types` is the small types crate it shares
-# with `aws-sdk-s3`. Owner: assets/.
-aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"] }
-aws-config = { version = "1", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"] }
+# reference. We disable defaults and re-enable only `rt-tokio` +
+# `default-https-client` so we stay on the modern rustls 0.23 stack shared with
+# `reqwest`/`sqlx` and don't pull in `hyper-tls`/`openssl`. NB: the SDK's
+# `rustls` feature is the *legacy* connector (`aws-smithy-runtime/tls-rustls`
+# → rustls 0.21 → rustls-webpki 0.101.7, which carries RUSTSEC-2026-0098/0099/
+# 0104); `default-https-client` is the maintained replacement. `aws-config`
+# builds the credential + endpoint resolution chain; `aws-credential-types` is
+# the small types crate it shares with `aws-sdk-s3`. Owner: assets/.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client", "behavior-version-latest"] }
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client", "behavior-version-latest"] }
 aws-credential-types = { version = "1", default-features = false }
 # §8 (zero-dep bias): magic-byte file type sniffer. The upload boundary
 # (assets/) MUST verify that an `image/png`-claimed body actually starts

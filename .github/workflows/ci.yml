@@ -113,16 +113,22 @@ jobs:
           sqlx migrate run
 
   # ── Supply-chain gates (CLAUDE.md §8) ───────────────────────────────────
+  # cargo-deny: licenses + advisories + bans + sources, configured by deny.toml.
+  # cargo-audit: lockfile advisory scan (superset of deny's build-graph scan),
+  # configured by .cargo/audit.toml. Both ignore lists carry per-ID rationale.
   supply-chain:
     name: deny + audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+      # Prebuilt binary — avoids a multi-minute `cargo install` compile.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: cargo audit
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit
+        run: cargo audit
