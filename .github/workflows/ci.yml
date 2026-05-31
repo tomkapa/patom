@@ -10,6 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: every job only reads the repo (checkout). No job writes
+# contents, posts statuses, or needs the token for anything else.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # Warnings are errors everywhere (CLAUDE.md §7).
