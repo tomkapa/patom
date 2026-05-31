@@ -26,11 +26,18 @@ externalSecret:
 env:
   HTTP_ADDR: "0.0.0.0:8080"
   PATOM_WEB_DIST: "/app/web/dist"
-  MODEL: "claude-sonnet-4-6"
+  MODEL: "deepseek-v4-flash"
   EMBEDDING_DIMENSIONS: "1536"
+  EMBEDDING_MODEL: "text-embedding-3-small"
+  EMBEDDING_BASE_URL: "https://api.openai.com/v1"
+  DEEPSEEK_BASE_URL: "https://api.deepseek.com"
   PATOM_COOKIE_SECURE: "true"
   PATOM_OAUTH_REDIRECT_BASE: "https://patom.app"
   PATOM_WEB_BASE_URL: "https://patom.app"
+  PATOM_R2_PUBLIC_HOST: "https://asset.patom.app"
+  PATOM_R2_BUCKET: "patom"
+  PATOM_GENAI_CAPTURE_CONTENT: 1
+
 resources:
   requests:
     cpu: 150m
