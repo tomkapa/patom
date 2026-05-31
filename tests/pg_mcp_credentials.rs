@@ -14,9 +14,9 @@ use oauth2::AccessToken;
 use oauth2::RefreshToken;
 use oauth2::TokenResponse as _;
 use oauth2::basic::BasicTokenType;
-use patom_rs::clock::SystemClock;
-use patom_rs::crypto::OrgEncryptor;
-use patom_rs::mcp::{
+use patom::clock::SystemClock;
+use patom::crypto::OrgEncryptor;
+use patom::mcp::{
     ConnectionStatus, CredentialPayload, McpCatalogId, McpCredentialStore, McpCredentialWrite,
     McpHttpUrl, McpServerCreate, McpServerStore, McpTransport, OAuth2Payload, PgMcpCredentialStore,
     PgMcpServerStore,
@@ -27,7 +27,7 @@ use sqlx::PgPool;
 mod common;
 use common::pg::seed_tenant;
 
-async fn seed_server(pool: &PgPool, seed: &common::pg::Seed) -> patom_rs::mcp::McpServerId {
+async fn seed_server(pool: &PgPool, seed: &common::pg::Seed) -> patom::mcp::McpServerId {
     let clock = SystemClock::shared();
     let store = PgMcpServerStore::new(pool.clone(), clock);
     let record = store

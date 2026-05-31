@@ -1,0 +1,36 @@
+# Keep the build context small and the image clean. The Rust build needs
+# Cargo.*, rust-toolchain.toml, src/, migrations/, .sqlx/; the web stage needs
+# web/ (minus node_modules + dist). Everything below is excluded.
+
+# Rust build artifacts (the big one)
+/target
+
+# Web install/build outputs — regenerated inside the image
+web/node_modules
+web/dist
+web/.bun
+
+# VCS / CI / editor
+.git
+.gitignore
+.github
+.idea
+.vscode
+*.swp
+
+# Local dev / tooling
+.env
+.env.*
+docker-compose.yml
+.claude
+.playwright-mcp
+
+# Tests are not compiled by `cargo build --bin patom`
+tests
+
+# Docs / design / misc — not needed to build
+doc
+design.pen
+*.md
+/v*.png
+.DS_Store

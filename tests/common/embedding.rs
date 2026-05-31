@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use patom_rs::provider::{EmbeddingProvider, ProviderError, SharedEmbeddingProvider};
+use patom::provider::{EmbeddingProvider, ProviderError, SharedEmbeddingProvider};
 
 const DEFAULT_DIM: usize = 1536;
 

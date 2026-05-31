@@ -1,0 +1,74 @@
+# Patom app chart values. The image.tag is rewritten by CI on every push to main
+# (see .github/workflows/release.yml); ArgoCD syncs the change.
+image:
+  repository: ghcr.io/tomkapa/patom
+  tag: latest            # CI-managed
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: ghcr-pull-secret
+
+replicaCount: 1
+
+service:
+  port: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  host: patom.app
+  clusterIssuer: letsencrypt-prod   # cert-manager ClusterIssuer (DNS-01)
+  tlsSecretName: patom-tls
+  proxyBodySize: "8m"               # app limit is 4 MiB; headroom for multipart
+
+# External Secret: the whole config lives at this OpenBao KV path and is pulled
+# verbatim into the `patom-config` Secret via dataFrom.extract — so adding a new
+# secret key needs no chart change, only an OpenBao write.
+externalSecret:
+  storeRef: vault-backend
+  remoteKey: secret/data/patom/config
+
+# Non-secret env (secret env comes from the patom-config Secret via envFrom).
+env:
+  HTTP_ADDR: "0.0.0.0:8080"
+  PATOM_WEB_DIST: "/app/web/dist"
+  MODEL: "claude-sonnet-4-6"
+  EMBEDDING_DIMENSIONS: "1536"
+  PATOM_COOKIE_SECURE: "true"
+  PATOM_OAUTH_REDIRECT_BASE: "https://patom.app"
+  PATOM_WEB_BASE_URL: "https://patom.app"
+
+resources:
+  requests:
+    cpu: 150m
+    memory: 320Mi
+  limits:
+    memory: 768Mi
+
+# Cold start runs 103 sqlx migrations before the listener binds; startupProbe
+# must cover that or liveness kills the pod mid-migration.
+probes:
+  startup:
+    failureThreshold: 60    # x5s = 300s budget
+    periodSeconds: 5
+  liveness:
+    periodSeconds: 10
+    failureThreshold: 3
+  readiness:
+    periodSeconds: 10
+    failureThreshold: 6
+
+# Namespace-level quota (co-located with the app; platform onboarding doesn't
+# need a separate step). Sized for app + Postgres + backup job on the 4 GB node.
+resourceQuota:
+  enabled: true
+  hard:
+    requests.cpu: 1
+    requests.memory: 1536Mi
+    limits.memory: 3Gi
+    count/pods: "8"
+
+# Postgres coordinates (the StatefulSet lives in the sibling `postgres` chart).
+postgres:
+  serviceName: patom-postgres
+  port: 5432

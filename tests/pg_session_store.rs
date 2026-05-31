@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`patom_rs::session::PgSessionStore`]. Each test
+//! Trait-contract tests for [`patom::session::PgSessionStore`]. Each test
 //! gets its own freshly-migrated database via `#[sqlx::test]`, so they run in
 //! parallel with full isolation.
 
@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
-use patom_rs::agents::AgentId;
-use patom_rs::clock::SystemClock;
-use patom_rs::provider::{ChatMessage, UserContent};
-use patom_rs::runtime::PromptRequestId;
-use patom_rs::session::{PgSessionStore, SessionError, SessionId, SessionStore};
-use patom_rs::types::{MessageSender, Participant};
+use patom::agents::AgentId;
+use patom::clock::SystemClock;
+use patom::provider::{ChatMessage, UserContent};
+use patom::runtime::PromptRequestId;
+use patom::session::{PgSessionStore, SessionError, SessionId, SessionStore};
+use patom::types::{MessageSender, Participant};
 use sqlx::PgPool;
 
 mod common;
@@ -208,9 +208,7 @@ async fn snapshot_renders_messages_from_viewer_perspective(pool: PgPool) {
             id,
             MessageSender::from_participant(agent),
             Participant::Human,
-            ChatMessage::Assistant(vec![patom_rs::provider::AssistantContent::Text(
-                "pong".into(),
-            )]),
+            ChatMessage::Assistant(vec![patom::provider::AssistantContent::Text("pong".into())]),
             req,
         )
         .await

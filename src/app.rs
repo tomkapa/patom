@@ -66,7 +66,7 @@ use crate::tools::system::{
 };
 use crate::tools::{ToolBox, ToolRegistry};
 
-const HTTP_USER_AGENT: &str = concat!("patom-rs/", env!("CARGO_PKG_VERSION"));
+const HTTP_USER_AGENT: &str = concat!("patom/", env!("CARGO_PKG_VERSION"));
 const HTTP_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 

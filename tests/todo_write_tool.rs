@@ -16,15 +16,15 @@
 
 use std::sync::Arc;
 
-use patom_rs::clock::SystemClock;
-use patom_rs::runtime::PromptRequestId;
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
-use patom_rs::tools::system::todos::{
+use patom::clock::SystemClock;
+use patom::runtime::PromptRequestId;
+use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::tools::system::todos::{
     MAX_TODO_WRITES_PER_TURN, MAX_TODOS_PER_LIST, PgSessionTodoStore, SharedSessionTodoStore,
     TodoToolDeps, TodoWriteTool,
 };
-use patom_rs::tools::{Tool, ToolCallContext, ToolError};
-use patom_rs::types::Participant;
+use patom::tools::{Tool, ToolCallContext, ToolError};
+use patom::types::Participant;
 use serde_json::{Value, json};
 
 mod common;
@@ -34,10 +34,10 @@ use sqlx::PgPool;
 struct Fixture {
     tool: TodoWriteTool,
     store: SharedSessionTodoStore,
-    session: patom_rs::session::SessionId,
-    agent_id: patom_rs::agents::AgentId,
-    user_id: patom_rs::auth::UserId,
-    org_id: patom_rs::auth::OrgId,
+    session: patom::session::SessionId,
+    agent_id: patom::agents::AgentId,
+    user_id: patom::auth::UserId,
+    org_id: patom::auth::OrgId,
 }
 
 async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
@@ -64,7 +64,7 @@ fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
         viewer: Participant::agent(f.agent_id),
         root_request_id: request_id,
         request_id,
-        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom::runtime::RequestKindPayload::Normal {},
         acting_user_id: f.user_id,
         org_id: f.org_id,
     }

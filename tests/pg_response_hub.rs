@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`patom_rs::runtime::PgResponseHub`]: live
+//! Trait-contract tests for [`patom::runtime::PgResponseHub`]: live
 //! publish/subscribe round trip, replay-on-late-subscribe, replay-since cutoff,
 //! and slot-cap eviction (closed-first, then live with a warning).
 
@@ -9,15 +9,15 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
-use patom_rs::agents::AgentId;
-use patom_rs::clock::{SharedClock, SystemClock};
-use patom_rs::runtime::queue::PromptQueue as _;
-use patom_rs::runtime::{
+use patom::agents::AgentId;
+use patom::clock::{SharedClock, SystemClock};
+use patom::runtime::queue::PromptQueue as _;
+use patom::runtime::{
     IdempotencyKey, LeaseTiming, NewPromptRequest, PgPromptQueue, PgResponseHub, PromptRequestId,
     ResponseChunk, ResponseSink as _, ResponseSource as _, StreamEvent,
 };
-use patom_rs::session::{PgSessionStore, SessionId};
-use patom_rs::types::{Participant, Prompt};
+use patom::session::{PgSessionStore, SessionId};
+use patom::types::{Participant, Prompt};
 use sqlx::PgPool;
 
 mod common;
@@ -52,7 +52,7 @@ async fn stage_request(
             idempotency_key: IdempotencyKey::try_from(key).expect("key"),
             org_id: seed.org_id,
             created_by_user_id: seed.user_id,
-            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue")

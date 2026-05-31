@@ -9,7 +9,7 @@
 
 mod common;
 
-use patom_rs::auth::{AuthError, OrgId, UserId, run_as_user, run_privileged};
+use patom::auth::{AuthError, OrgId, UserId, run_as_user, run_privileged};
 use sqlx::PgPool;
 use sqlx::Row as _;
 use uuid::Uuid;

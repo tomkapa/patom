@@ -8,7 +8,7 @@
 
 #![allow(clippy::expect_used)]
 
-use patom_rs::config::parse_platform_oauth_clients;
+use patom::config::parse_platform_oauth_clients;
 
 #[test]
 fn reads_paired_env_vars() {

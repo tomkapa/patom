@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: patom
+  labels:
+    {{- include "patom.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "patom.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

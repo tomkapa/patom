@@ -16,16 +16,16 @@ use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use chrono_tz::Asia::Bangkok;
-use patom_rs::clock::{SharedClock, SystemClock};
-use patom_rs::runtime::{
+use patom::clock::{SharedClock, SystemClock};
+use patom::runtime::{
     IdempotencyKey, NewPromptRequest, PgPromptQueue, RequestKind, RequestStatus, SharedPromptQueue,
 };
-use patom_rs::scheduling::{
+use patom::scheduling::{
     NewScheduledTask, PgScheduledTaskStore, ScheduleSpec, ScheduledPrompt, ScheduledTaskId,
     ScheduledTaskName, ScheduledTaskScheduler, ScheduledTaskState, SharedScheduledTaskStore,
     TimeOfDay, Timezone, Weekdays,
 };
-use patom_rs::types::{Participant, Prompt};
+use patom::types::{Participant, Prompt};
 use sqlx::PgPool;
 
 mod common;
@@ -36,9 +36,9 @@ struct Fixture {
     store: SharedScheduledTaskStore,
     queue: SharedPromptQueue,
     clock: SharedClock,
-    default_agent_id: patom_rs::agents::AgentId,
-    default_org_id: patom_rs::auth::OrgId,
-    default_user_id: patom_rs::auth::UserId,
+    default_agent_id: patom::agents::AgentId,
+    default_org_id: patom::auth::OrgId,
+    default_user_id: patom::auth::UserId,
 }
 
 async fn fresh(pool: PgPool) -> Fixture {

@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`patom_rs::mcp::PgMcpCatalogStore`].
+//! Trait-contract tests for [`patom::mcp::PgMcpCatalogStore`].
 //!
 //! The catalog store's writes were added to support the "Custom URL"
 //! flow in the connections UI — operators now create tenant-custom
@@ -12,9 +12,9 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use patom_rs::auth::{OrgId, UserId};
-use patom_rs::clock::SystemClock;
-use patom_rs::mcp::{
+use patom::auth::{OrgId, UserId};
+use patom::clock::SystemClock;
+use patom::mcp::{
     CatalogUpsert, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName, McpCatalogId,
     McpCatalogStore, McpError, McpHttpUrl, McpTransport, PgMcpCatalogStore,
 };

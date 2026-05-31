@@ -1,11 +1,11 @@
 ---
 name: patom-code-review
-description: Review uncommitted code changes in the Patom (patom-rs) project against the project's CLAUDE.md conventions, apply confident fixes in place, escalate ambiguous decisions to the human, and produce a final markdown report. Trigger whenever the user invokes /review-patom, asks to "review my changes / working tree / diff", asks for a "CLAUDE.md compliance check", or otherwise wants a pre-commit / pre-PR review of in-progress Patom code. Use proactively whenever the user signals they are about to commit or push Patom changes and wants them checked first.
+description: Review uncommitted code changes in the Patom (patom) project against the project's CLAUDE.md conventions, apply confident fixes in place, escalate ambiguous decisions to the human, and produce a final markdown report. Trigger whenever the user invokes /review-patom, asks to "review my changes / working tree / diff", asks for a "CLAUDE.md compliance check", or otherwise wants a pre-commit / pre-PR review of in-progress Patom code. Use proactively whenever the user signals they are about to commit or push Patom changes and wants them checked first.
 ---
 
 # patom-code-review
 
-Review the **uncommitted working-tree changes** in the Patom (`patom-rs`) repo against the project's binding engineering rules in `CLAUDE.md`, apply confident fixes directly, escalate the rest, and produce a single markdown report at the end.
+Review the **uncommitted working-tree changes** in the Patom (`patom`) repo against the project's binding engineering rules in `CLAUDE.md`, apply confident fixes directly, escalate the rest, and produce a single markdown report at the end.
 
 This skill is opinionated and scoped to **this project**. It is not a general-purpose code reviewer — its job is to be the second pair of eyes that catches the things `CLAUDE.md` says are review-blocking before they reach a PR.
 

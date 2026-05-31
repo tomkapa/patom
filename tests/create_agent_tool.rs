@@ -8,14 +8,14 @@
 
 #![allow(clippy::expect_used)]
 
-use patom_rs::agents::{AgentName, AllowedMcpTools, SharedAgentStore, ToolScope};
-use patom_rs::clock::SystemClock;
-use patom_rs::mcp::McpCatalogId;
-use patom_rs::runtime::{PromptRequestId, RequestKindPayload};
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
-use patom_rs::tools::system::CreateAgentTool;
-use patom_rs::tools::{Tool, ToolCallContext, ToolError};
-use patom_rs::types::Participant;
+use patom::agents::{AgentName, AllowedMcpTools, SharedAgentStore, ToolScope};
+use patom::clock::SystemClock;
+use patom::mcp::McpCatalogId;
+use patom::runtime::{PromptRequestId, RequestKindPayload};
+use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::tools::system::CreateAgentTool;
+use patom::tools::{Tool, ToolCallContext, ToolError};
+use patom::types::Participant;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -28,8 +28,8 @@ struct Fixture {
     tool: CreateAgentTool,
     agents: SharedAgentStore,
     ctx: ToolCallContext,
-    viewer_agent_id: patom_rs::agents::AgentId,
-    org_id: patom_rs::auth::OrgId,
+    viewer_agent_id: patom::agents::AgentId,
+    org_id: patom::auth::OrgId,
 }
 
 async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {

@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use patom_rs::mcp::{
+use patom::mcp::{
     ClientSource, McpCatalogId, McpCatalogStore, PgMcpCatalogStore, platform_env_keys,
 };
 use sqlx::PgPool;

@@ -9,13 +9,13 @@
 
 use std::sync::Arc;
 
-use patom_rs::clock::SystemClock;
-use patom_rs::runtime::queue::PromptQueue as _;
-use patom_rs::runtime::{
+use patom::clock::SystemClock;
+use patom::runtime::queue::PromptQueue as _;
+use patom::runtime::{
     DagBudget, IdempotencyKey, NewPromptRequest, PgDagBudget, PgPromptQueue, PromptError,
     PromptRequestId,
 };
-use patom_rs::types::{Participant, Prompt};
+use patom::types::{Participant, Prompt};
 use sqlx::PgPool;
 
 mod common;
@@ -39,7 +39,7 @@ async fn seed_dag(pool: &PgPool, seed: &common::pg::Seed) -> PromptRequestId {
                 .expect("key"),
             org_id: seed.org_id,
             created_by_user_id: seed.user_id,
-            kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+            kind_payload: patom::runtime::RequestKindPayload::Normal {},
         })
         .await
         .expect("enqueue");

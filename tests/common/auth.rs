@@ -7,11 +7,11 @@
 
 use std::sync::Arc;
 
-use patom_rs::auth::{
+use patom::auth::{
     GoogleOAuth, JwtSigner, OrgId, PgUserStore, Principal, Role, SharedUserStore, UserId,
 };
-use patom_rs::clock::{SharedClock, SystemClock};
-use patom_rs::types::SecretString;
+use patom::clock::{SharedClock, SystemClock};
+use patom::types::SecretString;
 use sqlx::PgPool;
 
 const TEST_JWT_SECRET: &str = "test-secret-bytes-must-be-at-least-32-bytes-long-yes";
@@ -66,9 +66,9 @@ impl SeededPrincipal {
     pub fn cookie_header(&self) -> String {
         format!(
             "{}={}; {}={}",
-            patom_rs::auth::limits::COOKIE_NAME,
+            patom::auth::limits::COOKIE_NAME,
             self.cookie_value,
-            patom_rs::auth::limits::CSRF_COOKIE_NAME,
+            patom::auth::limits::CSRF_COOKIE_NAME,
             TEST_CSRF_TOKEN,
         )
     }

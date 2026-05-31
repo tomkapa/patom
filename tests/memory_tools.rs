@@ -11,22 +11,22 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use patom_rs::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
-use patom_rs::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
-use patom_rs::clock::{SharedClock, SystemClock};
-use patom_rs::memory::{
+use patom::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
+use patom::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
+use patom::clock::{SharedClock, SystemClock};
+use patom::memory::{
     AgentMemory, MAX_MEMORY_MUTATIONS_PER_TURN, MemoryContent, MemoryHandle, MemoryKind,
     MemoryMutation, MemorySectionLoader, MemoryState, MutationSource, PgMemoryStore,
     SessionMemoryCache, SharedMemoryStore,
 };
-use patom_rs::prompts::Prompts;
-use patom_rs::runtime::PromptRequestId;
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
-use patom_rs::tools::system::{
+use patom::prompts::Prompts;
+use patom::runtime::PromptRequestId;
+use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::tools::system::{
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
 };
-use patom_rs::tools::{Tool, ToolCallContext, ToolError};
-use patom_rs::types::Participant;
+use patom::tools::{Tool, ToolCallContext, ToolError};
+use patom::types::Participant;
 use serde_json::json;
 
 mod common;
@@ -39,10 +39,10 @@ struct Fixture {
     deps: MemoryToolDeps,
     loader: MemorySectionLoader,
     store: SharedMemoryStore,
-    session: patom_rs::session::SessionId,
-    agent_id: patom_rs::agents::AgentId,
-    user_id: patom_rs::auth::UserId,
-    org_id: patom_rs::auth::OrgId,
+    session: patom::session::SessionId,
+    agent_id: patom::agents::AgentId,
+    user_id: patom::auth::UserId,
+    org_id: patom::auth::OrgId,
 }
 
 async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
@@ -93,7 +93,7 @@ fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
         viewer: Participant::agent(f.agent_id),
         root_request_id: request_id,
         request_id,
-        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom::runtime::RequestKindPayload::Normal {},
         acting_user_id: f.user_id,
         org_id: f.org_id,
     }
@@ -395,7 +395,7 @@ async fn handle_round_trips_through_session_cache(pool: PgPool) {
         .resolve_handle(
             f.session,
             f.agent_id,
-            &patom_rs::runtime::RequestKindPayload::Normal {},
+            &patom::runtime::RequestKindPayload::Normal {},
             MemoryHandle::try_from(1u32).expect("h"),
         )
         .await
@@ -408,14 +408,14 @@ async fn handle_round_trips_through_session_cache(pool: PgPool) {
 fn ctx_with_target(
     f: &Fixture,
     request_id: PromptRequestId,
-    target: patom_rs::memory::ContradictionEventId,
+    target: patom::memory::ContradictionEventId,
 ) -> ToolCallContext {
     ToolCallContext {
         session_id: f.session,
         viewer: Participant::agent(f.agent_id),
         root_request_id: request_id,
         request_id,
-        kind_payload: patom_rs::runtime::RequestKindPayload::Resolution {
+        kind_payload: patom::runtime::RequestKindPayload::Resolution {
             contradiction_event_id: target,
         },
         acting_user_id: f.user_id,
@@ -426,9 +426,9 @@ fn ctx_with_target(
 async fn seed_pair_and_contradiction(
     f: &Fixture,
 ) -> (
-    patom_rs::memory::MemoryId,
-    patom_rs::memory::MemoryId,
-    patom_rs::memory::ContradictionEventId,
+    patom::memory::MemoryId,
+    patom::memory::MemoryId,
+    patom::memory::ContradictionEventId,
 ) {
     let a = f
         .store

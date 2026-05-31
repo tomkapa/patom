@@ -16,28 +16,28 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 
-use patom_rs::agent_core::AgentBuilder;
-use patom_rs::agents::{
+use patom::agent_core::AgentBuilder;
+use patom::agents::{
     AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL, AgentFactory, CachedAgents, SharedAgentStore,
     SharedAgents,
 };
-use patom_rs::clock::SystemClock;
-use patom_rs::hook::HookChain;
-use patom_rs::memory::{SharedMemory, StaticMemory};
-use patom_rs::provider::{
+use patom::clock::SystemClock;
+use patom::hook::HookChain;
+use patom::memory::{SharedMemory, StaticMemory};
+use patom::provider::{
     AssistantContent, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError, ProviderId,
     ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason,
 };
-use patom_rs::runtime::queue::PromptQueue as _;
-use patom_rs::runtime::{
+use patom::runtime::queue::PromptQueue as _;
+use patom::runtime::{
     IdempotencyKey, LeaseTiming, NewPromptRequest, PgDagBudget, PgPromptQueue, PgResponseHub,
     RequestStatus, ResponseChunk, SharedDagBudget, SharedResponseSource, StreamEvent, WorkerConfig,
     WorkerPool,
 };
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
-use patom_rs::tools::system::SendMessageTool;
-use patom_rs::tools::{ToolBox, ToolRegistry};
-use patom_rs::types::Prompt;
+use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::tools::system::SendMessageTool;
+use patom::tools::{ToolBox, ToolRegistry};
+use patom::types::Prompt;
 use sqlx::PgPool;
 
 mod common;
@@ -81,8 +81,8 @@ fn text_response(s: &str) -> ChatResponse {
 /// at least one message; tests that previously asserted post-turn `Done`
 /// chunks must now route their reply through this tool.
 fn send_message_human_response(content: &str, call_id: &str) -> ChatResponse {
-    use patom_rs::provider::{ToolCall, ToolCallId};
-    use patom_rs::types::ToolName;
+    use patom::provider::{ToolCall, ToolCallId};
+    use patom::types::ToolName;
     ChatResponse {
         content: vec![AssistantContent::ToolCall(ToolCall {
             id: ToolCallId::try_from(call_id).expect("id"),
@@ -101,10 +101,10 @@ struct Harness {
     queue: Arc<PgPromptQueue>,
     hub: Arc<PgResponseHub>,
     sessions: SharedSessionStore,
-    default_agent_id: patom_rs::agents::AgentId,
-    default_org_id: patom_rs::auth::OrgId,
-    default_user_id: patom_rs::auth::UserId,
-    pool: patom_rs::runtime::WorkerPoolHandle,
+    default_agent_id: patom::agents::AgentId,
+    default_org_id: patom::auth::OrgId,
+    default_user_id: patom::auth::UserId,
+    pool: patom::runtime::WorkerPoolHandle,
 }
 
 async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness {
@@ -149,8 +149,8 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
         AGENT_PROMPT_CACHE_TTL,
         clock.clone(),
     ));
-    let memory_store_for_pool: patom_rs::memory::SharedMemoryStore =
-        Arc::new(patom_rs::memory::PgMemoryStore::new(
+    let memory_store_for_pool: patom::memory::SharedMemoryStore =
+        Arc::new(patom::memory::PgMemoryStore::new(
             pool.clone(),
             clock.clone(),
             common::embedding::FakeEmbeddingProvider::shared(),
@@ -190,23 +190,23 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
 }
 
 fn req(
-    session: patom_rs::session::SessionId,
-    agent_id: patom_rs::agents::AgentId,
+    session: patom::session::SessionId,
+    agent_id: patom::agents::AgentId,
     content: &str,
     key: &str,
-    org_id: patom_rs::auth::OrgId,
-    user_id: patom_rs::auth::UserId,
+    org_id: patom::auth::OrgId,
+    user_id: patom::auth::UserId,
 ) -> NewPromptRequest {
     NewPromptRequest {
         session: Some(session),
-        sender: patom_rs::types::Participant::Human,
+        sender: patom::types::Participant::Human,
         receiver_agent_id: agent_id,
         parent_session: None,
         content: Prompt::try_from(content).expect("p"),
         idempotency_key: IdempotencyKey::try_from(key).expect("k"),
         org_id,
         created_by_user_id: user_id,
-        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom::runtime::RequestKindPayload::Normal {},
     }
 }
 
@@ -215,28 +215,28 @@ fn req(
 /// any test whose script invokes `send_message`, since the tool's
 /// `dag.bump_or_fail` needs the DAG row to exist.
 fn req_root(
-    agent_id: patom_rs::agents::AgentId,
+    agent_id: patom::agents::AgentId,
     content: &str,
     key: &str,
-    org_id: patom_rs::auth::OrgId,
-    user_id: patom_rs::auth::UserId,
+    org_id: patom::auth::OrgId,
+    user_id: patom::auth::UserId,
 ) -> NewPromptRequest {
     NewPromptRequest {
         session: None,
-        sender: patom_rs::types::Participant::Human,
+        sender: patom::types::Participant::Human,
         receiver_agent_id: agent_id,
         parent_session: None,
         content: Prompt::try_from(content).expect("p"),
         idempotency_key: IdempotencyKey::try_from(key).expect("k"),
         org_id,
         created_by_user_id: user_id,
-        kind_payload: patom_rs::runtime::RequestKindPayload::Normal {},
+        kind_payload: patom::runtime::RequestKindPayload::Normal {},
     }
 }
 
 async fn drain_until_terminal(
     hub: Arc<PgResponseHub>,
-    id: patom_rs::runtime::PromptRequestId,
+    id: patom::runtime::PromptRequestId,
     deadline: Duration,
 ) -> Vec<ResponseChunk> {
     let source: SharedResponseSource = hub;
@@ -264,7 +264,7 @@ async fn drain_until_terminal(
 /// briefly to avoid races.
 async fn await_terminal_status(
     queue: &Arc<PgPromptQueue>,
-    id: patom_rs::runtime::PromptRequestId,
+    id: patom::runtime::PromptRequestId,
     deadline: Duration,
 ) -> RequestStatus {
     let until = std::time::Instant::now() + deadline;

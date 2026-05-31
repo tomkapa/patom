@@ -17,25 +17,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use patom_rs::agent_core::AgentBuilder;
-use patom_rs::agents::{
+use patom::agent_core::AgentBuilder;
+use patom::agents::{
     AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL, AgentFactory, CachedAgents, SharedAgentStore,
     SharedAgents,
 };
-use patom_rs::clock::SystemClock;
-use patom_rs::hook::HookChain;
-use patom_rs::memory::{SharedMemory, StaticMemory};
-use patom_rs::provider::{
+use patom::clock::SystemClock;
+use patom::hook::HookChain;
+use patom::memory::{SharedMemory, StaticMemory};
+use patom::provider::{
     ChatRequest, ChatResponse, LlmProvider, Model, ProviderError, ProviderId, ProviderRegistry,
     SharedProvider, SharedProviderRegistry,
 };
-use patom_rs::runtime::{
+use patom::runtime::{
     LeaseTiming, PgDagBudget, PgPromptQueue, PgResponseHub, SharedDagBudget, WorkerConfig,
     WorkerPool, WorkerPoolHandle,
 };
-use patom_rs::session::{PgSessionStore, SharedSessionStore};
-use patom_rs::tools::system::SendMessageTool;
-use patom_rs::tools::{ToolBox, ToolRegistry};
+use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::tools::system::SendMessageTool;
+use patom::tools::{ToolBox, ToolRegistry};
 use sqlx::PgPool;
 
 use super::pg::seed_tenant;
@@ -85,13 +85,13 @@ pub struct WorkerHarness {
     pub hub: Arc<PgResponseHub>,
     pub sessions: SharedSessionStore,
     pub dag: SharedDagBudget,
-    pub default_agent_id: patom_rs::agents::AgentId,
+    pub default_agent_id: patom::agents::AgentId,
     /// Seeded owning org id — needed by `NewPromptRequest` and any
     /// helper that mints a fresh session under this harness's tenant.
-    pub default_org_id: patom_rs::auth::OrgId,
+    pub default_org_id: patom::auth::OrgId,
     /// Seeded owning user id — pairs with `default_org_id` to pin
     /// sessions created via this harness to the test principal.
-    pub default_user_id: patom_rs::auth::UserId,
+    pub default_user_id: patom::auth::UserId,
     pub workers: WorkerPoolHandle,
 }
 
@@ -113,8 +113,8 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let agent_store: SharedAgentStore = super::pg::shared_agent_store(pool.clone(), clock.clone());
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
-    let memory_store: patom_rs::memory::SharedMemoryStore =
-        Arc::new(patom_rs::memory::PgMemoryStore::new(
+    let memory_store: patom::memory::SharedMemoryStore =
+        Arc::new(patom::memory::PgMemoryStore::new(
             pool.clone(),
             clock.clone(),
             super::embedding::FakeEmbeddingProvider::shared(),

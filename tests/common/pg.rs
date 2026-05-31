@@ -15,15 +15,15 @@
 
 use std::sync::Arc;
 
-use patom_rs::agents::{
+use patom::agents::{
     AgentDescription, AgentId, AgentName, AgentSystemPrompt, DefaultAgentSeed, PgAgentStore,
     SharedAgentStore,
 };
-use patom_rs::auth::{OrgId, UserId};
-use patom_rs::clock::{SharedClock, SystemClock};
-use patom_rs::runtime::PromptRequestId;
-use patom_rs::session::{SessionId, SessionStore};
-use patom_rs::types::Participant;
+use patom::auth::{OrgId, UserId};
+use patom::clock::{SharedClock, SystemClock};
+use patom::runtime::PromptRequestId;
+use patom::session::{SessionId, SessionStore};
+use patom::types::Participant;
 use sqlx::PgPool;
 use uuid::Uuid;
 

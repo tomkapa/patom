@@ -22,7 +22,7 @@ The code is authoritative. Where this document and the source disagree, fix the 
 
 ## 1. System shape
 
-Patom is **one Rust binary** (`patom-rs`) plus a Postgres-backed control plane. The binary serves HTTP and runs the agent worker pool in the same process; the same code can split into separate `serve-http` and `serve-worker` deployments without a rewrite, because all storage and I/O sit behind traits.
+Patom is **one Rust binary** (`patom`) plus a Postgres-backed control plane. The binary serves HTTP and runs the agent worker pool in the same process; the same code can split into separate `serve-http` and `serve-worker` deployments without a rewrite, because all storage and I/O sit behind traits.
 
 ```mermaid
 flowchart TB
