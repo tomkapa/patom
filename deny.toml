@@ -29,10 +29,16 @@ private = { ignore = true }
 
 [advisories]
 # Build-graph advisories with no actionable fix. cargo-deny scans the compiled
-# graph, so it sees these dev-only crates but NOT `rsa` (RUSTSEC-2023-0071),
-# which reaches only the lockfile via the uncompiled `sqlx-mysql` — that one is
-# handled in `.cargo/audit.toml`, which scans the raw lockfile.
+# graph; rationale for each ignore is mirrored in `.cargo/audit.toml`.
 ignore = [
+    # `rsa` "Marvin" timing sidechannel (RUSTSEC-2023-0071). Now compiled into
+    # the graph via `openidconnect` -> `rsa` (RS256 id_token signature
+    # verification, ADR-0011). The advisory is a *private-key* recovery
+    # sidechannel during signing/decryption; our only use is *public-key*
+    # verification of IdP-issued id_tokens — we never hold or operate on an RSA
+    # private key, so the leak does not apply. No fixed `rsa` release exists
+    # upstream. Re-evaluate when RustCrypto ships the constant-time rewrite.
+    "RUSTSEC-2023-0071",
     # `backoff` unmaintained. Dev-only: pulled by `async-openai`, a
     # dev-dependency — never in the shipped binary.
     "RUSTSEC-2025-0012",

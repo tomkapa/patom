@@ -1,16 +1,22 @@
-//! Google OAuth login / callback. Public — the auth layer is not
+//! OIDC login / callback (ADR-0011). Public — the auth layer is not
 //! applied here (the whole point is to mint a session for an as-yet
-//! unauthenticated visitor).
+//! unauthenticated visitor). Provider-agnostic: Google is one issuer
+//! behind the `OidcAuth` seam.
 //!
 //! Flow:
-//!   1. `GET  /auth/google/login?return_to=…` — mint random `state` +
-//!      PKCE verifier, insert into `oauth_login_states`, redirect to
-//!      Google.
-//!   2. `GET  /auth/google/callback?code=…&state=…` — consume the
-//!      stored verifier, exchange the code, upsert the user (and
-//!      create their personal org on first sign-up), mint a JWT, set
-//!      the session cookie, redirect to the validated `return_to` (or
-//!      `/`).
+//!   1. `GET  /auth/oidc/login?return_to=…` — mint random `state` +
+//!      PKCE verifier + nonce, insert into `oauth_login_states`, redirect
+//!      to the IdP.
+//!   2. `GET  /auth/oidc/callback?code=…&state=…` — consume the stored
+//!      verifier + nonce, exchange the code for a verified id_token,
+//!      upsert the user, resolve the org they land in (see
+//!      [`resolve_active_org`] — self-service on cloud; bootstrap /
+//!      join-by-invite / deny on self-host), mint a JWT, set the session
+//!      cookie, redirect to the validated `return_to` (or `/`).
+//!
+//! `/auth/google/{login,callback}` are kept one release as thin aliases
+//! to the same handlers so existing cloud deployments and bookmarks
+//! don't break.
 
 use axum::Router;
 use axum::extract::{Query, State};
@@ -32,6 +38,9 @@ use super::super::state::AppState;
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
+        .route("/auth/oidc/login", get(login))
+        .route("/auth/oidc/callback", get(callback))
+        // Aliases kept one release (ADR-0011) — same handlers.
         .route("/auth/google/login", get(login))
         .route("/auth/google/callback", get(callback))
 }
@@ -78,6 +87,7 @@ async fn login(
         .insert_oauth_state(&OAuthStateRow {
             state: start.state.clone(),
             pkce_verifier: start.pkce_verifier.clone(),
+            nonce: start.nonce.clone(),
             redirect_to: safe_return,
             detected_locale,
             created_at: now,
@@ -131,63 +141,18 @@ async fn callback(
 
     let profile = state
         .oauth
-        .exchange(&query.code, &consumed.pkce_verifier)
+        .exchange(&query.code, &consumed.pkce_verifier, &consumed.nonce)
         .await?;
-    let upserted = state.users.upsert_from_google(&profile, now).await?;
+    let upserted = state.users.upsert_from_oidc(&profile, now).await?;
 
-    // First sign-up → mint a personal org so the user has somewhere to
-    // own resources. The default-agent seed for the new org is the
-    // composition root's job (see `app::seed_default_agent_for_org`)
-    // and runs here so the cookie we mint immediately resolves to a
-    // usable workspace.
-    let orgs = state.users.list_user_orgs(upserted.user.id).await?;
-    let active_org = if let Some(first) = orgs.first() {
-        first.org_id
-    } else {
-        let display = upserted
-            .user
-            .display_name
-            .clone()
-            .unwrap_or_else(|| upserted.user.email.as_str().to_owned());
-        let slug_seed = upserted
-            .user
-            .email
-            .as_str()
-            .split('@')
-            .next()
-            .expect("invariant: str::split always yields at least one element");
-        // Per-org language seed. Google's userinfo `locale` field wins
-        // when present; the inbound Accept-Language primary tag stashed
-        // at /auth/google/login is the fallback. Both are hints —
-        // `Language::from_locale_hint` is the single normalization
-        // point and falls back to `Language::DEFAULT` (`En`) when
-        // neither matches a supported language.
-        let language = Language::from_locale_hint(
-            profile.locale.as_ref().map(LocaleHint::as_str),
-            consumed.detected_locale.as_ref().map(LocaleHint::as_str),
-        );
-        let new_org = state
-            .users
-            .create_personal_org(upserted.user.id, slug_seed, &display, language, now)
-            .await?;
-        // Seed the freshly minted personal org's default agent in the
-        // chosen language so the cookie we mint below immediately
-        // resolves to a usable workspace. Idempotent: re-running this
-        // for a pre-existing org returns the existing default's id
-        // rather than minting another. `default_agent_seed` only fails
-        // if the registry bodies violate a newtype invariant — surface
-        // as an internal error rather than a user-facing 4xx (it's a
-        // server-side bug, not a bad request).
-        let seed = crate::app::default_agent_seed(&state.prompts, language).map_err(|e| {
-            tracing::error!(
-                event = "auth.callback.default_agent_seed_build_failed",
-                error = ?e,
-            );
-            HttpError::Internal
-        })?;
-        crate::app::seed_default_agent_for_org(&state.agents, new_org.id, seed).await?;
-        new_org.id
-    };
+    let active_org = resolve_active_org(
+        &state,
+        &upserted.user,
+        profile.locale.as_ref(),
+        consumed.detected_locale.as_ref(),
+        now,
+    )
+    .await?;
 
     let token = state.jwt.mint(upserted.user.id, active_org)?;
     info!(
@@ -214,6 +179,100 @@ async fn callback(
     // axum-extra: tupling a CookieJar with a Redirect produces a
     // response that carries both `Set-Cookie` and `Location` headers.
     Ok((jar, Redirect::to(&dest)).into_response())
+}
+
+/// Pick (or establish) the org a freshly-authenticated user lands in.
+///
+/// - Already a member → their first org.
+/// - Cloud (`PATOM_BOOTSTRAP_ADMIN` unset) → self-service personal org.
+/// - Self-host (`PATOM_BOOTSTRAP_ADMIN` set, invite-only): the
+///   genuinely-first login (empty org table) bootstraps the initial org
+///   as owner; a later login joins whatever org it was invited to;
+///   anyone else is denied — no per-user personal org.
+async fn resolve_active_org(
+    state: &AppState,
+    user: &crate::auth::User,
+    profile_locale: Option<&LocaleHint>,
+    detected_locale: Option<&LocaleHint>,
+    now: DateTime<Utc>,
+) -> Result<crate::auth::OrgId, HttpError> {
+    let orgs = state.users.list_user_orgs(user.id).await?;
+    if let Some(first) = orgs.first() {
+        return Ok(first.org_id);
+    }
+    let display = user
+        .display_name
+        .clone()
+        .unwrap_or_else(|| user.email.as_str().to_owned());
+    let slug_seed = user
+        .email
+        .as_str()
+        .split('@')
+        .next()
+        .expect("invariant: str::split always yields at least one element");
+    // Per-org language seed. The id_token `locale` claim wins when
+    // present; the inbound Accept-Language primary tag stashed at
+    // /auth/oidc/login is the fallback. `Language::from_locale_hint` is
+    // the single normalization point, falling back to `Language::DEFAULT`.
+    let language = Language::from_locale_hint(
+        profile_locale.map(LocaleHint::as_str),
+        detected_locale.map(LocaleHint::as_str),
+    );
+
+    if state.bootstrap_admin {
+        // Self-host / invite-only (ADR-0011). First login on an empty DB
+        // becomes the admin; the count-guarded path emits the audit event.
+        if let Some(new_org) = state
+            .users
+            .bootstrap_initial_org_as_owner(user.id, slug_seed, &display, language, now)
+            .await?
+        {
+            seed_default_agent(state, new_org.id, language).await?;
+            return Ok(new_org.id);
+        }
+        // Otherwise the admin must have invited this email; consume the
+        // invite and join that existing org (which already has its
+        // agents — no seeding).
+        if let Some(org_id) = state
+            .orgs
+            .join_pending_invites(user.id, &user.email, now)
+            .await?
+        {
+            return Ok(org_id);
+        }
+        return Err(HttpError::Forbidden(
+            "no organization — ask your workspace admin for an invite",
+        ));
+    }
+
+    // Cloud self-service: every new user gets a personal org.
+    let new_org = state
+        .users
+        .create_personal_org(user.id, slug_seed, &display, language, now)
+        .await?;
+    seed_default_agent(state, new_org.id, language).await?;
+    Ok(new_org.id)
+}
+
+/// Seed a freshly-minted org's default agent in `language` so the
+/// session cookie we mint resolves to a usable workspace. Idempotent —
+/// re-running for an existing org returns the existing default's id.
+/// `default_agent_seed` only fails on a registry-body invariant
+/// violation, which is a server bug → 500, not a 4xx.
+async fn seed_default_agent(
+    state: &AppState,
+    org_id: crate::auth::OrgId,
+    language: Language,
+) -> Result<(), HttpError> {
+    let seed = crate::app::default_agent_seed(&state.prompts, language).map_err(|e| {
+        tracing::error!(
+            event = "auth.callback.default_agent_seed_build_failed",
+            error = ?e,
+        );
+        HttpError::Internal
+    })?;
+    crate::app::seed_default_agent_for_org(&state.agents, org_id, seed).await?;
+    Ok(())
 }
 
 pub(super) fn build_session_cookie(

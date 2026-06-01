@@ -504,6 +504,74 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         tx.commit().await?;
         Ok(())
     }
+
+    async fn join_pending_invites(
+        &self,
+        user_id: UserId,
+        email: &Email,
+        now: DateTime<Utc>,
+    ) -> Result<Option<OrgId>, OrgError> {
+        let mut tx = auth::begin_privileged(&self.pool).await?;
+        // Pending, non-expired invites addressed to the verified email,
+        // oldest first so the active org is deterministic.
+        let rows = sqlx::query(
+            "SELECT id, org_id, role FROM org_invites
+             WHERE email = $1 AND consumed_at IS NULL AND expires_at > $2
+             ORDER BY created_at ASC",
+        )
+        .bind(email.as_str())
+        .bind(now)
+        .fetch_all(&mut *tx)
+        .await?;
+        if rows.is_empty() {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let mut active: Option<OrgId> = None;
+        for row in &rows {
+            let org_id = OrgId::from(row.get::<uuid::Uuid, _>("org_id"));
+            let invite_id = row.get::<uuid::Uuid, _>("id");
+            let role: String = row.get("role");
+            // §6: the column CHECK guarantees this; the assertion detects
+            // corruption rather than silently inserting a bad membership.
+            assert!(
+                Role::parse(&role).is_some(),
+                "org_invites.role must be a known role"
+            );
+            // Idempotent join — a benign double-login (or an already-member
+            // invite) leaves the existing row untouched.
+            sqlx::query(
+                "INSERT INTO org_members (org_id, user_id, role, created_at)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (org_id, user_id) DO NOTHING",
+            )
+            .bind(org_id)
+            .bind(user_id)
+            .bind(&role)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            // Consume only if still pending so two concurrent logins for
+            // the same email don't double-stamp or panic.
+            sqlx::query(
+                "UPDATE org_invites SET consumed_at = $2 WHERE id = $1 AND consumed_at IS NULL",
+            )
+            .bind(invite_id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            if active.is_none() {
+                active = Some(org_id);
+            }
+        }
+        tx.commit().await?;
+        // §6: we returned early on the empty set, so a row was processed.
+        assert!(
+            active.is_some(),
+            "a non-empty pending-invite set must yield an active org"
+        );
+        Ok(active)
+    }
 }
 
 /// Guard a role-change or member-removal against demoting / removing

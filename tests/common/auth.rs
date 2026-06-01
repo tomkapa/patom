@@ -1,23 +1,22 @@
 //! Auth helpers for integration tests.
 //!
-//! Mints a deterministic `JwtSigner` + `GoogleOAuth` for the test
+//! Mints a deterministic `JwtSigner` + a stub `OidcAuth` for the test
 //! `AppState`. Seeds users + orgs + memberships via raw SQL inside a
 //! privileged tx (the identity tables are not RLS-protected so this is
 //! straightforward).
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use patom::auth::{
-    GoogleOAuth, JwtSigner, OrgId, PgUserStore, Principal, Role, SharedUserStore, UserId,
+    AuthStart, JwtSigner, OidcAuth, OidcNonce, OidcProfile, OrgId, PgUserStore, PkceVerifier,
+    Principal, Role, SharedOidcAuth, SharedUserStore, UserId,
 };
 use patom::clock::{SharedClock, SystemClock};
 use patom::types::SecretString;
 use sqlx::PgPool;
 
 const TEST_JWT_SECRET: &str = "test-secret-bytes-must-be-at-least-32-bytes-long-yes";
-const TEST_GOOGLE_CLIENT_ID: &str = "test-client-id";
-const TEST_GOOGLE_CLIENT_SECRET: &str = "test-client-secret";
-const TEST_GOOGLE_REDIRECT: &str = "http://localhost:8080/auth/google/callback";
 
 /// Build a `JwtSigner` with a deterministic secret. Tests that mint
 /// cookies share this signer with the `AppState` so verification
@@ -28,14 +27,38 @@ pub fn test_jwt(clock: SharedClock) -> JwtSigner {
     JwtSigner::new(&secret, clock).expect("test jwt signer")
 }
 
-/// Build a `GoogleOAuth` that points at the canonical Google endpoints
-/// but is never actually called in tests (OAuth flow is mocked at the
-/// store level for the rare test that exercises it).
+/// A stub OIDC provider for the test `AppState`. Discovery needs network
+/// and a live IdP, so the integration suite never drives a real login
+/// round-trip; this fake fills the `oauth` slot and errors loudly if a
+/// test ever calls it, surfacing the gap rather than hanging on a
+/// socket.
+#[derive(Debug)]
+struct StubOidcAuth;
+
+#[async_trait]
+impl OidcAuth for StubOidcAuth {
+    fn start(&self) -> Result<AuthStart, patom::auth::AuthError> {
+        Err(patom::auth::AuthError::Internal(
+            "stub oidc provider: start() not supported in tests",
+        ))
+    }
+
+    async fn exchange(
+        &self,
+        _code: &str,
+        _verifier: &PkceVerifier,
+        _nonce: &OidcNonce,
+    ) -> Result<OidcProfile, patom::auth::AuthError> {
+        Err(patom::auth::AuthError::Internal(
+            "stub oidc provider: exchange() not supported in tests",
+        ))
+    }
+}
+
+/// Build the stub [`SharedOidcAuth`] for the test `AppState`.
 #[must_use]
-pub fn test_oauth() -> GoogleOAuth {
-    let id = SecretString::try_from(TEST_GOOGLE_CLIENT_ID.to_owned()).expect("non-empty");
-    let secret = SecretString::try_from(TEST_GOOGLE_CLIENT_SECRET.to_owned()).expect("non-empty");
-    GoogleOAuth::new(&id, &secret, TEST_GOOGLE_REDIRECT).expect("test oauth client")
+pub fn test_oauth() -> SharedOidcAuth {
+    Arc::new(StubOidcAuth)
 }
 
 /// Construct the user store backed by the test pool.

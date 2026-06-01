@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use sqlx::Row;
+use tracing::info;
 
 use super::error::AuthError;
 use super::language::Language;
@@ -18,8 +19,8 @@ use super::locale_hint::LocaleHint;
 use super::org_rule::OrganizationRule;
 use super::store::{ConsumedOAuthState, NewOrg, OAuthStateRow, UpsertedUser, UserStore};
 use super::types::{
-    Email, GoogleProfile, OAuthState, OrgId, OrgMembership, OrgSlug, PkceVerifier, Role, User,
-    UserId,
+    Email, OAuthState, OidcNonce, OidcProfile, OrgId, OrgMembership, OrgSlug, PkceVerifier, Role,
+    User, UserId,
 };
 
 pub struct PgUserStore {
@@ -41,32 +42,37 @@ impl fmt::Debug for PgUserStore {
 
 #[async_trait]
 impl UserStore for PgUserStore {
-    async fn upsert_from_google(
+    async fn upsert_from_oidc(
         &self,
-        profile: &GoogleProfile,
+        profile: &OidcProfile,
         now: DateTime<Utc>,
     ) -> Result<UpsertedUser, AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
 
-        // Serialize concurrent first-logins for the same (provider, subject)
+        // Serialize concurrent first-logins for the same (issuer, subject)
         // so the "look up identity, insert if missing" sequence below
         // resolves to one users row. Transaction-scoped — released
         // automatically on commit/rollback. `hashtextextended` is a
         // built-in stable hash returning bigint, the shape
         // `pg_advisory_xact_lock` wants.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(format!("google:{}", profile.subject.as_str()))
+            .bind(format!(
+                "oidc:{}:{}",
+                profile.issuer.as_str(),
+                profile.subject.as_str()
+            ))
             .execute(&mut *tx)
             .await?;
 
-        // Canonical identity is (provider, subject), not email. Email
-        // can change on the Google side and a stale email-keyed upsert
-        // would sign the callback into the wrong users row when the
-        // new email already belongs to a different account.
+        // Canonical identity is (issuer, subject), not email. Email can
+        // change at the IdP and a stale email-keyed upsert would sign the
+        // callback into the wrong users row when the new email already
+        // belongs to a different account.
         let existing: Option<UserId> = sqlx::query_scalar(
             "SELECT user_id FROM user_identities
-             WHERE provider = 'google' AND subject = $1",
+             WHERE oidc_issuer = $1 AND oidc_subject = $2",
         )
+        .bind(profile.issuer.as_str())
         .bind(profile.subject.as_str())
         .fetch_optional(&mut *tx)
         .await?;
@@ -101,12 +107,18 @@ impl UserStore for PgUserStore {
             .bind(now)
             .execute(&mut *tx)
             .await?;
+            // `provider` + legacy `subject` are retained NOT NULL columns
+            // (migration 53): write 'oidc' and mirror the subject so the
+            // backfilled-Google rows and new rows share one shape. The PK
+            // is now (oidc_issuer, oidc_subject).
             sqlx::query(
-                "INSERT INTO user_identities (user_id, provider, subject, email_at_link, created_at)
-                 VALUES ($1, 'google', $2, $3, $4)",
+                "INSERT INTO user_identities
+                     (user_id, provider, subject, oidc_issuer, oidc_subject, email_at_link, created_at)
+                 VALUES ($1, 'oidc', $2, $3, $2, $4, $5)",
             )
             .bind(candidate_id)
             .bind(profile.subject.as_str())
+            .bind(profile.issuer.as_str())
             .bind(profile.email.as_str())
             .bind(now)
             .execute(&mut *tx)
@@ -173,6 +185,62 @@ impl UserStore for PgUserStore {
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    async fn bootstrap_initial_org_as_owner(
+        &self,
+        user_id: UserId,
+        suggested_slug: &str,
+        display_name: &str,
+        language: Language,
+        now: DateTime<Utc>,
+    ) -> Result<Option<NewOrg>, AuthError> {
+        let mut tx = super::begin_privileged(&self.pool).await?;
+        // One fixed lock for the whole bootstrap so two simultaneous
+        // first logins serialize: the loser observes count > 0 below.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind("patom:bootstrap-admin")
+            .execute(&mut *tx)
+            .await?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM organizations")
+            .fetch_one(&mut *tx)
+            .await?;
+        // §6: assert what we expect and what we don't before branching.
+        assert!(count >= 0, "count(*) is never negative");
+        if count > 0 {
+            // Not the first login any more; release the lock and let the
+            // caller fall through to the normal self-service path.
+            tx.commit().await?;
+            return Ok(None);
+        }
+        assert_eq!(count, 0, "bootstrap requires an empty organizations table");
+
+        // Empty table ⇒ no slug can collide; re-parse through OrgSlug so
+        // we never insert a row the CHECK would reject.
+        let slug = OrgSlug::try_from(sanitize_slug(suggested_slug)).map_err(AuthError::Parse)?;
+        let id = OrgId::new();
+        insert_org_and_owner(
+            &mut tx,
+            id,
+            user_id,
+            slug.as_str(),
+            display_name,
+            language,
+            now,
+        )
+        .await?;
+        tx.commit().await?;
+        info!(
+            event = "auth.bootstrap.admin",
+            patom.user.id = %user_id,
+            patom.org.id = %id,
+        );
+        Ok(Some(NewOrg {
+            id,
+            slug: slug.as_str().to_owned(),
+            name: display_name.to_owned(),
+            default_language: language,
+        }))
     }
 
     async fn list_user_orgs(&self, user_id: UserId) -> Result<Vec<OrgMembership>, AuthError> {
@@ -378,11 +446,12 @@ impl UserStore for PgUserStore {
     async fn insert_oauth_state(&self, row: &OAuthStateRow) -> Result<(), AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
         sqlx::query(
-            "INSERT INTO oauth_login_states (state, pkce_verifier, redirect_to, detected_locale, created_at, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO oauth_login_states (state, pkce_verifier, nonce, redirect_to, detected_locale, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(row.state.as_str())
         .bind(row.pkce_verifier.as_str())
+        .bind(row.nonce.as_str())
         .bind(row.redirect_to.as_deref())
         .bind(row.detected_locale.as_ref().map(LocaleHint::as_str))
         .bind(row.created_at)
@@ -402,7 +471,7 @@ impl UserStore for PgUserStore {
         let row = sqlx::query(
             "DELETE FROM oauth_login_states
              WHERE state = $1 AND expires_at > $2
-             RETURNING pkce_verifier, redirect_to, detected_locale",
+             RETURNING pkce_verifier, nonce, redirect_to, detected_locale",
         )
         .bind(state.as_str())
         .bind(now)
@@ -422,6 +491,7 @@ impl UserStore for PgUserStore {
             .transpose()?;
         Ok(ConsumedOAuthState {
             pkce_verifier: PkceVerifier::try_from(row.get::<String, _>("pkce_verifier"))?,
+            nonce: OidcNonce::try_from(row.get::<String, _>("nonce"))?,
             redirect_to: row.get("redirect_to"),
             detected_locale,
         })
@@ -439,26 +509,7 @@ impl PgUserStore {
     ) -> Result<NewOrg, AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
         let id = OrgId::new();
-        sqlx::query(
-            "INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $5)",
-        )
-        .bind(id)
-        .bind(display_name)
-        .bind(slug)
-        .bind(language)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO org_members (org_id, user_id, role, created_at)
-             VALUES ($1, $2, 'owner', $3)",
-        )
-        .bind(id)
-        .bind(user_id)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
+        insert_org_and_owner(&mut tx, id, user_id, slug, display_name, language, now).await?;
         tx.commit().await?;
         Ok(NewOrg {
             id,
@@ -467,6 +518,43 @@ impl PgUserStore {
             default_language: language,
         })
     }
+}
+
+/// Insert a new organization and its owner `org_members` row inside an
+/// existing transaction. The org-creation SQL lives here once and is
+/// shared by the self-service (`try_insert_org`) and first-admin
+/// (`bootstrap_initial_org_as_owner`) paths, which differ only in their
+/// surrounding guards (slug-collision retry vs. empty-table assertion).
+async fn insert_org_and_owner(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: OrgId,
+    user_id: UserId,
+    slug: &str,
+    display_name: &str,
+    language: Language,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $5)",
+    )
+    .bind(id)
+    .bind(display_name)
+    .bind(slug)
+    .bind(language)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO org_members (org_id, user_id, role, created_at)
+         VALUES ($1, $2, 'owner', $3)",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 fn sanitize_slug(raw: &str) -> String {

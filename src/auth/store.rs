@@ -13,7 +13,8 @@ use super::language::Language;
 use super::locale_hint::LocaleHint;
 use super::org_rule::OrganizationRule;
 use super::types::{
-    Email, GoogleProfile, OAuthState, OrgId, OrgMembership, PkceVerifier, Role, User, UserId,
+    Email, OAuthState, OidcNonce, OidcProfile, OrgId, OrgMembership, PkceVerifier, Role, User,
+    UserId,
 };
 
 pub type SharedUserStore = Arc<dyn UserStore>;
@@ -23,10 +24,13 @@ pub type SharedUserStore = Arc<dyn UserStore>;
 pub struct OAuthStateRow {
     pub state: OAuthState,
     pub pkce_verifier: PkceVerifier,
+    /// id_token `nonce` the authorize step minted; replayed in the
+    /// callback to bind the id_token to this exact login round-trip.
+    pub nonce: OidcNonce,
     pub redirect_to: Option<String>,
     /// Inbound `Accept-Language` primary tag captured at
-    /// `/auth/google/login`. Replayed in the callback as a fallback when
-    /// Google's userinfo `locale` is missing. Bounded by [`LocaleHint`];
+    /// `/auth/oidc/login`. Replayed in the callback as a fallback when
+    /// the id_token `locale` claim is missing. Bounded by [`LocaleHint`];
     /// the column CHECK is the defence-in-depth backstop.
     pub detected_locale: Option<LocaleHint>,
     pub created_at: DateTime<Utc>,
@@ -37,6 +41,9 @@ pub struct OAuthStateRow {
 #[derive(Debug, Clone)]
 pub struct ConsumedOAuthState {
     pub pkce_verifier: PkceVerifier,
+    /// The id_token `nonce` stashed at login; the callback hands it to
+    /// [`super::OidcAuth::exchange`] to verify the id_token.
+    pub nonce: OidcNonce,
     pub redirect_to: Option<String>,
     /// The same `Accept-Language` primary tag the login round-trip
     /// stashed; consumed by the callback to derive the personal org's
@@ -63,11 +70,11 @@ pub struct NewOrg {
 
 #[async_trait]
 pub trait UserStore: std::fmt::Debug + Send + Sync + 'static {
-    /// Insert or update the user + identity rows that map to one Google
-    /// profile. Idempotent on `(provider, subject)`.
-    async fn upsert_from_google(
+    /// Insert or update the user + identity rows that map to one verified
+    /// OIDC profile. Idempotent on `(oidc_issuer, oidc_subject)`.
+    async fn upsert_from_oidc(
         &self,
-        profile: &GoogleProfile,
+        profile: &OidcProfile,
         now: DateTime<Utc>,
     ) -> Result<UpsertedUser, AuthError>;
 
@@ -84,6 +91,25 @@ pub trait UserStore: std::fmt::Debug + Send + Sync + 'static {
         language: Language,
         now: DateTime<Utc>,
     ) -> Result<NewOrg, AuthError>;
+
+    /// First-admin bootstrap (ADR-0011 §3). When the `organizations`
+    /// table is empty, create the initial org and make `user_id` its
+    /// owner — returning `Some(org)`. When the table is non-empty,
+    /// perform no write and return `None` so the caller falls through to
+    /// the normal self-service path.
+    ///
+    /// The emptiness check and the insert run in **one** privileged
+    /// transaction guarded by an advisory lock, so two simultaneous
+    /// first logins cannot both bootstrap (§6). Only ever called when the
+    /// operator set `PATOM_BOOTSTRAP_ADMIN`.
+    async fn bootstrap_initial_org_as_owner(
+        &self,
+        user_id: UserId,
+        suggested_slug: &str,
+        display_name: &str,
+        language: Language,
+        now: DateTime<Utc>,
+    ) -> Result<Option<NewOrg>, AuthError>;
 
     /// List every org the user belongs to.
     async fn list_user_orgs(&self, user_id: UserId) -> Result<Vec<OrgMembership>, AuthError>;

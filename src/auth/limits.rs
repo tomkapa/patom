@@ -25,13 +25,16 @@ pub const OAUTH_STATE_TTL: Duration = Duration::from_mins(10);
 /// corrupted PRNG.
 pub const MAX_SLUG_RETRIES: usize = 5;
 
-/// Maximum bytes accepted from Google's userinfo response. The spec
-/// payload is well under 4 KiB; an oversize response is a sign of a
-/// hijacked provider and is rejected at the boundary.
-pub const MAX_USERINFO_BYTES: usize = 8 * 1024;
+/// Hard timeout on the OIDC discovery fetch at startup.
+///
+/// Covers `{issuer}/.well-known/openid-configuration` plus the JWKS the
+/// `openidconnect` client pulls alongside it. Discovery is one-shot at
+/// startup; a slow IdP must not hang boot indefinitely. Fail-closed on
+/// timeout (no login) per ADR-0011.
+pub const OIDC_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Hard timeout on every outbound call to Google during the OAuth
-/// exchange. Wraps both the token exchange and the userinfo fetch.
+/// Hard timeout on the OIDC token exchange (code → id_token) during the
+/// callback. Wraps the single outbound call to the token endpoint.
 pub const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Minimum byte length of the JWT signing secret. HS256 best-practice

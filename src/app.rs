@@ -24,8 +24,8 @@ use crate::agents::{
 };
 use crate::assets::{R2AssetStore, SharedAssetStore};
 use crate::auth::{
-    GoogleOAuth, JwtSigner, Language, OrgId, PgOrgLanguageResolver, PgOrgRuleResolver, PgUserStore,
-    SharedOrgLanguageResolver, SharedOrgRuleResolver, SharedUserStore,
+    JwtSigner, Language, OidcProvider, OrgId, PgOrgLanguageResolver, PgOrgRuleResolver,
+    PgUserStore, SharedOidcAuth, SharedOrgLanguageResolver, SharedOrgRuleResolver, SharedUserStore,
 };
 use crate::clock::{SharedClock, SystemClock};
 use crate::config::{EmbeddingSettings, Settings};
@@ -701,12 +701,20 @@ pub async fn build_server(
 
     let jwt =
         JwtSigner::new(&settings.auth.jwt_secret, pieces.clock.clone()).map_err(AppError::Auth)?;
-    let oauth = GoogleOAuth::new(
-        &settings.auth.google_client_id,
-        &settings.auth.google_client_secret,
-        &settings.auth.google_redirect_url,
-    )
-    .map_err(AppError::Auth)?;
+    // Discover the login IdP's endpoints + JWKS once at startup (§9,
+    // static-at-startup; §5, timeout-bounded). Fail-closed: a provider we
+    // can't discover aborts boot rather than degrading login. Google is
+    // one issuer behind this seam (ADR-0011).
+    let oauth: SharedOidcAuth = Arc::new(
+        OidcProvider::discover(
+            &settings.auth.oidc_issuer,
+            &settings.auth.oidc_client_id,
+            &settings.auth.oidc_client_secret,
+            &settings.auth.oidc_redirect_url,
+        )
+        .await
+        .map_err(AppError::Auth)?,
+    );
 
     // Platform-supported MCP OAuth clients now resolve from env
     // (`PATOM_<X>_CLIENT_ID/_SECRET`) via `client_resolver::resolve` at
@@ -835,6 +843,7 @@ pub async fn build_server(
         pool: pieces.pool.clone(),
         jwt,
         oauth,
+        bootstrap_admin: settings.auth.bootstrap_admin,
         users: pieces.users,
         clock: pieces.clock.clone(),
         cookie_secure: settings.auth.cookie_secure,

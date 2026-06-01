@@ -4,9 +4,11 @@
 # ignore mirrors deny.toml.
 [advisories]
 ignore = [
-    # rsa "Marvin" timing attack. Reaches the lockfile only through
-    # `sqlx-mysql`, which we never compile (sqlx is postgres-only) — not in the
-    # build graph. No fixed release exists upstream.
+    # rsa "Marvin" timing sidechannel. Compiled into the graph via
+    # `openidconnect` -> `rsa` for RS256 id_token signature verification
+    # (ADR-0011). The advisory leaks an RSA *private key* during private-key
+    # ops; we only do *public-key* verification of IdP id_tokens and never hold
+    # a private key, so it does not apply. No fixed release exists upstream.
     "RUSTSEC-2023-0071",
     # `backoff` unmaintained. Dev-only: via `async-openai` (a dev-dependency).
     "RUSTSEC-2025-0012",
