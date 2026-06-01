@@ -69,6 +69,7 @@ async fn extra_agent(pool: &PgPool, seed: &common::pg::Seed, name: &str) -> Agen
         is_default: false,
         allowed_mcp_tools: patom::agents::AllowedMcpTools::empty(),
         model: None,
+        avatar_url: None,
         edited_by: None,
     };
     agents.create(payload).await.expect("create agent").id

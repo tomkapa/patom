@@ -406,6 +406,7 @@ async fn excludes_calls_from_other_agents(pool: PgPool) {
             is_default: false,
             allowed_mcp_tools: patom::agents::AllowedMcpTools::default(),
             model: None,
+            avatar_url: None,
             edited_by: None,
         })
         .await
@@ -548,6 +549,7 @@ async fn cross_org_agent_returns_404(pool: PgPool) {
             is_default: false,
             allowed_mcp_tools: patom::agents::AllowedMcpTools::default(),
             model: None,
+            avatar_url: None,
             edited_by: None,
         })
         .await

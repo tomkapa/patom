@@ -155,6 +155,7 @@ impl AuthAgentsHarness {
                 is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
+                avatar_url: None,
                 edited_by: None,
             })
             .await
@@ -266,4 +267,103 @@ async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
         .map(|r| r["name"].as_str().expect("name"))
         .collect();
     assert_eq!(names, vec!["beta"]);
+}
+
+/// Issue #43: `avatar_url` is accepted on create, round-trips through the
+/// response, can be cleared via a `null` PATCH, and a malformed URL is
+/// rejected at the boundary with 400.
+#[sqlx::test]
+async fn agent_avatar_url_create_update_round_trip(pool: PgPool) {
+    let h = AuthAgentsHarness::new(&pool).await;
+    let app = router(h.state.clone());
+
+    // Create with an avatar.
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "name": "avatar-agent",
+                        "system_prompt": "be helpful",
+                        "description": "an agent with a face",
+                        "avatar_url": "https://cdn.example/face.png",
+                    }))
+                    .unwrap(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::CREATED);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let created: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        created["avatar_url"].as_str(),
+        Some("https://cdn.example/face.png"),
+        "create echoes the avatar_url",
+    );
+    let id = created["id"].as_str().expect("id");
+
+    // Clear it with a `null` PATCH.
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("PUT")
+                .uri(format!("/api/agents/{id}"))
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "avatar_url": null })).unwrap(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let updated: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        updated["avatar_url"].is_null(),
+        "null PATCH clears the avatar_url",
+    );
+}
+
+#[sqlx::test]
+async fn create_rejects_malformed_avatar_url(pool: PgPool) {
+    let h = AuthAgentsHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "name": "bad-avatar",
+                        "system_prompt": "be helpful",
+                        "description": "rejected at the boundary",
+                        "avatar_url": "not-a-url",
+                    }))
+                    .unwrap(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
 }

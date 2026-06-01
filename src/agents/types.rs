@@ -13,7 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::auth::OrgId;
 use crate::mcp::{McpCatalogId, McpToolRemoteName};
-use crate::types::ParseError;
+use crate::types::{AvatarUrl, ParseError};
 
 use super::limits::{
     AGENT_DESCRIPTION_MAX_LEN, AGENT_NAME_MAX_LEN, AGENT_SYSTEM_PROMPT_MAX_LEN,
@@ -267,6 +267,13 @@ pub struct AgentRecord {
     /// chokepoint that turns `Option<Model>` into the effective `Model` at
     /// agent-build time. Resolved through the same JOIN as `system_prompt`.
     pub model: Option<crate::provider::Model>,
+    /// Optional per-agent avatar image URL. `None` → Slack falls back to
+    /// the app's default bot avatar and the FE renders the name monogram;
+    /// `Some(url)` is the public assets-origin URL set via
+    /// `/api/uploads/agent-avatar/{agent_id}` and passed through as the
+    /// Slack `icon_url` on outbound agent posts (issue #43). Reuses the
+    /// shared [`AvatarUrl`] newtype — same validation as user/org avatars.
+    pub avatar_url: Option<AvatarUrl>,
     /// Id of the current (= MAX(version)) prompt-version row. Surfaced
     /// here so the turn-metrics writer can attribute each turn to the
     /// version the worker actually ran without re-querying. Derived from

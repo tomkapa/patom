@@ -17,6 +17,13 @@ pub const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 /// in product (e.g. designer drops a high-DPI export).
 pub const MAX_WORKSPACE_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
+/// Upper bound on a single per-agent avatar upload (issue #43).
+///
+/// Same 2 MiB ceiling as user/workspace avatars — agent avatars render at
+/// the same sizes (monogram tiles, Slack `icon_url`); held as its own
+/// constant so the cap can drift independently if product needs change.
+pub const MAX_AGENT_AVATAR_BYTES: usize = 2 * 1024 * 1024;
+
 /// Upper bound on an MCP-catalog tile icon upload.
 ///
 /// Tile icons are SVGs or PNGs that render at ~48px in the grid. A

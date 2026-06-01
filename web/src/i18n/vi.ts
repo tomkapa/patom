@@ -243,6 +243,7 @@ const vi: TranslationTable = {
   "agent.detail.general.subtitle":
     "Cấu hình tên, mô tả, prompt hệ thống và mô hình của Agent.",
   "agent.detail.general.save": "Lưu",
+  "agent.detail.general.avatarLabel": "Ảnh đại diện",
   "agent.detail.general.modelLabel": "Mô hình",
   "agent.detail.general.modelCaption":
     "Mô hình ngôn ngữ Agent dùng để suy luận.",

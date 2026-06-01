@@ -292,6 +292,9 @@ async fn run_pump(
 struct DeferredPost {
     body: PostBody,
     username: String,
+    /// Avatar URL for the attributed agent, passed through as Slack
+    /// `icon_url` (issue #43); `None` → default bot avatar.
+    icon_url: Option<String>,
     session_id: SessionId,
 }
 
@@ -322,7 +325,7 @@ async fn handle_stream_event(
             let Some(body) = payload_for_post(&item.chunk, connect_url.as_deref()) else {
                 return;
             };
-            let username = resolve_agent_name(deps, item.from_agent).await;
+            let identity = resolve_agent_identity(deps, item.from_agent).await;
             let body = clip_body(body, SLACK_MAX_POST_CHARS);
             let (route_session, allow_mint) = routing_for(&item.chunk, item.session_id);
             if matches!(&item.chunk, ResponseChunk::WireMcpRequest { .. }) {
@@ -331,7 +334,8 @@ async fn handle_stream_event(
                 }
                 deferred.push(DeferredPost {
                     body,
-                    username,
+                    username: identity.username,
+                    icon_url: identity.icon_url,
                     session_id: route_session,
                 });
                 return;
@@ -343,7 +347,8 @@ async fn handle_stream_event(
                 bot_token,
                 route_session,
                 body,
-                username,
+                identity.username,
+                identity.icon_url,
                 allow_mint,
                 minted_threads,
             )
@@ -361,6 +366,7 @@ async fn handle_stream_event(
                     pending.session_id,
                     pending.body,
                     pending.username,
+                    pending.icon_url,
                     false,
                     minted_threads,
                 )
@@ -390,6 +396,7 @@ async fn dispatch_post(
     session_id: SessionId,
     body: PostBody,
     username: String,
+    icon_url: Option<String>,
     allow_mint: bool,
     minted_threads: &mut usize,
 ) {
@@ -413,9 +420,9 @@ async fn dispatch_post(
                 thread_ts: Some(binding.thread_ts),
                 body,
                 username,
-                // Agents have no avatar yet (issue #43); leave Slack to
-                // render the app default for outbound agent posts.
-                icon_url: None,
+                // Per-agent avatar (issue #43): `Some` when the agent has
+                // `avatar_url` set, else `None` → Slack's default bot avatar.
+                icon_url,
             })
             .await
         {
@@ -452,9 +459,9 @@ async fn dispatch_post(
             thread_ts: None,
             body,
             username,
-            // Agents have no avatar yet (issue #43); leave Slack to
-            // render the app default for outbound agent posts.
-            icon_url: None,
+            // Per-agent avatar (issue #43): `Some` when the agent has
+            // `avatar_url` set, else `None` → Slack's default bot avatar.
+            icon_url,
         })
         .await
     {
@@ -600,15 +607,30 @@ fn build_connect_url(
     format!("{base}/slack/mcp/connect?token={token}")
 }
 
-/// Best-effort `from_agent` → username. On lookup failure (deleted
-/// agent, transient DB), surface a stable placeholder so the post
-/// still lands.
-async fn resolve_agent_name(deps: &PumpDeps, from: crate::agents::AgentId) -> String {
+/// The Slack identity (`username` + optional `icon_url`) an outbound
+/// agent post is attributed to.
+struct AgentIdentity {
+    username: String,
+    /// The agent's avatar URL, passed through as the Slack `icon_url`
+    /// (issue #43). `None` → Slack renders the app's default bot avatar.
+    icon_url: Option<String>,
+}
+
+/// Best-effort `from_agent` → Slack identity. On lookup failure (deleted
+/// agent, transient DB), surface a stable placeholder username with no
+/// avatar so the post still lands.
+async fn resolve_agent_identity(deps: &PumpDeps, from: crate::agents::AgentId) -> AgentIdentity {
     match deps.agents.read(from).await {
-        Ok(record) => record.name.as_str().to_owned(),
+        Ok(record) => AgentIdentity {
+            username: record.name.as_str().to_owned(),
+            icon_url: record.avatar_url.as_ref().map(|a| a.as_str().to_owned()),
+        },
         Err(e) => {
             warn!(error = ?e, agent.id = %from, event = "slack.stream_pump.agent_read_failed");
-            "agent".to_owned()
+            AgentIdentity {
+                username: "agent".to_owned(),
+                icon_url: None,
+            }
         }
     }
 }
@@ -841,6 +863,7 @@ mod tests {
             session,
             text_body("hello from recruiter"),
             "recruiter".to_owned(),
+            None,
             true,
             &mut minted,
         )
@@ -863,6 +886,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatch_passes_agent_avatar_through_as_icon_url() {
+        // Issue #43: an agent with `avatar_url` set surfaces it as the
+        // Slack `icon_url` on its outbound posts; `None` leaves Slack to
+        // render the default bot avatar.
+        let (req, token, poster, threads) = dispatch_fixtures();
+        let mut minted = 0;
+
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            SessionId::new(),
+            text_body("with avatar"),
+            "atlas".to_owned(),
+            Some("https://cdn.example/atlas.png".to_owned()),
+            true,
+            &mut minted,
+        )
+        .await;
+        dispatch_post(
+            &poster,
+            &threads,
+            &req,
+            &token,
+            SessionId::new(),
+            text_body("without avatar"),
+            "atlas".to_owned(),
+            None,
+            true,
+            &mut minted,
+        )
+        .await;
+
+        let captured = poster.captured();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(
+            captured[0].icon_url.as_deref(),
+            Some("https://cdn.example/atlas.png"),
+            "avatar_url is passed through as icon_url",
+        );
+        assert_eq!(
+            captured[1].icon_url, None,
+            "no avatar_url → no icon_url override",
+        );
+    }
+
+    #[tokio::test]
     async fn dispatch_second_chunk_same_session_threads_under_minted_anchor() {
         let (req, token, poster, threads) = dispatch_fixtures();
         let mut minted = 0;
@@ -876,6 +947,7 @@ mod tests {
             session,
             text_body("first"),
             "recruiter".to_owned(),
+            None,
             true,
             &mut minted,
         )
@@ -888,6 +960,7 @@ mod tests {
             session,
             text_body("second"),
             "recruiter".to_owned(),
+            None,
             true,
             &mut minted,
         )
@@ -932,6 +1005,7 @@ mod tests {
             session,
             text_body("follow-up"),
             "writer".to_owned(),
+            None,
             false,
             &mut minted,
         )
@@ -960,6 +1034,7 @@ mod tests {
             session,
             text_body("should-be-dropped"),
             "agent".to_owned(),
+            None,
             true,
             &mut minted,
         )
@@ -995,6 +1070,7 @@ mod tests {
             session,
             text_body("internal turn final answer"),
             "writer".to_owned(),
+            None,
             false,
             &mut minted,
         )
@@ -1135,6 +1211,7 @@ mod tests {
             route_session,
             text_body("here's the code example you asked for"),
             "writer".to_owned(),
+            None,
             allow_mint,
             &mut minted,
         )
@@ -1188,6 +1265,7 @@ mod tests {
             route_session,
             text_body("internal answer back to recruiter"),
             "writer".to_owned(),
+            None,
             allow_mint,
             &mut minted,
         )

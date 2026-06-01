@@ -371,6 +371,8 @@ type AgentRow = {
   /** Catalog model id, or null to inherit the workspace default. Mirrors
    *  the tri-state PATCH contract in `src/http/routes/agents.rs`. */
   model: string | null;
+  /** Per-agent avatar URL, or null when unset (issue #43). */
+  avatar_url: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -435,6 +437,7 @@ alternative personas when requested. Always identify yourself as Atlas.`,
       ],
     },
     model: "claude-sonnet-4-6",
+    avatar_url: null,
     created_at: DAY_3_AGO,
     updated_at: NOW,
   },
@@ -446,6 +449,7 @@ alternative personas when requested. Always identify yourself as Atlas.`,
     is_default: false,
     allowed_mcp_tools: {},
     model: null,
+    avatar_url: null,
     created_at: DAY_3_AGO,
     updated_at: NOW,
   },
@@ -992,6 +996,25 @@ const server = Bun.serve({
 
     if (path === "/agents" && method === "GET") {
       return json([...agentsById.values()]);
+    }
+
+    // Agent avatar upload (issue #43). The real backend stores the image
+    // and returns its assets-origin URL; the mock skips storage and hands
+    // back an inline data-URI so the preview <img> renders without a
+    // network round-trip. Persistence still happens via the PUT on Save.
+    const agentAvatarMatch = path.match(/^\/uploads\/agent-avatar\/([^/]+)$/);
+    if (agentAvatarMatch && method === "POST") {
+      const id = agentAvatarMatch[1]!;
+      if (!agentsById.has(id)) return empty(404);
+      // A tiny deterministic SVG tile so uploads visibly change the
+      // preview; varies by id so re-uploads for different agents differ.
+      const hue = (id.charCodeAt(id.length - 1) * 37) % 360;
+      const svg =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">` +
+        `<rect width="64" height="64" fill="hsl(${hue} 60% 55%)"/>` +
+        `<circle cx="32" cy="32" r="14" fill="white" opacity="0.85"/></svg>`;
+      const url = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+      return json({ url });
     }
 
     const agentMatch = path.match(/^\/agents\/([^/]+)(\/.*)?$/);

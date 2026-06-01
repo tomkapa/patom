@@ -248,6 +248,7 @@ const en = {
   "agent.detail.general.subtitle":
     "Configure the agent's name, description, system prompt, and model.",
   "agent.detail.general.save": "Save",
+  "agent.detail.general.avatarLabel": "Avatar",
   "agent.detail.general.modelLabel": "Model",
   "agent.detail.general.modelCaption":
     "The language model this agent uses for inference.",

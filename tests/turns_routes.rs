@@ -525,6 +525,7 @@ async fn returns_404_for_cross_org_request(pool: PgPool) {
             is_default: false,
             allowed_mcp_tools: patom::agents::AllowedMcpTools::default(),
             model: None,
+            avatar_url: None,
             edited_by: None,
         })
         .await

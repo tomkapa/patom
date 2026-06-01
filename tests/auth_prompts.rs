@@ -161,6 +161,7 @@ impl AuthPromptsHarness {
                 is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
+                avatar_url: None,
                 edited_by: None,
             })
             .await

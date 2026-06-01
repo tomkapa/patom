@@ -414,6 +414,19 @@ export const api = {
     });
   },
 
+  /** Upload an avatar for an agent the caller's org owns. The backend
+   *  stores the object (keyed by agent id) and returns the URL; it is NOT
+   *  persisted to the agent row here — include the returned URL in a
+   *  subsequent `updateAgent` patch (issue #43). */
+  uploadAgentAvatar: (agentId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<UploadResponse>(
+      `/uploads/agent-avatar/${encodeURIComponent(agentId)}`,
+      { method: "POST", body: form },
+    );
+  },
+
   /** Upload a tile icon for an org-scoped MCP catalog entry. Owner/admin
    *  only; built-in (global) catalog ids return 403. */
   uploadMcpCatalogIcon: (catalogId: string, file: File) => {

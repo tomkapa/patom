@@ -204,6 +204,9 @@ impl CreateAgentTool {
             is_default: false,
             allowed_mcp_tools,
             model: None,
+            // Recruiter-minted hires start with no avatar; the operator
+            // sets one later via `PUT /agents/{id}` (issue #43).
+            avatar_url: None,
             edited_by: Some(ctx.acting_user_id),
         };
 

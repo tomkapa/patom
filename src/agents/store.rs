@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::auth::{OrgId, UserId};
+use crate::types::AvatarUrl;
 
 use super::error::AgentStoreError;
 use super::types::{
@@ -40,6 +41,10 @@ pub struct NewAgent {
     /// at agent-build time; `Some(model)` pins this agent to a specific
     /// catalog model (and, transitively, its provider).
     pub model: Option<crate::provider::Model>,
+    /// Optional per-agent avatar URL. `None` leaves the column NULL (the
+    /// default-app-avatar fallback). Validated as a shared [`AvatarUrl`]
+    /// at the HTTP boundary before reaching the store.
+    pub avatar_url: Option<AvatarUrl>,
     /// Principal who minted this agent, stamped onto the seeded v1
     /// `agent_prompt_versions` row. `None` for system-seeded agents
     /// (composition root, OAuth callback) where no user is in hand;
@@ -72,6 +77,12 @@ pub struct AgentUpdate {
     /// reason this field exists — an enum split would inflate every caller.
     #[allow(clippy::option_option)]
     pub model: Option<Option<crate::provider::Model>>,
+    /// Patch the per-agent avatar URL. Double-`Option` follows the same
+    /// tri-state idiom as `model`: outer `None` = "field omitted, leave
+    /// untouched", outer `Some(None)` = "clear back to NULL (default
+    /// avatar)", outer `Some(Some(url))` = "set to this URL".
+    #[allow(clippy::option_option)]
+    pub avatar_url: Option<Option<AvatarUrl>>,
     /// Principal driving this edit. Stamped on the new
     /// `agent_prompt_versions` row when (and only when) the prompt or
     /// model actually changes. `None` is reserved for paths with no user
