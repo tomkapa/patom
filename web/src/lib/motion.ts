@@ -25,6 +25,22 @@ export const scrimMotion = {
   transition: { duration: 0.15 },
 } as const;
 
+// Off-canvas slide for the mobile Drawer. Left = nav sidebar, right =
+// chat thread panel. Same easing as the rest so the feel stays coherent.
+export const drawerLeftMotion = {
+  initial: { x: "-100%" },
+  animate: { x: 0 },
+  exit: { x: "-100%" },
+  transition: { duration: 0.22, ease: EASE_OUT },
+} as const;
+
+export const drawerRightMotion = {
+  initial: { x: "100%" },
+  animate: { x: 0 },
+  exit: { x: "100%" },
+  transition: { duration: 0.22, ease: EASE_OUT },
+} as const;
+
 // Springy slide for layoutId indicators (sidebar active marker, menu rail
 // highlight). Tuned to feel snappy without overshooting hard.
 export const indicatorSpring = {

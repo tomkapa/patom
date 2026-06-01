@@ -73,7 +73,7 @@ export function Composer({
         : `Message #${channel} — type @agent-name to route`;
 
   return (
-    <div className="border-t border-[var(--color-line)] bg-[var(--color-paper)] px-8 pt-3 pb-4">
+    <div className="border-t border-[var(--color-line)] bg-[var(--color-paper)] px-4 md:px-8 pt-3 pb-4">
       <div className="space-y-2">
         {mode === "channel" && (
           <TipBar>

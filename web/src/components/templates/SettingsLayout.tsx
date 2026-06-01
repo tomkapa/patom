@@ -8,8 +8,7 @@ import {
   Settings2,
   Users,
 } from "lucide-react";
-import { MenuRail } from "../organisms/MenuRail";
-import { GlobalErrorBanner } from "../organisms/GlobalErrorBanner";
+import { AppFrame } from "./AppFrame";
 import { useT } from "../../i18n";
 import { cn } from "../../lib/utils";
 import { indicatorSpring } from "../../lib/motion";
@@ -74,13 +73,11 @@ export function SettingsLayout({
     },
   ];
 
-  return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-paper)]">
-      <MenuRail />
-      <aside
-        className="flex h-full w-[240px] shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-paper-2)]"
-        aria-label="Workspace settings sidebar"
-      >
+  const sidebar = (
+    <aside
+      className="flex h-full w-[240px] max-w-[85vw] shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-paper-2)]"
+      aria-label="Workspace settings sidebar"
+    >
         <div className="border-b border-[var(--color-line)] px-5 pt-5 pb-4">
           <div className="font-[var(--font-mono)] text-[10px] tracking-[0.14em] text-[var(--color-muted-foreground)] uppercase">
             {workspaceLabel}
@@ -134,12 +131,15 @@ export function SettingsLayout({
             );
           })}
         </nav>
-      </aside>
-      <main className="flex min-w-0 flex-1 flex-col bg-[var(--color-card)]">
-        <GlobalErrorBanner />
+    </aside>
+  );
+
+  return (
+    <AppFrame sidebar={sidebar} title={t("settings.nav.title")}>
+      <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-card)]">
         {children}
-      </main>
-    </div>
+      </div>
+    </AppFrame>
   );
 }
 
@@ -149,7 +149,7 @@ export function SettingsBreadcrumb({
   trail: { label: string; current?: boolean }[];
 }) {
   return (
-    <div className="flex items-center gap-2 px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
+    <div className="flex items-center gap-2 px-4 md:px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
       {trail.map((step, i) => (
         <span key={`${step.label}-${i}`} className="flex items-center gap-2">
           <span
@@ -179,9 +179,9 @@ export function SettingsPageHeader({
   right?: ReactNode;
 }) {
   return (
-    <header className="flex items-end justify-between gap-4 border-b border-[var(--color-line)] px-8 pt-2 pb-6">
+    <header className="flex flex-col items-start gap-3 border-b border-[var(--color-line)] px-4 md:px-8 pt-2 pb-6 md:flex-row md:items-end md:justify-between md:gap-4">
       <div className="min-w-0">
-        <h1 className="font-[var(--font-display)] text-[32px] leading-tight font-bold text-[var(--color-ink)]">
+        <h1 className="font-[var(--font-display)] text-[24px] md:text-[32px] leading-tight font-bold text-[var(--color-ink)]">
           {title}
         </h1>
         <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted-foreground)]">

@@ -1,11 +1,9 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
 import { useT } from "../../i18n";
 import { modalMotion, scrimMotion } from "../../lib/motion";
-
-const FOCUSABLE_SELECTOR =
-  'a[href], area[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+import { useOverlayA11y } from "../../hooks/useOverlayA11y";
 
 // Scrim is `--color-rail` at 80% alpha (matches the design frames).
 export function Modal({
@@ -28,61 +26,7 @@ export function Modal({
   fill?: boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
-
-  // Trap focus inside the dialog and restore the caller's focus on
-  // close. Without this, Tab can land on background controls — a
-  // standard a11y blocker for keyboard/screen-reader users.
-  useEffect(() => {
-    if (!open) return;
-    const previousFocus = document.activeElement as HTMLElement | null;
-    const dialog = dialogRef.current;
-    // Move focus into the dialog on next paint so any auto-focused
-    // child (e.g. inputs) wins over our fallback.
-    if (dialog) {
-      const first = dialog.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
-      (first ?? dialog).focus({ preventScroll: true });
-    }
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-        return;
-      }
-      if (e.key !== "Tab" || !dialog) return;
-      const items = Array.from(
-        dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-      ).filter((el) => !el.hasAttribute("aria-hidden"));
-      if (items.length === 0) {
-        e.preventDefault();
-        dialog.focus({ preventScroll: true });
-        return;
-      }
-      const first = items[0]!;
-      const last = items[items.length - 1]!;
-      const active = document.activeElement as HTMLElement | null;
-      if (e.shiftKey && (active === first || !dialog.contains(active))) {
-        e.preventDefault();
-        last.focus({ preventScroll: true });
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus({ preventScroll: true });
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      previousFocus?.focus({ preventScroll: true });
-    };
-  }, [open, onClose]);
-
-  useEffect(() => {
-    if (!open) return;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [open]);
+  useOverlayA11y(dialogRef, open, onClose);
 
   return (
     <AnimatePresence>

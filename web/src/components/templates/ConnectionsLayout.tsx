@@ -2,8 +2,7 @@ import type { ReactNode } from "react";
 import { LayoutGrid, Link as LinkIcon } from "lucide-react";
 import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { MenuRail } from "../organisms/MenuRail";
-import { GlobalErrorBanner } from "../organisms/GlobalErrorBanner";
+import { AppFrame } from "./AppFrame";
 import { useMcpServers } from "../../hooks/useMcpServers";
 import { useT } from "../../i18n";
 import { useAuthStore } from "../../stores/authStore";
@@ -42,13 +41,11 @@ export function ConnectionsLayout({
     },
   ];
 
-  return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-paper)]">
-      <MenuRail />
-      <aside
-        className="flex h-full w-[240px] shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-paper-2)]"
-        aria-label="Connections sidebar"
-      >
+  const sidebar = (
+    <aside
+      className="flex h-full w-[240px] max-w-[85vw] shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-paper-2)]"
+      aria-label="Connections sidebar"
+    >
         <div className="border-b border-[var(--color-line)] px-5 pt-5 pb-4">
           <div className="font-[var(--font-mono)] text-[10px] tracking-[0.14em] text-[var(--color-muted-foreground)] uppercase">
             {workspaceLabel}
@@ -115,12 +112,15 @@ export function ConnectionsLayout({
             );
           })}
         </nav>
-      </aside>
-      <main className="flex min-w-0 flex-1 flex-col bg-[var(--color-card)]">
-        <GlobalErrorBanner />
+    </aside>
+  );
+
+  return (
+    <AppFrame sidebar={sidebar} title={t("connections.nav.title")}>
+      <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-card)]">
         {children}
-      </main>
-    </div>
+      </div>
+    </AppFrame>
   );
 }
 
@@ -130,7 +130,7 @@ export function ConnectionsBreadcrumb({
   trail: { label: string; current?: boolean }[];
 }) {
   return (
-    <div className="flex items-center gap-2 border-b border-transparent px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
+    <div className="flex items-center gap-2 border-b border-transparent px-4 md:px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
       {trail.map((step, i) => (
         <span key={`${step.label}-${i}`} className="flex items-center gap-2">
           <span

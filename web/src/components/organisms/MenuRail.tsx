@@ -1,66 +1,26 @@
-import { Bot, House, Plug, Settings } from "lucide-react";
 import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
-import { useT } from "../../i18n";
 import { useAuthStore } from "../../stores/authStore";
 import { useActiveOrg } from "../../hooks/useMe";
 import { indicatorSpring } from "../../lib/motion";
+import { useNavItems } from "../../lib/nav";
 import { UserMenu } from "./UserMenu";
 import appLogoUrl from "../../../assets/favicon-192.png";
-
-type MenuItem = {
-  id: string;
-  label: string;
-  icon: typeof House;
-  /** Match against the current pathname prefix to highlight as active. */
-  match: (pathname: string) => boolean;
-  to: string;
-};
 
 export function MenuRail() {
   const nav = useNavigate();
   const { pathname } = useLocation();
-  const { t } = useT();
   const me = useAuthStore((s) => s.me);
   const activeOrg = useActiveOrg();
   const workspaceLogo = activeOrg?.avatar_url ?? appLogoUrl;
   const workspaceName = activeOrg?.name ?? "Patom";
 
-  const items: MenuItem[] = [
-    {
-      id: "home",
-      label: "Home",
-      icon: House,
-      match: (p) => p === "/" || p.startsWith("/threads") || p.startsWith("/c/"),
-      to: "/",
-    },
-    {
-      id: "agent",
-      label: "Agent",
-      icon: Bot,
-      match: (p) => p.startsWith("/agents"),
-      to: "/agents",
-    },
-    {
-      id: "connections",
-      label: t("menu.connections"),
-      icon: Plug,
-      match: (p) => p.startsWith("/connections"),
-      to: "/connections",
-    },
-    {
-      id: "settings",
-      label: t("menu.settings"),
-      icon: Settings,
-      match: (p) => p.startsWith("/settings"),
-      to: "/settings",
-    },
-  ];
+  const items = useNavItems();
 
   return (
     <aside
-      className="flex h-full w-[72px] shrink-0 flex-col items-center gap-1.5 bg-[var(--color-rail-brand)] p-2"
+      className="hidden h-full w-[72px] shrink-0 flex-col items-center gap-1.5 bg-[var(--color-rail-brand)] p-2 md:flex"
       aria-label="Menu rail"
     >
       <img

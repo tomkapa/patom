@@ -1,6 +1,7 @@
 import { Check, X } from "lucide-react";
 import { SectionHeader } from "../atoms/SectionHeader";
 import { SectionCard } from "../molecules/SectionCard";
+import { TableScroll } from "../core/TableScroll";
 import { Spinner } from "../atoms/Spinner";
 import { useMcpServerToolCalls } from "../../hooks/useMcpServers";
 import { useT } from "../../i18n";
@@ -63,7 +64,7 @@ function ActivityBody({ query, items }: { query: Query; items: ToolCall[] }) {
   }
 
   return (
-    <>
+    <TableScroll minWidth={620}>
       <div
         className="grid items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5 font-[var(--font-mono)] text-[9px] tracking-[0.15em] uppercase text-[var(--color-muted-foreground)]"
         style={{ gridTemplateColumns: COL_WIDTHS }}
@@ -79,7 +80,7 @@ function ActivityBody({ query, items }: { query: Query; items: ToolCall[] }) {
       {items.map((row) => (
         <ActivityRow key={row.id} row={row} />
       ))}
-    </>
+    </TableScroll>
   );
 }
 

@@ -182,7 +182,7 @@ export function SettingsGeneral() {
         }
       />
 
-      <div className="min-h-0 flex-1 overflow-auto p-8">
+      <div className="min-h-0 flex-1 overflow-auto p-4 md:p-8">
         {serverError ? (
           <div className="mb-4 border border-[var(--color-rose)] bg-[var(--color-rose-soft)] px-3 py-2 text-[12px] text-[var(--color-rose)]">
             {serverError}
@@ -444,7 +444,7 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[280px_1fr] gap-8">
+    <div className="grid grid-cols-1 gap-6 md:grid-cols-[280px_1fr] md:gap-8">
       <div>
         <div className="text-[13px] font-semibold text-[var(--color-ink)]">
           {label}

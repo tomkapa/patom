@@ -13,6 +13,7 @@ import { CatalogIcon } from "../components/atoms/CatalogIcon";
 import { Switch } from "../components/atoms/Switch";
 import { EmptyState } from "../components/molecules/EmptyState";
 import { ConnectModal } from "../components/organisms/ConnectModal";
+import { TableScroll } from "../components/core/TableScroll";
 import { useT } from "../i18n";
 import {
   useCatalogLookup,
@@ -62,9 +63,9 @@ export function ConnectionsList() {
           { label: t("connections.breadcrumb.my"), current: true },
         ]}
       />
-      <header className="flex items-end justify-between gap-4 border-b border-[var(--color-line)] px-8 pt-2 pb-6">
+      <header className="flex flex-col items-start gap-3 border-b border-[var(--color-line)] px-4 md:px-8 pt-2 pb-6 md:flex-row md:items-end md:justify-between md:gap-4">
         <div className="min-w-0">
-          <h1 className="font-[var(--font-display)] text-[32px] leading-tight font-bold text-[var(--color-ink)]">
+          <h1 className="font-[var(--font-display)] text-[24px] md:text-[32px] leading-tight font-bold text-[var(--color-ink)]">
             {t("connections.list.title")}
           </h1>
           <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted-foreground)]">
@@ -126,7 +127,7 @@ export function ConnectionsList() {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto p-8">
+      <div className="min-h-0 flex-1 overflow-auto p-4 md:p-8">
         {isLoading ? (
           <div className="flex h-32 items-center justify-center text-[var(--color-muted-foreground)]">
             <Spinner size={16} />
@@ -145,7 +146,10 @@ export function ConnectionsList() {
             }
           />
         ) : (
-          <div className="border border-[var(--color-line)] bg-[var(--color-card)]">
+          <TableScroll
+            minWidth={880}
+            className="border border-[var(--color-line)] bg-[var(--color-card)]"
+          >
             <div
               className="grid items-center gap-4 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5 font-[var(--font-mono)] text-[9px] tracking-[0.14em] text-[var(--color-muted-foreground)] uppercase"
               style={{
@@ -193,7 +197,7 @@ export function ConnectionsList() {
                 {t("connections.catalog.empty")}
               </div>
             ) : null}
-          </div>
+          </TableScroll>
         )}
       </div>
 

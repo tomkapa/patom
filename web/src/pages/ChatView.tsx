@@ -6,7 +6,6 @@ import { Composer } from "../components/organisms/Composer";
 import { MessageList } from "../components/organisms/MessageList";
 import { Sidebar } from "../components/organisms/Sidebar";
 import { ThreadPanel } from "../components/organisms/ThreadPanel";
-import { MenuRail } from "../components/organisms/MenuRail";
 import { OrgSwitcher } from "../components/organisms/OrgSwitcher";
 import { useAgents } from "../hooks/useAgents";
 import { useActiveOrg } from "../hooks/useMe";
@@ -29,6 +28,7 @@ import { decodeBody } from "../lib/chatBody";
 import type { Bubble, Poster, RootMessage } from "../lib/foldHistory";
 import { uuidv7 } from "../lib/utils";
 import { prefixMention } from "../lib/mentions";
+import { useIsWide } from "../hooks/useMediaQuery";
 import { useT } from "../i18n";
 
 const CHANNEL = "general";
@@ -47,7 +47,11 @@ export function ChatView() {
   // When set, the channel feed is filtered to threads where this agent is
   // the human's first recipient (`first_agent.id === selectedAgentId`).
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [showPanel, setShowPanel] = useState(true);
+  // On wide screens the thread panel is a default-visible side column; on
+  // compact screens it's a drill-in overlay that stays closed until the
+  // reader opens a thread (otherwise it would cover the feed on load).
+  const isWide = useIsWide();
+  const [showPanel, setShowPanel] = useState(isWide);
 
   // Deep-link from the memory pane: `/?turn=<request_id>` opens the thread
   // that owns the turn and scrolls the matching bubble into view. We
@@ -177,9 +181,13 @@ export function ChatView() {
   // useMcpServers poll; the agent's next response arrives via the
   // existing thread stream.
 
+  // Feed label: agent DMs read `dm/<name>`, the channel reads bare
+  // `general` (the `#` prefix is added only where a header wants it).
+  const channelLabel = selectedAgent ? `dm/${selectedAgent.name}` : CHANNEL;
+
   return (
     <ChatLayout
-      rail={<MenuRail />}
+      title={selectedAgent ? channelLabel : `#${CHANNEL}`}
       sidebar={
         <Sidebar
           workspace={activeOrg?.name ?? "Patom"}
@@ -200,13 +208,10 @@ export function ChatView() {
       }
       main={
         <>
-          <ChannelHeader
-            channel={selectedAgent ? `dm/${selectedAgent.name}` : CHANNEL}
-            agents={agents}
-          />
+          <ChannelHeader channel={channelLabel} agents={agents} />
           <MessageList
             threads={visibleThreads}
-            channel={selectedAgent ? `dm/${selectedAgent.name}` : CHANNEL}
+            channel={channelLabel}
             userName={poster.name}
             humanPoster={poster}
             onOpenThread={(rootId) => {
@@ -225,22 +230,22 @@ export function ChatView() {
           />
         </>
       }
+      panelOpen={showPanel}
+      onPanelClose={() => setShowPanel(false)}
       panel={
-        showPanel ? (
-          <ThreadPanel
-            channel={CHANNEL}
-            thread={selectedThread}
-            agents={agents}
-            bubbles={bubbles}
-            rootMessage={rootMessage}
-            showThinking={showThinking}
-            pending={submit.isPending}
-            focusRequestId={focusTurnId}
-            onFocusConsumed={clearFocusTurn}
-            onReply={onThreadReply}
-            onClose={() => setShowPanel(false)}
-          />
-        ) : null
+        <ThreadPanel
+          channel={CHANNEL}
+          thread={selectedThread}
+          agents={agents}
+          bubbles={bubbles}
+          rootMessage={rootMessage}
+          showThinking={showThinking}
+          pending={submit.isPending}
+          focusRequestId={focusTurnId}
+          onFocusConsumed={clearFocusTurn}
+          onReply={onThreadReply}
+          onClose={() => setShowPanel(false)}
+        />
       }
     />
   );

@@ -42,9 +42,9 @@ export function ConnectionsCatalog() {
           { label: t("connections.breadcrumb.add"), current: true },
         ]}
       />
-      <header className="flex items-end justify-between gap-4 border-b border-[var(--color-line)] px-8 pt-2 pb-6">
+      <header className="flex flex-col items-start gap-3 border-b border-[var(--color-line)] px-4 md:px-8 pt-2 pb-6 md:flex-row md:items-end md:justify-between md:gap-4">
         <div className="min-w-0">
-          <h1 className="font-[var(--font-display)] text-[32px] leading-tight font-bold text-[var(--color-ink)]">
+          <h1 className="font-[var(--font-display)] text-[24px] md:text-[32px] leading-tight font-bold text-[var(--color-ink)]">
             {t("connections.catalog.title")}
           </h1>
           <p className="mt-1 max-w-[60ch] text-[14px] text-[var(--color-muted-foreground)]">
@@ -64,13 +64,13 @@ export function ConnectionsCatalog() {
         </label>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto px-8 pt-6 pb-10">
+      <div className="min-h-0 flex-1 overflow-auto px-4 md:px-8 pt-6 pb-10">
         {catalog.isLoading ? (
           <div className="flex items-center justify-center py-10 text-[var(--color-muted-foreground)]">
             <Spinner />
           </div>
         ) : (
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {filtered.map((row) => (
               <CatalogTileButton
                 key={row.catalog_id}

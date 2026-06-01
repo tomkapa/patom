@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
+import { TableScroll } from "./TableScroll";
 
 /**
  * Thin semantic-HTML wrapper around `<table>` that matches the
@@ -17,12 +18,15 @@ export function DataTable({
   caption?: ReactNode;
 }) {
   return (
-    <div className={cn("w-full border border-[var(--color-line)] bg-[var(--color-card)]", className)}>
+    <TableScroll
+      minWidth={560}
+      className={cn("border border-[var(--color-line)] bg-[var(--color-card)]", className)}
+    >
       <table className="w-full border-collapse text-left text-[13px]">
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         {children}
       </table>
-    </div>
+    </TableScroll>
   );
 }
 

@@ -42,7 +42,7 @@ export const MessageBubble = memo(function MessageBubble({
   return (
     <article
       className={cn(
-        "group relative flex gap-3 px-8 py-2 hover:bg-[var(--color-paper-2)]/40 transition-colors",
+        "group relative flex gap-3 px-4 md:px-8 py-2 hover:bg-[var(--color-paper-2)]/40 transition-colors",
         fresh && "bubble-in",
       )}
     >

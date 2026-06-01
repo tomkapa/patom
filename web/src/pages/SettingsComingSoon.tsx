@@ -31,7 +31,7 @@ export function SettingsComingSoon({ kind }: { kind: ComingSoonKind }) {
           { label: t(labelKey), current: true },
         ]}
       />
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 md:px-8 text-center">
         <Construction className="h-8 w-8 text-[var(--color-muted-foreground)]" strokeWidth={1.5} />
         <h1 className="font-[var(--font-display)] text-[22px] font-bold text-[var(--color-ink)]">
           {t(labelKey)}

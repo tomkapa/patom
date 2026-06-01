@@ -11,6 +11,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { SectionCard } from "../../molecules/SectionCard";
+import { TableScroll } from "../../core/TableScroll";
 import { Dropdown } from "../../molecules/Dropdown";
 import { Button } from "../../atoms/Button";
 import { Spinner } from "../../atoms/Spinner";
@@ -184,6 +185,7 @@ export function TurnsTimeline({
         />
       }
     >
+      <TableScroll minWidth={820}>
       <div
         className="grid items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-8 py-2.5 font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--color-muted-foreground)]"
         style={{ gridTemplateColumns: gridTemplate }}
@@ -241,6 +243,7 @@ export function TurnsTimeline({
           ),
         )
       )}
+      </TableScroll>
       {hasNextPage ? (
         <div className="flex items-center justify-center border-t border-[var(--color-line)] px-5 py-3">
           <Button variant="ghost" size="sm" onClick={onLoadMore} disabled={isFetchingNextPage}>
@@ -699,10 +702,14 @@ function SeparatorBanner({
         </span>
       ) : null}
       <span className="flex-1" />
-      <span className="font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-white/85">
-        {t("agent.detail.logs.turns.separator.viewDiff")}
-      </span>
-      <ArrowRight className="h-3 w-3 shrink-0 text-white/85" />
+      {onClick ? (
+        <>
+          <span className="font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-white/85">
+            {t("agent.detail.logs.turns.separator.viewDiff")}
+          </span>
+          <ArrowRight className="h-3 w-3 shrink-0 text-white/85" />
+        </>
+      ) : null}
     </div>
   );
   const cls = "block w-full bg-[var(--color-moss)]";
