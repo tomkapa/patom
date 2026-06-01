@@ -377,6 +377,7 @@ async fn stream_thread(
                         cursor,
                         &ResponseChunk::Error {
                             reason: e.to_string(),
+                            code: "stream".to_owned(),
                         },
                     )
                 }

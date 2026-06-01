@@ -52,6 +52,34 @@ impl TryFrom<i128> for CostMicros {
     }
 }
 
+/// An org's configured monthly spend cap in micro-USD.
+///
+/// The `org_budgets` column is `BIGINT CHECK (... > 0)` — the absence of a cap
+/// (unlimited) is modelled as `Option::None` at the boundary, never a stored
+/// zero, so a `MonthlyCapMicros` is always strictly positive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MonthlyCapMicros(i64);
+
+impl MonthlyCapMicros {
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for MonthlyCapMicros {
+    type Error = ParseError;
+    fn try_from(raw: i64) -> Result<Self, Self::Error> {
+        if raw <= 0 {
+            return Err(ParseError::OutOfRange {
+                field: "monthly_cap_micro_usd",
+                detail: "must be > 0",
+            });
+        }
+        Ok(Self(raw))
+    }
+}
+
 /// A token price as micro-USD per **million** tokens.
 ///
 /// This is the conventional vendor pricing unit. Keeping the rate per-million
@@ -185,6 +213,18 @@ mod tests {
                 .expect("fits")
                 .get(),
             i64::MAX
+        );
+    }
+
+    #[test]
+    fn monthly_cap_rejects_non_positive() {
+        assert!(MonthlyCapMicros::try_from(0_i64).is_err());
+        assert!(MonthlyCapMicros::try_from(-1_i64).is_err());
+        assert_eq!(
+            MonthlyCapMicros::try_from(5_000_000_i64)
+                .expect("valid")
+                .get(),
+            5_000_000
         );
     }
 

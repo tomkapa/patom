@@ -543,7 +543,7 @@ fn payload_for_post(chunk: &ResponseChunk, connect_url: Option<&str>) -> Option<
         ResponseChunk::AgentMessage { content, .. } if !content.is_empty() => {
             Some(PostBody::Text(content.clone()))
         }
-        ResponseChunk::Error { reason } => {
+        ResponseChunk::Error { reason, .. } => {
             Some(PostBody::Text(format!(":warning: Error: {reason}")))
         }
         ResponseChunk::WireMcpRequest {
@@ -676,6 +676,7 @@ mod tests {
     fn payload_for_post_returns_error_with_prefix() {
         let c = ResponseChunk::Error {
             reason: "timeout".to_owned(),
+            code: "timeout".to_owned(),
         };
         match payload_for_post(&c, None) {
             Some(PostBody::Text(s)) => {
@@ -1050,6 +1051,7 @@ mod tests {
         let request_session = SessionId::new();
         let chunk = ResponseChunk::Error {
             reason: "timeout".to_owned(),
+            code: "timeout".to_owned(),
         };
         let (route_session, allow_mint) = routing_for(&chunk, request_session);
         assert_eq!(route_session, request_session);

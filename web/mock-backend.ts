@@ -183,6 +183,36 @@ const orgState = {
   created_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(),
 };
 
+// Mutable spend-budget state so GET/PUT /me/org/budget round-trips. Seeded
+// over the 80% warn threshold so the progress bar + warn chip are visible.
+const MONTH_START = (() => {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-01`;
+})();
+const budgetState = {
+  monthly_cap_micro_usd: 5_000_000 as number | null,
+  warn_threshold_bps: 8000,
+  used_micro_usd: 4_200_000,
+  warned_at: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString() as
+    | string
+    | null,
+  period_start: MONTH_START,
+};
+
+function budgetView() {
+  const cap = budgetState.monthly_cap_micro_usd;
+  return {
+    monthly_cap_micro_usd: cap,
+    warn_threshold_bps: budgetState.warn_threshold_bps,
+    used_micro_usd: budgetState.used_micro_usd,
+    remaining_micro_usd:
+      cap === null ? null : Math.max(0, cap - budgetState.used_micro_usd),
+    warned_at: budgetState.warned_at,
+    period_start: budgetState.period_start,
+    role: me.role,
+  };
+}
+
 const me = {
   user: {
     id: USER_ID,
@@ -1378,6 +1408,31 @@ const server = Bun.serve({
       }
       orgState.default_language = body.language;
       return json({ default_language: body.language });
+    }
+    // ─── Spend budget (src/http/routes/org.rs) ────────────────────────
+    if (path === "/me/org/budget" && method === "GET") {
+      return json(budgetView());
+    }
+    if (path === "/me/org/budget" && method === "PUT") {
+      // Members are read-only; mirror the server's 403 role gate.
+      if (me.role === "member") {
+        return json({ error: "owner or admin role required" }, 403);
+      }
+      const body = (await req.json()) as {
+        monthly_cap_micro_usd?: unknown;
+        warn_threshold_bps?: unknown;
+      };
+      const cap = body.monthly_cap_micro_usd;
+      if (cap !== null && (typeof cap !== "number" || cap <= 0)) {
+        return json({ error: "monthly_cap_micro_usd must be > 0" }, 400);
+      }
+      const bps = body.warn_threshold_bps;
+      if (typeof bps !== "number" || bps < 1 || bps > 10000) {
+        return json({ error: "warn_threshold_bps must be 1..=10000" }, 400);
+      }
+      budgetState.monthly_cap_micro_usd = cap as number | null;
+      budgetState.warn_threshold_bps = bps;
+      return json(budgetView());
     }
     if (path === "/me/org/members" && method === "GET") {
       const qs = url.searchParams;

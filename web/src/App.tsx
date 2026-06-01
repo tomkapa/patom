@@ -9,6 +9,7 @@ import { ConnectionDetail } from "./pages/ConnectionDetail";
 import { ConnectionsCatalog } from "./pages/ConnectionsCatalog";
 import { ConnectionsList } from "./pages/ConnectionsList";
 import { OAuthCallback } from "./pages/OAuthCallback";
+import { SettingsBilling } from "./pages/SettingsBilling";
 import { SettingsComingSoon } from "./pages/SettingsComingSoon";
 import { SettingsGeneral } from "./pages/SettingsGeneral";
 import { SettingsIntegrations } from "./pages/SettingsIntegrations";
@@ -123,7 +124,7 @@ export function App() {
         path="/settings/billing"
         element={
           <Protected>
-            <SettingsComingSoon kind="billing" />
+            <SettingsBilling />
           </Protected>
         }
       />

@@ -52,6 +52,23 @@ export type OrgDetails = {
   avatar_url: string | null;
 };
 
+/** Per-org monthly spend budget: configured cap + warn threshold + this
+ *  period's spend. Money is micro-USD (1e-6 USD) end-to-end; the UI converts
+ *  to/from dollars at the edge. `monthly_cap_micro_usd === null` is unlimited. */
+export type OrgBudget = {
+  monthly_cap_micro_usd: number | null;
+  warn_threshold_bps: number;
+  used_micro_usd: number;
+  /** `cap - used` floored at zero; `null` when unlimited. */
+  remaining_micro_usd: number | null;
+  /** Set once per period when usage first crossed the warn threshold. */
+  warned_at: string | null;
+  /** First day of the current billing month (UTC), `YYYY-MM-DD`. */
+  period_start: string;
+  /** Caller's live role — members get a read-only view. */
+  role: Role;
+};
+
 /** Status of a row on the Members tab. */
 export type MemberStatus = "active" | "invited" | "expired";
 
@@ -252,7 +269,10 @@ export type ResponseChunk =
    *  turn. */
   | ({ kind: "wire_mcp_request"; from: string } & McpWireRequest)
   | { kind: "done"; final_text: string }
-  | { kind: "error"; reason: string }
+  /** `reason` is the failure's human Display form; `code` is the stable,
+   *  low-cardinality label (e.g. `"budget_exceeded"`) so the UI can branch
+   *  on the failure kind without parsing the human text. */
+  | { kind: "error"; reason: string; code: string }
   | { kind: "stalled" };
 
 export type ToolCallEntry = {
