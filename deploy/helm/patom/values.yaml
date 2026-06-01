@@ -75,7 +75,13 @@ env:
   PATOM_S3_PUBLIC_HOST: "https://asset.patom.app"
   PATOM_S3_BUCKET: "patom"
   PATOM_S3_REGION: "auto"
-  PATOM_GENAI_CAPTURE_CONTENT: 1
+  # Secure-by-default (issue #88): 0 keeps prompt/response content on-box — it is
+  # never recorded onto spans or stderr, so a fresh self-host install captures no
+  # prompt content regardless of which (if any) OTLP backend is configured. SaaS
+  # prod re-enables capture by overriding this to 1 via the ArgoCD Application's
+  # Helm parameter (patom-infra kubernetes/apps/patom.yaml), same float pattern as
+  # `externalSecret` above. See doc/operations/self-hosting.md.
+  PATOM_GENAI_CAPTURE_CONTENT: 0
 resources:
   requests:
     cpu: 150m
