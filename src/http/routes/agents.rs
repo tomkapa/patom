@@ -173,42 +173,29 @@ struct UpdateAgentRequest {
     /// is allowed here because the tri-state is intentional — the alternative
     /// (a per-field enum) would inflate every PATCH route.
     #[allow(clippy::option_option)]
-    #[serde(default, deserialize_with = "deserialize_optional_optional_model")]
+    #[serde(default, deserialize_with = "deserialize_optional_optional")]
     model: Option<Option<Model>>,
     /// Patch the per-agent avatar URL. Same tri-state idiom as `model`:
     /// omitted = leave untouched, `null` = clear to default, `"<url>"` =
     /// set. The string is parsed through [`AvatarUrl`] in the handler.
     #[allow(clippy::option_option)]
-    #[serde(default, deserialize_with = "deserialize_optional_optional_avatar_url")]
+    #[serde(default, deserialize_with = "deserialize_optional_optional")]
     avatar_url: Option<Option<String>>,
 }
 
-/// Tri-state deserialiser so `{}` (omitted), `{"model": null}` (clear), and
-/// `{"model": "claude-sonnet-4-5"}` (set) all map distinctly onto
-/// `Option<Option<Model>>`. The default `Option` deserialise collapses null
-/// and missing, which would force every PATCH to send the field — breaking
-/// partial updates.
+/// Tri-state PATCH deserialiser: `{}` (field omitted) → `None`,
+/// `{"f": null}` → `Some(None)` (clear), `{"f": <value>}` → `Some(Some(_))`
+/// (set). The default `Option` deserialise collapses null and missing, which
+/// would force every PATCH to send the field — breaking partial updates. `T`
+/// is inferred from the field type, so one helper serves every nullable-PATCH
+/// column (`model`, `avatar_url`, …).
 #[allow(clippy::option_option)]
-fn deserialize_optional_optional_model<'de, D>(d: D) -> Result<Option<Option<Model>>, D::Error>
+fn deserialize_optional_optional<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
 {
-    Ok(Some(Option::<Model>::deserialize(d)?))
-}
-
-/// Tri-state deserialiser for `avatar_url`, mirroring
-/// [`deserialize_optional_optional_model`]: distinguishes omitted
-/// (`None`) from `null` (`Some(None)`, clear) from `"<url>"`
-/// (`Some(Some(_))`, set). The raw string is validated through
-/// [`AvatarUrl`] later, in the handler.
-#[allow(clippy::option_option)]
-fn deserialize_optional_optional_avatar_url<'de, D>(
-    d: D,
-) -> Result<Option<Option<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Some(Option::<String>::deserialize(d)?))
+    Ok(Some(Option::<T>::deserialize(d)?))
 }
 
 async fn create_agent(
