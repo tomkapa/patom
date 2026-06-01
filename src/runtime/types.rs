@@ -315,6 +315,11 @@ pub enum FailureReason {
     /// on the root request's stream so the caller learns the conversation
     /// hit its loop budget.
     DagBudgetExceeded,
+    /// The org reached its monthly spend cap mid-conversation. The per-turn
+    /// budget gate ([`crate::agent_core::AgentError::BudgetExceeded`]) stopped
+    /// the turn before the provider call; surfaced as a terminal chunk so the
+    /// caller learns the workspace ran out of budget.
+    BudgetExceeded,
     /// Agent produced text without ever calling `send_message`. The worker
     /// nudged it `MAX_PINGPONG_RETRIES` times and still got no delivery —
     /// the request is parked so the caller knows the model misbehaved.
@@ -333,6 +338,7 @@ impl FailureReason {
             Self::Poison => "poison",
             Self::Unrecoverable(_) => "unrecoverable",
             Self::DagBudgetExceeded => "dag_budget_exceeded",
+            Self::BudgetExceeded => "budget_exceeded",
             Self::NoEgress => "no_egress",
         }
     }
@@ -348,6 +354,7 @@ impl fmt::Display for FailureReason {
             Self::Poison => f.write_str("max attempts exceeded"),
             Self::Unrecoverable(s) => write!(f, "unrecoverable: {s}"),
             Self::DagBudgetExceeded => f.write_str("dag turn budget exceeded"),
+            Self::BudgetExceeded => f.write_str("monthly spend budget exceeded"),
             Self::NoEgress => {
                 f.write_str("agent produced text without calling send_message after retries")
             }
