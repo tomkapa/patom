@@ -97,6 +97,10 @@ impl AuthPromptsHarness {
             sessions,
             agents: agents.clone(),
             dag,
+            budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
+                pool.clone(),
+                patom::clock::SystemClock::shared(),
+            )),
             memory_store,
             mcp_store,
             mcp_catalog,

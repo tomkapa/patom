@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use crate::auth::OrgId;
 use crate::hook::{HookDenied, HookError};
 use crate::memory::MemoryError;
 use crate::provider::ProviderError;
@@ -46,6 +47,9 @@ pub enum AgentError {
 
     #[error("provider returned no usable content")]
     EmptyReply,
+
+    #[error("org {org} has exhausted its monthly spend budget")]
+    BudgetExceeded { org: OrgId },
 
     #[error("agent cancelled")]
     Cancelled,

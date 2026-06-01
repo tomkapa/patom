@@ -37,6 +37,7 @@ fn error_label(err: &AgentError) -> &'static str {
         AgentError::TooManyToolCalls { .. } => "tool_calls_exceeded",
         AgentError::MaxTurnsExceeded(_) => "max_turns",
         AgentError::EmptyReply => "empty_reply",
+        AgentError::BudgetExceeded { .. } => "budget_exceeded",
         AgentError::HookDenied(_) => "hook_denied",
         AgentError::Hook(_) => "hook_error",
         AgentError::Session(_) => "session_error",

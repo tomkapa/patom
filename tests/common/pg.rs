@@ -160,6 +160,40 @@ pub async fn human_to_agent_session(
         .expect("create human-to-agent session")
 }
 
+/// Configure (or update) an org's spend budget. `cap` of `None` is the
+/// unlimited case. Runs as the table owner (RLS-bypassing in the dev/test
+/// image), mirroring [`seed_tenant`].
+pub async fn set_budget(pool: &PgPool, org: OrgId, cap: Option<i64>, bps: i32) {
+    sqlx::query(
+        "INSERT INTO org_budgets (org_id, monthly_cap_micro_usd, warn_threshold_bps, created_at, updated_at)
+         VALUES ($1, $2, $3, now(), now())
+         ON CONFLICT (org_id) DO UPDATE
+             SET monthly_cap_micro_usd = EXCLUDED.monthly_cap_micro_usd,
+                 warn_threshold_bps    = EXCLUDED.warn_threshold_bps,
+                 updated_at            = EXCLUDED.updated_at",
+    )
+    .bind(org)
+    .bind(cap)
+    .bind(bps)
+    .execute(pool)
+    .await
+    .expect("set budget");
+}
+
+/// Seed `used` micro-USD of spend for `org` in the current UTC month — used to
+/// drive an org over its cap before exercising a gate.
+pub async fn seed_period_usage(pool: &PgPool, org: OrgId, used: i64) {
+    sqlx::query(
+        "INSERT INTO org_budget_usage (org_id, period_start, used_micro_usd, created_at, updated_at)
+         VALUES ($1, date_trunc('month', now())::date, $2, now(), now())",
+    )
+    .bind(org)
+    .bind(used)
+    .execute(pool)
+    .await
+    .expect("seed period usage");
+}
+
 /// Insert a stub `prompt_requests` row for a freshly minted session and
 /// return its id. `session_messages.request_id` is `NOT NULL REFERENCES
 /// prompt_requests(id)` — store-level tests that exercise `append` need a
