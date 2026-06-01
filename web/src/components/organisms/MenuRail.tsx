@@ -60,7 +60,7 @@ export function MenuRail() {
 
   return (
     <aside
-      className="flex h-full w-[72px] shrink-0 flex-col items-center gap-1.5 bg-[#1E3322] p-2"
+      className="flex h-full w-[72px] shrink-0 flex-col items-center gap-1.5 bg-[var(--color-rail-brand)] p-2"
       aria-label="Menu rail"
     >
       <img

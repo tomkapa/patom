@@ -52,7 +52,7 @@ export function MemoryRowCard({
           className={cn(
             "inline-flex items-center gap-1 border px-1.5 py-[2px] font-[var(--font-mono)] text-[10px] font-semibold transition-colors",
             row.pinned
-              ? "border-[#FED7AA] bg-[#FFF7ED] text-[#EA580C]"
+              ? "border-[var(--color-amber)] bg-[var(--color-amber-soft)] text-[var(--color-amber-deep)]"
               : "border-transparent text-[var(--color-fg-muted)] hover:text-[var(--color-ink)]",
             pinPending && "cursor-wait opacity-60",
           )}

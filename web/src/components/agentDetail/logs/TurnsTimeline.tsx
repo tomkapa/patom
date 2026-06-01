@@ -685,8 +685,8 @@ function SeparatorBanner({
   const time = edit?.created_at ? formatHM(edit.created_at) : null;
   const content = (
     <div className="flex w-full items-center gap-3 px-8 py-2.5 text-left">
-      <GitCommitHorizontal className="h-3.5 w-3.5 shrink-0 text-[var(--color-card)]/80" />
-      <span className="font-[var(--font-body)] text-[12px] font-medium text-[var(--color-card)]">
+      <GitCommitHorizontal className="h-3.5 w-3.5 shrink-0 text-white/80" />
+      <span className="font-[var(--font-body)] text-[12px] font-medium text-white">
         {t("agent.detail.logs.turns.separator.label", {
           author,
           from: to,
@@ -694,24 +694,24 @@ function SeparatorBanner({
         })}
       </span>
       {time ? (
-        <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-card)]/70">
+        <span className="font-[var(--font-mono)] text-[11px] text-white/70">
           {time}
         </span>
       ) : null}
       <span className="flex-1" />
-      <span className="font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--color-card)]/85">
+      <span className="font-[var(--font-mono)] text-[10px] font-semibold tracking-[0.12em] uppercase text-white/85">
         {t("agent.detail.logs.turns.separator.viewDiff")}
       </span>
-      <ArrowRight className="h-3 w-3 shrink-0 text-[var(--color-card)]/85" />
+      <ArrowRight className="h-3 w-3 shrink-0 text-white/85" />
     </div>
   );
-  const cls = "block w-full bg-[var(--color-ink)]";
+  const cls = "block w-full bg-[var(--color-moss)]";
   if (onClick) {
     return (
       <button
         type="button"
         onClick={onClick}
-        className={`${cls} cursor-pointer transition-colors duration-150 ease-out hover:bg-[var(--color-ink-2)]`}
+        className={`${cls} cursor-pointer transition-colors duration-150 ease-out hover:bg-[var(--color-moss-deep)]`}
       >
         {content}
       </button>

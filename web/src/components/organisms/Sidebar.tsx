@@ -201,10 +201,10 @@ function SidebarRow({
         "group flex h-[28px] w-full items-center gap-2 px-2 text-left text-[13px] transition-colors",
         mono && "font-[var(--font-mono)] text-[12.5px]",
         active
-          ? "bg-[var(--color-rail)] text-[var(--color-paper)] font-medium"
+          ? "bg-[var(--color-moss)] text-white font-medium"
           : muted
-            ? "text-[var(--color-muted-foreground)] hover:bg-[var(--color-paper-2)] hover:text-[var(--color-ink)]"
-            : "text-[var(--color-ink)] hover:bg-[var(--color-paper-2)]",
+            ? "text-[var(--color-muted-foreground)] hover:bg-[var(--color-sidebar-accent)] hover:text-[var(--color-ink)]"
+            : "text-[var(--color-ink)] hover:bg-[var(--color-sidebar-accent)]",
       )}
     >
       {icon && <span className="shrink-0">{icon}</span>}
@@ -214,7 +214,7 @@ function SidebarRow({
             className={cn(
               "mr-0.5",
               active
-                ? "text-[var(--color-paper)]"
+                ? "text-white/80"
                 : "text-[var(--color-muted-foreground)]",
             )}
           >

@@ -18,7 +18,7 @@ type BaseProps = {
 
 const VARIANT: Record<Variant, string> = {
   primary:
-    "bg-[var(--color-ink)] text-[var(--color-paper)] border border-[var(--color-ink)] hover:bg-[var(--color-ink-2)] disabled:opacity-50",
+    "bg-[var(--color-moss)] text-white border border-[var(--color-moss)] hover:bg-[var(--color-moss-deep)] disabled:opacity-50",
   moss: "bg-[var(--color-moss)] text-white border border-[var(--color-moss)] hover:bg-[var(--color-moss-deep)] disabled:cursor-not-allowed disabled:opacity-40",
   ghost:
     "bg-transparent text-[var(--color-muted-foreground)] border border-transparent hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-2)] disabled:opacity-40",

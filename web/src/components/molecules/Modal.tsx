@@ -92,7 +92,7 @@ export function Modal({
           aria-modal="true"
           aria-label={ariaLabel}
           {...scrimMotion}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[#1E3322CC] p-8"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-rail)]/80 p-8"
           onMouseDown={(e) => {
             // Close on backdrop click only (not when dragging from inside).
             if (e.target === e.currentTarget) onClose();

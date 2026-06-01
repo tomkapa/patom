@@ -146,8 +146,8 @@ export function MemoryFilterBar({
           className={cn(
             "flex h-7 cursor-pointer items-center gap-1.5 border px-2.5 text-[11px] font-semibold transition-colors duration-150 ease-out",
             filters.aging
-              ? "border-[#F59E0B] bg-[#FEF3C7] text-[#92400E]"
-              : "border-[#F59E0B66] bg-[#FEF3C766] text-[#92400EAA]",
+              ? "border-[var(--color-amber)] bg-[var(--color-amber-soft)] text-[var(--color-amber-deep)]"
+              : "border-[var(--color-line)] text-[var(--color-fg-muted)] hover:text-[var(--color-ink)]",
             !agingAvailable && !filters.aging && "cursor-not-allowed opacity-50",
           )}
         >

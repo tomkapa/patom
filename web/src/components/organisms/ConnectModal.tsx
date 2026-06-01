@@ -624,7 +624,7 @@ function AuthTab({
       className={
         "flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] transition-colors " +
         (active
-          ? "bg-[var(--color-ink)] text-white"
+          ? "bg-[var(--color-ink)] text-[var(--color-paper)]"
           : "bg-[var(--color-card)] text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]")
       }
     >

@@ -63,6 +63,7 @@
   --color-paper-3: #f5f5f5;
   --color-rail: #18181b;             /* dark sidebar surface */
   --color-rail-2: #2a2a30;
+  --color-rail-brand: #1e3322;       /* menu rail — forest green in light */
 
   --color-ink: #0a0a0a;
   --color-ink-2: #1e3322;            /* dark forest green */
@@ -78,6 +79,7 @@
 
   --color-amber: #b97a2b;
   --color-amber-soft: #f0e3c4;
+  --color-amber-deep: #7a4e15;       /* readable text on amber-soft (light) */
   --color-rose: #b54848;
   --color-rose-soft: #ecd2c8;
 
@@ -165,6 +167,7 @@
   --color-paper-3: #131516;
   --color-rail: #08090a;
   --color-rail-2: #131516;
+  --color-rail-brand: #08090a;       /* menu rail — deepest surface in dark */
 
   --color-ink: #f7f8f8;
   --color-ink-2: #d0d6e0;
@@ -184,6 +187,7 @@
 
   --color-amber: #d9a35a;
   --color-amber-soft: #2a1f10;
+  --color-amber-deep: #e0b878;       /* readable text on amber-soft (dark) */
   --color-rose: #eb5757;
   --color-rose-soft: #1f1010;
 }

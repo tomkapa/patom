@@ -62,7 +62,7 @@ export function GutteredEditor({
         className,
       )}
     >
-      <div className="flex h-10 shrink-0 items-center justify-between gap-3 bg-[var(--color-ink)] px-4">
+      <div className="flex h-10 shrink-0 items-center justify-between gap-3 bg-[var(--color-rail)] px-4">
         <div className="flex items-center gap-2 text-[#FFFFFFCC]">
           {header.icon ? (
             <span className="flex h-3.5 w-3.5 items-center justify-center text-[#FFFFFF66]">

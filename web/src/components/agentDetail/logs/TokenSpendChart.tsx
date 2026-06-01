@@ -16,12 +16,15 @@ const CHART_HEIGHT = 220;
  *  font size. Two markers closer than this collide visually, so we merge
  *  them into a single grouped marker. */
 const MARKER_LABEL_PX = 64;
-/** Stacked-bar colour by kind. Mirrors the `--color-moss*` family already
- *  used elsewhere; reflection lands on the tinted variant so the rare,
- *  internal turn type reads visually subordinate to the user-facing one. */
+/** Stacked-bar colour by kind. `normal` is the brand accent (the dominant,
+ *  user-facing turn). `reflection` uses the warm amber accent so the rare
+ *  internal turn type stays clearly legible against both light and dark
+ *  backgrounds — the former `--color-moss-tint` was near-invisible in dark
+ *  (`#1e1f35` on a near-black chart). `resolution` takes `--color-ink` for
+ *  high contrast at the top of the stack. */
 const KIND_COLOR = {
   normal: "var(--color-moss)",
-  reflection: "var(--color-moss-tint)",
+  reflection: "var(--color-amber)",
   resolution: "var(--color-ink)",
 } as const;
 
@@ -373,7 +376,7 @@ function ChartHero({
           label={t("agent.detail.logs.chart.legend.normal")}
         />
         <LegendSwatch
-          color="var(--color-moss-tint)"
+          color="var(--color-amber)"
           label={t("agent.detail.logs.chart.legend.reflection")}
         />
         <LegendSwatch
