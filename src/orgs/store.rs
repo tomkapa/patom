@@ -185,6 +185,23 @@ pub trait OrgStore: std::fmt::Debug + Send + Sync + 'static {
     /// Delete a pending invite (revoke).
     async fn revoke_invite(&self, org_id: OrgId, invite_id: InviteId) -> Result<(), OrgError>;
 
+    /// Accept-on-login (ADR-0011, self-host invite-only). Consume every
+    /// pending, non-expired invite addressed to `email` — inserting an
+    /// `org_members` row with the invited role and stamping
+    /// `consumed_at` — then return the org to make active (the oldest
+    /// invite's org), or `None` when there is no pending invite.
+    ///
+    /// Runs privileged (the user is by definition not yet a member, so
+    /// RLS on `org_invites` would hide the row). `email` must be the
+    /// IdP-verified address from the id_token — possession of the
+    /// invited mailbox is what authorises the join.
+    async fn join_pending_invites(
+        &self,
+        user_id: UserId,
+        email: &Email,
+        now: DateTime<Utc>,
+    ) -> Result<Option<OrgId>, OrgError>;
+
     /// Set (or clear, with `None`) the workspace avatar URL.
     async fn set_avatar_url(
         &self,

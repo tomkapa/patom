@@ -172,16 +172,17 @@ impl TryFrom<String> for OrgSlug {
     }
 }
 
-/// Google's `sub` claim — stable per-user identifier scoped to our
-/// OAuth client. Persisted in `user_identities.subject` and used as
-/// the primary key for "is this the same Google account."
+/// OIDC `sub` claim — the stable, per-issuer identifier for an end
+/// user. Persisted in `user_identities.oidc_subject` and, together with
+/// the issuer, forms the primary key for "is this the same account."
 ///
-/// Google publishes `sub` as a numeric string up to 255 chars; we
-/// enforce non-empty + the 255-byte cap at the boundary.
+/// `sub` is opaque and provider-defined (Google emits a numeric string,
+/// Entra a GUID, Keycloak a UUID); we only enforce non-empty + the
+/// 255-byte cap at the boundary, matching the column CHECK.
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct GoogleSubject(Arc<str>);
+pub struct OidcSubject(Arc<str>);
 
-impl GoogleSubject {
+impl OidcSubject {
     pub const MAX_BYTES: usize = 255;
 
     #[must_use]
@@ -190,24 +191,24 @@ impl GoogleSubject {
     }
 }
 
-impl std::fmt::Debug for GoogleSubject {
+impl std::fmt::Debug for OidcSubject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // PII — debug-tier per CLAUDE.md §2; redact in any printed form.
-        f.write_str("GoogleSubject(***)")
+        f.write_str("OidcSubject(***)")
     }
 }
 
-impl TryFrom<&str> for GoogleSubject {
+impl TryFrom<&str> for OidcSubject {
     type Error = ParseError;
     fn try_from(raw: &str) -> Result<Self, Self::Error> {
         if raw.is_empty() {
             return Err(ParseError::Empty {
-                field: "google_subject",
+                field: "oidc_subject",
             });
         }
         if raw.len() > Self::MAX_BYTES {
             return Err(ParseError::TooLong {
-                field: "google_subject",
+                field: "oidc_subject",
                 max: Self::MAX_BYTES,
                 got: raw.len(),
             });
@@ -216,7 +217,137 @@ impl TryFrom<&str> for GoogleSubject {
     }
 }
 
-impl TryFrom<String> for GoogleSubject {
+impl TryFrom<String> for OidcSubject {
+    type Error = ParseError;
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        Self::try_from(raw.as_str())
+    }
+}
+
+/// The OIDC issuer identifier — the `https` origin that names an IdP.
+///
+/// E.g. `https://accounts.google.com`. Half of the `(issuer, subject)`
+/// identity key and the seed for discovery
+/// (`{issuer}/.well-known/openid-configuration`).
+///
+/// Parsed at the config boundary: must be a syntactically valid URL with
+/// an `https` scheme (OIDC forbids a plaintext issuer) and no query or
+/// fragment. The 255-byte cap matches the `user_identities.oidc_issuer`
+/// column CHECK.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct IssuerUrl(Arc<str>);
+
+impl IssuerUrl {
+    pub const MAX_BYTES: usize = 255;
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for IssuerUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("IssuerUrl").field(&self.as_str()).finish()
+    }
+}
+
+impl std::fmt::Display for IssuerUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<&str> for IssuerUrl {
+    type Error = ParseError;
+
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(ParseError::Empty {
+                field: "oidc_issuer",
+            });
+        }
+        if trimmed.len() > Self::MAX_BYTES {
+            return Err(ParseError::TooLong {
+                field: "oidc_issuer",
+                max: Self::MAX_BYTES,
+                got: trimmed.len(),
+            });
+        }
+        let parsed = url::Url::parse(trimmed).map_err(|_| ParseError::Malformed {
+            field: "oidc_issuer",
+            detail: "not a valid URL",
+        })?;
+        if parsed.scheme() != "https" {
+            return Err(ParseError::Malformed {
+                field: "oidc_issuer",
+                detail: "scheme must be https",
+            });
+        }
+        if parsed.query().is_some() || parsed.fragment().is_some() {
+            return Err(ParseError::Malformed {
+                field: "oidc_issuer",
+                detail: "must not carry a query or fragment",
+            });
+        }
+        Ok(Self(Arc::from(trimmed)))
+    }
+}
+
+impl TryFrom<String> for IssuerUrl {
+    type Error = ParseError;
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        Self::try_from(raw.as_str())
+    }
+}
+
+/// OIDC `nonce` — a single-use value binding the id_token to one login.
+///
+/// The authorize step mints it and the callback replays it so the
+/// id_token can be bound to this exact round-trip (defeats id_token
+/// replay). Stored in `oauth_login_states.nonce`; secret-tier, so
+/// redacted Debug.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OidcNonce(Arc<str>);
+
+impl OidcNonce {
+    // Matches the `oauth_login_states.nonce` CHECK (octet_length 1..=128).
+    pub const MIN_BYTES: usize = 1;
+    pub const MAX_BYTES: usize = 128;
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for OidcNonce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OidcNonce(***)")
+    }
+}
+
+impl TryFrom<&str> for OidcNonce {
+    type Error = ParseError;
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        if raw.len() < Self::MIN_BYTES {
+            return Err(ParseError::Empty {
+                field: "oidc_nonce",
+            });
+        }
+        if raw.len() > Self::MAX_BYTES {
+            return Err(ParseError::TooLong {
+                field: "oidc_nonce",
+                max: Self::MAX_BYTES,
+                got: raw.len(),
+            });
+        }
+        Ok(Self(Arc::from(raw)))
+    }
+}
+
+impl TryFrom<String> for OidcNonce {
     type Error = ParseError;
     fn try_from(raw: String) -> Result<Self, Self::Error> {
         Self::try_from(raw.as_str())
@@ -343,20 +474,26 @@ impl TryFrom<String> for OAuthState {
     }
 }
 
-/// Profile claims pulled from Google's `userinfo` endpoint. Built by
-/// [`crate::auth::oauth_google`] and consumed by [`UserStore::upsert_from_google`].
+/// Verified identity claims from an OIDC id_token.
+///
+/// Built by [`crate::auth::oidc`] after JWKS signature + nonce
+/// verification and consumed by [`UserStore::upsert_from_oidc`]. Keyed on
+/// `(issuer, subject)`; email is captured for display, not identity.
 #[derive(Debug, Clone)]
-pub struct GoogleProfile {
-    pub subject: GoogleSubject,
+pub struct OidcProfile {
+    /// The issuer the id_token was verified against — the trusted half
+    /// of the `(issuer, subject)` identity key.
+    pub issuer: IssuerUrl,
+    pub subject: OidcSubject,
     pub email: Email,
     pub email_verified: bool,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     /// BCP-47 locale tag (e.g. `"vi"`, `"en-US"`). Treated as a hint
     /// only — normalized into [`Language`] at the OAuth-callback boundary
-    /// via [`Language::from_locale_hint`]. Bounded at the
-    /// `fetch_userinfo` ingestion seam so the cross-module value carries
-    /// a length invariant, not a free-form provider string.
+    /// via [`Language::from_locale_hint`]. Bounded at the id_token
+    /// ingestion seam so the cross-module value carries a length
+    /// invariant, not a free-form provider string.
     pub locale: Option<LocaleHint>,
 }
 
@@ -518,5 +655,61 @@ impl TryFrom<String> for InviteToken {
     type Error = ParseError;
     fn try_from(raw: String) -> Result<Self, Self::Error> {
         Self::try_from(raw.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn issuer_url_accepts_https_origin() {
+        let iss = IssuerUrl::try_from("https://accounts.google.com").expect("valid https issuer");
+        assert_eq!(iss.as_str(), "https://accounts.google.com");
+    }
+
+    #[test]
+    fn issuer_url_rejects_plaintext_scheme() {
+        // OIDC forbids a plaintext issuer; the boundary must refuse http://.
+        assert!(IssuerUrl::try_from("http://accounts.google.com").is_err());
+    }
+
+    #[test]
+    fn issuer_url_rejects_query_and_fragment() {
+        assert!(IssuerUrl::try_from("https://idp.test/?a=b").is_err());
+        assert!(IssuerUrl::try_from("https://idp.test/#frag").is_err());
+    }
+
+    #[test]
+    fn issuer_url_rejects_garbage_and_oversize() {
+        assert!(IssuerUrl::try_from("not a url").is_err());
+        let long = format!("https://{}.test", "a".repeat(IssuerUrl::MAX_BYTES));
+        assert!(IssuerUrl::try_from(long.as_str()).is_err());
+    }
+
+    #[test]
+    fn oidc_subject_enforces_bounds() {
+        assert!(OidcSubject::try_from("").is_err());
+        assert!(OidcSubject::try_from("sub-123").is_ok());
+        let max = "a".repeat(OidcSubject::MAX_BYTES);
+        assert!(OidcSubject::try_from(max.as_str()).is_ok());
+        let over = "a".repeat(OidcSubject::MAX_BYTES + 1);
+        assert!(OidcSubject::try_from(over.as_str()).is_err());
+    }
+
+    #[test]
+    fn oidc_subject_debug_is_redacted() {
+        let sub = OidcSubject::try_from("sensitive-sub").expect("valid");
+        assert_eq!(format!("{sub:?}"), "OidcSubject(***)");
+    }
+
+    #[test]
+    fn oidc_nonce_enforces_bounds_and_redacts() {
+        assert!(OidcNonce::try_from("").is_err());
+        assert!(OidcNonce::try_from("n").is_ok());
+        let over = "a".repeat(OidcNonce::MAX_BYTES + 1);
+        assert!(OidcNonce::try_from(over.as_str()).is_err());
+        let nonce = OidcNonce::try_from("abc123").expect("valid");
+        assert_eq!(format!("{nonce:?}"), "OidcNonce(***)");
     }
 }

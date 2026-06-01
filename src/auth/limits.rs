@@ -25,18 +25,34 @@ pub const OAUTH_STATE_TTL: Duration = Duration::from_mins(10);
 /// corrupted PRNG.
 pub const MAX_SLUG_RETRIES: usize = 5;
 
-/// Maximum bytes accepted from Google's userinfo response. The spec
-/// payload is well under 4 KiB; an oversize response is a sign of a
-/// hijacked provider and is rejected at the boundary.
-pub const MAX_USERINFO_BYTES: usize = 8 * 1024;
+/// Hard timeout on the OIDC discovery fetch at startup.
+///
+/// Covers `{issuer}/.well-known/openid-configuration` plus the JWKS the
+/// `openidconnect` client pulls alongside it. Discovery is one-shot at
+/// startup; a slow IdP must not hang boot indefinitely. Fail-closed on
+/// timeout (no login) per ADR-0011.
+pub const OIDC_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Hard timeout on every outbound call to Google during the OAuth
-/// exchange. Wraps both the token exchange and the userinfo fetch.
+/// Hard timeout on the OIDC token exchange (code → id_token) during the
+/// callback. Wraps the single outbound call to the token endpoint.
 pub const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Minimum byte length of the JWT signing secret. HS256 best-practice
 /// is 256 bits (32 bytes) of random material.
 pub const JWT_SECRET_MIN_BYTES: usize = 32;
+
+/// Maximum bytes accepted for an OIDC `name` claim before it is dropped.
+///
+/// Mirrors the `users.display_name` CHECK (migration 14, ≤200). An
+/// over-cap value from a (pluggable) IdP is treated as a best-effort hint
+/// and discarded rather than failing the sign-in or the later `users`
+/// insert — same posture as `locale`.
+pub const MAX_DISPLAY_NAME_BYTES: usize = 200;
+
+/// Maximum bytes accepted for an OIDC `picture` claim before it is
+/// dropped at the auth boundary. Mirrors the `users.avatar_url` CHECK
+/// (migration 14, ≤2048).
+pub const MAX_AVATAR_URL_BYTES: usize = 2048;
 
 /// Cookie name carrying the CSRF double-submit token.
 ///

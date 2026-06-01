@@ -128,6 +128,7 @@ impl Harness {
             pool: pool.clone(),
             jwt,
             oauth,
+            bootstrap_admin: false,
             users,
             clock: clock.clone(),
             cookie_secure: false,

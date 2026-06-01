@@ -26,14 +26,21 @@ pub enum AuthError {
     #[error("oauth state expired or unknown")]
     OAuthStateInvalid,
 
-    /// The remote provider (Google) returned an error envelope or an
-    /// unparseable response.
+    /// The remote OIDC provider returned an error envelope, an
+    /// unparseable response, or an id_token that failed signature /
+    /// nonce verification.
     #[error("oauth provider error: {0}")]
     OAuthProvider(String),
 
-    /// The remote provider claims the email is unverified. We refuse
-    /// to mint a session for it because the email is our primary key
-    /// on `users.email`.
+    /// OIDC discovery (`{issuer}/.well-known/openid-configuration` + its
+    /// JWKS) failed or timed out at startup. Fail-closed: a provider we
+    /// can't discover yields no login rather than a degraded path.
+    #[error("oidc discovery failed: {0}")]
+    DiscoveryFailed(String),
+
+    /// The provider claims the email is unverified. We refuse to mint a
+    /// session for it: an unverified email must not seed a `users.email`
+    /// row that other surfaces treat as a confirmed contact.
     #[error("email not verified by oauth provider")]
     EmailUnverified,
 

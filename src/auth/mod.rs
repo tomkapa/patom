@@ -2,7 +2,7 @@
 //!
 //! - Identity types ([`UserId`], [`OrgId`], [`Email`], [`Role`], [`Principal`]).
 //! - JWT-in-cookie session ([`JwtSigner`]).
-//! - Google OAuth wrapper ([`GoogleOAuth`]).
+//! - Pluggable OIDC provider ([`OidcProvider`], [`OidcAuth`]).
 //! - Store contract over `users`, `organizations`, `org_members`,
 //!   `user_identities`, `oauth_login_states` ([`UserStore`]).
 //! - Tenant-context helpers ([`TenantTx`], [`PrivilegedTx`], [`run_as_user`],
@@ -14,7 +14,7 @@ mod jwt;
 mod language;
 pub mod limits;
 mod locale_hint;
-mod oauth_google;
+mod oidc;
 mod org_language;
 mod org_rule;
 mod pg_store;
@@ -26,7 +26,7 @@ pub use error::AuthError;
 pub use jwt::{JwtClaims, JwtSigner};
 pub use language::Language;
 pub use locale_hint::LocaleHint;
-pub use oauth_google::{AuthStart, GoogleOAuth, TokenExchanger};
+pub use oidc::{AuthStart, OidcAuth, OidcProvider, SharedOidcAuth};
 pub use org_language::{
     LanguageResolverError, OrgLanguageResolver, PgOrgLanguageResolver, SharedOrgLanguageResolver,
 };
@@ -38,8 +38,8 @@ pub use store::{
     ConsumedOAuthState, NewOrg, OAuthStateRow, SharedUserStore, UpsertedUser, UserStore,
 };
 pub use types::{
-    Email, GoogleProfile, GoogleSubject, InviteId, InviteToken, OAuthState, OrgId, OrgMembership,
-    OrgName, OrgSlug, PkceVerifier, Principal, Role, User, UserId,
+    Email, InviteId, InviteToken, IssuerUrl, OAuthState, OidcNonce, OidcProfile, OidcSubject,
+    OrgId, OrgMembership, OrgName, OrgSlug, PkceVerifier, Principal, Role, User, UserId,
 };
 
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};

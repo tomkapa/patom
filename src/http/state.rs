@@ -6,7 +6,7 @@ use sqlx::PgPool;
 use crate::agents::SharedAgentStore;
 use crate::assets::SharedAssetStore;
 use crate::auth::{
-    CookieDomain, GoogleOAuth, JwtSigner, SharedOrgLanguageResolver, SharedOrgRuleResolver,
+    CookieDomain, JwtSigner, SharedOidcAuth, SharedOrgLanguageResolver, SharedOrgRuleResolver,
     SharedUserStore,
 };
 use crate::clock::SharedClock;
@@ -89,9 +89,15 @@ pub struct AppState {
     /// JWT signer used by the auth middleware to verify cookies and by
     /// the OAuth callback route to mint them.
     pub jwt: JwtSigner,
-    /// Google OAuth client — owns the redirect URL, client id/secret,
-    /// and the HTTP exchanger.
-    pub oauth: GoogleOAuth,
+    /// Login OIDC provider (ADR-0011) — owns the discovered endpoints +
+    /// JWKS, the client id/secret, and the redirect URL. Google is one
+    /// issuer behind this seam. `dyn` so tests inject a fake without
+    /// discovery or a live IdP.
+    pub oauth: SharedOidcAuth,
+    /// First-admin bootstrap toggle (`PATOM_BOOTSTRAP_ADMIN`). When true
+    /// and the org table is empty, the OAuth callback routes the very
+    /// first login through the audited, count-guarded bootstrap path.
+    pub bootstrap_admin: bool,
     /// Identity-table store.
     ///
     /// Used by the OAuth callback to upsert users + personal org, and

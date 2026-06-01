@@ -9,8 +9,8 @@ use config::{Config, ConfigError, Environment};
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::auth::CookieDomain;
 use crate::auth::limits::MAX_CORS_ALLOWED_ORIGINS;
+use crate::auth::{CookieDomain, IssuerUrl};
 use crate::provider::{Model, ProviderId};
 use crate::types::SecretString;
 
@@ -18,6 +18,10 @@ use crate::types::SecretString;
 /// `web/build.ts`'s `outdir`; operators running the binary from outside
 /// the repo root must override.
 const DEFAULT_WEB_DIST: &str = "./web/dist";
+
+/// Issuer for the Google login preset (ADR-0011). Used when
+/// `PATOM_OIDC_ISSUER` is unset so cloud keeps its `GOOGLE_*` config.
+const GOOGLE_OIDC_ISSUER: &str = "https://accounts.google.com";
 
 #[derive(Debug, Error)]
 pub enum SettingsError {
@@ -47,6 +51,19 @@ pub enum SettingsError {
 
     #[error("auth: PATOM_WEB_BASE_URL is not a valid origin: {raw:?} ({reason})")]
     InvalidWebBaseUrl { raw: String, reason: &'static str },
+
+    #[error("auth: PATOM_OIDC_ISSUER is not a valid https issuer: {raw:?} ({reason})")]
+    InvalidOidcIssuer { raw: String, reason: &'static str },
+
+    #[error("auth: login redirect URL is not a valid http(s) URL: {raw:?} ({reason})")]
+    InvalidRedirectUrl { raw: String, reason: &'static str },
+
+    #[error(
+        "auth: no login provider configured; set PATOM_OIDC_ISSUER + \
+         PATOM_OIDC_CLIENT_ID + PATOM_OIDC_CLIENT_SECRET + PATOM_OIDC_REDIRECT_URL, \
+         or GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET + GOOGLE_REDIRECT_URL"
+    )]
+    MissingLoginProvider,
 
     #[error("auth: PATOM_COOKIE_DOMAIN is not a valid cookie domain: {raw:?} ({reason})")]
     InvalidCookieDomain { raw: String, reason: &'static str },
@@ -205,6 +222,12 @@ where
     const PREFIX: &str = "PATOM_";
     const ID_SUFFIX: &str = "_CLIENT_ID";
     const SECRET_SUFFIX: &str = "_CLIENT_SECRET";
+    // Login-OIDC creds share the `PATOM_<MID>_CLIENT_*` shape but are NOT
+    // MCP platform clients (they belong to `AuthSettings.oidc_*`). Exclude
+    // the reserved middle so a generic-OIDC deployment doesn't synthesize a
+    // bogus `platform_oauth_clients["oidc"]` and so a real future `oidc`
+    // catalog entry can't collide with it.
+    const RESERVED_MIDDLES: &[&str] = &["oidc"];
 
     let mut ids: HashMap<String, String> = HashMap::new();
     let mut secrets: HashMap<String, String> = HashMap::new();
@@ -215,10 +238,12 @@ where
         };
         if let Some(middle) = remainder.strip_suffix(SECRET_SUFFIX)
             && !middle.is_empty()
+            && !RESERVED_MIDDLES.contains(&middle.to_ascii_lowercase().as_str())
         {
             secrets.insert(middle.to_ascii_lowercase(), value);
         } else if let Some(middle) = remainder.strip_suffix(ID_SUFFIX)
             && !middle.is_empty()
+            && !RESERVED_MIDDLES.contains(&middle.to_ascii_lowercase().as_str())
         {
             ids.insert(middle.to_ascii_lowercase(), value);
         }
@@ -252,17 +277,24 @@ where
 pub struct AuthSettings {
     /// HS256 signing secret for session JWTs. Must be ≥32 bytes.
     pub jwt_secret: SecretString,
-    /// Google OAuth client id for **Login-with-Google only**. The MCP
-    /// `google` catalog entry reads its credentials from
-    /// `PATOM_GOOGLE_CLIENT_ID` / `_CLIENT_SECRET` env vars via
-    /// [`platform_oauth_clients`] — operators may point both at the same
-    /// upstream OAuth app or split them.
-    pub google_client_id: SecretString,
-    /// Google OAuth client secret. Login-with-Google only.
-    pub google_client_secret: SecretString,
-    /// Redirect URL registered with Google, e.g.
-    /// `http://localhost:8080/auth/google/callback`.
-    pub google_redirect_url: String,
+    /// Resolved login-OIDC issuer (ADR-0011). `PATOM_OIDC_ISSUER` when
+    /// set; otherwise the Google preset `https://accounts.google.com`.
+    /// Endpoints + JWKS are discovered from this at startup.
+    pub oidc_issuer: IssuerUrl,
+    /// Login-OIDC client id. `PATOM_OIDC_CLIENT_ID` for a generic issuer;
+    /// `GOOGLE_CLIENT_ID` for the Google preset. The MCP `google` catalog
+    /// entry has its own credentials in [`platform_oauth_clients`] — this
+    /// is **login only**.
+    pub oidc_client_id: SecretString,
+    /// Login-OIDC client secret. `PATOM_OIDC_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRET`.
+    pub oidc_client_secret: SecretString,
+    /// Redirect URL registered with the IdP, e.g.
+    /// `http://localhost:8080/auth/oidc/callback`.
+    pub oidc_redirect_url: String,
+    /// First-admin bootstrap toggle (`PATOM_BOOTSTRAP_ADMIN`, ADR-0011
+    /// §3). When true and the org table is empty, the first login creates
+    /// the initial org and owns it. Default false.
+    pub bootstrap_admin: bool,
     /// GitHub OAuth App client id, used by the MCP shared-client seeder
     /// (`src/mcp/oauth/shared_seed.rs`) to register a platform-owned OAuth
     /// client keyed by issuer `https://github.com`. Required at startup:
@@ -410,9 +442,29 @@ struct RawSettings {
     // `config` crate's own "missing field" error via `SettingsError::Source`,
     // same as `database_url` / `brave_search_api_key` above.
     patom_jwt_secret: SecretString,
-    google_client_id: SecretString,
-    google_client_secret: SecretString,
-    google_redirect_url: String,
+    // Login provider (ADR-0011). When `patom_oidc_issuer` is set the
+    // generic OIDC path is used (requires the three `patom_oidc_*`
+    // creds); otherwise the Google preset is used (requires the three
+    // `google_*` creds). Resolved + validated in `TryFrom<RawSettings>`,
+    // so all six are optional at the serde layer.
+    #[serde(default)]
+    google_client_id: Option<SecretString>,
+    #[serde(default)]
+    google_client_secret: Option<SecretString>,
+    #[serde(default)]
+    google_redirect_url: Option<String>,
+    #[serde(default)]
+    patom_oidc_issuer: Option<String>,
+    #[serde(default)]
+    patom_oidc_client_id: Option<SecretString>,
+    #[serde(default)]
+    patom_oidc_client_secret: Option<SecretString>,
+    #[serde(default)]
+    patom_oidc_redirect_url: Option<String>,
+    // First-admin bootstrap (ADR-0011 §3). Default false — promotion is
+    // a deliberate operator act, never a silent default.
+    #[serde(default)]
+    patom_bootstrap_admin: bool,
     // GitHub MCP shared OAuth App — required at startup. GitHub does not
     // expose RFC 7591 DCR, so the platform-owned OAuth App is the only
     // way the `github` catalog row can complete a flow. Same shape as
@@ -529,6 +581,50 @@ fn parse_error_reason(e: &crate::types::ParseError) -> &'static str {
         ParseError::TooLong { .. } => "too long",
         ParseError::OutOfRange { detail, .. } | ParseError::Malformed { detail, .. } => detail,
     }
+}
+
+/// Pair a resolved login `issuer` with its client credentials, requiring
+/// all three to be present. Shared by the generic-OIDC and Google-preset
+/// arms of `TryFrom<RawSettings>` so the "all-or-nothing" rule lives in
+/// one place.
+fn require_login_creds(
+    issuer: IssuerUrl,
+    client_id: Option<SecretString>,
+    client_secret: Option<SecretString>,
+    redirect_url: Option<String>,
+) -> Result<(IssuerUrl, SecretString, SecretString, String), SettingsError> {
+    let (Some(id), Some(secret), Some(redirect)) = (client_id, client_secret, redirect_url) else {
+        return Err(SettingsError::MissingLoginProvider);
+    };
+    // Parse the callback URL once, here at the config boundary (§1), so an
+    // empty / whitespace / malformed value fails fast at startup with a
+    // clear error instead of surfacing only when discovery hands it to the
+    // OIDC client.
+    validate_redirect_url(&redirect)?;
+    Ok((issuer, id, secret, redirect))
+}
+
+/// Validate a login OIDC `redirect_url`: a syntactically valid `http`/`https`
+/// URL (a path is expected, e.g. `/auth/oidc/callback`) within a sane length.
+fn validate_redirect_url(raw: &str) -> Result<(), SettingsError> {
+    const MAX_BYTES: usize = 2048;
+    if raw.len() > MAX_BYTES {
+        return Err(SettingsError::InvalidRedirectUrl {
+            raw: raw.to_owned(),
+            reason: "too long",
+        });
+    }
+    let url = url::Url::parse(raw).map_err(|_| SettingsError::InvalidRedirectUrl {
+        raw: raw.to_owned(),
+        reason: "not a valid URL",
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(SettingsError::InvalidRedirectUrl {
+            raw: raw.to_owned(),
+            reason: "scheme must be http or https",
+        });
+    }
+    Ok(())
 }
 
 /// Parse the comma-separated `PATOM_CORS_ALLOWED_ORIGINS` list into
@@ -650,11 +746,49 @@ impl TryFrom<RawSettings> for Settings {
             Some(raw_list) => parse_cors_allowed_origins(&raw_list)?,
             None => Vec::new(),
         };
+        // Resolve the login OIDC provider (ADR-0011). `PATOM_OIDC_ISSUER`
+        // selects a generic issuer (with the `PATOM_OIDC_*` creds); its
+        // absence falls back to the Google preset (with the `GOOGLE_*`
+        // creds). Cloud config stays a one-liner; self-host points at its
+        // own IdP without touching Google env vars.
+        let (oidc_issuer, oidc_client_id, oidc_client_secret, oidc_redirect_url) =
+            if let Some(raw_issuer) = raw.patom_oidc_issuer {
+                let issuer = IssuerUrl::try_from(raw_issuer.as_str()).map_err(|e| {
+                    SettingsError::InvalidOidcIssuer {
+                        raw: raw_issuer.clone(),
+                        reason: parse_error_reason(&e),
+                    }
+                })?;
+                require_login_creds(
+                    issuer,
+                    raw.patom_oidc_client_id,
+                    raw.patom_oidc_client_secret,
+                    raw.patom_oidc_redirect_url,
+                )?
+            } else {
+                // The Google preset's issuer is a compile-time constant;
+                // a parse failure here is a programmer error, surfaced via
+                // the same variant for symmetry.
+                let issuer = IssuerUrl::try_from(GOOGLE_OIDC_ISSUER).map_err(|e| {
+                    SettingsError::InvalidOidcIssuer {
+                        raw: GOOGLE_OIDC_ISSUER.to_owned(),
+                        reason: parse_error_reason(&e),
+                    }
+                })?;
+                require_login_creds(
+                    issuer,
+                    raw.google_client_id,
+                    raw.google_client_secret,
+                    raw.google_redirect_url,
+                )?
+            };
         let auth = AuthSettings {
             jwt_secret: raw.patom_jwt_secret,
-            google_client_id: raw.google_client_id,
-            google_client_secret: raw.google_client_secret,
-            google_redirect_url: raw.google_redirect_url,
+            oidc_issuer,
+            oidc_client_id,
+            oidc_client_secret,
+            oidc_redirect_url,
+            bootstrap_admin: raw.patom_bootstrap_admin,
             github_client_id: raw.patom_github_client_id,
             github_client_secret: raw.patom_github_client_secret,
             // Populated by `Settings::load` after `try_from`; left empty
@@ -798,9 +932,14 @@ mod tests {
             embedding_dimensions: None,
             default_timezone: default_timezone_raw(),
             patom_jwt_secret: secret(&"a".repeat(64)),
-            google_client_id: secret("test-client-id"),
-            google_client_secret: secret("test-client-secret"),
-            google_redirect_url: "http://localhost:8080/auth/google/callback".to_string(),
+            google_client_id: Some(secret("test-client-id")),
+            google_client_secret: Some(secret("test-client-secret")),
+            google_redirect_url: Some("http://localhost:8080/auth/google/callback".to_string()),
+            patom_oidc_issuer: None,
+            patom_oidc_client_id: None,
+            patom_oidc_client_secret: None,
+            patom_oidc_redirect_url: None,
+            patom_bootstrap_admin: false,
             patom_github_client_id: secret("test-github-client-id"),
             patom_github_client_secret: secret("test-github-client-secret"),
             patom_cookie_secure: false,
@@ -995,5 +1134,77 @@ mod tests {
         raw.embedding_model = None;
         let err = Settings::try_from(raw).expect_err("expected error");
         assert!(matches!(err, SettingsError::MissingEmbedding));
+    }
+
+    #[test]
+    fn google_preset_is_default_login_provider() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        let s = Settings::try_from(raw).expect("valid");
+        assert_eq!(s.auth.oidc_issuer.as_str(), "https://accounts.google.com");
+        assert!(!s.auth.bootstrap_admin);
+    }
+
+    #[test]
+    fn oidc_issuer_selects_generic_provider() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_oidc_issuer = Some("https://idp.example.test".to_string());
+        raw.patom_oidc_client_id = Some(secret("oidc-id"));
+        raw.patom_oidc_client_secret = Some(secret("oidc-secret"));
+        raw.patom_oidc_redirect_url = Some("https://app.example/auth/oidc/callback".to_string());
+        let s = Settings::try_from(raw).expect("valid");
+        assert_eq!(s.auth.oidc_issuer.as_str(), "https://idp.example.test");
+        assert_eq!(s.auth.oidc_client_id.expose(), "oidc-id");
+    }
+
+    #[test]
+    fn oidc_issuer_set_without_creds_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_oidc_issuer = Some("https://idp.example.test".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::MissingLoginProvider));
+    }
+
+    #[test]
+    fn malformed_oidc_issuer_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_oidc_issuer = Some("http://idp.example.test".to_string());
+        raw.patom_oidc_client_id = Some(secret("oidc-id"));
+        raw.patom_oidc_client_secret = Some(secret("oidc-secret"));
+        raw.patom_oidc_redirect_url = Some("https://app.example/auth/oidc/callback".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::InvalidOidcIssuer { .. }));
+    }
+
+    #[test]
+    fn missing_all_login_creds_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.google_client_id = None;
+        raw.google_client_secret = None;
+        raw.google_redirect_url = None;
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::MissingLoginProvider));
+    }
+
+    #[test]
+    fn malformed_login_redirect_url_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.google_redirect_url = Some("not a url".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::InvalidRedirectUrl { .. }));
+    }
+
+    #[test]
+    fn bootstrap_admin_flag_is_honored() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_bootstrap_admin = true;
+        let s = Settings::try_from(raw).expect("valid");
+        assert!(s.auth.bootstrap_admin);
     }
 }
