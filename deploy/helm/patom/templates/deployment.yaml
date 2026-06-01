@@ -2,6 +2,12 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: patom
+  annotations:
+    # stakater/reloader watches the envFrom secretRef (patom-config) and
+    # rolling-restarts this Deployment whenever its contents change — so an
+    # OpenBao secret rotation goes live without a manual `kubectl rollout
+    # restart`. No-op if the reloader controller isn't installed.
+    reloader.stakater.com/auto: "true"
   labels:
     {{- include "patom.labels" . | nindent 4 }}
 spec:
