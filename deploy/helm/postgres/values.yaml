@@ -1,11 +1,11 @@
 image: pgvector/pgvector:pg17
 database: patom
 user: patom
-# POSTGRES_PASSWORD and the R2 backup creds are pulled from this OpenBao KV path
+# POSTGRES_PASSWORD and the S3 backup creds are pulled from this OpenBao KV path
 # (same path the app uses) — one source of truth, no chart-side secrets.
 # Expected keys at this path (operators seed these in OpenBao):
-#   POSTGRES_PASSWORD, and (when backup.enabled) PATOM_R2_ACCOUNT_ID,
-#   PATOM_R2_ACCESS_KEY_ID, PATOM_R2_SECRET_ACCESS_KEY.
+#   POSTGRES_PASSWORD, and (when backup.enabled) PATOM_S3_ENDPOINT,
+#   PATOM_S3_ACCESS_KEY_ID, PATOM_S3_SECRET_ACCESS_KEY.
 externalSecret:
   storeRef: vault-backend
   remoteKey: secret/data/patom/config
@@ -27,21 +27,21 @@ resources:
   limits:
     memory: 768Mi
 backup:
-  # R2 creds already exist (avatars), so backups can run. Reuses the same R2
-  # account + access keys, but writes to a SEPARATE PRIVATE bucket below — never
-  # the public avatar bucket. Create that bucket in Cloudflare R2 first (private,
-  # default), then set its name here.
+  # S3 creds already exist (avatars), so backups can run. Reuses the same S3
+  # endpoint + access keys, but writes to a SEPARATE PRIVATE bucket below — never
+  # the public avatar bucket. Create that bucket on your object store first
+  # (private, default), then set its name here.
   enabled: true
   schedule: "0 3 * * *" # 03:00 UTC daily
   # imageTag is CI-managed (release.yml bumps it to the build SHA alongside the
   # app tag) so the backup image is pinned, not floating on :latest.
   image: ghcr.io/tomkapa/patom-backup
   imageTag: bd8840814367
-  r2:
-    # MUST be a dedicated PRIVATE bucket (NOT PATOM_R2_BUCKET, which is public-read
+  s3:
+    # MUST be a dedicated PRIVATE bucket (NOT PATOM_S3_BUCKET, which is public-read
     # for avatars). DB dumps hold tenant data + MASTER_KEK-encrypted secrets.
     bucket: "patom-db-backups"
-    # Endpoint derived as https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com.
+    # Endpoint comes from PATOM_S3_ENDPOINT in the shared OpenBao path.
     prefix: "postgres"
   retentionNote: "Set an object-lifecycle expiry rule on the backup bucket (not managed here)."
   resources:

@@ -37,11 +37,11 @@ spec:
                 - name: PGDATABASE
                   value: {{ .Values.database | quote }}
                 - name: PREFIX
-                  value: {{ .Values.backup.r2.prefix | quote }}
+                  value: {{ .Values.backup.s3.prefix | quote }}
                 # Dedicated PRIVATE backup bucket from chart values (NOT the public
-                # avatar bucket). R2_ACCOUNT_ID + AWS_* keys come from the Secret.
-                - name: R2_BUCKET
-                  value: {{ .Values.backup.r2.bucket | quote }}
+                # avatar bucket). S3_ENDPOINT + AWS_* keys come from the Secret.
+                - name: S3_BUCKET
+                  value: {{ .Values.backup.s3.bucket | quote }}
               command:
                 - /bin/bash
                 - -c
@@ -51,10 +51,9 @@ spec:
                   file="/tmp/${PGDATABASE}_${ts}.dump"
                   echo "dumping ${PGDATABASE} -> ${file}"
                   pg_dump -Fc -f "${file}"
-                  endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-                  echo "uploading to s3://${R2_BUCKET}/${PREFIX}/"
-                  aws --endpoint-url "${endpoint}" s3 cp \
-                    "${file}" "s3://${R2_BUCKET}/${PREFIX}/${PGDATABASE}_${ts}.dump"
+                  echo "uploading to s3://${S3_BUCKET}/${PREFIX}/"
+                  aws --endpoint-url "${S3_ENDPOINT}" s3 cp \
+                    "${file}" "s3://${S3_BUCKET}/${PREFIX}/${PGDATABASE}_${ts}.dump"
                   echo "backup complete"
               resources:
                 {{- toYaml .Values.backup.resources | nindent 16 }}

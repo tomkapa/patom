@@ -1,5 +1,5 @@
 # Default-deny + explicit allows (homelab security model, extended with the
-# external-HTTPS egress the agent runtime needs for LLM/embedding/search/R2).
+# external-HTTPS egress the agent runtime needs for LLM/embedding/search/S3).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -67,8 +67,9 @@ spec:
       ports:
         - { protocol: TCP, port: {{ .Values.postgres.port }} }
 ---
-# Outbound HTTPS to LLM / embedding / Brave / R2. Excludes RFC1918 + link-local
-# so this rule can't be abused to reach in-cluster/metadata endpoints.
+# Outbound HTTPS to LLM / embedding / Brave / object storage. Excludes RFC1918
+# + link-local so this rule can't be abused to reach in-cluster/metadata
+# endpoints — a self-hosted S3 store on a private IP needs an extra egress rule.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
