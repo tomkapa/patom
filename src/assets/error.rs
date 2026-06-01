@@ -42,18 +42,19 @@ pub enum AssetError {
     #[error("multipart decode failed: {0}")]
     Multipart(String),
 
-    /// R2 PutObject round-trip failed. Body is the SDK's display string;
+    /// S3 PutObject round-trip failed. Body is the SDK's display string;
     /// the full `DisplayErrorContext` is logged via the §2 5xx tracing
     /// handler.
-    #[error("r2 put object failed: {0}")]
-    R2Put(String),
+    #[error("storage put object failed: {0}")]
+    StoragePut(String),
 
-    /// R2 DeleteObject round-trip failed.
-    #[error("r2 delete object failed: {0}")]
-    R2Delete(String),
+    /// S3 DeleteObject round-trip failed.
+    #[error("storage delete object failed: {0}")]
+    StorageDelete(String),
 
-    /// Per-call timeout fired before R2 responded. Distinct variant so
-    /// retries and dashboards can separate "slow R2" from "broken R2".
-    #[error("r2 operation timed out")]
+    /// Per-call timeout fired before object storage responded. Distinct
+    /// variant so retries and dashboards can separate "slow storage" from
+    /// "broken storage".
+    #[error("storage operation timed out")]
     Timeout,
 }

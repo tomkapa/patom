@@ -7,7 +7,7 @@ use std::time::Duration;
 /// Sized for "modern phone photo" — a 4MP JPEG/PNG out of an iPhone camera
 /// is comfortably under 2 MiB. Bigger inputs almost certainly mean the
 /// user uploaded the raw file straight off a DSLR; rejecting at 2 MiB
-/// nudges them to resize before we ever bill bytes to R2.
+/// nudges them to resize before we ever bill bytes to object storage.
 pub const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
 /// Upper bound on a single workspace (organization) avatar upload.
@@ -22,7 +22,7 @@ pub const MAX_WORKSPACE_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 /// Tile icons are SVGs or PNGs that render at ~48px in the grid. A
 /// well-prepared SVG is single-digit KB; even an unoptimised PNG is
 /// under 100 KB. The 256 KiB ceiling exists so a misclicked HD wallpaper
-/// gets rejected at the boundary rather than wasting R2 Class A ops.
+/// gets rejected at the boundary rather than wasting object-storage ops.
 pub const MAX_MCP_ICON_BYTES: usize = 256 * 1024;
 
 /// Cap on the bytes of magic-byte sniffing we feed `infer`.
@@ -46,16 +46,16 @@ pub const OBJECT_KEY_MAX_LEN: usize = 256;
 /// so the BE rejects a row the DB would also reject.
 pub const ASSET_URL_MAX_LEN: usize = 2048;
 
-/// How long we'll wait on a single R2 PutObject round-trip.
+/// How long we'll wait on a single S3 PutObject round-trip.
 ///
-/// R2 is CDN-fronted and usually sub-second; the cap is generous so a
+/// Object storage is usually sub-second; the cap is generous so a
 /// transient slow upload still completes, but tight enough that a stuck
 /// connection doesn't hold an axum task indefinitely. CLAUDE.md §5: every
 /// I/O await is wrapped in `tokio::time::timeout`.
-pub const R2_PUT_TIMEOUT: Duration = Duration::from_secs(15);
+pub const STORAGE_PUT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How long we'll wait on a single R2 DeleteObject round-trip.
-pub const R2_DELETE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long we'll wait on a single S3 DeleteObject round-trip.
+pub const STORAGE_DELETE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Per-await cap on the multipart trust boundary.
 ///
