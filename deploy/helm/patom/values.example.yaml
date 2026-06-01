@@ -45,10 +45,12 @@ secret:
     # Slack (inbound webhook + OAuth):
     # PATOM_SLACK_SIGNING_SECRET: "CHANGE_ME"
     # PATOM_SLACK_CLIENT_SECRET: "CHANGE_ME"
-    # S3-compatible object storage — MinIO / AWS / self-hosted / R2 (pair
-    # with env.PATOM_S3_PUBLIC_HOST / PATOM_S3_BUCKET / PATOM_S3_REGION).
-    # Endpoint is grouped with the credentials because the R2 form embeds
-    # the account id; for MinIO/AWS it's just the API URL.
+    # S3-compatible object storage — MinIO / AWS / self-hosted / R2. ALL-OR-NOTHING:
+    # to enable uploads you must set BOTH this secret trio AND the non-secret trio
+    # (PATOM_S3_PUBLIC_HOST / _BUCKET / _REGION) in the `env:` block below — a
+    # partial set fails config parse. Leave all of it commented to run with uploads
+    # disabled (endpoints 503). Endpoint is grouped with the credentials because the
+    # R2 form embeds the account id; for MinIO/AWS it's just the API URL.
     # PATOM_S3_ENDPOINT: "CHANGE_ME"            # e.g. http://minio:9000 or https://<acct>.r2.cloudflarestorage.com
     # PATOM_S3_ACCESS_KEY_ID: "CHANGE_ME"
     # PATOM_S3_SECRET_ACCESS_KEY: "CHANGE_ME"
@@ -94,9 +96,9 @@ ingress:
 # response content is recorded) and, with the telemetry keys in secret.data left
 # commented, the app runs console-only — NOTHING leaves the cluster.
 #
-# To opt in to on-cluster observability, uncomment this `env:` block. These keys
-# merge over the chart defaults (values.yaml). Keep every endpoint in-cluster so
-# prompt content never reaches a vendor cloud. See doc/operations/self-hosting.md.
+# To opt in (observability and/or S3 uploads), uncomment this `env:` block. These
+# keys merge over the chart defaults (values.yaml). Keep every endpoint in-cluster
+# so prompt content never reaches a vendor cloud. See doc/operations/self-hosting.md.
 # env:
 #   # Record prompt/response content onto spans + stderr (off by default).
 #   PATOM_GENAI_CAPTURE_CONTENT: "1"
@@ -106,3 +108,9 @@ ingress:
 #   HONEYCOMB_BASE_URL: "http://otel-collector.patom.svc:4318"
 #   #   …or self-hosted Langfuse via the Langfuse path:
 #   # LANGFUSE_BASE_URL: "http://langfuse-web.patom.svc:3000/api/public/otel"
+#   # S3 object storage — the NON-SECRET trio. Set these together with the secret
+#   # trio in secret.data above (all-or-nothing). PUBLIC_HOST is the browser-facing
+#   # base URL assets are served from; REGION is "us-east-1" if omitted.
+#   PATOM_S3_PUBLIC_HOST: "https://assets.example.com"   # or http://minio.patom.svc:9000/patom
+#   PATOM_S3_BUCKET: "patom"
+#   PATOM_S3_REGION: "us-east-1"
