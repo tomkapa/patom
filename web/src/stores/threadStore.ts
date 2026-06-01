@@ -37,6 +37,10 @@ export type LiveAgent = {
   wire_requests: McpWireRequest[];
   status: LiveStatus;
   error?: string;
+  /** Stable, low-cardinality failure label (e.g. `"budget_exceeded"`) from the
+   *  error chunk — lets the UI branch on the failure kind without parsing the
+   *  human `error` text. */
+  errorCode?: string;
   /** Captured on first chunk; stable thereafter. */
   ts: string;
 };
@@ -133,7 +137,7 @@ function applyChunk(b: LiveAgent, chunk: ResponseChunk): LiveAgent {
     case "done":
       return { ...b, status: "done" };
     case "error":
-      return { ...b, status: "error", error: chunk.reason };
+      return { ...b, status: "error", error: chunk.reason, errorCode: chunk.code };
     case "stalled":
       return { ...b, status: "stalled" };
   }

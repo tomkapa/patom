@@ -25,5 +25,7 @@ pub mod types;
 
 pub use error::BudgetError;
 pub use pricing::{price_for, turn_cost};
-pub use service::{BudgetService, PgBudgetService, SharedBudgetService};
-pub use types::{BillingPeriod, CostMicros, MicroUsdPerMtok, Price, WarnThresholdBps};
+pub use service::{BudgetConfig, BudgetService, PgBudgetService, SharedBudgetService};
+pub use types::{
+    BillingPeriod, CostMicros, MicroUsdPerMtok, MonthlyCapMicros, Price, WarnThresholdBps,
+};

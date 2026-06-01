@@ -82,8 +82,11 @@ pub enum ResponseChunk {
     /// subscribers that don't want to reconstitute from `Text` chunks.
     Done { final_text: String },
     /// Turn failed. `reason` is the failure's `Display` form so SSE clients see
-    /// provider/hook detail; tracing attributes use the low-cardinality label.
-    Error { reason: String },
+    /// provider/hook detail; `code` is the low-cardinality label
+    /// ([`FailureReason::label`]) so clients can branch on the failure kind
+    /// (e.g. render a dedicated message for `budget_exceeded`) without parsing
+    /// the human text.
+    Error { reason: String, code: String },
     /// Slow subscriber overflowed the broadcast buffer; reconnect with `Last-Event-ID`.
     Stalled,
 }
@@ -117,7 +120,7 @@ impl ResponseChunk {
     pub fn weight(&self) -> usize {
         match self {
             Self::Text { value } | Self::Reasoning { value } => value.len(),
-            Self::Error { reason } => reason.len(),
+            Self::Error { reason, code } => reason.len() + code.len(),
             Self::Done { final_text } => final_text.len(),
             Self::AgentMessage { content, .. } => content.len() + 36, // 36 = uuid str
             Self::WireMcpRequest {
@@ -141,13 +144,15 @@ impl ResponseChunk {
         }
     }
 
-    /// Build a wire `Error` chunk from a [`FailureReason`]. The wire payload carries
-    /// the full `Display` form so SSE clients see provider/hook detail; tracing
-    /// attributes use [`FailureReason::label`] for low cardinality.
+    /// Build a wire `Error` chunk from a [`FailureReason`]. `reason` carries the
+    /// full `Display` form so SSE clients see provider/hook detail; `code`
+    /// carries the low-cardinality [`FailureReason::label`] so clients can
+    /// branch on the failure kind.
     #[must_use]
     pub fn from_failure(reason: &FailureReason) -> Self {
         Self::Error {
             reason: reason.to_string(),
+            code: reason.label().to_owned(),
         }
     }
 }

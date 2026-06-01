@@ -76,6 +76,8 @@ export function useThreadView(
           tool_calls: Array.from(lb.tool_calls.values()),
           wire_requests: lb.wire_requests,
           phase: "streaming",
+          error: lb.status === "error" ? lb.error : undefined,
+          error_code: lb.status === "error" ? lb.errorCode : undefined,
         });
       }
     }

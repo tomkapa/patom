@@ -25,6 +25,7 @@ import {
   DEMO_USER,
 } from "../lib/demo";
 import { decodeBody } from "../lib/chatBody";
+import { ApiError } from "../lib/errors";
 import type { Bubble, Poster, RootMessage } from "../lib/foldHistory";
 import { uuidv7 } from "../lib/utils";
 import { prefixMention } from "../lib/mentions";
@@ -52,6 +53,9 @@ export function ChatView() {
   // reader opens a thread (otherwise it would cover the feed on load).
   const isWide = useIsWide();
   const [showPanel, setShowPanel] = useState(isWide);
+  // Inline composer error — surfaces a 429 (over monthly spend budget) from
+  // POST /prompts instead of swallowing it as a generic mutation rejection.
+  const [composerError, setComposerError] = useState<string | null>(null);
 
   // Deep-link from the memory pane: `/?turn=<request_id>` opens the thread
   // that owns the turn and scrolls the matching bubble into view. We
@@ -134,18 +138,34 @@ export function ChatView() {
     [threads, selectedRoot],
   );
 
+  const { t } = useT();
+
+  // A 429 from POST /prompts means the workspace is over its monthly budget —
+  // surface it inline rather than as a generic failure. Returns true if handled.
+  const handleBudgetExceeded = (e: unknown): boolean => {
+    if (e instanceof ApiError && e.status === 429) {
+      setComposerError(t("chat.error.budget_exceeded"));
+      return true;
+    }
+    return false;
+  };
+
   const onSubmit = async (input: { content: string; agent_id?: string }) => {
     if (isDemo) return;
     const agent_id = selectedAgentId ?? input.agent_id ?? defaultAgent?.id;
     if (!agent_id) return;
-    const res = await submit.mutateAsync({
-      content: input.content,
-      agent_id,
-    });
-    setSelectedRoot(res.request_id);
+    setComposerError(null);
+    try {
+      const res = await submit.mutateAsync({
+        content: input.content,
+        agent_id,
+      });
+      setSelectedRoot(res.request_id);
+    } catch (e) {
+      if (handleBudgetExceeded(e)) return;
+      throw e;
+    }
   };
-
-  const { t } = useT();
 
   const onThreadReply = async (input: { content: string }) => {
     if (isDemo || !selectedThread) return;
@@ -159,6 +179,7 @@ export function ChatView() {
       text,
       ts: new Date().toISOString(),
     });
+    setComposerError(null);
     try {
       const res = await submit.mutateAsync({
         content: text,
@@ -170,6 +191,7 @@ export function ChatView() {
     } catch (e) {
       // Withdraw the optimistic bubble; the user can retry.
       removePending(root, idempotency_key);
+      if (handleBudgetExceeded(e)) return;
       throw e;
     }
   };
@@ -219,6 +241,22 @@ export function ChatView() {
               setShowPanel(true);
             }}
           />
+          {composerError ? (
+            <div
+              role="alert"
+              className="mx-3 mt-2 flex items-center justify-between gap-2 border border-[var(--color-rose)] bg-[var(--color-rose-soft)] px-3 py-2 text-[12px] text-[var(--color-rose)]"
+            >
+              <span className="min-w-0">{composerError}</span>
+              <button
+                type="button"
+                onClick={() => setComposerError(null)}
+                aria-label="Dismiss"
+                className="shrink-0 font-[var(--font-mono)] text-[11px] uppercase tracking-[0.06em] hover:opacity-70"
+              >
+                ✕
+              </button>
+            </div>
+          ) : null}
           <Composer
             agents={agents}
             mode={selectedAgent ? "dm" : "channel"}

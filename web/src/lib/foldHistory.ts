@@ -53,6 +53,11 @@ export type Bubble = {
    *  human bubbles. */
   wire_requests: McpWireRequest[];
   phase: BubblePhase;
+  /** Set on a streaming bubble that ended in a terminal `error` chunk:
+   *  `error` is the human reason, `error_code` the stable label (e.g.
+   *  `"budget_exceeded"`). Undefined for healthy / persisted / human bubbles. */
+  error?: string;
+  error_code?: string;
 };
 
 export type RootMessage = {

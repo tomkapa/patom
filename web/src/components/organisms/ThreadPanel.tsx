@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   AtSign,
   Bell,
   ChevronDown,
@@ -9,6 +10,8 @@ import {
   Smile,
   X,
 } from "lucide-react";
+import { Link } from "react-router-dom";
+import { useT } from "../../i18n";
 import { Button } from "../atoms/Button";
 import { Monogram } from "../atoms/Monogram";
 import { Markdown } from "../molecules/Markdown";
@@ -304,6 +307,34 @@ function HumanReplyCard({
   );
 }
 
+/** Terminal failure on a streaming agent bubble. The budget-exceeded case
+ *  gets a dedicated, actionable message + link; every other failure shows the
+ *  raw reason so nothing is swallowed. */
+function FailureBanner({ bubble }: { bubble: Bubble }) {
+  const { t } = useT();
+  const isBudget = bubble.error_code === "budget_exceeded";
+  return (
+    <div
+      role="alert"
+      className="mt-2 flex items-start gap-2 border border-[var(--color-rose)] bg-[var(--color-rose-soft)] px-3 py-2 text-[12px] text-[var(--color-rose)]"
+    >
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+      <div className="min-w-0">
+        {isBudget ? (
+          <>
+            <span>{t("chat.error.budget_exceeded")}</span>{" "}
+            <Link to="/settings/billing" className="font-medium underline">
+              {t("settings.nav.billing")}
+            </Link>
+          </>
+        ) : (
+          <span>{bubble.error}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AgentReplyCard({
   bubble,
   agents,
@@ -369,10 +400,12 @@ function AgentReplyCard({
       <div className="mt-1.5 text-[13px] leading-[1.5] text-[var(--color-ink)]">
         {bubble.text ? (
           <Markdown text={bubble.text} className="text-[13px]" />
-        ) : isLive ? (
+        ) : isLive && !bubble.error ? (
           <ThinkingIndicator />
         ) : null}
       </div>
+
+      {bubble.error ? <FailureBanner bubble={bubble} /> : null}
 
       {bubble.wire_requests.length > 0 && (
         <div className="mt-1">

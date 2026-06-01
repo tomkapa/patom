@@ -553,6 +553,33 @@ const vi: TranslationTable = {
   "settings.comingSoon.title": "{label}",
   "settings.comingSoon.body": "Phần này sẽ ra mắt sớm. Quay lại sau nhé.",
 
+  // Billing / spend budget tab
+  "settings.budget.subtitle":
+    "Giới hạn chi tiêu mô hình hằng tháng của workspace này và nhận cảnh báo trước khi cạn.",
+  "settings.budget.save": "Lưu",
+  "settings.budget.savedToast": "Đã cập nhật ngân sách",
+  "settings.budget.usage.title": "THÁNG NÀY",
+  "settings.budget.usage.helper": "Chi tiêu trong kỳ thanh toán hiện tại",
+  "settings.budget.used": "Đã dùng",
+  "settings.budget.remaining": "Còn lại {amount}",
+  "settings.budget.unlimited": "Không giới hạn — chi tiêu không bị chặn.",
+  "settings.budget.warned": "Đã vượt ngưỡng cảnh báo trong kỳ này.",
+  "settings.budget.config.title": "NGÂN SÁCH",
+  "settings.budget.config.helper": "Giới hạn hằng tháng và ngưỡng cảnh báo",
+  "settings.budget.cap": "Giới hạn hằng tháng",
+  "settings.budget.cap.helper":
+    "Mức trần chi tiêu mỗi tháng dương lịch, tính bằng USD. Prompt mới sẽ bị chặn khi đạt mức này.",
+  "settings.budget.cap.unlimitedToggle": "Không giới hạn (bỏ trần)",
+  "settings.budget.warnThreshold": "Ngưỡng cảnh báo",
+  "settings.budget.warnThreshold.helper":
+    "Gửi cảnh báo nhẹ khi chi tiêu vượt phần trăm này của giới hạn.",
+  "settings.budget.memberHint": "Chỉ chủ sở hữu hoặc quản trị viên mới đổi được ngân sách.",
+  "settings.budget.error": "Không thể lưu ngân sách. Hãy thử lại.",
+
+  // Chat — budget exceeded
+  "chat.error.budget_exceeded":
+    "Workspace này đã vượt ngân sách chi tiêu hằng tháng. Chủ sở hữu có thể nâng giới hạn trong Cài đặt → Thanh toán.",
+
   // General tab
   "settings.general.title": "Chung",
   "settings.general.subtitle":

@@ -553,6 +553,33 @@ const en = {
   "settings.comingSoon.title": "{label}",
   "settings.comingSoon.body": "This area is coming soon. Check back later.",
 
+  // Billing / spend budget tab
+  "settings.budget.subtitle":
+    "Cap this workspace's monthly model spend and get a heads-up before it runs out.",
+  "settings.budget.save": "Save",
+  "settings.budget.savedToast": "Budget updated",
+  "settings.budget.usage.title": "THIS MONTH",
+  "settings.budget.usage.helper": "Spend in the current billing period",
+  "settings.budget.used": "Used",
+  "settings.budget.remaining": "{amount} remaining",
+  "settings.budget.unlimited": "No cap — usage is unlimited.",
+  "settings.budget.warned": "Past the warn threshold this period.",
+  "settings.budget.config.title": "BUDGET",
+  "settings.budget.config.helper": "Monthly cap and warn threshold",
+  "settings.budget.cap": "Monthly cap",
+  "settings.budget.cap.helper":
+    "Spend ceiling per calendar month, in USD. New prompts are blocked once it's reached.",
+  "settings.budget.cap.unlimitedToggle": "Unlimited (no cap)",
+  "settings.budget.warnThreshold": "Warn threshold",
+  "settings.budget.warnThreshold.helper":
+    "Send a soft alert once spend crosses this percentage of the cap.",
+  "settings.budget.memberHint": "Only an owner or admin can change the budget.",
+  "settings.budget.error": "Couldn't save the budget. Try again.",
+
+  // Chat — budget exceeded
+  "chat.error.budget_exceeded":
+    "This workspace is over its monthly spend budget. An owner can raise the cap in Settings → Billing.",
+
   // General tab
   "settings.general.title": "General",
   "settings.general.subtitle":
