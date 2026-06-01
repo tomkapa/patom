@@ -109,7 +109,7 @@ fn view_user(u: User) -> UserView {
         id: u.id,
         email: u.email.as_str().to_owned(),
         display_name: u.display_name,
-        avatar_url: u.avatar_url,
+        avatar_url: u.avatar_url.map(|a| a.as_str().to_owned()),
     }
 }
 
@@ -121,7 +121,7 @@ fn view_org(m: &OrgMembership) -> OrgView {
         role: m.role,
         default_language: m.default_language,
         default_rule: m.default_rule.as_ref().map(|r| r.as_str().to_owned()),
-        avatar_url: m.avatar_url.clone(),
+        avatar_url: m.avatar_url.as_ref().map(|a| a.as_str().to_owned()),
     }
 }
 

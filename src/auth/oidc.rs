@@ -27,12 +27,10 @@ use openidconnect::{
 use tracing::warn;
 use url::Url;
 
-use crate::types::SecretString;
+use crate::types::{AvatarUrl, SecretString};
 
 use super::error::AuthError;
-use super::limits::{
-    MAX_AVATAR_URL_BYTES, MAX_DISPLAY_NAME_BYTES, OAUTH_HTTP_TIMEOUT, OIDC_DISCOVERY_TIMEOUT,
-};
+use super::limits::{MAX_DISPLAY_NAME_BYTES, OAUTH_HTTP_TIMEOUT, OIDC_DISCOVERY_TIMEOUT};
 use super::locale_hint::LocaleHint;
 use super::types::{
     Email, IssuerUrl, OAuthState, OidcNonce, OidcProfile, OidcSubject, PkceVerifier,
@@ -203,12 +201,16 @@ impl OidcProvider {
             .map(|n| n.as_str())
             .filter(|n| n.len() <= MAX_DISPLAY_NAME_BYTES)
             .map(ToOwned::to_owned);
+        // The `picture` claim is a free-form IdP URL. Parse it through
+        // `AvatarUrl` at the boundary (CLAUDE.md §1); a claim that isn't a
+        // valid avatar URL (bad scheme, no host, or over the 2048-byte
+        // cap) is dropped to `None` — a best-effort hint, like `locale` —
+        // rather than failing sign-in or poisoning the `users` row the
+        // read path later parses back through the same newtype.
         let avatar_url = claims
             .picture()
             .and_then(|p| p.get(None))
-            .map(|p| p.as_str())
-            .filter(|p| p.len() <= MAX_AVATAR_URL_BYTES)
-            .map(ToOwned::to_owned);
+            .and_then(|p| AvatarUrl::try_from(p.as_str()).ok());
         // Locale is a hint; a misshapen tag is dropped rather than
         // failing sign-in (we fall back to Accept-Language / DEFAULT).
         let locale = claims

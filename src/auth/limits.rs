@@ -49,10 +49,8 @@ pub const JWT_SECRET_MIN_BYTES: usize = 32;
 /// insert — same posture as `locale`.
 pub const MAX_DISPLAY_NAME_BYTES: usize = 200;
 
-/// Maximum bytes accepted for an OIDC `picture` claim before it is
-/// dropped at the auth boundary. Mirrors the `users.avatar_url` CHECK
-/// (migration 14, ≤2048).
-pub const MAX_AVATAR_URL_BYTES: usize = 2048;
+// `MAX_AVATAR_URL_BYTES` moved to `crate::types::AVATAR_URL_MAX_BYTES`:
+// the auth boundary parses the `picture` claim through `AvatarUrl::try_from`.
 
 /// Cookie name carrying the CSRF double-submit token.
 ///

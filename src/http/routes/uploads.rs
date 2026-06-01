@@ -16,6 +16,7 @@ use serde::Serialize;
 use crate::assets::{AssetKind, AssetUrl, ObjectKey, SharedAssetStore, extract_single_image_field};
 use crate::auth::{AuthError, Principal, Role};
 use crate::mcp::{McpCatalogId, McpError};
+use crate::types::AvatarUrl;
 
 use super::super::error::HttpError;
 use super::super::state::AppState;
@@ -98,13 +99,18 @@ async fn upload_avatar(
     let assets = assets_or_503(&state)?;
     let stable_id = principal.user_id.to_string();
     let url = extract_and_store(assets, AssetKind::Avatar, &stable_id, multipart).await?;
+    // The store URL is already an `AssetUrl`; re-parse it through
+    // `AvatarUrl` so the persisted column and the `/me` read path share
+    // one typed invariant (CLAUDE.md §1). Identical validation, so this
+    // only fails on a genuinely malformed store URL.
+    let avatar = AvatarUrl::try_from(url.as_str()).map_err(HttpError::Parse)?;
     let now = state.clock.now_utc();
     state
         .users
-        .set_avatar_url(principal.user_id, Some(url.as_str()), now)
+        .set_avatar_url(principal.user_id, Some(&avatar), now)
         .await?;
     Ok(Json(UploadResponse {
-        url: url.as_str().to_owned(),
+        url: avatar.as_str().to_owned(),
     }))
 }
 
@@ -117,13 +123,14 @@ async fn upload_workspace_avatar(
     require_admin(&state, &principal).await?;
     let stable_id = principal.active_org_id.to_string();
     let url = extract_and_store(assets, AssetKind::WorkspaceAvatar, &stable_id, multipart).await?;
+    let avatar = AvatarUrl::try_from(url.as_str()).map_err(HttpError::Parse)?;
     let now = state.clock.now_utc();
     state
         .orgs
-        .set_avatar_url(principal.active_org_id, Some(url.as_str()), now)
+        .set_avatar_url(principal.active_org_id, Some(&avatar), now)
         .await?;
     Ok(Json(UploadResponse {
-        url: url.as_str().to_owned(),
+        url: avatar.as_str().to_owned(),
     }))
 }
 

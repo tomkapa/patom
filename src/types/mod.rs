@@ -5,6 +5,7 @@
 //! that genuinely have none.
 
 mod agent_reply;
+mod avatar_url;
 mod error;
 mod limits;
 mod macros;
@@ -15,6 +16,7 @@ mod secret;
 mod tool_name;
 
 pub use agent_reply::AgentReply;
+pub use avatar_url::{AVATAR_URL_MAX_BYTES, AvatarUrl};
 pub use error::ParseError;
 pub use limits::{MAX_OUTPUT_TOKENS_CAP, MAX_TURNS_CAP, MaxOutputTokens, MaxTurns, TurnIndex};
 pub use model_id::ModelId;
