@@ -93,8 +93,14 @@ pub enum SettingsError {
     #[error("s3: PATOM_S3_ENDPOINT {raw:?} is not a valid http(s) origin ({reason})")]
     InvalidS3Endpoint { raw: String, reason: &'static str },
 
-    #[error("s3: PATOM_S3_PUBLIC_HOST {raw:?} is not a valid http(s) origin ({reason})")]
+    #[error(
+        "s3: PATOM_S3_PUBLIC_HOST {raw:?} is not a valid http(s) base URL \
+         (optional path prefix allowed) ({reason})"
+    )]
     InvalidS3PublicHost { raw: String, reason: &'static str },
+
+    #[error("s3: PATOM_S3_{field} must not be empty")]
+    EmptyS3Field { field: &'static str },
 }
 
 /// Process-wide configuration loaded once at startup. Secrets are wrapped in
@@ -903,16 +909,35 @@ fn resolve_object_storage(
             Some(access_key_id),
             Some(secret_access_key),
             Some(public_host_raw),
-        ) => Ok(Some(ObjectStorageSettings {
-            endpoint: parse_s3_endpoint(&endpoint_raw)?,
-            region: region.unwrap_or_else(|| DEFAULT_S3_REGION.to_owned()),
-            bucket,
-            access_key_id,
-            secret_access_key,
-            public_host: parse_s3_public_host(&public_host_raw)?,
-        })),
+        ) => {
+            // `bucket` and `region` have no URL shape to parse, but an empty
+            // value is still a misconfiguration — reject it here so it fails
+            // at startup, not as an opaque S3 error on the first upload.
+            let region = match region {
+                Some(r) => require_non_empty_s3(r, "REGION")?,
+                None => DEFAULT_S3_REGION.to_owned(),
+            };
+            Ok(Some(ObjectStorageSettings {
+                endpoint: parse_s3_endpoint(&endpoint_raw)?,
+                region,
+                bucket: require_non_empty_s3(bucket, "BUCKET")?,
+                access_key_id,
+                secret_access_key,
+                public_host: parse_s3_public_host(&public_host_raw)?,
+            }))
+        }
         _ => Err(SettingsError::PartialS3Config),
     }
+}
+
+/// Reject an empty / whitespace-only required S3 field. `field` is the env
+/// var suffix (e.g. `BUCKET`) used in the [`SettingsError::EmptyS3Field`]
+/// message. Returns the value unchanged when non-empty.
+fn require_non_empty_s3(raw: String, field: &'static str) -> Result<String, SettingsError> {
+    if raw.trim().is_empty() {
+        return Err(SettingsError::EmptyS3Field { field });
+    }
+    Ok(raw)
 }
 
 /// Validate `PATOM_S3_ENDPOINT` — must be an http(s) origin (no path) so
@@ -1347,6 +1372,32 @@ mod tests {
         raw.patom_s3_endpoint = Some("http://minio:9000/path".to_string());
         let err = Settings::try_from(raw).expect_err("expected error");
         assert!(matches!(err, SettingsError::InvalidS3Endpoint { .. }));
+    }
+
+    #[test]
+    fn empty_s3_bucket_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_s3(&mut raw);
+        raw.patom_s3_bucket = Some("   ".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(
+            err,
+            SettingsError::EmptyS3Field { field: "BUCKET" }
+        ));
+    }
+
+    #[test]
+    fn empty_s3_region_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_s3(&mut raw);
+        raw.patom_s3_region = Some(String::new());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(
+            err,
+            SettingsError::EmptyS3Field { field: "REGION" }
+        ));
     }
 
     #[test]
