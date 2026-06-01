@@ -2,7 +2,7 @@
 # (see .github/workflows/release.yml); ArgoCD syncs the change.
 image:
   repository: ghcr.io/tomkapa/patom
-  tag: d5529b971484 # CI-managed
+  tag: bd8840814367 # CI-managed
   pullPolicy: IfNotPresent
 imagePullSecrets:
   - name: ghcr-pull-secret
@@ -20,12 +20,23 @@ ingress:
   clusterIssuer: letsencrypt-prod # cert-manager ClusterIssuer (DNS-01)
   tlsSecretName: patom-tls
   proxyBodySize: "8m" # app limit is 4 MiB; headroom for multipart
-# External Secret: the whole config lives at this OpenBao KV path and is pulled
-# verbatim into the `patom-config` Secret via dataFrom.extract — so adding a new
-# secret key needs no chart change, only an OpenBao write.
+# External Secret (opt-in): the whole config lives at this OpenBao KV path and is
+# pulled verbatim into the `patom-config` Secret via dataFrom.extract — so adding
+# a new secret key needs no chart change, only an OpenBao write. Off by default
+# (issue #84) so self-hosted clusters without the External Secrets Operator can
+# render; SaaS prod re-enables it via the ArgoCD Application's Helm parameter
+# (patom-infra kubernetes/apps/patom.yaml). Mutually exclusive with `secret.create`.
 externalSecret:
+  enabled: false
   storeRef: vault-backend
   remoteKey: secret/data/patom/config
+# Plain Kubernetes Secret path for self-hosted installs (no ESO/OpenBao required).
+# Mutually exclusive with externalSecret.enabled; exactly one of the two must be
+# set. Keys under secret.data become container env via the Deployment's envFrom.
+# See values.example.yaml for the full key list.
+secret:
+  create: false
+  data: {}
 # Non-secret env (secret env comes from the patom-config Secret via envFrom).
 env:
   HTTP_ADDR: "0.0.0.0:8080"

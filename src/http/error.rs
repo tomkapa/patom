@@ -8,6 +8,7 @@ use super::routes::turns::TurnDetailError;
 use crate::agents::{AgentStoreError, PromptVersionError};
 use crate::assets::AssetError;
 use crate::auth::AuthError;
+use crate::budget::BudgetError;
 use crate::mcp::McpError;
 use crate::orgs::OrgError;
 use crate::runtime::{PromptError, ResponseError};
@@ -63,6 +64,9 @@ pub enum HttpError {
     #[error("auth: {0}")]
     Auth(#[from] AuthError),
 
+    #[error("budget: {0}")]
+    Budget(#[from] BudgetError),
+
     /// Inner failure on the per-turn detail route. 4xx variants (NotFound /
     /// MetricsMissing / PromptVersionMissing) are bridged to `Self::NotFound`
     /// at the route, so the only variant that reaches this seat is the 5xx
@@ -113,9 +117,14 @@ impl IntoResponse for HttpError {
             }
             Self::Session(SessionError::MessageCapExceeded { .. })
             | Self::Prompt(PromptError::PendingCapExceeded { .. })
-            | Self::Mcp(McpError::ServerCapExceeded { .. }) => {
+            | Self::Mcp(McpError::ServerCapExceeded { .. })
+            | Self::Budget(BudgetError::Exceeded { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, self.to_string())
             }
+            Self::Budget(BudgetError::Db(_)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "budget store error".into(),
+            ),
             Self::Session(e) => (StatusCode::BAD_REQUEST, e.to_string()),
             Self::Agent(
                 AgentStoreError::DefaultDeletionForbidden

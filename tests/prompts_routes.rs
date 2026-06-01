@@ -96,6 +96,10 @@ impl PromptsHarness {
             sessions,
             agents: agents.clone(),
             dag,
+            budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
+                pool.clone(),
+                patom::clock::SystemClock::shared(),
+            )),
             memory_store,
             mcp_store,
             mcp_catalog,
@@ -313,4 +317,35 @@ async fn new_session_without_agent_id_uses_default(pool: PgPool) {
             .await
             .expect("fetch new row");
     assert_eq!(row.0, h.seed.agent_id.as_uuid());
+}
+
+/// Admission gate: an org that has spent its monthly cap gets a 429 on
+/// `POST /prompts` before any work is enqueued.
+#[sqlx::test]
+async fn over_budget_org_is_rejected_with_429(pool: PgPool) {
+    let h = PromptsHarness::new(pool).await;
+
+    // Cap the org at 1 micro-USD and record 1000 already spent this period.
+    common::pg::set_budget(&h.pool, h.seed.org_id, Some(1), 8000).await;
+    common::pg::seed_period_usage(&h.pool, h.seed.org_id, 1000).await;
+
+    let (status, _body) = post_json(
+        h.state.clone(),
+        "/api/prompts",
+        serde_json::json!({
+            "content": "should be rejected",
+            "idempotency_key": Uuid::new_v4().to_string(),
+        }),
+        &h.auth_cookie,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
+
+    // Nothing was enqueued — the gate ran before the queue insert.
+    let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM prompt_requests WHERE org_id = $1")
+        .bind(h.seed.org_id)
+        .fetch_one(&h.pool)
+        .await
+        .expect("count requests");
+    assert_eq!(count, 0, "over-budget prompt must not enqueue work");
 }
