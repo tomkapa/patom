@@ -1,11 +1,20 @@
-# Patom app chart values. The image.tag is rewritten by CI on every push to main
-# (see .github/workflows/release.yml); ArgoCD syncs the change.
+# Patom app chart values. This is the stable, customer-facing default: it pins a
+# specific image tag and pulls anonymously from the public GHCR package — no
+# registry credentials required (issue #85). CI no longer rewrites image.tag here;
+# SaaS continuous-deploy floats to the latest main build via the ArgoCD
+# Application's Helm `image.tag` parameter instead (patom-infra
+# kubernetes/apps/patom.yaml). See doc/operations/self-hosting.md.
 image:
   repository: ghcr.io/tomkapa/patom
-  tag: 5fea278ff98c # CI-managed
+  # Pinned release tag. Bumped by hand at chart-release time (NOT by CI). To
+  # mirror into a private/air-gap registry, override image.repository (and set
+  # imagePullSecrets below). Do not deploy `:latest` in production.
+  tag: 5fea278ff98c
   pullPolicy: IfNotPresent
-imagePullSecrets:
-  - name: ghcr-pull-secret
+# Empty by default: the public GHCR image needs no pull secret. Set this only
+# when mirroring into a private registry, e.g.
+#   --set-json 'imagePullSecrets=[{"name":"my-registry-cred"}]'
+imagePullSecrets: []
 replicaCount: 1
 service:
   port: 8080

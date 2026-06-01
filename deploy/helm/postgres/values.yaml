@@ -33,8 +33,11 @@ backup:
   # (private, default), then set its name here.
   enabled: true
   schedule: "0 3 * * *" # 03:00 UTC daily
-  # imageTag is CI-managed (release.yml bumps it to the build SHA alongside the
-  # app tag) so the backup image is pinned, not floating on :latest.
+  # Pinned, customer-facing default (public GHCR — no pull secret needed, issue
+  # #85). Bumped by hand at chart-release time, NOT by CI. SaaS floats to the
+  # latest main build via the ArgoCD Application's backup.imageTag Helm parameter
+  # (patom-infra kubernetes/apps/postgres.yaml). To mirror into a private/air-gap
+  # registry, override backup.image. See doc/operations/self-hosting.md.
   image: ghcr.io/tomkapa/patom-backup
   imageTag: 5fea278ff98c
   s3:
