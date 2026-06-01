@@ -75,6 +75,70 @@ credentials. You only need a pull secret if you mirror into a private registry
 
 ---
 
+## 2a. Domain, DNS & TLS
+
+Patom serves the app, API, and SPA from **one domain**. Set it once:
+
+```yaml
+ingress:
+  host: patom.example.com    # the single value to set
+```
+
+`ingress.host` is the source of truth — `PATOM_OAUTH_REDIRECT_BASE` and
+`PATOM_WEB_BASE_URL` are derived as `https://<host>`, so they can't drift. (If an
+external LB exposes a public hostname that differs from `ingress.host`, override
+it with `app.publicUrl`.)
+
+### DNS
+
+Point a record for your host at your ingress controller's external address:
+
+- Get the controller's external IP / hostname (nginx example):
+  `kubectl get svc -n ingress-nginx ingress-nginx-controller`
+- Create an **A**/**AAAA** record (IP) or **CNAME** (hostname) for
+  `patom.example.com` → that address.
+
+### TLS — pick one `ingress.tls.mode`
+
+| Mode | What it does | Prerequisite |
+|------|--------------|--------------|
+| `cert-manager` (default) | cert-manager issues + auto-renews into `tls.secretName` via `tls.clusterIssuer` | cert-manager installed + a `ClusterIssuer`. HTTP-01 works for a single host; DNS-01 only if you need a wildcard cert. |
+| `existing-secret` | Ingress uses a TLS Secret you provide; no cert-manager | `kubectl create secret tls patom-tls --cert=fullchain.pem --key=key.pem` (any CA, incl. internal) |
+| `none` | No `tls` block; TLS terminated upstream (cloud LB / edge). `ssl-redirect` is disabled to avoid a redirect loop | Your LB / edge presents the cert for the host |
+
+```yaml
+# cert-manager (default)
+ingress:
+  host: patom.example.com
+  tls: { mode: cert-manager, clusterIssuer: letsencrypt-prod, secretName: patom-tls }
+
+# bring your own cert
+ingress:
+  host: patom.example.com
+  tls: { mode: existing-secret, secretName: patom-tls }
+
+# TLS terminated at a cloud LB / edge
+ingress:
+  host: patom.example.com
+  tls: { mode: none }
+```
+
+### Single-origin vs. cross-subdomain
+
+The default is **single-origin**: cookies are host-only and there is no CORS layer
+— everything is served from your one host, which is what most self-hosters want.
+Cross-subdomain cookie sharing / credentialed CORS (e.g. a separate marketing site
+reading login state) is cloud-specific and **off by default**. Enable it only when
+you split the app across hostnames:
+
+```yaml
+app:
+  cookieDomain: ".example.com"               # cookies shared across *.example.com
+  corsAllowedOrigins: ["https://www.example.com"]
+```
+
+---
+
 ## 3. Air-gapped / mirrored registry (sideload)
 
 For clusters with no path to `ghcr.io`, mirror the pinned images into a registry

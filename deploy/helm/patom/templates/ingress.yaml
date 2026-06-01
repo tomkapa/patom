@@ -1,4 +1,15 @@
 {{- if .Values.ingress.enabled }}
+{{- $tls := .Values.ingress.tls }}
+{{- $modes := list "cert-manager" "existing-secret" "none" }}
+{{- if not (has $tls.mode $modes) }}
+{{- fail (printf "ingress.tls.mode must be one of cert-manager|existing-secret|none, got %q" $tls.mode) }}
+{{- end }}
+{{- if and (eq $tls.mode "cert-manager") (not $tls.clusterIssuer) }}
+{{- fail "ingress.tls.mode=cert-manager requires ingress.tls.clusterIssuer" }}
+{{- end }}
+{{- if and (eq $tls.mode "existing-secret") (not $tls.secretName) }}
+{{- fail "ingress.tls.mode=existing-secret requires ingress.tls.secretName (your pre-created kubernetes.io/tls Secret)" }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -6,15 +17,26 @@ metadata:
   labels:
     {{- include "patom.labels" . | nindent 4 }}
   annotations:
-    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
+    {{- if eq $tls.mode "cert-manager" }}
+    cert-manager.io/cluster-issuer: {{ $tls.clusterIssuer }}
+    {{- end }}
+    {{- if ne $tls.mode "none" }}
+    # Edge-terminated (mode=none) ingress receives plain HTTP from the upstream
+    # terminator, so ssl-redirect would loop — only enabled when nginx serves TLS.
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    {{- end }}
     nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.proxyBodySize | quote }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- if ne $tls.mode "none" }}
   tls:
     - hosts:
         - {{ .Values.ingress.host }}
-      secretName: {{ .Values.ingress.tlsSecretName }}
+      secretName: {{ $tls.secretName }}
+  {{- end }}
   rules:
     - host: {{ .Values.ingress.host }}
       http:

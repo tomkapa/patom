@@ -48,6 +48,23 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            # Origin-derived config, keyed off the single customer domain
+            # (ingress.host) so it cannot drift. PATOM_OAUTH_REDIRECT_BASE is
+            # required by the app; PATOM_WEB_BASE_URL = same origin is harmless.
+            - name: PATOM_OAUTH_REDIRECT_BASE
+              value: {{ include "patom.publicUrl" . | quote }}
+            - name: PATOM_WEB_BASE_URL
+              value: {{ include "patom.publicUrl" . | quote }}
+            {{- with .Values.app.cookieDomain }}
+            # Opt-in: cross-subdomain cookie Domain. Empty (default) → host-only.
+            - name: PATOM_COOKIE_DOMAIN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.corsAllowedOrigins }}
+            # Opt-in: extra credentialed CORS origins. Empty (default) → no CORS.
+            - name: PATOM_CORS_ALLOWED_ORIGINS
+              value: {{ join "," . | quote }}
+            {{- end }}
           envFrom:
             - secretRef:
                 name: patom-config
