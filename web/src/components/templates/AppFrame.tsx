@@ -63,7 +63,7 @@ export function AppFrame({
 
   if (compact) {
     return (
-      <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--color-surface)]">
+      <div className="flex h-dvh w-screen flex-col overflow-hidden bg-[var(--color-surface)]">
         <MobileTopBar
           title={title}
           onOpenSidebar={sidebar ? () => setNavOpen(true) : undefined}
@@ -90,7 +90,7 @@ export function AppFrame({
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-surface)]">
+    <div className="flex h-dvh w-screen overflow-hidden bg-[var(--color-surface)]">
       <MenuRail />
       {sidebar}
       <main className="flex min-w-0 flex-1 flex-col">
