@@ -22,6 +22,7 @@ use super::store::{
 };
 use crate::auth;
 use crate::auth::{Email, InviteId, InviteToken, Language, OrgId, OrgName, OrgSlug, Role, UserId};
+use crate::types::AvatarUrl;
 
 #[derive(Debug)]
 pub struct PgOrgStore {
@@ -80,7 +81,10 @@ async fn fetch_org_details_priv(
         default_language: row.get::<Language, _>("default_language"),
         created_at: row.get("created_at"),
         member_count: row.get("member_count"),
-        avatar_url: row.get("avatar_url"),
+        avatar_url: row
+            .get::<Option<String>, _>("avatar_url")
+            .map(AvatarUrl::try_from)
+            .transpose()?,
     })
 }
 
@@ -276,7 +280,10 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
                     user_id: UserId::from(r.get::<uuid::Uuid, _>("user_id")),
                     email,
                     display_name: r.get("display_name"),
-                    avatar_url: r.get("avatar_url"),
+                    avatar_url: r
+                        .get::<Option<String>, _>("avatar_url")
+                        .map(AvatarUrl::try_from)
+                        .transpose()?,
                     role,
                     joined_at,
                 });
@@ -483,7 +490,7 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
     async fn set_avatar_url(
         &self,
         org_id: OrgId,
-        avatar_url: Option<&str>,
+        avatar_url: Option<&AvatarUrl>,
         now: DateTime<Utc>,
     ) -> Result<(), OrgError> {
         let mut tx = auth::begin_privileged(&self.pool).await?;
@@ -493,7 +500,7 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
              WHERE id = $1",
         )
         .bind(org_id)
-        .bind(avatar_url)
+        .bind(avatar_url.map(AvatarUrl::as_str))
         .bind(now)
         .execute(&mut *tx)
         .await?

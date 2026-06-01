@@ -91,7 +91,7 @@ impl OrgDetailsView {
             member_count: details.member_count,
             created_at: details.created_at,
             role,
-            avatar_url: details.avatar_url,
+            avatar_url: details.avatar_url.map(|a| a.as_str().to_owned()),
         }
     }
 }
@@ -322,7 +322,7 @@ async fn list_members(
                 invite_id: None,
                 email: email.as_str().to_owned(),
                 display_name,
-                avatar_url,
+                avatar_url: avatar_url.map(|a| a.as_str().to_owned()),
                 role,
                 status: "active",
                 joined_at,

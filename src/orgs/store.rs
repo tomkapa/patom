@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 
 use super::error::OrgError;
 use crate::auth::{Email, InviteId, InviteToken, Language, OrgId, OrgName, OrgSlug, Role, UserId};
+use crate::types::AvatarUrl;
 
 pub type SharedOrgStore = Arc<dyn OrgStore>;
 
@@ -20,7 +21,7 @@ pub struct OrgDetails {
     pub created_at: DateTime<Utc>,
     pub member_count: i64,
     /// Public asset URL, or `None` → FE renders the default tile.
-    pub avatar_url: Option<String>,
+    pub avatar_url: Option<AvatarUrl>,
 }
 
 /// Bag of optional patches for `PATCH /me/org`. `None` means "don't
@@ -65,7 +66,7 @@ pub enum MemberRow {
         user_id: UserId,
         email: Email,
         display_name: Option<String>,
-        avatar_url: Option<String>,
+        avatar_url: Option<AvatarUrl>,
         role: Role,
         joined_at: DateTime<Utc>,
     },
@@ -206,7 +207,7 @@ pub trait OrgStore: std::fmt::Debug + Send + Sync + 'static {
     async fn set_avatar_url(
         &self,
         org_id: OrgId,
-        avatar_url: Option<&str>,
+        avatar_url: Option<&AvatarUrl>,
         now: DateTime<Utc>,
     ) -> Result<(), OrgError>;
 }

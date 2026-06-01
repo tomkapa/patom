@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::types::ParseError;
+use crate::types::{AvatarUrl, ParseError};
 
 use super::language::Language;
 use super::locale_hint::LocaleHint;
@@ -488,7 +488,10 @@ pub struct OidcProfile {
     pub email: Email,
     pub email_verified: bool,
     pub display_name: Option<String>,
-    pub avatar_url: Option<String>,
+    /// IdP `picture` claim, parsed at the OIDC boundary. A claim that
+    /// isn't a valid avatar URL is dropped to `None` (best-effort hint,
+    /// like `locale`) rather than failing sign-in.
+    pub avatar_url: Option<AvatarUrl>,
     /// BCP-47 locale tag (e.g. `"vi"`, `"en-US"`). Treated as a hint
     /// only — normalized into [`Language`] at the OAuth-callback boundary
     /// via [`Language::from_locale_hint`]. Bounded at the id_token
@@ -503,7 +506,7 @@ pub struct User {
     pub id: UserId,
     pub email: Email,
     pub display_name: Option<String>,
-    pub avatar_url: Option<String>,
+    pub avatar_url: Option<AvatarUrl>,
 }
 
 /// One row from `org_members` joined with `organizations`.
@@ -519,7 +522,7 @@ pub struct OrgMembership {
     /// `/me` so the FE editor seeds with the current value.
     pub default_rule: Option<super::org_rule::OrganizationRule>,
     /// `organizations.avatar_url`. `None` → FE renders the default tile.
-    pub avatar_url: Option<String>,
+    pub avatar_url: Option<AvatarUrl>,
 }
 
 /// What every authed HTTP request hands to its handler. Built by the

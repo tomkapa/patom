@@ -8,6 +8,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::types::AvatarUrl;
+
 use super::error::AuthError;
 use super::language::Language;
 use super::locale_hint::LocaleHint;
@@ -171,7 +173,7 @@ pub trait UserStore: std::fmt::Debug + Send + Sync + 'static {
     async fn set_avatar_url(
         &self,
         user_id: UserId,
-        avatar_url: Option<&str>,
+        avatar_url: Option<&AvatarUrl>,
         now: DateTime<Utc>,
     ) -> Result<(), AuthError>;
 

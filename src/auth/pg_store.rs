@@ -22,6 +22,7 @@ use super::types::{
     Email, OAuthState, OidcNonce, OidcProfile, OrgId, OrgMembership, OrgSlug, PkceVerifier, Role,
     User, UserId,
 };
+use crate::types::AvatarUrl;
 
 pub struct PgUserStore {
     pool: PgPool,
@@ -89,7 +90,7 @@ impl UserStore for PgUserStore {
             .bind(uid)
             .bind(profile.email.as_str())
             .bind(profile.display_name.as_deref())
-            .bind(profile.avatar_url.as_deref())
+            .bind(profile.avatar_url.as_ref().map(AvatarUrl::as_str))
             .bind(now)
             .execute(&mut *tx)
             .await?;
@@ -103,7 +104,7 @@ impl UserStore for PgUserStore {
             .bind(candidate_id)
             .bind(profile.email.as_str())
             .bind(profile.display_name.as_deref())
-            .bind(profile.avatar_url.as_deref())
+            .bind(profile.avatar_url.as_ref().map(AvatarUrl::as_str))
             .bind(now)
             .execute(&mut *tx)
             .await?;
@@ -138,7 +139,10 @@ impl UserStore for PgUserStore {
             id: user_id,
             email: Email::try_from(row.get::<String, _>("email"))?,
             display_name: row.get("display_name"),
-            avatar_url: row.get("avatar_url"),
+            avatar_url: row
+                .get::<Option<String>, _>("avatar_url")
+                .map(AvatarUrl::try_from)
+                .transpose()?,
         };
         Ok(UpsertedUser { user, is_new_user })
     }
@@ -271,7 +275,10 @@ impl UserStore for PgUserStore {
                         .ok_or(AuthError::Internal("unknown role in db"))?,
                     default_language: r.get::<Language, _>("default_language"),
                     default_rule,
-                    avatar_url: r.get("avatar_url"),
+                    avatar_url: r
+                        .get::<Option<String>, _>("avatar_url")
+                        .map(AvatarUrl::try_from)
+                        .transpose()?,
                 })
             })
             .collect()
@@ -302,7 +309,10 @@ impl UserStore for PgUserStore {
             id: UserId::from(r.get::<uuid::Uuid, _>("id")),
             email: Email::try_from(r.get::<String, _>("email"))?,
             display_name: r.get("display_name"),
-            avatar_url: r.get("avatar_url"),
+            avatar_url: r
+                .get::<Option<String>, _>("avatar_url")
+                .map(AvatarUrl::try_from)
+                .transpose()?,
         }))
     }
 
@@ -421,7 +431,7 @@ impl UserStore for PgUserStore {
     async fn set_avatar_url(
         &self,
         user_id: UserId,
-        avatar_url: Option<&str>,
+        avatar_url: Option<&AvatarUrl>,
         now: DateTime<Utc>,
     ) -> Result<(), AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
@@ -431,7 +441,7 @@ impl UserStore for PgUserStore {
              WHERE id = $1",
         )
         .bind(user_id)
-        .bind(avatar_url)
+        .bind(avatar_url.map(AvatarUrl::as_str))
         .bind(now)
         .execute(&mut *tx)
         .await?
