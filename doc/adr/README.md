@@ -18,6 +18,7 @@ Format follows Michael Nygard's template: **Status · Context · Decision · Con
 | 0008  | [Provider-agnostic agent core; everything I/O is a trait](./0008-provider-agnostic-agent-core.md) | Accepted |
 | 0009  | [Typed memory states, not numeric confidence](./0009-typed-memory-states-not-numeric-confidence.md) | Accepted |
 | 0010  | [Append-only journal for memory + replayable revert](./0010-append-only-memory-journal.md) | Accepted |
+| 0011  | [Pluggable OIDC auth; Google is one preset; first login bootstraps the admin](./0011-pluggable-oidc-auth-and-first-admin-bootstrap.md) | Accepted |
 
 ## When to write a new ADR
 
