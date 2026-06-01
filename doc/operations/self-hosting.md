@@ -153,6 +153,40 @@ helm install patom deploy/helm/patom -f my-values.yaml \
 
 ---
 
+## 5. Observability & data egress
+
+A fresh self-hosted install is **private by default** — nothing about your prompts
+leaves the cluster:
+
+- **No prompt content is captured.** The chart sets `PATOM_GENAI_CAPTURE_CONTENT=0`,
+  so request/response text is never recorded onto spans or stderr.
+- **No telemetry is exported off-cluster.** With no backend keys set, the app runs
+  **console-only** (structured logs to stderr) — no OTLP exporter is built. The
+  `HONEYCOMB_*` / `LANGFUSE_*` keys in `values.example.yaml` ship commented out.
+
+To enable observability while keeping data on-box, run a collector **in your own
+namespace** (an OpenTelemetry Collector, or self-hosted Langfuse) and point the app
+at it — never at a vendor cloud. Uncomment the `env:` and matching `secret.data`
+blocks in
+[`values.example.yaml`](../../deploy/helm/patom/values.example.yaml):
+
+```yaml
+env:
+  PATOM_GENAI_CAPTURE_CONTENT: "1"                       # opt in to content capture
+  HONEYCOMB_BASE_URL: "http://otel-collector.patom.svc:4318"   # in-cluster OTLP/HTTP
+secret:
+  data:
+    HONEYCOMB_API_KEY: "any-value"      # a local collector ignores the header value
+```
+
+The app appends `/v1/traces` to the base URL automatically. The Honeycomb path needs
+only `HONEYCOMB_API_KEY` (value ignored by a local collector); the Langfuse path needs
+both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` with `LANGFUSE_BASE_URL` pointed
+at your self-hosted Langfuse. Setting a cloud base URL (the upstream default) is what
+sends data off-cluster — so only do that deliberately.
+
+---
+
 ## Notes
 
 - The image is source-available under FSL-1.1-Apache-2.0 (see the repo `LICENSE.md`).

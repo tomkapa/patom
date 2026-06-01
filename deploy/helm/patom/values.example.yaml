@@ -52,7 +52,12 @@ secret:
     # PATOM_S3_ENDPOINT: "CHANGE_ME"            # e.g. http://minio:9000 or https://<acct>.r2.cloudflarestorage.com
     # PATOM_S3_ACCESS_KEY_ID: "CHANGE_ME"
     # PATOM_S3_SECRET_ACCESS_KEY: "CHANGE_ME"
-    # Telemetry exporters:
+    # Telemetry exporter credentials (see the `env:` observability block below for
+    # the full on-cluster opt-in). Leave all three commented to stay console-only:
+    # with no backend keys set the app exports NOTHING off-cluster (stderr logs
+    # only). Honeycomb needs just the API key (a local collector ignores its value);
+    # Langfuse needs both keys. Pair these with the *_BASE_URL overrides under `env`
+    # so traces go to YOUR in-cluster collector, not a vendor cloud.
     # HONEYCOMB_API_KEY: "CHANGE_ME"
     # LANGFUSE_PUBLIC_KEY: "CHANGE_ME"
     # LANGFUSE_SECRET_KEY: "CHANGE_ME"
@@ -64,3 +69,21 @@ secret:
 # ingress:
 #   host: patom.example.com
 #   clusterIssuer: letsencrypt-prod
+
+# --- Observability / telemetry (issue #88) ---
+# Private by default: the chart ships PATOM_GENAI_CAPTURE_CONTENT=0 (no prompt or
+# response content is recorded) and, with the telemetry keys in secret.data left
+# commented, the app runs console-only — NOTHING leaves the cluster.
+#
+# To opt in to on-cluster observability, uncomment this `env:` block. These keys
+# merge over the chart defaults (values.yaml). Keep every endpoint in-cluster so
+# prompt content never reaches a vendor cloud. See doc/operations/self-hosting.md.
+# env:
+#   # Record prompt/response content onto spans + stderr (off by default).
+#   PATOM_GENAI_CAPTURE_CONTENT: "1"
+#   # Send traces to YOUR collector, not the vendor cloud. The app appends
+#   # /v1/traces automatically. Pick the backend whose keys you set in secret.data:
+#   #   OTel Collector (OTLP/HTTP) via the Honeycomb path — key value is ignored:
+#   HONEYCOMB_BASE_URL: "http://otel-collector.patom.svc:4318"
+#   #   …or self-hosted Langfuse via the Langfuse path:
+#   # LANGFUSE_BASE_URL: "http://langfuse-web.patom.svc:3000/api/public/otel"
