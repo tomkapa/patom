@@ -140,6 +140,16 @@ export function ChatView() {
 
   const { t } = useT();
 
+  // A 429 from POST /prompts means the workspace is over its monthly budget —
+  // surface it inline rather than as a generic failure. Returns true if handled.
+  const handleBudgetExceeded = (e: unknown): boolean => {
+    if (e instanceof ApiError && e.status === 429) {
+      setComposerError(t("chat.error.budget_exceeded"));
+      return true;
+    }
+    return false;
+  };
+
   const onSubmit = async (input: { content: string; agent_id?: string }) => {
     if (isDemo) return;
     const agent_id = selectedAgentId ?? input.agent_id ?? defaultAgent?.id;
@@ -152,10 +162,7 @@ export function ChatView() {
       });
       setSelectedRoot(res.request_id);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 429) {
-        setComposerError(t("chat.error.budget_exceeded"));
-        return;
-      }
+      if (handleBudgetExceeded(e)) return;
       throw e;
     }
   };
@@ -184,10 +191,7 @@ export function ChatView() {
     } catch (e) {
       // Withdraw the optimistic bubble; the user can retry.
       removePending(root, idempotency_key);
-      if (e instanceof ApiError && e.status === 429) {
-        setComposerError(t("chat.error.budget_exceeded"));
-        return;
-      }
+      if (handleBudgetExceeded(e)) return;
       throw e;
     }
   };

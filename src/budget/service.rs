@@ -120,15 +120,16 @@ pub trait BudgetService: fmt::Debug + Send + Sync {
     ) -> Result<BudgetConfig, BudgetError>;
 
     /// Tenant-scoped write for the admin PUT. Sets/clears the cap and warn
-    /// threshold via `begin_as_user` (RLS). The owner/admin role gate is the
-    /// caller's responsibility (enforced at the HTTP boundary).
+    /// threshold via `begin_as_user` (RLS) and returns the fresh config read in
+    /// the same transaction, so the caller needn't re-read. The owner/admin role
+    /// gate is the caller's responsibility (enforced at the HTTP boundary).
     async fn set_config(
         &self,
         acting_user_id: UserId,
         org: OrgId,
         cap: Option<MonthlyCapMicros>,
         warn: WarnThresholdBps,
-    ) -> Result<(), BudgetError>;
+    ) -> Result<BudgetConfig, BudgetError>;
 }
 
 /// Cheap-clone handle held by the admission gate and the agent worker.
@@ -207,6 +208,42 @@ async fn read_snapshot(
     Ok(UsageSnapshot {
         used_micro_usd: used.unwrap_or(0),
         cap_micro_usd: cap,
+    })
+}
+
+/// Read one org's config (cap + warn threshold) plus the current period's usage
+/// inside an open transaction, and assemble a [`BudgetConfig`]. Shared by the
+/// get (read-only) and set (read-after-write) paths so the assembly lives once.
+async fn read_config(
+    tx: &mut Transaction<'_, Postgres>,
+    org: OrgId,
+    period: BillingPeriod,
+) -> Result<BudgetConfig, sqlx::Error> {
+    let (cap, bps, used, warned_at): (
+        Option<i64>,
+        Option<i32>,
+        Option<i64>,
+        Option<DateTime<Utc>>,
+    ) = sqlx::query_as(READ_CONFIG)
+        .bind(org)
+        .bind(period.start_date())
+        .fetch_one(&mut **tx)
+        .await?;
+    let used = used.unwrap_or(0);
+    // §6: the column CHECK keeps stored usage non-negative; assert so a corrupt
+    // read crashes here rather than underflowing `remaining`.
+    assert!(used >= 0, "invariant: usage non-negative");
+    // No config row → unlimited; surface the default threshold so the form has a
+    // sensible starting value rather than a magic zero.
+    let warn_threshold_bps = bps.map_or(DEFAULT_WARN_BPS, |b| {
+        u16::try_from(b).unwrap_or(DEFAULT_WARN_BPS)
+    });
+    Ok(BudgetConfig {
+        cap_micro_usd: cap,
+        warn_threshold_bps,
+        used_micro_usd: used,
+        warned_at,
+        period_start: period.start_date(),
     })
 }
 
@@ -305,30 +342,9 @@ impl BudgetService for PgBudgetService {
     ) -> Result<BudgetConfig, BudgetError> {
         let period = BillingPeriod::current(&self.clock);
         let mut tx = begin_as_user(&self.pool, acting_user_id).await?;
-        let row: (Option<i64>, Option<i32>, Option<i64>, Option<DateTime<Utc>>) =
-            sqlx::query_as(READ_CONFIG)
-                .bind(org)
-                .bind(period.start_date())
-                .fetch_one(&mut *tx)
-                .await?;
+        let config = read_config(&mut tx, org, period).await?;
         tx.commit().await?;
-        let (cap, bps, used, warned_at) = row;
-        let used = used.unwrap_or(0);
-        // §6: the column CHECK keeps stored usage non-negative; assert so a
-        // corrupt read crashes here rather than underflowing `remaining`.
-        assert!(used >= 0, "invariant: usage non-negative");
-        // No config row → unlimited; surface the default threshold so the form
-        // has a sensible starting value rather than a magic zero.
-        let warn_threshold_bps = bps.map_or(DEFAULT_WARN_BPS, |b| {
-            u16::try_from(b).unwrap_or(DEFAULT_WARN_BPS)
-        });
-        Ok(BudgetConfig {
-            cap_micro_usd: cap,
-            warn_threshold_bps,
-            used_micro_usd: used,
-            warned_at,
-            period_start: period.start_date(),
-        })
+        Ok(config)
     }
 
     #[tracing::instrument(skip_all, name = "budget.set_config", fields(patom.org.id = %org))]
@@ -338,7 +354,8 @@ impl BudgetService for PgBudgetService {
         org: OrgId,
         cap: Option<MonthlyCapMicros>,
         warn: WarnThresholdBps,
-    ) -> Result<(), BudgetError> {
+    ) -> Result<BudgetConfig, BudgetError> {
+        let period = BillingPeriod::current(&self.clock);
         let now = self.clock.now_utc();
         let cap_micros = cap.map(MonthlyCapMicros::get);
         let bps = i32::from(warn.get());
@@ -350,8 +367,11 @@ impl BudgetService for PgBudgetService {
             .bind(now)
             .execute(&mut *tx)
             .await?;
+        // Read the fresh view back in the same transaction so the PUT returns it
+        // without a second round-trip.
+        let config = read_config(&mut tx, org, period).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(config)
     }
 }
 

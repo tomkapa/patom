@@ -10,6 +10,7 @@ import {
 import { Button } from "../components/atoms/Button";
 import { Spinner } from "../components/atoms/Spinner";
 import { SectionCard } from "../components/molecules/SectionCard";
+import { SettingsField } from "../components/molecules/SettingsField";
 import { Modal, ModalFooter, ModalHeader } from "../components/molecules/Modal";
 import { Select } from "../components/molecules/Select";
 import { PrefixInput } from "../components/core/PrefixInput";
@@ -205,7 +206,7 @@ export function SettingsGeneral() {
           }
           bodyClassName="grid grid-cols-1 gap-5 px-5 py-5"
         >
-          <Field
+          <SettingsField
             label={t("settings.general.identity.avatar")}
             helper={t("settings.general.identity.avatar.helper")}
           >
@@ -229,8 +230,8 @@ export function SettingsGeneral() {
                 onUpload={handleAvatarUpload}
               />
             )}
-          </Field>
-          <Field
+          </SettingsField>
+          <SettingsField
             label={t("settings.general.identity.name")}
             helper={t("settings.general.identity.name.helper")}
           >
@@ -241,8 +242,8 @@ export function SettingsGeneral() {
               className="h-9 w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 text-[13px] text-[var(--color-ink)] outline-none focus:ring-1 focus:ring-[var(--color-moss)]"
               data-testid="settings-general-name"
             />
-          </Field>
-          <Field
+          </SettingsField>
+          <SettingsField
             label={t("settings.general.identity.slug")}
             helper={t("settings.general.identity.slug.helper")}
           >
@@ -267,7 +268,7 @@ export function SettingsGeneral() {
                 {slugError}
               </div>
             ) : null}
-          </Field>
+          </SettingsField>
         </SectionCard>
 
         {/* DEFAULTS */}
@@ -284,7 +285,7 @@ export function SettingsGeneral() {
           }
           bodyClassName="grid grid-cols-1 gap-5 px-5 py-5"
         >
-          <Field
+          <SettingsField
             label={t("settings.general.defaults.language")}
             helper={t("settings.general.defaults.language.helper")}
           >
@@ -298,7 +299,7 @@ export function SettingsGeneral() {
               variant="default"
               ariaLabel={t("settings.general.defaults.language")}
             />
-          </Field>
+          </SettingsField>
         </SectionCard>
 
         {/* DANGER ZONE */}
@@ -431,32 +432,6 @@ export function SettingsGeneral() {
         </ModalFooter>
       </Modal>
     </SettingsLayout>
-  );
-}
-
-function Field({
-  label,
-  helper,
-  children,
-}: {
-  label: string;
-  helper?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="grid grid-cols-1 gap-6 md:grid-cols-[280px_1fr] md:gap-8">
-      <div>
-        <div className="text-[13px] font-semibold text-[var(--color-ink)]">
-          {label}
-        </div>
-        {helper ? (
-          <div className="mt-1 text-[12px] leading-snug text-[var(--color-muted-foreground)]">
-            {helper}
-          </div>
-        ) : null}
-      </div>
-      <div className="min-w-0">{children}</div>
-    </div>
   );
 }
 

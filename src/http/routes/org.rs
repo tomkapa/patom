@@ -207,13 +207,11 @@ async fn set_budget(
         .map(MonthlyCapMicros::try_from)
         .transpose()?;
     let warn = WarnThresholdBps::try_from(req.warn_threshold_bps)?;
-    state
-        .budget
-        .set_config(principal.user_id, principal.active_org_id, cap, warn)
-        .await?;
+    // `set_config` returns the fresh view read in the write transaction — no
+    // second round-trip needed.
     let config = state
         .budget
-        .get_config(principal.user_id, principal.active_org_id)
+        .set_config(principal.user_id, principal.active_org_id, cap, warn)
         .await?;
     Ok(Json(BudgetView::new(config, role)).into_response())
 }

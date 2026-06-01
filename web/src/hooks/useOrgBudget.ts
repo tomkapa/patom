@@ -5,7 +5,7 @@ import type { OrgBudget } from "../types/api";
 export const ORG_BUDGET_KEY = ["orgBudget"] as const;
 
 /** Active workspace's spend budget (cap + warn threshold + period usage).
- *  Refetched lazily; the mutation below invalidates it on save. */
+ *  Refetched lazily; the mutation below seeds the cache from its response. */
 export function useOrgBudget() {
   return useQuery({
     queryKey: ORG_BUDGET_KEY,
@@ -21,9 +21,9 @@ export function useUpdateOrgBudget() {
       monthly_cap_micro_usd: number | null;
       warn_threshold_bps: number;
     }) => api.updateOrgBudget(body),
+    // The PUT returns the fresh view, so seed the cache directly — no refetch.
     onSuccess: (data: OrgBudget) => {
       qc.setQueryData(ORG_BUDGET_KEY, data);
-      qc.invalidateQueries({ queryKey: ORG_BUDGET_KEY });
     },
   });
 }

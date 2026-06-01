@@ -10,9 +10,11 @@ import { Spinner } from "../components/atoms/Spinner";
 import { Switch } from "../components/atoms/Switch";
 import { ProgressBar } from "../components/atoms/ProgressBar";
 import { SectionCard } from "../components/molecules/SectionCard";
+import { SettingsField } from "../components/molecules/SettingsField";
 import { useOrgBudget, useUpdateOrgBudget } from "../hooks/useOrgBudget";
 import { formatUSD, microToUsd, usdToMicro } from "../lib/currency";
 import { useT } from "../i18n";
+import type { TranslationKey } from "../i18n/en";
 
 /** Basis points in 100% — warn threshold is stored in bps, edited in percent. */
 const BPS_PER_PERCENT = 100;
@@ -141,14 +143,10 @@ export function SettingsBilling() {
           {/* CURRENT PERIOD */}
           <SectionCard
             header={
-              <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5">
-                <span className="font-[var(--font-mono)] text-[11px] font-bold tracking-[0.09em] text-[var(--color-muted-foreground)] uppercase">
-                  {t("settings.budget.usage.title")}
-                </span>
-                <span className="text-[12px] text-[var(--color-fg-muted)]">
-                  {t("settings.budget.usage.helper")}
-                </span>
-              </div>
+              <SectionCardHeader
+                titleKey="settings.budget.usage.title"
+                helperKey="settings.budget.usage.helper"
+              />
             }
             bodyClassName="flex flex-col gap-3 px-5 py-5"
           >
@@ -193,14 +191,10 @@ export function SettingsBilling() {
           {/* BUDGET CONFIG */}
           <SectionCard
             header={
-              <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5">
-                <span className="font-[var(--font-mono)] text-[11px] font-bold tracking-[0.09em] text-[var(--color-muted-foreground)] uppercase">
-                  {t("settings.budget.config.title")}
-                </span>
-                <span className="text-[12px] text-[var(--color-fg-muted)]">
-                  {t("settings.budget.config.helper")}
-                </span>
-              </div>
+              <SectionCardHeader
+                titleKey="settings.budget.config.title"
+                helperKey="settings.budget.config.helper"
+              />
             }
             bodyClassName="grid grid-cols-1 gap-5 px-5 py-5"
           >
@@ -210,7 +204,7 @@ export function SettingsBilling() {
               </div>
             ) : null}
 
-            <Field
+            <SettingsField
               label={t("settings.budget.cap")}
               helper={t("settings.budget.cap.helper")}
             >
@@ -244,9 +238,9 @@ export function SettingsBilling() {
                   </div>
                 ) : null}
               </div>
-            </Field>
+            </SettingsField>
 
-            <Field
+            <SettingsField
               label={t("settings.budget.warnThreshold")}
               helper={t("settings.budget.warnThreshold.helper")}
             >
@@ -266,7 +260,7 @@ export function SettingsBilling() {
                   %
                 </span>
               </div>
-            </Field>
+            </SettingsField>
           </SectionCard>
         </div>
       </div>
@@ -274,28 +268,23 @@ export function SettingsBilling() {
   );
 }
 
-function Field({
-  label,
-  helper,
-  children,
+/** Mono-case section title + helper bar shared by the two SectionCards. */
+function SectionCardHeader({
+  titleKey,
+  helperKey,
 }: {
-  label: string;
-  helper?: string;
-  children: React.ReactNode;
+  titleKey: TranslationKey;
+  helperKey: TranslationKey;
 }) {
+  const { t } = useT();
   return (
-    <div className="grid grid-cols-1 gap-6 md:grid-cols-[280px_1fr] md:gap-8">
-      <div>
-        <div className="text-[13px] font-semibold text-[var(--color-ink)]">
-          {label}
-        </div>
-        {helper ? (
-          <div className="mt-1 text-[12px] leading-snug text-[var(--color-muted-foreground)]">
-            {helper}
-          </div>
-        ) : null}
-      </div>
-      <div className="min-w-0">{children}</div>
+    <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5">
+      <span className="font-[var(--font-mono)] text-[11px] font-bold tracking-[0.09em] text-[var(--color-muted-foreground)] uppercase">
+        {t(titleKey)}
+      </span>
+      <span className="text-[12px] text-[var(--color-fg-muted)]">
+        {t(helperKey)}
+      </span>
     </div>
   );
 }
