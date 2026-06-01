@@ -72,6 +72,15 @@ pub(super) async fn submit_internal(
     state: &AppState,
     params: SubmitPromptParams,
 ) -> Result<EnqueueOutcome, HttpError> {
+    // Admission gate: reject a new prompt up front when the org has spent its
+    // monthly cap, so the user gets an immediate 429 instead of enqueuing work
+    // that the per-turn gate would fail mid-flight. Tenant-scoped
+    // (`begin_as_user`) so a caller can only ever read its own org's counter.
+    state
+        .budget
+        .check_or_fail_for_user(params.user_id, params.org_id)
+        .await?;
+
     let receiver_agent_id = match params.session_id {
         Some(session_id) => session_agent_participant(state, session_id).await?,
         None => match params.agent_id {

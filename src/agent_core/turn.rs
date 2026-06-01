@@ -24,6 +24,9 @@ use crate::tools::{
 };
 use crate::types::{MessageSender, Participant, TurnIndex};
 
+use crate::auth::OrgId;
+use crate::budget::{BudgetError, price_for, turn_cost};
+
 use super::core::{Agent, send_message_tool_name};
 use super::error::AgentError;
 use super::limits::MAX_TOOL_CALLS_PER_TURN;
@@ -51,6 +54,10 @@ impl Agent {
         observer: Option<&SharedTurnObserver>,
     ) -> Result<Option<String>, AgentError> {
         self.hooks().before_turn(ctx).await?.into_result()?;
+        // Spend gate before the (paid) provider call. Stops a long-running DAG
+        // the moment it crosses the org's monthly cap; the HTTP admission gate
+        // only checked the root prompt.
+        self.budget_gate(caller.org_id).await?;
         // Wall-clock `started_at` from the agent clock (CLAUDE.md §11) so
         // tests can pin timestamps; `started_mono` runs alongside so a
         // paused / faked wall clock cannot zero out `duration_ms`.
@@ -70,6 +77,9 @@ impl Agent {
             &response,
         )
         .await;
+        // Post-paid settle: charge the org for what this turn actually cost.
+        // Awaited but fail-open (see `budget_settle`).
+        self.budget_settle(caller.org_id, &response).await;
         self.hooks()
             .after_turn(ctx, &response)
             .await?
@@ -151,6 +161,47 @@ impl Agent {
             )
             .await?;
         Ok(None)
+    }
+
+    /// Pre-turn spend gate. Returns [`AgentError::BudgetExceeded`] when the org
+    /// is at/over its monthly cap. A DB error fails *open* — a transient blip
+    /// must not block a turn the admission gate already admitted; the counter is
+    /// reconciled from `turn_metrics`. No-op when no budget service is wired
+    /// (agent_core unit tests).
+    async fn budget_gate(&self, org: OrgId) -> Result<(), AgentError> {
+        let Some(budget) = self.budget() else {
+            return Ok(());
+        };
+        match budget.check_or_fail(org).await {
+            Ok(()) => Ok(()),
+            Err(BudgetError::Exceeded { .. }) => Err(AgentError::BudgetExceeded { org }),
+            Err(BudgetError::Db(e)) => {
+                tracing::error!(
+                    error = ?e,
+                    patom.org.id = %org,
+                    "budget.gate.db_error_fail_open",
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Post-paid settle: add this turn's actual cost to the org's current
+    /// period. Fail-open — a settle failure is logged and the turn proceeds (the
+    /// user already received the answer); `turn_metrics` is the reconciliation
+    /// ledger (CLAUDE.md §6). No-op when no budget service is wired.
+    async fn budget_settle(&self, org: OrgId, response: &ChatResponse) {
+        let Some(budget) = self.budget() else {
+            return;
+        };
+        let cost = turn_cost(price_for(self.model()), &response.usage);
+        if let Err(e) = budget.settle(org, cost).await {
+            tracing::error!(
+                error = ?e,
+                patom.org.id = %org,
+                "budget.settle.failed",
+            );
+        }
     }
 
     /// Best-effort write to `turn_metrics`. Skipped when the recorder is

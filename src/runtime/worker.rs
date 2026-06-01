@@ -709,6 +709,7 @@ impl Worker {
             AgentError::Cancelled => FailureReason::Cancelled,
             AgentError::ProviderTimeout | AgentError::TodosLoadTimeout => FailureReason::Timeout,
             AgentError::HookDenied(d) => FailureReason::Hook(d.0),
+            AgentError::BudgetExceeded { .. } => FailureReason::BudgetExceeded,
             e @ (AgentError::Provider(_)
             | AgentError::Session(_)
             | AgentError::Memory(_)

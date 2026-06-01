@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug};
 
 use crate::auth::Caller;
+use crate::budget::SharedBudgetService;
 use crate::clock::SharedClock;
 use crate::hook::{HookChain, TurnContext};
 use crate::memory::SharedMemory;
@@ -63,6 +64,12 @@ pub struct Agent {
     /// production. When `None` the turn loop skips the INSERT (CLAUDE.md
     /// §6: observability never blocks the user-visible turn).
     turn_metrics: Option<TurnMetricsBinding>,
+    /// Per-org spend-budget seam. `None` in agent_core unit tests (the gate
+    /// and settle are skipped); the production factory binds
+    /// [`crate::budget::PgBudgetService`]. When present, the turn loop checks
+    /// the org's cap before each provider call and settles the turn's cost
+    /// after — see [`Agent::budget_gate`] / [`Agent::budget_settle`].
+    budget: Option<SharedBudgetService>,
 }
 
 impl Agent {
@@ -82,6 +89,7 @@ impl Agent {
         tool_call_store: Option<SharedToolCallStore>,
         todos_store: Option<SharedSessionTodoStore>,
         turn_metrics: Option<TurnMetricsBinding>,
+        budget: Option<SharedBudgetService>,
     ) -> Self {
         Self {
             providers,
@@ -98,6 +106,7 @@ impl Agent {
             tool_call_store,
             todos_store,
             turn_metrics,
+            budget,
         }
     }
 
@@ -154,6 +163,9 @@ impl Agent {
     }
     pub(super) fn turn_metrics(&self) -> Option<&TurnMetricsBinding> {
         self.turn_metrics.as_ref()
+    }
+    pub(super) fn budget(&self) -> Option<&SharedBudgetService> {
+        self.budget.as_ref()
     }
 
     /// Drive a batch of user prompts to a final assistant text answer, running

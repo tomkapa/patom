@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use crate::agents::AgentId;
 use crate::agents::prompt_versions::PromptVersionId;
+use crate::budget::SharedBudgetService;
 use crate::clock::{SharedClock, SystemClock};
 use crate::hook::HookChain;
 use crate::memory::SharedMemory;
@@ -39,6 +40,7 @@ pub struct AgentBuilder {
     tool_call_store: Option<SharedToolCallStore>,
     todos_store: Option<SharedSessionTodoStore>,
     turn_metrics: Option<TurnMetricsBinding>,
+    budget: Option<SharedBudgetService>,
 }
 
 /// Per-record identity needed to write a `turn_metrics` row. Bound at build
@@ -74,6 +76,7 @@ impl AgentBuilder {
             tool_call_store: None,
             todos_store: None,
             turn_metrics: None,
+            budget: None,
         })
     }
 
@@ -162,6 +165,18 @@ impl AgentBuilder {
         self
     }
 
+    /// Attach the per-org spend-budget service.
+    ///
+    /// Optional: agent_core unit tests skip it and the turn loop runs without a
+    /// cap. The production factory binds [`crate::budget::PgBudgetService`] so
+    /// every turn is gated against the org's monthly cap and its cost settled
+    /// afterwards (see [`crate::agent_core::core::Agent::budget_gate`]).
+    #[must_use]
+    pub fn with_budget(mut self, budget: SharedBudgetService) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
     /// Attach the per-session todo store.
     ///
     /// Optional: agent_core unit tests skip it. With this wired,
@@ -191,6 +206,7 @@ impl AgentBuilder {
             self.tool_call_store,
             self.todos_store,
             self.turn_metrics,
+            self.budget,
         )
     }
 }
