@@ -227,7 +227,7 @@ All four gates (`fmt`, `clippy`, `check`, `test`) must be green before a PR land
 - [`doc/ARCHITECTURE.md`](./doc/ARCHITECTURE.md) — how the system is built, end to end.
 - [`doc/adr/`](./doc/adr/) — architecture decision records (the *why* behind each load-bearing choice).
 - [`doc/marketing.md`](./doc/marketing.md) — the worked example: Patom marketing itself, with five role-named agents covering strategy, long-form, social, design, and community.
-- [`doc/operations/`](./doc/operations/) — operator runbooks (Slack setup, known integration issues).
+- [`doc/operations/`](./doc/operations/) — operator runbooks ([self-hosting & air-gap install](./doc/operations/self-hosting.md), Slack setup, known integration issues).
 - [`migrations/`](./migrations) — the canonical schema.
 
 ## Contributing
@@ -242,7 +242,7 @@ Patom is **source-available** under the [Functional Source License, Version 1.1,
 
 In plain English:
 
-- **You may** use, modify, self-host, and redistribute Patom for any purpose that is not a Competing Use — internal use, non-commercial education and research, and professional services delivered to licensees are all explicitly permitted.
+- **You may** use, modify, self-host, and redistribute Patom for any purpose that is not a Competing Use — internal use, non-commercial education and research, and professional services delivered to licensees are all explicitly permitted. To deploy on your own cluster, see the [self-hosting runbook](./doc/operations/self-hosting.md).
 - **You may not** use Patom to offer a commercial product or service that substitutes for Patom or for any product/service we offer using Patom.
 - **Two years after each release**, that release automatically converts to the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0). The non-compete is time-limited, not perpetual.
 

@@ -11,10 +11,10 @@ on:
     branches: [main]
 
 permissions:
-  contents: write   # commit the image-tag bump
+  contents: read    # checkout only; the tag bump now lands in patom-infra (cross-repo)
   packages: write   # push to GHCR
 
-# Serialize releases so two workflow_run completions can't race on the push to main.
+# Serialize releases so two workflow_run completions can't race on the cross-repo push.
 concurrency:
   group: release-main
   cancel-in-progress: false
@@ -70,30 +70,40 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Bump image tags in Helm values
+      - name: Pin image tags in patom-infra ArgoCD apps
+        # The chart's own values.yaml now carries a STABLE, customer-facing pinned
+        # tag (issue #85) — CI must not clobber it. SaaS continuous-deploy instead
+        # floats to this build by rewriting the `image.tag` / `backup.imageTag`
+        # Helm parameters on the ArgoCD Applications in patom-infra; ArgoCD's
+        # app-of-apps tracks that repo's HEAD and syncs the new tag.
         env:
           SHA: ${{ steps.vars.outputs.sha }}
+          # Fine-grained PAT with contents:write on tomkapa/patom-infra. The
+          # built-in GITHUB_TOKEN is scoped to THIS repo and cannot push cross-repo.
+          INFRA_REPO_TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          app=deploy/helm/patom/values.yaml
-          pg=deploy/helm/postgres/values.yaml
           # yq isn't preinstalled on ubuntu-latest; grab the static binary.
           sudo wget -qO /usr/local/bin/yq \
             https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
-          # Commit onto the CURRENT main tip (not the detached head_sha we built
-          # from) so the push is always fast-forward; the concurrency group keeps
-          # runs serialized.
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout -B main origin/main
-          yq -i '.image.tag = strenv(SHA)' "$app"
-          yq -i '.backup.imageTag = strenv(SHA)' "$pg"
+          git clone --depth 1 \
+            "https://x-access-token:${INFRA_REPO_TOKEN}@github.com/tomkapa/patom-infra.git" \
+            infra
+          cd infra
+          app=kubernetes/apps/patom.yaml
+          pg=kubernetes/apps/postgres.yaml
+          # Rewrite the value of the pre-seeded CI-managed params in place. yq
+          # selects the param by name, so unrelated params (e.g. externalSecret.enabled)
+          # are untouched.
+          yq -i '(.spec.source.helm.parameters[] | select(.name == "image.tag") | .value) = strenv(SHA)' "$app"
+          yq -i '(.spec.source.helm.parameters[] | select(.name == "backup.imageTag") | .value) = strenv(SHA)' "$pg"
           if git diff --quiet -- "$app" "$pg"; then
-            echo "tags already ${SHA}; nothing to commit"
+            echo "params already ${SHA}; nothing to commit"
             exit 0
           fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$app" "$pg"
-          git commit -m "deploy(patom): image ${SHA} [skip ci]"
-          git push origin main
+          git commit -m "deploy(patom): image ${SHA}"
+          git push origin HEAD:main
