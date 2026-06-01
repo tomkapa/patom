@@ -1,9 +1,10 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 import { AlertTriangle, Radio } from "lucide-react";
 import { Banner } from "../components/molecules/Banner";
 import { Button } from "../components/atoms/Button";
 import signinArtwork from "../assets/signin.png";
+import { applyTheme, getStoredTheme } from "../lib/theme";
 import { useT } from "../i18n";
 
 function GoogleG() {
@@ -39,6 +40,18 @@ export function SignIn() {
   const location = useLocation();
   const { t } = useT();
 
+  // The sign-in screen is always presented in the light palette regardless
+  // of the user's theme preference — it pairs the forest-green brand panel
+  // with the green artwork, which only reads correctly in light mode. Force
+  // light on mount (before paint, so dark never flashes) and restore the
+  // stored theme on unmount.
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.classList.remove("dark");
+    root.style.colorScheme = "light";
+    return () => applyTheme(getStoredTheme());
+  }, []);
+
   const { oauthDown, returnTo } = useMemo(() => {
     const params = new URLSearchParams(location.search);
     const fromQuery = params.get("from");
@@ -60,28 +73,28 @@ export function SignIn() {
 
   return (
     <div className="flex h-screen w-screen bg-[var(--color-paper)]">
-      <aside className="relative hidden flex-col overflow-hidden bg-[var(--color-rail)] px-14 py-14 md:flex md:w-[44%] lg:w-[39%]">
+      <aside className="relative hidden flex-col overflow-hidden bg-[var(--color-rail-brand)] px-14 py-14 md:flex md:w-[44%] lg:w-[39%]">
         <header className="flex items-center gap-3">
           <span
             aria-hidden="true"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-sm bg-[var(--color-moss)] text-[var(--color-paper)]"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-sm bg-[var(--color-moss)] text-white"
           >
             <Radio className="h-4 w-4" />
           </span>
-          <span className="font-[var(--font-mono)] text-[14px] font-semibold uppercase tracking-[0.28em] text-[var(--color-paper)]">
+          <span className="font-[var(--font-mono)] text-[14px] font-semibold uppercase tracking-[0.28em] text-white">
             {t("signin.brand")}
           </span>
           <span
             aria-hidden="true"
-            className="ml-2 h-px flex-1 bg-[var(--color-rail-2)]"
+            className="ml-2 h-px flex-1 bg-white/20"
           />
-          <span className="font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.24em] text-[var(--color-fg-muted)]">
+          <span className="font-[var(--font-mono)] text-[10.5px] uppercase tracking-[0.24em] text-white/50">
             v1.0
           </span>
         </header>
 
         <div className="mt-16">
-          <p className="font-[var(--font-display)] text-[40px] font-bold leading-[1.1] tracking-tight text-[var(--color-paper)]">
+          <p className="font-[var(--font-display)] text-[40px] font-bold leading-[1.1] tracking-tight text-white">
             {t("signin.tagline")}
           </p>
         </div>
