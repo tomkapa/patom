@@ -538,8 +538,25 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
                 Role::parse(&role).is_some(),
                 "org_invites.role must be a known role"
             );
-            // Idempotent join — a benign double-login (or an already-member
-            // invite) leaves the existing row untouched.
+            // Claim the invite FIRST: the conditional UPDATE is the atomic
+            // gate. Two concurrent logins proving the same email race here;
+            // exactly one wins the row (RETURNING yields it), the loser sees
+            // zero rows and skips. Only the winner mints the membership, so a
+            // single invite can never admit two accounts.
+            let claimed = sqlx::query(
+                "UPDATE org_invites SET consumed_at = $2
+                 WHERE id = $1 AND consumed_at IS NULL
+                 RETURNING id",
+            )
+            .bind(invite_id)
+            .bind(now)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if claimed.is_none() {
+                continue;
+            }
+            // Idempotent on (org_id, user_id) so a benign self double-login
+            // (same user already a member) leaves the existing row untouched.
             sqlx::query(
                 "INSERT INTO org_members (org_id, user_id, role, created_at)
                  VALUES ($1, $2, $3, $4)
@@ -551,25 +568,14 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
             .bind(now)
             .execute(&mut *tx)
             .await?;
-            // Consume only if still pending so two concurrent logins for
-            // the same email don't double-stamp or panic.
-            sqlx::query(
-                "UPDATE org_invites SET consumed_at = $2 WHERE id = $1 AND consumed_at IS NULL",
-            )
-            .bind(invite_id)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
             if active.is_none() {
                 active = Some(org_id);
             }
         }
         tx.commit().await?;
-        // §6: we returned early on the empty set, so a row was processed.
-        assert!(
-            active.is_some(),
-            "a non-empty pending-invite set must yield an active org"
-        );
+        // Note: `active` may be None even though `rows` was non-empty — a
+        // concurrent login can have claimed every invite between our SELECT
+        // and our UPDATE. The caller treats None as "no org" and denies.
         Ok(active)
     }
 }

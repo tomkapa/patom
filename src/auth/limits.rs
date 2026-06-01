@@ -41,6 +41,19 @@ pub const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// is 256 bits (32 bytes) of random material.
 pub const JWT_SECRET_MIN_BYTES: usize = 32;
 
+/// Maximum bytes accepted for an OIDC `name` claim before it is dropped.
+///
+/// Mirrors the `users.display_name` CHECK (migration 14, ≤200). An
+/// over-cap value from a (pluggable) IdP is treated as a best-effort hint
+/// and discarded rather than failing the sign-in or the later `users`
+/// insert — same posture as `locale`.
+pub const MAX_DISPLAY_NAME_BYTES: usize = 200;
+
+/// Maximum bytes accepted for an OIDC `picture` claim before it is
+/// dropped at the auth boundary. Mirrors the `users.avatar_url` CHECK
+/// (migration 14, ≤2048).
+pub const MAX_AVATAR_URL_BYTES: usize = 2048;
+
 /// Cookie name carrying the CSRF double-submit token.
 ///
 /// Non-HttpOnly so the SPA can read it via `document.cookie` and echo

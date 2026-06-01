@@ -55,6 +55,9 @@ pub enum SettingsError {
     #[error("auth: PATOM_OIDC_ISSUER is not a valid https issuer: {raw:?} ({reason})")]
     InvalidOidcIssuer { raw: String, reason: &'static str },
 
+    #[error("auth: login redirect URL is not a valid http(s) URL: {raw:?} ({reason})")]
+    InvalidRedirectUrl { raw: String, reason: &'static str },
+
     #[error(
         "auth: no login provider configured; set PATOM_OIDC_ISSUER + \
          PATOM_OIDC_CLIENT_ID + PATOM_OIDC_CLIENT_SECRET + PATOM_OIDC_REDIRECT_URL, \
@@ -219,6 +222,12 @@ where
     const PREFIX: &str = "PATOM_";
     const ID_SUFFIX: &str = "_CLIENT_ID";
     const SECRET_SUFFIX: &str = "_CLIENT_SECRET";
+    // Login-OIDC creds share the `PATOM_<MID>_CLIENT_*` shape but are NOT
+    // MCP platform clients (they belong to `AuthSettings.oidc_*`). Exclude
+    // the reserved middle so a generic-OIDC deployment doesn't synthesize a
+    // bogus `platform_oauth_clients["oidc"]` and so a real future `oidc`
+    // catalog entry can't collide with it.
+    const RESERVED_MIDDLES: &[&str] = &["oidc"];
 
     let mut ids: HashMap<String, String> = HashMap::new();
     let mut secrets: HashMap<String, String> = HashMap::new();
@@ -229,10 +238,12 @@ where
         };
         if let Some(middle) = remainder.strip_suffix(SECRET_SUFFIX)
             && !middle.is_empty()
+            && !RESERVED_MIDDLES.contains(&middle.to_ascii_lowercase().as_str())
         {
             secrets.insert(middle.to_ascii_lowercase(), value);
         } else if let Some(middle) = remainder.strip_suffix(ID_SUFFIX)
             && !middle.is_empty()
+            && !RESERVED_MIDDLES.contains(&middle.to_ascii_lowercase().as_str())
         {
             ids.insert(middle.to_ascii_lowercase(), value);
         }
@@ -582,11 +593,38 @@ fn require_login_creds(
     client_secret: Option<SecretString>,
     redirect_url: Option<String>,
 ) -> Result<(IssuerUrl, SecretString, SecretString, String), SettingsError> {
-    if let (Some(id), Some(secret), Some(redirect)) = (client_id, client_secret, redirect_url) {
-        Ok((issuer, id, secret, redirect))
-    } else {
-        Err(SettingsError::MissingLoginProvider)
+    let (Some(id), Some(secret), Some(redirect)) = (client_id, client_secret, redirect_url) else {
+        return Err(SettingsError::MissingLoginProvider);
+    };
+    // Parse the callback URL once, here at the config boundary (§1), so an
+    // empty / whitespace / malformed value fails fast at startup with a
+    // clear error instead of surfacing only when discovery hands it to the
+    // OIDC client.
+    validate_redirect_url(&redirect)?;
+    Ok((issuer, id, secret, redirect))
+}
+
+/// Validate a login OIDC `redirect_url`: a syntactically valid `http`/`https`
+/// URL (a path is expected, e.g. `/auth/oidc/callback`) within a sane length.
+fn validate_redirect_url(raw: &str) -> Result<(), SettingsError> {
+    const MAX_BYTES: usize = 2048;
+    if raw.len() > MAX_BYTES {
+        return Err(SettingsError::InvalidRedirectUrl {
+            raw: raw.to_owned(),
+            reason: "too long",
+        });
     }
+    let url = url::Url::parse(raw).map_err(|_| SettingsError::InvalidRedirectUrl {
+        raw: raw.to_owned(),
+        reason: "not a valid URL",
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(SettingsError::InvalidRedirectUrl {
+            raw: raw.to_owned(),
+            reason: "scheme must be http or https",
+        });
+    }
+    Ok(())
 }
 
 /// Parse the comma-separated `PATOM_CORS_ALLOWED_ORIGINS` list into
@@ -1150,6 +1188,15 @@ mod tests {
         raw.google_redirect_url = None;
         let err = Settings::try_from(raw).expect_err("expected error");
         assert!(matches!(err, SettingsError::MissingLoginProvider));
+    }
+
+    #[test]
+    fn malformed_login_redirect_url_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.google_redirect_url = Some("not a url".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::InvalidRedirectUrl { .. }));
     }
 
     #[test]

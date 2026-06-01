@@ -30,7 +30,9 @@ use url::Url;
 use crate::types::SecretString;
 
 use super::error::AuthError;
-use super::limits::{OAUTH_HTTP_TIMEOUT, OIDC_DISCOVERY_TIMEOUT};
+use super::limits::{
+    MAX_AVATAR_URL_BYTES, MAX_DISPLAY_NAME_BYTES, OAUTH_HTTP_TIMEOUT, OIDC_DISCOVERY_TIMEOUT,
+};
 use super::locale_hint::LocaleHint;
 use super::types::{
     Email, IssuerUrl, OAuthState, OidcNonce, OidcProfile, OidcSubject, PkceVerifier,
@@ -190,14 +192,23 @@ impl OidcProvider {
             .ok_or_else(|| AuthError::OAuthProvider("id_token missing email".to_owned()))?;
         let email = Email::try_from(email_raw.as_str())?;
         let subject = OidcSubject::try_from(claims.subject().as_str())?;
+        // `name` / `picture` are free-form IdP claims. With pluggable
+        // issuers we can't trust their size, so cap them at the boundary
+        // against the `users` column limits (§5) — an over-cap value is
+        // dropped (a best-effort hint, like `locale`) rather than left to
+        // blow up the later `users` insert's CHECK.
         let display_name = claims
             .name()
             .and_then(|n| n.get(None))
-            .map(|n| n.as_str().to_owned());
+            .map(|n| n.as_str())
+            .filter(|n| n.len() <= MAX_DISPLAY_NAME_BYTES)
+            .map(ToOwned::to_owned);
         let avatar_url = claims
             .picture()
             .and_then(|p| p.get(None))
-            .map(|p| p.as_str().to_owned());
+            .map(|p| p.as_str())
+            .filter(|p| p.len() <= MAX_AVATAR_URL_BYTES)
+            .map(ToOwned::to_owned);
         // Locale is a hint; a misshapen tag is dropped rather than
         // failing sign-in (we fall back to Accept-Language / DEFAULT).
         let locale = claims

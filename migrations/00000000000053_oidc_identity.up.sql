@@ -55,5 +55,12 @@ ALTER TABLE user_identities
 -- oauth_login_states: carry the id_token nonce through the round-trip.
 -- ───────────────────────────────────────────────────────────────────────────
 
+-- The `nonce` column is NOT NULL with no default, so adding it would abort
+-- if any in-flight login-state row exists. Those rows are ephemeral (10-min
+-- TTL, mid-consent round-trips) and carry no durable value, so clear them
+-- first — the alternative (nullable → backfill → SET NOT NULL) would only
+-- invent throwaway nonces for logins that are about to be abandoned.
+DELETE FROM oauth_login_states;
+
 ALTER TABLE oauth_login_states
     ADD COLUMN nonce TEXT NOT NULL CHECK (octet_length(nonce) BETWEEN 1 AND 128);
