@@ -219,8 +219,13 @@ impl fmt::Display for ObjectKey {
     }
 }
 
-/// Public-facing URL for a stored asset. CLAUDE.md §1: parse at the
-/// boundary; the smart constructor enforces `https` + length cap.
+/// Public-facing URL for a stored asset.
+///
+/// CLAUDE.md §1: parse at the boundary; the smart constructor enforces an
+/// http(s) scheme + length cap. `http://` is permitted so self-hosted
+/// MinIO behind a plain-HTTP endpoint works; production deployments
+/// serving the SPA over https should front object storage with an https
+/// reverse proxy.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AssetUrl(Arc<str>);
 
@@ -245,10 +250,10 @@ impl TryFrom<&str> for AssetUrl {
                 got: raw.len(),
             });
         }
-        if !raw.starts_with("https://") {
+        if !raw.starts_with("https://") && !raw.starts_with("http://") {
             return Err(ParseError::Malformed {
                 field: "asset.url",
-                detail: "must be https://",
+                detail: "must be http:// or https://",
             });
         }
         Ok(Self(Arc::from(raw)))
@@ -356,12 +361,20 @@ mod tests {
     }
 
     #[test]
-    fn asset_url_requires_https() {
+    fn asset_url_requires_http_scheme() {
+        // https is accepted (CDN / R2).
+        assert!(AssetUrl::try_from("https://assets.example/x.png").is_ok());
+        // http is accepted too — self-hosted MinIO over plain HTTP.
+        assert!(AssetUrl::try_from("http://minio:9000/patom-assets/x.png").is_ok());
+        // anything without an http(s) scheme is rejected.
         assert!(matches!(
-            AssetUrl::try_from("http://assets.example/x.png"),
+            AssetUrl::try_from("ftp://assets.example/x.png"),
             Err(ParseError::Malformed { .. })
         ));
-        assert!(AssetUrl::try_from("https://assets.example/x.png").is_ok());
+        assert!(matches!(
+            AssetUrl::try_from("/relative/x.png"),
+            Err(ParseError::Malformed { .. })
+        ));
     }
 
     #[test]

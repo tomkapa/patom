@@ -186,7 +186,7 @@ impl IntoResponse for HttpError {
             Self::Asset(AssetError::Timeout) => {
                 (StatusCode::GATEWAY_TIMEOUT, "asset upload timed out".into())
             }
-            Self::Asset(AssetError::R2Put(_) | AssetError::R2Delete(_)) => (
+            Self::Asset(AssetError::StoragePut(_) | AssetError::StorageDelete(_)) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "asset storage error".into(),
             ),
