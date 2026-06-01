@@ -65,10 +65,29 @@ secret:
     # PATOM_MICROSOFT_365_CLIENT_ID: "CHANGE_ME"
     # PATOM_MICROSOFT_365_CLIENT_SECRET: "CHANGE_ME"
 
-# Point the app at your own hostname (cert-manager issues TLS for this host).
-# ingress:
-#   host: patom.example.com
-#   clusterIssuer: letsencrypt-prod
+# Point the app at your own domain. This single `host` value drives the ingress
+# AND the app's redirect/web-base URLs (derived as https://<host>). Defaults are
+# single-origin: host-only cookies, no CORS — leave the `app` block untouched
+# unless you serve the app across multiple hostnames. See
+# doc/operations/self-hosting.md for DNS + TLS prerequisites.
+ingress:
+  host: patom.example.com
+  tls:
+    # Choose ONE TLS source:
+    #   cert-manager    — needs cert-manager + a ClusterIssuer; it issues/renews.
+    mode: cert-manager
+    clusterIssuer: letsencrypt-prod
+    #   existing-secret — pre-create the TLS Secret yourself, then:
+    #     mode: existing-secret
+    #     secretName: my-tls   # kubectl create secret tls my-tls --cert=... --key=...
+    #   none            — TLS terminated upstream (cloud LB / edge):
+    #     mode: none
+
+# Cross-subdomain cookie/CORS — OFF by default (single-origin). Set these only if
+# the app and a sibling site share cookies / call each other across hostnames:
+# app:
+#   cookieDomain: ".example.com"
+#   corsAllowedOrigins: ["https://www.example.com"]
 
 # --- Observability / telemetry (issue #88) ---
 # Private by default: the chart ships PATOM_GENAI_CAPTURE_CONTENT=0 (no prompt or
