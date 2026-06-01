@@ -1,6 +1,6 @@
 # Postgres-specific allows. The namespace-wide default-deny + allow-dns come from
 # the patom chart (distinct names, additive). 5432 ingress only from the app and
-# the backup job; the backup job also needs egress to Postgres + R2.
+# the backup job; the backup job also needs egress to Postgres + object storage.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -43,7 +43,7 @@ spec:
               {{- include "postgres.selectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: {{ .Values.service.port }} }
-    # DNS — self-contained so the backup job can resolve the R2 endpoint without
+    # DNS — self-contained so the backup job can resolve the S3 endpoint without
     # depending on the patom chart's namespace-wide allow-dns policy.
     - to:
         - namespaceSelector:
@@ -52,7 +52,9 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
-    # R2 upload over HTTPS (exclude private + other reserved ranges).
+    # Object-storage upload over HTTPS (exclude private + other reserved
+    # ranges). Sized for a public S3 endpoint (R2/AWS); a self-hosted store
+    # on a private IP or non-443 port needs an extra egress rule here.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

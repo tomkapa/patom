@@ -150,7 +150,7 @@ pub struct AppState {
     /// stay first-class.
     pub slack: Option<SlackAppState>,
     /// Object-storage seam for user avatars and MCP catalog icons.
-    /// `Some` when `PATOM_R2_*` env vars are configured; `None` makes
+    /// `Some` when `PATOM_S3_*` env vars are configured; `None` makes
     /// the upload routes 503 with "asset storage not configured".
     pub assets: Option<SharedAssetStore>,
     /// Workspace-settings store. Reads/writes `organizations`,

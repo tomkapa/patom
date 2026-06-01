@@ -1,11 +1,12 @@
-//! Cloudflare R2 (S3-compatible) implementation of [`AssetStore`].
+//! Generic S3-compatible implementation of [`AssetStore`].
 //!
-//! R2 speaks the S3 API at `https://<account_id>.r2.cloudflarestorage.com`
-//! with region `auto`. The SDK's normal credential-chain resolution would
-//! look at the EC2 IMDS / ECS provider / etc.; we short-circuit it with a
-//! static credential built from the configured access key + secret so
-//! startup is hermetic and we never accidentally pick up the host's AWS
-//! creds.
+//! Works against any S3 API endpoint — MinIO, AWS S3, self-hosted, or
+//! Cloudflare R2 — using the explicit endpoint + region resolved at the
+//! config boundary ([`ObjectStorageSettings`]). The SDK's normal
+//! credential-chain resolution would look at the EC2 IMDS / ECS provider /
+//! etc.; we short-circuit it with a static credential built from the
+//! configured access key + secret so startup is hermetic and we never
+//! accidentally pick up the host's AWS creds.
 
 use std::fmt;
 use std::sync::Arc;
@@ -22,16 +23,16 @@ use bytes::Bytes;
 use tokio::time::timeout;
 use tracing::instrument;
 
-use crate::config::R2Settings;
+use crate::config::ObjectStorageSettings;
 
 use super::error::AssetError;
-use super::limits::{R2_DELETE_TIMEOUT, R2_PUT_TIMEOUT};
+use super::limits::{STORAGE_DELETE_TIMEOUT, STORAGE_PUT_TIMEOUT};
 use super::traits::{AssetStore, AssetUrl, ImageContentType, ObjectKey};
 
-/// Cloudflare R2 connection bundle. Cheap to clone — the inner `S3Client`
+/// S3-compatible connection bundle. Cheap to clone — the inner `S3Client`
 /// holds an `Arc` internally.
 #[derive(Clone)]
-pub struct R2AssetStore {
+pub struct S3AssetStore {
     client: S3Client,
     bucket: Arc<str>,
     /// Base URL the FE renders. Stored without trailing slash; `put`
@@ -39,32 +40,34 @@ pub struct R2AssetStore {
     public_host: Arc<str>,
 }
 
-impl R2AssetStore {
-    /// Construct a client from validated R2 settings. Synchronous —
-    /// [`aws_config::SdkConfig`] assembly is pure data; no network
-    /// round-trip happens until the first PutObject.
+impl S3AssetStore {
+    /// Construct a client from validated object-storage settings.
+    /// Synchronous — [`aws_config::SdkConfig`] assembly is pure data; no
+    /// network round-trip happens until the first PutObject.
     ///
-    /// `public_host` is already validated by the config boundary
-    /// ([`R2Settings`] parsing rejects non-`https://` and trailing
-    /// slashes), so this constructor doesn't re-check it.
-    pub fn new(settings: &R2Settings) -> Self {
+    /// `endpoint` and `public_host` are already validated by the config
+    /// boundary ([`ObjectStorageSettings`] parsing rejects non-origin URLs
+    /// and trailing slashes), so this constructor doesn't re-check them.
+    #[must_use]
+    pub fn new(settings: &ObjectStorageSettings) -> Self {
         let credentials = Credentials::new(
             settings.access_key_id.expose(),
             settings.secret_access_key.expose(),
             None,
             None,
-            "patom-r2-static",
+            "patom-s3-static",
         );
         let sdk_config = aws_config::SdkConfig::builder()
             .behavior_version(BehaviorVersion::latest())
-            .region(Region::new("auto"))
-            .endpoint_url(settings.endpoint())
+            .region(Region::new(settings.region.clone()))
+            .endpoint_url(&settings.endpoint)
             .credentials_provider(SharedCredentialsProvider::new(credentials))
             .build();
         let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
-            // R2 requires path-style addressing; the SDK's virtual-host
-            // default would try `<bucket>.<account>.r2.cloudflarestorage.com`
-            // which is not how R2 routes requests.
+            // Path-style addressing (`<endpoint>/<bucket>/<key>`) works
+            // universally — MinIO and R2 require it, AWS still supports it.
+            // The SDK's virtual-host default (`<bucket>.<endpoint>`) breaks
+            // MinIO/R2, so we force path-style for every backend.
             .force_path_style(true)
             .build();
         Self {
@@ -80,9 +83,9 @@ impl R2AssetStore {
     }
 }
 
-impl fmt::Debug for R2AssetStore {
+impl fmt::Debug for S3AssetStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("R2AssetStore")
+        f.debug_struct("S3AssetStore")
             .field("bucket", &&*self.bucket)
             .field("public_host", &&*self.public_host)
             .finish_non_exhaustive()
@@ -90,7 +93,7 @@ impl fmt::Debug for R2AssetStore {
 }
 
 #[async_trait]
-impl AssetStore for R2AssetStore {
+impl AssetStore for S3AssetStore {
     #[instrument(
         name = "assets.put",
         skip(self, bytes),
@@ -126,7 +129,7 @@ impl AssetStore for R2AssetStore {
             .send();
         // Box::pin keeps the SDK's large output future off the stack
         // — clippy::large_futures otherwise flags ~21 KB of inline.
-        Box::pin(run_with_timeout(R2_PUT_TIMEOUT, put))
+        Box::pin(run_with_timeout(STORAGE_PUT_TIMEOUT, put))
             .await
             .map_err(SdkOutcome::into_put_error)?;
         self.build_public_url(&key)
@@ -140,7 +143,7 @@ impl AssetStore for R2AssetStore {
             .bucket(self.bucket.as_ref())
             .key(key.as_str())
             .send();
-        Box::pin(run_with_timeout(R2_DELETE_TIMEOUT, del))
+        Box::pin(run_with_timeout(STORAGE_DELETE_TIMEOUT, del))
             .await
             .map_err(SdkOutcome::into_delete_error)?;
         Ok(())
@@ -148,8 +151,8 @@ impl AssetStore for R2AssetStore {
 }
 
 /// Per-op-neutral outcome from [`run_with_timeout`]. The caller maps
-/// this onto its specific [`AssetError`] variant (R2Put vs R2Delete) so
-/// errors carry the correct operation label.
+/// this onto its specific [`AssetError`] variant (StoragePut vs
+/// StorageDelete) so errors carry the correct operation label.
 enum SdkOutcome {
     Timeout,
     Sdk(String),
@@ -159,14 +162,14 @@ impl SdkOutcome {
     fn into_put_error(self) -> AssetError {
         match self {
             Self::Timeout => AssetError::Timeout,
-            Self::Sdk(msg) => AssetError::R2Put(msg),
+            Self::Sdk(msg) => AssetError::StoragePut(msg),
         }
     }
 
     fn into_delete_error(self) -> AssetError {
         match self {
             Self::Timeout => AssetError::Timeout,
-            Self::Sdk(msg) => AssetError::R2Delete(msg),
+            Self::Sdk(msg) => AssetError::StorageDelete(msg),
         }
     }
 }
@@ -174,7 +177,7 @@ impl SdkOutcome {
 /// Wrap an async S3 future in `tokio::time::timeout` and surface the
 /// SDK's full error chain. Returns [`SdkOutcome`] — the caller maps it
 /// to the operation-specific [`AssetError`] variant so a delete failure
-/// doesn't surface as `R2Put` and vice versa.
+/// doesn't surface as `StoragePut` and vice versa.
 async fn run_with_timeout<F, T, E>(dur: Duration, fut: F) -> Result<T, SdkOutcome>
 where
     F: std::future::Future<Output = Result<T, E>>,
@@ -201,9 +204,9 @@ where
 /// In-memory [`AssetStore`] for tests.
 ///
 /// Stores bytes in a `Mutex<HashMap>` and synthesises the public URL
-/// the same way the R2 impl does. Lives here (not under `#[cfg(test)]`)
+/// the same way the S3 impl does. Lives here (not under `#[cfg(test)]`)
 /// so integration tests in `tests/` can build a router without standing
-/// up a real R2 bucket.
+/// up a real object-storage bucket.
 pub struct InMemoryAssetStore {
     public_host: Arc<str>,
     objects: tokio::sync::Mutex<std::collections::HashMap<String, (Bytes, ImageContentType)>>,

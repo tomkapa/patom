@@ -84,14 +84,23 @@ pub enum SettingsError {
     InvalidSlackClientId,
 
     #[error(
-        "r2: partial configuration; set all of PATOM_R2_ACCOUNT_ID, \
-         PATOM_R2_BUCKET, PATOM_R2_ACCESS_KEY_ID, PATOM_R2_SECRET_ACCESS_KEY, \
-         PATOM_R2_PUBLIC_HOST — or none"
+        "s3: partial configuration; set all of PATOM_S3_ENDPOINT, \
+         PATOM_S3_BUCKET, PATOM_S3_ACCESS_KEY_ID, PATOM_S3_SECRET_ACCESS_KEY, \
+         PATOM_S3_PUBLIC_HOST — or none"
     )]
-    PartialR2Config,
+    PartialS3Config,
 
-    #[error("r2: PATOM_R2_PUBLIC_HOST {raw:?} is not a valid https origin ({reason})")]
-    InvalidR2PublicHost { raw: String, reason: &'static str },
+    #[error("s3: PATOM_S3_ENDPOINT {raw:?} is not a valid http(s) origin ({reason})")]
+    InvalidS3Endpoint { raw: String, reason: &'static str },
+
+    #[error(
+        "s3: PATOM_S3_PUBLIC_HOST {raw:?} is not a valid http(s) base URL \
+         (optional path prefix allowed) ({reason})"
+    )]
+    InvalidS3PublicHost { raw: String, reason: &'static str },
+
+    #[error("s3: PATOM_S3_{field} must not be empty")]
+    EmptyS3Field { field: &'static str },
 }
 
 /// Process-wide configuration loaded once at startup. Secrets are wrapped in
@@ -130,41 +139,44 @@ pub struct Settings {
     /// set. `None` is a first-class deployment (the Slack routes and
     /// background workers stay un-spawned).
     pub slack: Option<SlackSettings>,
-    /// Cloudflare R2 (S3-compatible) object storage. Present iff all
-    /// `PATOM_R2_*` env vars are set. When `None`, the upload endpoints
-    /// 503 with "asset storage not configured" — deployments that don't
-    /// care about avatar/icon uploads stay first-class.
-    pub r2: Option<R2Settings>,
+    /// Generic S3-compatible object storage (MinIO / AWS / self-hosted /
+    /// Cloudflare R2). Present iff all required `PATOM_S3_*` env vars are
+    /// set. When `None`, the upload endpoints 503 with "asset storage not
+    /// configured" — deployments that don't care about avatar/icon uploads
+    /// stay first-class.
+    pub object_storage: Option<ObjectStorageSettings>,
 }
 
-/// R2 object-storage configuration. All five fields are required as a
-/// group; the `TryFrom<RawSettings>` impl rejects partial sets via
-/// [`SettingsError::PartialR2Config`].
+/// S3-compatible object-storage configuration.
+///
+/// The endpoint is resolved at the config boundary so the asset layer
+/// never composes a URL itself (CLAUDE.md §1). For Cloudflare R2, point
+/// `PATOM_S3_ENDPOINT` at `https://<account_id>.r2.cloudflarestorage.com`
+/// and set `PATOM_S3_REGION=auto`.
+///
+/// The five non-region fields are required as a group; the
+/// `TryFrom<RawSettings>` impl rejects partial sets via
+/// [`SettingsError::PartialS3Config`].
 #[derive(Debug, Clone)]
-pub struct R2Settings {
-    /// Cloudflare account id — used to compose the S3 endpoint URL.
-    pub account_id: SecretString,
-    /// R2 bucket name (e.g. `patom-assets-prod`).
+pub struct ObjectStorageSettings {
+    /// S3 endpoint URL (e.g. `https://s3.us-east-1.amazonaws.com`,
+    /// `http://minio:9000`, or `https://<acct>.r2.cloudflarestorage.com`).
+    /// Validated at the boundary: http(s) origin, no path/query/fragment,
+    /// no trailing slash.
+    pub endpoint: String,
+    /// SigV4 region label. `us-east-1` by default; `auto` for R2.
+    pub region: String,
+    /// Bucket name (e.g. `patom-assets-prod`).
     pub bucket: String,
-    /// Scoped R2 API token: access key id.
+    /// Access key id.
     pub access_key_id: SecretString,
-    /// Scoped R2 API token: secret access key.
+    /// Secret access key.
     pub secret_access_key: SecretString,
-    /// Public-facing base URL (custom domain) the FE renders. Validated
-    /// at the boundary: `https://` scheme, no path/query/fragment, no
-    /// trailing slash.
+    /// Public-facing base URL the FE renders, e.g. `https://asset.example`
+    /// (CDN) or `http://minio:9000/<bucket>` (path-style direct).
+    /// Validated at the boundary: `http(s)://` scheme, an optional path
+    /// prefix, no query/fragment, no trailing slash.
     pub public_host: String,
-}
-
-impl R2Settings {
-    /// Compose the S3-compatible endpoint URL for the account.
-    #[must_use]
-    pub fn endpoint(&self) -> String {
-        format!(
-            "https://{account}.r2.cloudflarestorage.com",
-            account = self.account_id.expose(),
-        )
-    }
 }
 
 /// Slack-side configuration. All fields required as a group; the
@@ -509,17 +521,20 @@ struct RawSettings {
     #[serde(default)]
     patom_slack_client_secret: Option<SecretString>,
 
-    // R2 object storage — same all-or-nothing rule as Slack.
+    // S3-compatible object storage — same all-or-nothing rule as Slack
+    // for the five required fields. `region` is optional (defaulted).
     #[serde(default)]
-    patom_r2_account_id: Option<SecretString>,
+    patom_s3_endpoint: Option<String>,
     #[serde(default)]
-    patom_r2_bucket: Option<String>,
+    patom_s3_region: Option<String>,
     #[serde(default)]
-    patom_r2_access_key_id: Option<SecretString>,
+    patom_s3_bucket: Option<String>,
     #[serde(default)]
-    patom_r2_secret_access_key: Option<SecretString>,
+    patom_s3_access_key_id: Option<SecretString>,
     #[serde(default)]
-    patom_r2_public_host: Option<String>,
+    patom_s3_secret_access_key: Option<SecretString>,
+    #[serde(default)]
+    patom_s3_public_host: Option<String>,
 }
 
 fn default_web_dist() -> PathBuf {
@@ -536,8 +551,24 @@ const fn default_cookie_secure() -> bool {
 /// as `Err` so the caller can wrap it into a per-field error variant.
 ///
 /// `allowed_schemes` is the set the URL must match (e.g. `&["https"]`
-/// for R2, `&["http", "https"]` for the SPA base url).
+/// for the OIDC issuer, `&["http", "https"]` for the SPA base url and the
+/// S3 endpoint / public host).
 fn parse_origin(raw: &str, allowed_schemes: &[&str]) -> Result<String, &'static str> {
+    let parsed = parse_http_url(raw, allowed_schemes)?;
+    if parsed.path() != "/" && !parsed.path().is_empty() {
+        return Err("must be an origin with no path");
+    }
+    // `Origin::ascii_serialization` yields `scheme://host[:port]` with no
+    // trailing slash, regardless of whether `raw` ended with one.
+    Ok(parsed.origin().ascii_serialization())
+}
+
+/// Parse `raw` and run the validation shared by every config URL: scheme
+/// is in `allowed_schemes`, and no query, fragment, or userinfo is
+/// present. Hands the parsed [`url::Url`] back so the caller can finish
+/// according to its own shape (origin-only via [`parse_origin`], or
+/// origin-plus-path via [`parse_base_url`]).
+fn parse_http_url(raw: &str, allowed_schemes: &[&str]) -> Result<url::Url, &'static str> {
     let parsed = url::Url::parse(raw).map_err(|_| "not a valid url")?;
     if !allowed_schemes.iter().any(|&s| s == parsed.scheme()) {
         return Err(match allowed_schemes {
@@ -546,18 +577,13 @@ fn parse_origin(raw: &str, allowed_schemes: &[&str]) -> Result<String, &'static 
             _ => "scheme not allowed",
         });
     }
-    if parsed.path() != "/" && !parsed.path().is_empty() {
-        return Err("must be an origin with no path");
-    }
     if parsed.query().is_some() || parsed.fragment().is_some() {
         return Err("must not include query or fragment");
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("userinfo is not allowed");
     }
-    // `Origin::ascii_serialization` yields `scheme://host[:port]` with no
-    // trailing slash, regardless of whether `raw` ended with one.
-    Ok(parsed.origin().ascii_serialization())
+    Ok(parsed)
 }
 
 /// Validate `PATOM_WEB_BASE_URL` — must be an http(s) origin so callers
@@ -828,32 +854,14 @@ impl TryFrom<RawSettings> for Settings {
             }
             _ => return Err(SettingsError::PartialSlackConfig),
         };
-        let r2 = match (
-            raw.patom_r2_account_id,
-            raw.patom_r2_bucket,
-            raw.patom_r2_access_key_id,
-            raw.patom_r2_secret_access_key,
-            raw.patom_r2_public_host,
-        ) {
-            (None, None, None, None, None) => None,
-            (
-                Some(account_id),
-                Some(bucket),
-                Some(access_key_id),
-                Some(secret_access_key),
-                Some(public_host_raw),
-            ) => {
-                let public_host = parse_r2_public_host(&public_host_raw)?;
-                Some(R2Settings {
-                    account_id,
-                    bucket,
-                    access_key_id,
-                    secret_access_key,
-                    public_host,
-                })
-            }
-            _ => return Err(SettingsError::PartialR2Config),
-        };
+        let object_storage = resolve_object_storage(
+            raw.patom_s3_endpoint,
+            raw.patom_s3_region,
+            raw.patom_s3_bucket,
+            raw.patom_s3_access_key_id,
+            raw.patom_s3_secret_access_key,
+            raw.patom_s3_public_host,
+        )?;
         Ok(Self {
             providers,
             brave_search_api_key: raw.brave_search_api_key,
@@ -865,19 +873,105 @@ impl TryFrom<RawSettings> for Settings {
             auth,
             web_dist: raw.patom_web_dist,
             slack,
-            r2,
+            object_storage,
         })
     }
 }
 
-/// Validate `PATOM_R2_PUBLIC_HOST` — must be an `https://` origin so the
-/// asset module can join it to object keys with a single `/` without
-/// producing `//<key>` URLs.
-fn parse_r2_public_host(raw: &str) -> Result<String, SettingsError> {
-    parse_origin(raw, &["https"]).map_err(|reason| SettingsError::InvalidR2PublicHost {
+/// Default SigV4 region when `PATOM_S3_REGION` is unset. MinIO ignores
+/// the region; AWS accepts `us-east-1` as the canonical default; R2 wants
+/// `auto` (set explicitly by the operator).
+const DEFAULT_S3_REGION: &str = "us-east-1";
+
+/// Resolve the optional S3 object-storage settings from the raw env
+/// fields. The five non-region fields are required as a group: all unset
+/// → `None` (uploads disabled, a first-class deployment); all set →
+/// `Some`; any mixed subset → [`SettingsError::PartialS3Config`].
+fn resolve_object_storage(
+    endpoint: Option<String>,
+    region: Option<String>,
+    bucket: Option<String>,
+    access_key_id: Option<SecretString>,
+    secret_access_key: Option<SecretString>,
+    public_host: Option<String>,
+) -> Result<Option<ObjectStorageSettings>, SettingsError> {
+    match (
+        endpoint,
+        bucket,
+        access_key_id,
+        secret_access_key,
+        public_host,
+    ) {
+        (None, None, None, None, None) => Ok(None),
+        (
+            Some(endpoint_raw),
+            Some(bucket),
+            Some(access_key_id),
+            Some(secret_access_key),
+            Some(public_host_raw),
+        ) => {
+            // `bucket` and `region` have no URL shape to parse, but an empty
+            // value is still a misconfiguration — reject it here so it fails
+            // at startup, not as an opaque S3 error on the first upload.
+            let region = match region {
+                Some(r) => require_non_empty_s3(r, "REGION")?,
+                None => DEFAULT_S3_REGION.to_owned(),
+            };
+            Ok(Some(ObjectStorageSettings {
+                endpoint: parse_s3_endpoint(&endpoint_raw)?,
+                region,
+                bucket: require_non_empty_s3(bucket, "BUCKET")?,
+                access_key_id,
+                secret_access_key,
+                public_host: parse_s3_public_host(&public_host_raw)?,
+            }))
+        }
+        _ => Err(SettingsError::PartialS3Config),
+    }
+}
+
+/// Reject an empty / whitespace-only required S3 field. `field` is the env
+/// var suffix (e.g. `BUCKET`) used in the [`SettingsError::EmptyS3Field`]
+/// message. Returns the value unchanged when non-empty.
+fn require_non_empty_s3(raw: String, field: &'static str) -> Result<String, SettingsError> {
+    if raw.trim().is_empty() {
+        return Err(SettingsError::EmptyS3Field { field });
+    }
+    Ok(raw)
+}
+
+/// Validate `PATOM_S3_ENDPOINT` — must be an http(s) origin (no path) so
+/// the SDK receives a clean endpoint URL.
+fn parse_s3_endpoint(raw: &str) -> Result<String, SettingsError> {
+    parse_origin(raw, &["http", "https"]).map_err(|reason| SettingsError::InvalidS3Endpoint {
         raw: raw.to_owned(),
         reason,
     })
+}
+
+/// Validate `PATOM_S3_PUBLIC_HOST` — an http(s) base URL the FE prepends
+/// to an object key. Unlike the endpoint, a path is permitted so a
+/// path-style MinIO base (`http://minio:9000/<bucket>`) works directly;
+/// http is permitted for self-hosted. Any trailing slash is stripped so
+/// the asset module joins `{base}/{key}` without producing `//<key>`.
+fn parse_s3_public_host(raw: &str) -> Result<String, SettingsError> {
+    parse_base_url(raw, &["http", "https"]).map_err(|reason| SettingsError::InvalidS3PublicHost {
+        raw: raw.to_owned(),
+        reason,
+    })
+}
+
+/// Validate `raw` as an absolute http(s) base URL — like [`parse_origin`]
+/// but a path is allowed (e.g. a path-style bucket prefix). Query,
+/// fragment, and userinfo are still rejected; any trailing slash is
+/// stripped so callers can join `{base}/{suffix}` cleanly.
+fn parse_base_url(raw: &str, allowed_schemes: &[&str]) -> Result<String, &'static str> {
+    let parsed = parse_http_url(raw, allowed_schemes)?;
+    // `origin()` yields `scheme://host[:port]`; append the path with any
+    // trailing slash removed (the root path `/` collapses to empty).
+    let origin = parsed.origin().ascii_serialization();
+    let path = parsed.path().trim_end_matches('/');
+    Ok(format!("{origin}{path}"))
 }
 
 /// Default vector dimension. Matches `text-embedding-3-small` / the
@@ -954,11 +1048,12 @@ mod tests {
             patom_slack_signing_secret: None,
             patom_slack_client_id: None,
             patom_slack_client_secret: None,
-            patom_r2_account_id: None,
-            patom_r2_bucket: None,
-            patom_r2_access_key_id: None,
-            patom_r2_secret_access_key: None,
-            patom_r2_public_host: None,
+            patom_s3_endpoint: None,
+            patom_s3_region: None,
+            patom_s3_bucket: None,
+            patom_s3_access_key_id: None,
+            patom_s3_secret_access_key: None,
+            patom_s3_public_host: None,
         }
     }
 
@@ -1206,5 +1301,131 @@ mod tests {
         raw.patom_bootstrap_admin = true;
         let s = Settings::try_from(raw).expect("valid");
         assert!(s.auth.bootstrap_admin);
+    }
+
+    /// Fill the five required S3 fields on `raw` with a MinIO-style
+    /// configuration so individual tests can mutate one knob at a time.
+    fn with_s3(raw: &mut RawSettings) {
+        raw.patom_s3_endpoint = Some("http://minio:9000".to_string());
+        raw.patom_s3_bucket = Some("patom-assets".to_string());
+        raw.patom_s3_access_key_id = Some(secret("AKIA_TEST"));
+        raw.patom_s3_secret_access_key = Some(secret("secret_test"));
+        raw.patom_s3_public_host = Some("http://minio:9000/patom-assets".to_string());
+    }
+
+    #[test]
+    fn s3_resolves() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_s3(&mut raw);
+        let s = Settings::try_from(raw).expect("valid");
+        let store = s.object_storage.expect("configured");
+        assert_eq!(store.endpoint, "http://minio:9000");
+        assert_eq!(store.bucket, "patom-assets");
+        assert_eq!(store.access_key_id.expose(), "AKIA_TEST");
+        // http public host is accepted for self-hosted MinIO.
+        assert_eq!(store.public_host, "http://minio:9000/patom-assets");
+    }
+
+    #[test]
+    fn s3_region_default() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_s3(&mut raw);
+        let s = Settings::try_from(raw).expect("valid");
+        let store = s.object_storage.expect("configured");
+        assert_eq!(store.region, "us-east-1");
+    }
+
+    #[test]
+    fn s3_explicit_region_flows_through() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_s3(&mut raw);
+        // R2 deployment: explicit endpoint + region `auto`.
+        raw.patom_s3_endpoint = Some("https://acct.r2.cloudflarestorage.com".to_string());
+        raw.patom_s3_region = Some("auto".to_string());
+        raw.patom_s3_public_host = Some("https://asset.patom.app".to_string());
+        let s = Settings::try_from(raw).expect("valid");
+        let store = s.object_storage.expect("configured");
+        assert_eq!(store.endpoint, "https://acct.r2.cloudflarestorage.com");
+        assert_eq!(store.region, "auto");
+        assert_eq!(store.public_host, "https://asset.patom.app");
+    }
+
+    #[test]
+    fn partial_s3_group_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        // Endpoint set, the rest unset — a mixed subset.
+        raw.patom_s3_endpoint = Some("http://minio:9000".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::PartialS3Config));
+    }
+
+    #[test]
+    fn invalid_s3_endpoint_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_s3(&mut raw);
+        // A path is not an origin.
+        raw.patom_s3_endpoint = Some("http://minio:9000/path".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::InvalidS3Endpoint { .. }));
+    }
+
+    #[test]
+    fn empty_s3_bucket_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_s3(&mut raw);
+        raw.patom_s3_bucket = Some("   ".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(
+            err,
+            SettingsError::EmptyS3Field { field: "BUCKET" }
+        ));
+    }
+
+    #[test]
+    fn empty_s3_region_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_s3(&mut raw);
+        raw.patom_s3_region = Some(String::new());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(
+            err,
+            SettingsError::EmptyS3Field { field: "REGION" }
+        ));
+    }
+
+    #[test]
+    fn invalid_s3_public_host_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_s3(&mut raw);
+        raw.patom_s3_public_host = Some("ftp://minio:9000".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::InvalidS3PublicHost { .. }));
+    }
+
+    #[test]
+    fn s3_public_host_trailing_slash_stripped() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_s3(&mut raw);
+        raw.patom_s3_public_host = Some("https://asset.patom.app/".to_string());
+        let s = Settings::try_from(raw).expect("valid");
+        let store = s.object_storage.expect("configured");
+        assert_eq!(store.public_host, "https://asset.patom.app");
+    }
+
+    #[test]
+    fn no_object_storage_is_ok() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        let s = Settings::try_from(raw).expect("valid");
+        assert!(s.object_storage.is_none());
     }
 }

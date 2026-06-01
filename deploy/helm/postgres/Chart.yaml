@@ -1,6 +1,6 @@
 apiVersion: v2
 name: postgres
-description: Patom Postgres (pgvector) — StatefulSet on an hcloud-csi volume + pg_dump→R2 backup
+description: Patom Postgres (pgvector) — StatefulSet on an hcloud-csi volume + pg_dump→S3 backup
 type: application
 version: 0.1.0
 appVersion: "17"

@@ -22,7 +22,7 @@ use crate::agents::{
     AgentNamesCache, AgentPromptCache, AgentStoreError, AgentSystemPrompt, CachedAgents,
     DefaultAgentSeed, PgAgentStore, SharedAgentStore, SharedAgents,
 };
-use crate::assets::{R2AssetStore, SharedAssetStore};
+use crate::assets::{S3AssetStore, SharedAssetStore};
 use crate::auth::{
     JwtSigner, Language, OidcProvider, OrgId, PgOrgLanguageResolver, PgOrgRuleResolver,
     PgUserStore, SharedOidcAuth, SharedOrgLanguageResolver, SharedOrgRuleResolver, SharedUserStore,
@@ -818,12 +818,12 @@ pub async fn build_server(
         }
     };
 
-    // Object-storage seam — built once at startup from R2 settings when
+    // Object-storage seam — built once at startup from S3 settings when
     // present. Holding `None` is a first-class deployment shape; the
     // upload routes 503 cleanly instead of every other handler refusing
     // to start. CLAUDE.md §9: pool sized + endpoint resolved at boot.
-    let assets: Option<SharedAssetStore> = settings.r2.as_ref().map(|cfg| {
-        let store: SharedAssetStore = Arc::new(R2AssetStore::new(cfg));
+    let assets: Option<SharedAssetStore> = settings.object_storage.as_ref().map(|cfg| {
+        let store: SharedAssetStore = Arc::new(S3AssetStore::new(cfg));
         store
     });
 

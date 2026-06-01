@@ -9,7 +9,7 @@ image:
   # Pinned release tag. Bumped by hand at chart-release time (NOT by CI). To
   # mirror into a private/air-gap registry, override image.repository (and set
   # imagePullSecrets below). Do not deploy `:latest` in production.
-  tag: bd8840814367
+  tag: 5fea278ff98c
   pullPolicy: IfNotPresent
 # Empty by default: the public GHCR image needs no pull secret. Set this only
 # when mirroring into a private registry, e.g.
@@ -66,8 +66,15 @@ env:
   # CORS allowlist so the marketing apex can read app.patom.app/api/me with
   # credentials. Credentialed CORS forbids a wildcard, so this is explicit.
   PATOM_CORS_ALLOWED_ORIGINS: "https://patom.app"
-  PATOM_R2_PUBLIC_HOST: "https://asset.patom.app"
-  PATOM_R2_BUCKET: "patom"
+  # S3-compatible object storage (generic — MinIO / AWS / R2). The
+  # endpoint embeds the R2 account id, so it stays in the secret store
+  # (`PATOM_S3_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com`)
+  # alongside the credentials (`PATOM_S3_ACCESS_KEY_ID`,
+  # `PATOM_S3_SECRET_ACCESS_KEY`), materialised by the ExternalSecret.
+  # Bucket, region, and public host are non-sensitive and live here.
+  PATOM_S3_PUBLIC_HOST: "https://asset.patom.app"
+  PATOM_S3_BUCKET: "patom"
+  PATOM_S3_REGION: "auto"
   PATOM_GENAI_CAPTURE_CONTENT: 1
 resources:
   requests:
