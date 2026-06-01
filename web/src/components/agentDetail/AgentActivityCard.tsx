@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { ArrowRight, Check, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { SectionCard } from "../molecules/SectionCard";
+import { TableScroll } from "../core/TableScroll";
 import { SectionHeader } from "../atoms/SectionHeader";
 import { Spinner } from "../atoms/Spinner";
 import { CatalogIcon } from "../atoms/CatalogIcon";
@@ -105,7 +106,7 @@ function ActivityBody({
   }
 
   return (
-    <>
+    <TableScroll minWidth={600}>
       <div
         className="grid items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5 font-[var(--font-mono)] text-[9px] tracking-[0.15em] uppercase text-[var(--color-muted-foreground)]"
         style={{ gridTemplateColumns: COL_WIDTHS }}
@@ -125,7 +126,7 @@ function ActivityBody({
           catalogLookup={catalogLookup}
         />
       ))}
-    </>
+    </TableScroll>
   );
 }
 

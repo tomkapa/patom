@@ -1,26 +1,35 @@
 import type { ReactNode } from "react";
-import { GlobalErrorBanner } from "../organisms/GlobalErrorBanner";
+import { AppFrame } from "./AppFrame";
 
+/**
+ * Chat screen layout — a thin adapter over `AppFrame`. The thread `panel`
+ * is an inline fourth column on wide screens and a right overlay below
+ * `lg`; `AppFrame` decides which based on the viewport.
+ */
 export function ChatLayout({
-  rail,
   sidebar,
   main,
   panel,
+  panelOpen,
+  onPanelClose,
+  title,
 }: {
-  rail: ReactNode;
   sidebar: ReactNode;
   main: ReactNode;
   panel: ReactNode;
+  panelOpen: boolean;
+  onPanelClose: () => void;
+  title: ReactNode;
 }) {
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-surface)]">
-      {rail}
-      {sidebar}
-      <main className="flex min-w-0 flex-1 flex-col">
-        <GlobalErrorBanner />
-        {main}
-      </main>
-      {panel}
-    </div>
+    <AppFrame
+      sidebar={sidebar}
+      title={title}
+      panel={panel}
+      panelOpen={panelOpen}
+      onPanelClose={onPanelClose}
+    >
+      {main}
+    </AppFrame>
   );
 }

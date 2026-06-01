@@ -92,9 +92,9 @@ export function SettingsIntegrations() {
         {/* CONNECTED */}
         <SectionHeader
           eyebrow={t("settings.integrations.connected")}
-          className="border-t px-8 py-2.5"
+          className="border-t px-4 md:px-8 py-2.5"
         />
-        <div className="border-b border-[var(--color-line)] px-8 py-6">
+        <div className="border-b border-[var(--color-line)] px-4 md:px-8 py-6">
           {installs.isLoading ? (
             <div className="flex h-24 items-center justify-center">
               <Spinner />
@@ -140,9 +140,9 @@ export function SettingsIntegrations() {
               {t("settings.integrations.available.helper")}
             </span>
           }
-          className="border-t px-8 py-2.5"
+          className="border-t px-4 md:px-8 py-2.5"
         />
-        <div className="grid grid-cols-1 gap-4 px-8 py-6 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 px-4 md:px-8 py-6 lg:grid-cols-2">
           <AvailableCard
             icon={<Sparkles className="h-5 w-5" strokeWidth={1.5} />}
             name="Lark"

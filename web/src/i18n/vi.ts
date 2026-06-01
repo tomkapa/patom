@@ -22,6 +22,11 @@ const vi: TranslationTable = {
   "sidebar.dms": "Tin nhắn riêng",
   "sidebar.empty_agents": "Chưa có agent nào được đăng ký.",
 
+  "menu.home": "Trang chủ",
+  "menu.agent": "Agent",
+  "nav.aria.openMenu": "Mở điều hướng",
+  "nav.aria.closeMenu": "Đóng điều hướng",
+
   "usermenu.signout": "Đăng xuất",
   "usermenu.language.label": "Ngôn ngữ",
   "usermenu.language.en": "English",

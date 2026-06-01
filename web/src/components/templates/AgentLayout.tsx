@@ -9,8 +9,7 @@ import {
   Settings2,
   Shield,
 } from "lucide-react";
-import { MenuRail } from "../organisms/MenuRail";
-import { GlobalErrorBanner } from "../organisms/GlobalErrorBanner";
+import { AppFrame } from "./AppFrame";
 import { Monogram } from "../atoms/Monogram";
 import { Dropdown } from "../molecules/Dropdown";
 import { useT } from "../../i18n";
@@ -71,13 +70,11 @@ export function AgentLayout({
     },
   ];
 
-  return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-paper)]">
-      <MenuRail />
-      <aside
-        className="flex h-full w-[260px] shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-paper-2)]"
-        aria-label={t("agent.detail.nav.aria")}
-      >
+  const sidebar = (
+    <aside
+      className="flex h-full w-[260px] max-w-[85vw] shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-paper-2)]"
+      aria-label={t("agent.detail.nav.aria")}
+    >
         <div className="border-b border-[var(--color-line)] px-5 pt-5 pb-4">
           <div className="font-[var(--font-mono)] text-[10px] tracking-[0.15em] text-[var(--color-muted-foreground)] uppercase">
             {t("agent.detail.nav.eyebrow")}
@@ -158,12 +155,15 @@ export function AgentLayout({
             );
           })}
         </nav>
-      </aside>
-      <main className="flex min-w-0 flex-1 flex-col bg-[var(--color-card)]">
-        <GlobalErrorBanner />
+    </aside>
+  );
+
+  return (
+    <AppFrame sidebar={sidebar} title={agent?.name ?? t("agent.detail.nav.eyebrow")}>
+      <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-card)]">
         {children}
-      </main>
-    </div>
+      </div>
+    </AppFrame>
   );
 }
 
@@ -249,7 +249,7 @@ export function AgentBreadcrumb({
   trail: { label: string; current?: boolean }[];
 }) {
   return (
-    <div className="flex items-center gap-2 px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
+    <div className="flex items-center gap-2 px-4 md:px-8 pt-4 pb-3 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
       {trail.map((step, i) => (
         <span key={`${step.label}-${i}`} className="flex items-center gap-2">
           <span

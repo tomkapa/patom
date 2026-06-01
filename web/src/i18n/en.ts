@@ -26,6 +26,11 @@ const en = {
   "sidebar.dms": "Direct Messages",
   "sidebar.empty_agents": "No agents registered.",
 
+  "menu.home": "Home",
+  "menu.agent": "Agent",
+  "nav.aria.openMenu": "Open navigation",
+  "nav.aria.closeMenu": "Close navigation",
+
   "usermenu.signout": "Sign out",
   "usermenu.language.label": "Language",
   "usermenu.language.en": "English",

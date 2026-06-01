@@ -1,6 +1,5 @@
 import { Navigate } from "react-router-dom";
-import { MenuRail } from "../components/organisms/MenuRail";
-import { GlobalErrorBanner } from "../components/organisms/GlobalErrorBanner";
+import { AppFrame } from "../components/templates/AppFrame";
 import { Spinner } from "../components/atoms/Spinner";
 import { EmptyState } from "../components/molecules/EmptyState";
 import { useAgents } from "../hooks/useAgents";
@@ -36,13 +35,12 @@ export function AgentsIndex() {
 }
 
 function Frame({ children }: { children: React.ReactNode }) {
+  const { t } = useT();
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-paper)]">
-      <MenuRail />
-      <main className="flex min-w-0 flex-1 flex-col bg-[var(--color-card)]">
-        <GlobalErrorBanner />
+    <AppFrame title={t("menu.agent")}>
+      <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-card)]">
         {children}
-      </main>
-    </div>
+      </div>
+    </AppFrame>
   );
 }

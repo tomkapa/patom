@@ -17,6 +17,7 @@ import {
   useAgentTurns,
 } from "../hooks/useAgentLogs";
 import { useAgent } from "../hooks/useAgents";
+import { useIsWide } from "../hooks/useMediaQuery";
 import { useT } from "../i18n";
 import { useAuthStore } from "../stores/authStore";
 import { ApiError, formatError } from "../lib/errors";
@@ -47,6 +48,10 @@ export function AgentLogs() {
   const [kind, setKind] = useState<LogsKindFilter>("all");
   const [compare, setCompare] = useState<LogsCompareMode>("prev_window");
   const [diffTarget, setDiffTarget] = useState<number | null>(null);
+  // The prompt-version diff is a side-by-side view that needs a wide
+  // screen; on mobile/tablet the row is still readable but the diff
+  // affordance is disabled rather than opening an unusable dialog.
+  const canDiff = useIsWide();
 
   const metrics = useAgentMetricsTimeseries(id ?? null, range, compare);
   const turns = useAgentTurns(id ?? null, range, kind);
@@ -76,7 +81,7 @@ export function AgentLogs() {
           <Spinner size={16} />
         </div>
       ) : !agent ? (
-        <div className="flex flex-1 items-center justify-center p-8">
+        <div className="flex flex-1 items-center justify-center p-4 md:p-8">
           <AgentLoadFallback
             error={agentQuery.error}
             onRetry={() => agentQuery.refetch()}
@@ -99,7 +104,7 @@ export function AgentLogs() {
             updatedAt={updatedAt}
             bucketLabel={metrics.data?.bucket_label}
           />
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-8 py-4">
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 md:px-8 py-4">
             <TokenSpendChart
               buckets={metrics.data?.buckets ?? []}
               totals={
@@ -120,7 +125,7 @@ export function AgentLogs() {
               }
               promptEdits={metrics.data?.prompt_edits ?? []}
               loading={metrics.isLoading}
-              onMarkerClick={(v) => setDiffTarget(v)}
+              onMarkerClick={canDiff ? (v) => setDiffTarget(v) : undefined}
             />
             <TurnsTimeline
               pages={allTurns}
@@ -128,13 +133,13 @@ export function AgentLogs() {
               hasNextPage={Boolean(turns.hasNextPage)}
               isFetchingNextPage={turns.isFetchingNextPage}
               onLoadMore={() => turns.fetchNextPage()}
-              onSeparatorClick={(v) => setDiffTarget(v)}
+              onSeparatorClick={canDiff ? (v) => setDiffTarget(v) : undefined}
               promptEdits={metrics.data?.prompt_edits ?? []}
             />
           </div>
         </>
       )}
-      {id ? (
+      {id && canDiff ? (
         <PromptDiffModal
           agentId={id}
           targetVersion={diffTarget}

@@ -76,7 +76,7 @@ export function AgentGeneral() {
           <Spinner size={16} />
         </div>
       ) : !agent ? (
-        <div className="flex flex-1 items-center justify-center p-8">
+        <div className="flex flex-1 items-center justify-center p-4 md:p-8">
           <AgentLoadFallback
             error={agentQuery.error}
             onRetry={() => agentQuery.refetch()}
@@ -103,7 +103,7 @@ export function AgentGeneral() {
               </Button>
             }
           />
-          <div className="flex min-h-0 flex-1 flex-col gap-6 p-8">
+          <div className="flex min-h-0 flex-1 flex-col gap-6 p-4 md:p-8">
             <ModelPickerRow
               models={models}
               value={model}
