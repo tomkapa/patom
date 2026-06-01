@@ -125,10 +125,15 @@ export function AgentGeneral() {
             }
           />
           <div className="flex min-h-0 flex-1 flex-col gap-6 p-4 md:p-8">
-            <div className="flex flex-col gap-2">
-              <span className="font-[var(--font-mono)] text-[11px] tracking-[0.08em] text-[var(--color-muted-foreground)] uppercase">
-                {t("agent.detail.general.avatarLabel")}
-              </span>
+            <div className="flex flex-col items-start gap-3 md:flex-row md:items-center md:justify-between md:gap-6">
+              <div className="flex min-w-0 flex-col gap-1">
+                <div className="text-[14px] font-medium text-[var(--color-ink)]">
+                  {t("agent.detail.general.avatarLabel")}
+                </div>
+                <div className="max-w-[42ch] text-[13px] text-[var(--color-muted-foreground)]">
+                  {t("agent.detail.general.avatarCaption")}
+                </div>
+              </div>
               <ImageUploader
                 kind="avatar"
                 currentUrl={avatarUrl}

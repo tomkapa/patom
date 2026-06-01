@@ -249,6 +249,8 @@ const en = {
     "Configure the agent's name, description, system prompt, and model.",
   "agent.detail.general.save": "Save",
   "agent.detail.general.avatarLabel": "Avatar",
+  "agent.detail.general.avatarCaption":
+    "Shown on this agent's Slack messages and in the agent switcher.",
   "agent.detail.general.modelLabel": "Model",
   "agent.detail.general.modelCaption":
     "The language model this agent uses for inference.",
