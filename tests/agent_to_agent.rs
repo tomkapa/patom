@@ -157,6 +157,7 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
             is_default: false,
             allowed_mcp_tools: patom::agents::AllowedMcpTools::empty(),
             model: None,
+            avatar_url: None,
             edited_by: None,
         })
         .await

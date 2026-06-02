@@ -30,6 +30,7 @@ use super::types::{
     AgentCard, AgentDescription, AgentId, AgentName, AgentRecord, AgentSystemPrompt,
     AllowedMcpTools, DefaultAgentSeed,
 };
+use crate::types::AvatarUrl;
 
 /// Hard cap on `list_names` SQL — fetched batches are bounded per
 /// CLAUDE.md §5. Sized at 4× the inline-render cap; the renderer already
@@ -56,7 +57,7 @@ const AGENT_DEFAULT_SEED_LOCK_KEY: i64 = 0x6167_656E_745F_6473;
 /// explicit and lets the planner reuse the index scan across rows when
 /// the outer query lists every agent.
 const AGENT_SELECT: &str = "a.id, a.org_id, a.name, apv.system_prompt, a.description, \
-    a.is_default, a.allowed_mcp_tools, a.model, \
+    a.is_default, a.allowed_mcp_tools, a.model, a.avatar_url, \
     apv.id AS current_prompt_version_id, a.created_at, a.updated_at \
     FROM agents a \
     JOIN LATERAL ( \
@@ -275,6 +276,9 @@ impl AgentStore for PgAgentStore {
             if let Some(model) = payload.model {
                 current.model = model;
             }
+            if let Some(avatar_url) = payload.avatar_url {
+                current.avatar_url = avatar_url;
+            }
 
             // Promote: clear the old default in the *same org* in the same
             // transaction, then set the flag on this row. No-op if this row
@@ -322,7 +326,8 @@ impl AgentStore for PgAgentStore {
                 "UPDATE agents \
                  SET name = $2, description = $3, \
                      description_embedding = COALESCE($4::vector, description_embedding), \
-                     is_default = $5, allowed_mcp_tools = $6, model = $7, updated_at = $8 \
+                     is_default = $5, allowed_mcp_tools = $6, model = $7, \
+                     avatar_url = $8, updated_at = $9 \
                  WHERE id = $1",
             )
             .bind(id)
@@ -332,6 +337,7 @@ impl AgentStore for PgAgentStore {
             .bind(current.is_default)
             .bind(Json(&current.allowed_mcp_tools))
             .bind(current.model)
+            .bind(current.avatar_url.as_ref().map(AvatarUrl::as_str))
             .bind(now)
             .execute(&mut **tx)
             .await?;
@@ -571,8 +577,9 @@ async fn create_in_tx(
     let insert = sqlx::query(
         "INSERT INTO agents \
                  (id, org_id, name, description, description_embedding, \
-                  is_default, allowed_mcp_tools, model, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8, $9, $9)",
+                  is_default, allowed_mcp_tools, model, avatar_url, \
+                  created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8, $9, $10, $10)",
     )
     .bind(id)
     .bind(payload.org_id)
@@ -582,6 +589,7 @@ async fn create_in_tx(
     .bind(payload.is_default)
     .bind(Json(&payload.allowed_mcp_tools))
     .bind(payload.model)
+    .bind(payload.avatar_url.as_ref().map(AvatarUrl::as_str))
     .bind(now)
     .execute(&mut **tx)
     .await;
@@ -612,6 +620,7 @@ async fn create_in_tx(
         is_default: payload.is_default,
         allowed_mcp_tools: payload.allowed_mcp_tools,
         model: payload.model,
+        avatar_url: payload.avatar_url,
         current_prompt_version_id: version_id,
         created_at: now,
         updated_at: now,
@@ -714,6 +723,10 @@ struct AgentRow {
     // out-of-catalog value here surfaces as `AgentStoreError::Backend` at
     // hydrate — loud (CLAUDE.md §6), not silent.
     model: Option<crate::provider::Model>,
+    /// `agents.avatar_url TEXT NULL`. Read raw and re-validated through
+    /// [`AvatarUrl::try_from`] at hydrate — a row that violates the
+    /// length/scheme invariant surfaces loudly (CLAUDE.md §6), not silent.
+    avatar_url: Option<String>,
     /// Id of the joined `agent_prompt_versions` row (the current
     /// MAX(version) for this agent). Surfaced so the turn-metrics
     /// writer can capture it at turn-start without an extra query.
@@ -735,6 +748,11 @@ impl TryFrom<AgentRow> for AgentRecord {
             is_default: row.is_default,
             allowed_mcp_tools: row.allowed_mcp_tools.0,
             model: row.model,
+            avatar_url: row
+                .avatar_url
+                .as_deref()
+                .map(AvatarUrl::try_from)
+                .transpose()?,
             current_prompt_version_id: row.current_prompt_version_id,
             created_at: row.created_at,
             updated_at: row.updated_at,

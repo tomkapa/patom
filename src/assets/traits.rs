@@ -12,8 +12,8 @@ use crate::types::ParseError;
 
 use super::error::AssetError;
 use super::limits::{
-    ASSET_URL_MAX_LEN, MAX_AVATAR_BYTES, MAX_MCP_ICON_BYTES, MAX_WORKSPACE_AVATAR_BYTES,
-    OBJECT_KEY_MAX_LEN,
+    ASSET_URL_MAX_LEN, MAX_AGENT_AVATAR_BYTES, MAX_AVATAR_BYTES, MAX_MCP_ICON_BYTES,
+    MAX_WORKSPACE_AVATAR_BYTES, OBJECT_KEY_MAX_LEN,
 };
 
 /// Image content-type allowed at the upload boundary.
@@ -89,6 +89,10 @@ pub enum AssetKind {
     /// reason as user avatars; distinct key prefix from `Avatar` so
     /// user and workspace UUIDs cannot collide.
     WorkspaceAvatar,
+    /// Per-agent avatar (issue #43). SVG denied for the same XSS reason
+    /// as user/workspace avatars; distinct key prefix so agent UUIDs
+    /// cannot collide with user or workspace ids.
+    AgentAvatar,
 }
 
 impl AssetKind {
@@ -96,8 +100,13 @@ impl AssetKind {
     #[must_use]
     pub fn accepts(self, content_type: ImageContentType) -> bool {
         match (self, content_type) {
-            (Self::Avatar | Self::WorkspaceAvatar, ImageContentType::Svg) => false,
-            (Self::Avatar | Self::McpCatalogIcon | Self::WorkspaceAvatar, _) => true,
+            (Self::Avatar | Self::WorkspaceAvatar | Self::AgentAvatar, ImageContentType::Svg) => {
+                false
+            }
+            (
+                Self::Avatar | Self::McpCatalogIcon | Self::WorkspaceAvatar | Self::AgentAvatar,
+                _,
+            ) => true,
         }
     }
 
@@ -108,6 +117,7 @@ impl AssetKind {
             Self::Avatar => "avatars",
             Self::McpCatalogIcon => "mcp",
             Self::WorkspaceAvatar => "workspaces",
+            Self::AgentAvatar => "agents",
         }
     }
 
@@ -119,6 +129,7 @@ impl AssetKind {
             Self::Avatar => "avatar",
             Self::McpCatalogIcon => "mcp_icon",
             Self::WorkspaceAvatar => "workspace_avatar",
+            Self::AgentAvatar => "agent_avatar",
         }
     }
 
@@ -129,6 +140,7 @@ impl AssetKind {
             Self::Avatar => MAX_AVATAR_BYTES,
             Self::McpCatalogIcon => MAX_MCP_ICON_BYTES,
             Self::WorkspaceAvatar => MAX_WORKSPACE_AVATAR_BYTES,
+            Self::AgentAvatar => MAX_AGENT_AVATAR_BYTES,
         }
     }
 }
@@ -437,5 +449,24 @@ mod tests {
         )
         .expect("ok");
         assert_eq!(k.as_str(), "workspaces/0123abcd.png");
+    }
+
+    #[test]
+    fn agent_avatar_rejects_svg() {
+        // Issue #43: agent avatars are served on the assets origin and
+        // embedded in the FE / Slack, so SVG is denied like user avatars.
+        assert!(!AssetKind::AgentAvatar.accepts(ImageContentType::Svg));
+        assert!(AssetKind::AgentAvatar.accepts(ImageContentType::Png));
+        assert!(AssetKind::AgentAvatar.accepts(ImageContentType::Jpeg));
+        assert!(AssetKind::AgentAvatar.accepts(ImageContentType::Webp));
+    }
+
+    #[test]
+    fn agent_avatar_uses_own_prefix() {
+        // Distinct prefix so agent UUIDs cannot collide with user or
+        // workspace ids in the bucket.
+        let k = ObjectKey::derive(AssetKind::AgentAvatar, "0123abcd", ImageContentType::Png)
+            .expect("ok");
+        assert_eq!(k.as_str(), "agents/0123abcd.png");
     }
 }

@@ -6,15 +6,21 @@
 //!   * `POST /api/uploads/mcp-catalog/:catalog_id` — owner/admin-only,
 //!     org-scoped catalog entries (built-ins refuse — they're seeded
 //!     via migration).
+//!   * `POST /api/uploads/agent-avatar/:agent_id` — per-agent avatar,
+//!     scoped to an agent visible to the caller's org (issue #43). The
+//!     object is stored and the validated URL returned; persistence to
+//!     `agents.avatar_url` happens on the next `PUT /agents/{id}`.
 
 use axum::Json;
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::routing::post;
 use serde::Serialize;
+use uuid::Uuid;
 
+use crate::agents::AgentId;
 use crate::assets::{AssetKind, AssetUrl, ObjectKey, SharedAssetStore, extract_single_image_field};
-use crate::auth::{AuthError, Principal, Role};
+use crate::auth::{AuthError, Principal, Role, VisibilityTable, visible_to};
 use crate::mcp::{McpCatalogId, McpError};
 use crate::types::AvatarUrl;
 
@@ -48,6 +54,12 @@ pub(super) fn router() -> Router<AppState> {
             "/uploads/mcp-catalog/{catalog_id}",
             post(upload_mcp_catalog_icon).layer(DefaultBodyLimit::max(
                 AssetKind::McpCatalogIcon.max_bytes() + MULTIPART_OVERHEAD,
+            )),
+        )
+        .route(
+            "/uploads/agent-avatar/{agent_id}",
+            post(upload_agent_avatar).layer(DefaultBodyLimit::max(
+                AssetKind::AgentAvatar.max_bytes() + MULTIPART_OVERHEAD,
             )),
         )
 }
@@ -172,5 +184,37 @@ async fn upload_mcp_catalog_icon(
         .await?;
     Ok(Json(UploadResponse {
         url: url.as_str().to_owned(),
+    }))
+}
+
+async fn upload_agent_avatar(
+    State(state): State<AppState>,
+    principal: Principal,
+    Path(agent_id): Path<Uuid>,
+    multipart: Multipart,
+) -> Result<Json<UploadResponse>, HttpError> {
+    let assets = assets_or_503(&state)?;
+    let agent_id = AgentId::from(agent_id);
+    // Tenant gate: an agent the caller's org can't see (cross-org or
+    // unknown) 404s without leaking existence, and — crucially — without
+    // letting a caller write an object under another org's agent key.
+    if !visible_to(
+        &state.pool,
+        &principal,
+        VisibilityTable::Agents,
+        agent_id.as_uuid(),
+    )
+    .await?
+    {
+        return Err(HttpError::NotFound);
+    }
+    let stable_id = agent_id.as_uuid().to_string();
+    let url = extract_and_store(assets, AssetKind::AgentAvatar, &stable_id, multipart).await?;
+    // Validate through the shared `AvatarUrl` so the returned value
+    // matches what `PUT /agents/{id}` will accept; the form persists it
+    // on the next save (no DB write here — see the module header).
+    let avatar = AvatarUrl::try_from(url.as_str()).map_err(HttpError::Parse)?;
+    Ok(Json(UploadResponse {
+        url: avatar.as_str().to_owned(),
     }))
 }

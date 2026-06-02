@@ -159,6 +159,7 @@ impl PromptsHarness {
                 is_default: false,
                 allowed_mcp_tools: patom::agents::AllowedMcpTools::empty(),
                 model: None,
+                avatar_url: None,
                 edited_by: None,
             })
             .await

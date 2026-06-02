@@ -15,6 +15,9 @@
 
 use std::sync::Arc;
 
+use patom::agents::{
+    AgentDescription, AgentId, AgentName, AgentSystemPrompt, AllowedMcpTools, NewAgent,
+};
 use patom::assets::{InMemoryAssetStore, SharedAssetStore};
 use patom::auth::OrgId;
 use patom::clock::SystemClock;
@@ -200,6 +203,28 @@ impl UploadsHarness {
         .execute(&self.pool)
         .await
         .expect("seed org-scoped catalog");
+    }
+
+    /// Create an agent in `org` and return its id. Used by the
+    /// agent-avatar upload tests (issue #43).
+    async fn seed_agent(&self, org: OrgId, name: &str) -> AgentId {
+        self.state
+            .agents
+            .create(NewAgent {
+                org_id: org,
+                name: AgentName::try_from(name).expect("valid name"),
+                system_prompt: AgentSystemPrompt::try_from("be helpful").expect("valid prompt"),
+                description: AgentDescription::try_from(format!("agent {name}"))
+                    .expect("valid desc"),
+                is_default: false,
+                allowed_mcp_tools: AllowedMcpTools::empty(),
+                model: None,
+                avatar_url: None,
+                edited_by: None,
+            })
+            .await
+            .expect("seed agent")
+            .id
     }
 
     /// Demote the principal's role on their seeded org. Used by the
@@ -445,5 +470,78 @@ async fn workspace_avatar_upload_oversize_returns_413(pool: PgPool) {
     let req = upload_request("/api/uploads/workspace-avatar", &h.primary, body);
     let res = app.oneshot(req).await.expect("response");
     assert_eq!(res.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(store.is_empty().await);
+}
+
+#[sqlx::test]
+async fn agent_avatar_upload_writes_store_keyed_by_agent(pool: PgPool) {
+    // Issue #43: uploading for an agent the caller's org owns stores the
+    // object under `agents/<agent_id>.<ext>` and returns its URL. No DB
+    // write here — the agent settings form persists on the next PUT.
+    let (h, store) = UploadsHarness::with_assets(pool).await;
+    let agent_id = h.seed_agent(h.primary.org_id, "atlas").await;
+    let app = router(h.state.clone());
+    let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
+    let req = upload_request(
+        &format!("/api/uploads/agent-avatar/{}", agent_id.as_uuid()),
+        &h.primary,
+        body,
+    );
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("json");
+    let url = json["url"].as_str().expect("url field");
+    let expected_key = format!("agents/{}.png", agent_id.as_uuid());
+    assert!(url.ends_with(&format!("/{expected_key}")), "url = {url}");
+    assert_eq!(store.len().await, 1);
+
+    // Contract: the upload stores the object only — it must NOT persist to
+    // `agents.avatar_url`. That happens on the subsequent `PUT /agents/{id}`.
+    let row: (Option<String>,) = sqlx::query_as("SELECT avatar_url FROM agents WHERE id = $1")
+        .bind(agent_id)
+        .fetch_one(&h.pool)
+        .await
+        .expect("read agent");
+    assert_eq!(row.0, None, "upload must not persist avatar_url directly");
+}
+
+#[sqlx::test]
+async fn agent_avatar_upload_cross_org_agent_returns_404(pool: PgPool) {
+    // An agent in another org is invisible (RLS) — the upload 404s
+    // without writing an object under that org's agent key.
+    let (h, store) = UploadsHarness::with_assets(pool).await;
+    let other = seed_principal(&h.pool, &h.state.jwt).await;
+    let foreign_agent = h.seed_agent(other.org_id, "foreign").await;
+    let app = router(h.state.clone());
+    let body = build_multipart("image/png", &pad(PNG_HEADER, 256));
+    let req = upload_request(
+        &format!("/api/uploads/agent-avatar/{}", foreign_agent.as_uuid()),
+        &h.primary,
+        body,
+    );
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
+    assert!(store.is_empty().await);
+}
+
+#[sqlx::test]
+async fn agent_avatar_upload_svg_rejected(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
+    let agent_id = h.seed_agent(h.primary.org_id, "svg-agent").await;
+    let app = router(h.state.clone());
+    let body = build_multipart(
+        "image/svg+xml",
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+    );
+    let req = upload_request(
+        &format!("/api/uploads/agent-avatar/{}", agent_id.as_uuid()),
+        &h.primary,
+        body,
+    );
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
     assert!(store.is_empty().await);
 }

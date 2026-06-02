@@ -160,6 +160,11 @@ export type Agent = {
    *  the agent inherits the workspace default. Mirrors
    *  `src/http/routes/agents.rs::AgentResponse.model`. */
   model?: string | null;
+  /** Per-agent avatar URL, or `null` when unset (the FE renders the name
+   *  monogram and Slack uses the default bot avatar). Set via
+   *  {@link Api.uploadAgentAvatar} then persisted on the next PUT. Mirrors
+   *  `src/http/routes/agents.rs::AgentResponse.avatar_url`. */
+  avatar_url?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -178,6 +183,9 @@ export type UpdateAgentRequest = {
   is_default?: boolean;
   allowed_mcp_tools?: Record<string, string[] | null>;
   model?: string | null;
+  /** Tri-state, mirroring `model`: omitted = leave untouched, `null` =
+   *  clear the avatar back to none, string = set to that URL. */
+  avatar_url?: string | null;
 };
 
 /** One row of `GET /models`. Mirrors

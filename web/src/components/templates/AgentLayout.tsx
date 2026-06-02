@@ -189,6 +189,7 @@ function AgentSwitcher({ current }: { current: Agent | null }) {
           <Monogram
             name={current?.name ?? "—"}
             id={current?.id}
+            avatarUrl={current?.avatar_url ?? undefined}
             size={32}
             tone="moss"
           />
@@ -225,7 +226,13 @@ function AgentSwitcher({ current }: { current: Agent | null }) {
                     }}
                     className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-paper-2)]"
                   >
-                    <Monogram name={a.name} id={a.id} size={24} tone="moss" />
+                    <Monogram
+                      name={a.name}
+                      id={a.id}
+                      avatarUrl={a.avatar_url ?? undefined}
+                      size={24}
+                      tone="moss"
+                    />
                     <div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-[var(--color-ink)]">
                       {a.name}
                     </div>

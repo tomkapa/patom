@@ -40,6 +40,7 @@ use crate::mcp::McpServerId;
 use crate::provider::{Model, ProviderId};
 use crate::runtime::RequestKind;
 use crate::tools::{DEFAULT_TOOL_CALLS_PAGE, MAX_TOOL_CALLS_PAGE, ToolCallRowId};
+use crate::types::AvatarUrl;
 
 use super::super::error::HttpError;
 use super::super::state::AppState;
@@ -90,6 +91,10 @@ struct AgentResponse {
     /// provider; the FE can derive the provider chip from the catalog if
     /// needed.
     model: Option<&'static str>,
+    /// Per-agent avatar URL, or `null` when unset (FE renders the name
+    /// monogram; Slack uses the default bot avatar). Set via
+    /// `POST /uploads/agent-avatar/{id}` then persisted on the next PUT.
+    avatar_url: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -104,6 +109,7 @@ impl From<AgentRecord> for AgentResponse {
             is_default: r.is_default,
             allowed_mcp_tools: r.allowed_mcp_tools,
             model: r.model.map(Model::as_str),
+            avatar_url: r.avatar_url.map(|a| a.as_str().to_owned()),
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -133,6 +139,11 @@ struct CreateAgentRequest {
     /// callers do not send it separately.
     #[serde(default)]
     model: Option<Model>,
+    /// Optional avatar URL for the new agent. Omit (or `null`) for no
+    /// avatar. Parsed through the shared [`AvatarUrl`] newtype at the
+    /// handler, so a malformed/oversize URL rejects with 400.
+    #[serde(default)]
+    avatar_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,21 +173,29 @@ struct UpdateAgentRequest {
     /// is allowed here because the tri-state is intentional — the alternative
     /// (a per-field enum) would inflate every PATCH route.
     #[allow(clippy::option_option)]
-    #[serde(default, deserialize_with = "deserialize_optional_optional_model")]
+    #[serde(default, deserialize_with = "deserialize_optional_optional")]
     model: Option<Option<Model>>,
+    /// Patch the per-agent avatar URL. Same tri-state idiom as `model`:
+    /// omitted = leave untouched, `null` = clear to default, `"<url>"` =
+    /// set. The string is parsed through [`AvatarUrl`] in the handler.
+    #[allow(clippy::option_option)]
+    #[serde(default, deserialize_with = "deserialize_optional_optional")]
+    avatar_url: Option<Option<String>>,
 }
 
-/// Tri-state deserialiser so `{}` (omitted), `{"model": null}` (clear), and
-/// `{"model": "claude-sonnet-4-5"}` (set) all map distinctly onto
-/// `Option<Option<Model>>`. The default `Option` deserialise collapses null
-/// and missing, which would force every PATCH to send the field — breaking
-/// partial updates.
+/// Tri-state PATCH deserialiser: `{}` (field omitted) → `None`,
+/// `{"f": null}` → `Some(None)` (clear), `{"f": <value>}` → `Some(Some(_))`
+/// (set). The default `Option` deserialise collapses null and missing, which
+/// would force every PATCH to send the field — breaking partial updates. `T`
+/// is inferred from the field type, so one helper serves every nullable-PATCH
+/// column (`model`, `avatar_url`, …).
 #[allow(clippy::option_option)]
-fn deserialize_optional_optional_model<'de, D>(d: D) -> Result<Option<Option<Model>>, D::Error>
+fn deserialize_optional_optional<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
 {
-    Ok(Some(Option::<Model>::deserialize(d)?))
+    Ok(Some(Option::<T>::deserialize(d)?))
 }
 
 async fn create_agent(
@@ -188,6 +207,11 @@ async fn create_agent(
     let system_prompt =
         AgentSystemPrompt::try_from(payload.system_prompt).map_err(HttpError::Parse)?;
     let description = AgentDescription::try_from(payload.description).map_err(HttpError::Parse)?;
+    let avatar_url = payload
+        .avatar_url
+        .map(AvatarUrl::try_from)
+        .transpose()
+        .map_err(HttpError::Parse)?;
     let record = state
         .agents
         .create(NewAgent {
@@ -198,6 +222,7 @@ async fn create_agent(
             is_default: payload.is_default,
             allowed_mcp_tools: payload.allowed_mcp_tools,
             model: payload.model,
+            avatar_url,
             edited_by: Some(principal.user_id),
         })
         .await?;
@@ -267,6 +292,14 @@ async fn update_agent(
         .transpose()
         .map_err(HttpError::Parse)?;
     let allowed_mcp_tools = payload.allowed_mcp_tools;
+    // Preserve the tri-state through the parse: omitted stays omitted,
+    // `null` stays "clear", a present string is validated into an
+    // `AvatarUrl` (400 on malformed/oversize) before reaching the store.
+    let avatar_url = match payload.avatar_url {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(raw)) => Some(Some(AvatarUrl::try_from(raw).map_err(HttpError::Parse)?)),
+    };
     // Tenant gate: 404 cross-org / unknown ids without leaking existence
     // before dispatching the privileged update.
     if !crate::auth::visible_to(
@@ -297,6 +330,7 @@ async fn update_agent(
                 is_default: payload.is_default,
                 allowed_mcp_tools,
                 model: payload.model,
+                avatar_url,
                 edited_by: Some(principal.user_id),
             },
         )
@@ -330,7 +364,7 @@ async fn delete_agent(
 // run raw SQL inside the principal-scoped tx without going through the
 // store's privileged transaction.
 const AGENT_LIST_SELECT: &str = "a.id, a.org_id, a.name, apv.system_prompt, a.description, \
-    a.is_default, a.allowed_mcp_tools, a.model, a.created_at, a.updated_at \
+    a.is_default, a.allowed_mcp_tools, a.model, a.avatar_url, a.created_at, a.updated_at \
     FROM agents a \
     JOIN LATERAL ( \
         SELECT system_prompt FROM agent_prompt_versions \
@@ -348,6 +382,7 @@ struct AgentRowForList {
     is_default: bool,
     allowed_mcp_tools: SqlxJson<AllowedMcpTools>,
     model: Option<Model>,
+    avatar_url: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -363,6 +398,13 @@ impl AgentRowForList {
             is_default: self.is_default,
             allowed_mcp_tools: self.allowed_mcp_tools.0,
             model: self.model.map(Model::as_str),
+            // The DB CHECK only caps length, so re-parse through `AvatarUrl`
+            // here — as the privileged store hydrate and `model`'s sqlx
+            // decode both do on this path — and drop a row that somehow
+            // violated the URL invariant rather than leak it onto the wire.
+            avatar_url: self
+                .avatar_url
+                .filter(|s| AvatarUrl::try_from(s.as_str()).is_ok()),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }

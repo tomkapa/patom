@@ -402,6 +402,7 @@ async fn cache_serves_within_ttl_then_refreshes_after_expiry(pool: PgPool) {
                 system_prompt: Some(
                     AgentSystemPrompt::try_from("rolled-out v2").expect("valid prompt"),
                 ),
+                avatar_url: None,
                 edited_by: Some(seed.user_id),
                 ..AgentUpdate::default()
             },

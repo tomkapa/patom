@@ -15,6 +15,7 @@ use patom::auth::OrgId;
 use patom::clock::SystemClock;
 use patom::mcp::McpCatalogId;
 use patom::session::PgSessionStore;
+use patom::types::AvatarUrl;
 use sqlx::PgPool;
 
 mod common;
@@ -41,6 +42,7 @@ fn new_agent(org_id: OrgId, name: &str, prompt: &str, is_default: bool) -> NewAg
         is_default,
         allowed_mcp_tools: AllowedMcpTools::empty(),
         model: None,
+        avatar_url: None,
         edited_by: None,
     }
 }
@@ -101,6 +103,105 @@ async fn seed_default_does_not_overwrite_existing_prompt(pool: PgPool) {
     // Original prompt from seed_tenant wins.
     assert_eq!(record.system_prompt.as_str(), "test default prompt");
     assert_eq!(record.name.as_str(), "test-default");
+}
+
+#[sqlx::test]
+async fn seed_default_agent_has_no_avatar(pool: PgPool) {
+    // Issue #43: the migration adds avatar_url as nullable with no
+    // default, so a seeded agent reads back `None`.
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let record = store.read(seed.agent_id).await.expect("read");
+    assert!(record.avatar_url.is_none(), "seed agent has no avatar");
+}
+
+#[sqlx::test]
+async fn create_persists_avatar_url_and_reads_back(pool: PgPool) {
+    // Issue #43: a `NewAgent.avatar_url` round-trips through INSERT and
+    // the SELECT/hydrate path.
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let url = AvatarUrl::try_from("https://cdn.example/atlas.png").expect("valid url");
+    let mut payload = new_agent(seed.org_id, "with-avatar", "be helpful", false);
+    payload.avatar_url = Some(url.clone());
+
+    let created = store.create(payload).await.expect("create");
+    assert_eq!(
+        created.avatar_url.as_ref().map(AvatarUrl::as_str),
+        Some(url.as_str()),
+        "create returns the avatar it persisted",
+    );
+    let read = store.read(created.id).await.expect("read");
+    assert_eq!(
+        read.avatar_url.as_ref().map(AvatarUrl::as_str),
+        Some(url.as_str()),
+        "avatar survives the SELECT/hydrate round-trip",
+    );
+}
+
+#[sqlx::test]
+async fn update_sets_then_clears_avatar_url(pool: PgPool) {
+    // Issue #43: the tri-state PATCH — `Some(Some(_))` sets,
+    // `Some(None)` clears to NULL, and omitting it (`None`) leaves the
+    // column untouched.
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let created = store
+        .create(new_agent(seed.org_id, "patchable", "be helpful", false))
+        .await
+        .expect("create");
+    assert!(created.avatar_url.is_none());
+
+    let url = AvatarUrl::try_from("https://cdn.example/patchable.png").expect("valid url");
+    let set = store
+        .update(
+            created.id,
+            AgentUpdate {
+                avatar_url: Some(Some(url.clone())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("set avatar");
+    assert_eq!(
+        set.avatar_url.as_ref().map(AvatarUrl::as_str),
+        Some(url.as_str()),
+    );
+
+    // Omitting the field leaves the avatar untouched.
+    let untouched = store
+        .update(
+            created.id,
+            AgentUpdate {
+                name: Some(AgentName::try_from("patchable2").expect("name")),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("rename only");
+    assert_eq!(
+        untouched.avatar_url.as_ref().map(AvatarUrl::as_str),
+        Some(url.as_str()),
+        "omitted avatar_url is left untouched",
+    );
+
+    // `Some(None)` clears it back to NULL.
+    let cleared = store
+        .update(
+            created.id,
+            AgentUpdate {
+                avatar_url: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("clear avatar");
+    assert!(cleared.avatar_url.is_none(), "Some(None) clears to NULL");
+    let reread = store.read(created.id).await.expect("read");
+    assert!(
+        reread.avatar_url.is_none(),
+        "cleared avatar persists as NULL"
+    );
 }
 
 #[sqlx::test]
@@ -300,6 +401,7 @@ async fn create_with_explicit_allowed_mcp_tools_round_trips(pool: PgPool) {
         is_default: false,
         allowed_mcp_tools: allowed(&["notion", "linear"]),
         model: None,
+        avatar_url: None,
         edited_by: None,
     };
     let created = store.create(payload).await.expect("create");
@@ -339,6 +441,7 @@ async fn update_replaces_allowed_mcp_tools(pool: PgPool) {
             is_default: false,
             allowed_mcp_tools: allowed(&["notion", "linear"]),
             model: None,
+            avatar_url: None,
             edited_by: None,
         })
         .await
@@ -350,6 +453,7 @@ async fn update_replaces_allowed_mcp_tools(pool: PgPool) {
             AgentUpdate {
                 allowed_mcp_tools: Some(allowed(&["jira"])),
                 model: None,
+                avatar_url: None,
                 edited_by: None,
                 ..Default::default()
             },
@@ -369,6 +473,7 @@ async fn update_replaces_allowed_mcp_tools(pool: PgPool) {
             AgentUpdate {
                 allowed_mcp_tools: Some(AllowedMcpTools::empty()),
                 model: None,
+                avatar_url: None,
                 edited_by: None,
                 ..Default::default()
             },
@@ -384,6 +489,7 @@ async fn update_replaces_allowed_mcp_tools(pool: PgPool) {
             AgentUpdate {
                 allowed_mcp_tools: Some(allowed(&["notion"])),
                 model: None,
+                avatar_url: None,
                 edited_by: None,
                 ..Default::default()
             },

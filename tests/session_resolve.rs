@@ -37,6 +37,7 @@ async fn fresh_agent(pool: &PgPool, seed: &common::pg::Seed, name: &str) -> Part
             is_default: false,
             allowed_mcp_tools: patom::agents::AllowedMcpTools::empty(),
             model: None,
+            avatar_url: None,
             edited_by: None,
         })
         .await

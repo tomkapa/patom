@@ -155,6 +155,7 @@ impl AuthAgentsHarness {
                 is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
+                avatar_url: None,
                 edited_by: None,
             })
             .await
@@ -266,4 +267,160 @@ async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
         .map(|r| r["name"].as_str().expect("name"))
         .collect();
     assert_eq!(names, vec!["beta"]);
+}
+
+/// Issue #43: `POST /agents` accepts `avatar_url` and echoes it in the
+/// response. Returns the created agent's JSON for callers that need the id.
+async fn create_agent_with_avatar(
+    app: &axum::Router,
+    h: &AuthAgentsHarness,
+    name: &str,
+    avatar_url: &str,
+) -> serde_json::Value {
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "name": name,
+                        "system_prompt": "be helpful",
+                        "description": "an agent with a face",
+                        "avatar_url": avatar_url,
+                    }))
+                    .unwrap(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::CREATED);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    serde_json::from_slice(&bytes).expect("json")
+}
+
+#[sqlx::test]
+async fn agent_avatar_url_echoed_on_create(pool: PgPool) {
+    let h = AuthAgentsHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let created =
+        create_agent_with_avatar(&app, &h, "avatar-agent", "https://cdn.example/face.png").await;
+    assert_eq!(
+        created["avatar_url"].as_str(),
+        Some("https://cdn.example/face.png"),
+        "create echoes the avatar_url",
+    );
+}
+
+#[sqlx::test]
+async fn agent_avatar_url_cleared_by_null_patch(pool: PgPool) {
+    let h = AuthAgentsHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let created =
+        create_agent_with_avatar(&app, &h, "avatar-agent", "https://cdn.example/face.png").await;
+    let id = created["id"].as_str().expect("id");
+
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("PUT")
+                .uri(format!("/api/agents/{id}"))
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "avatar_url": null })).unwrap(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let updated: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        updated["avatar_url"].is_null(),
+        "null PATCH clears the avatar_url",
+    );
+}
+
+#[sqlx::test]
+async fn create_rejects_malformed_avatar_url(pool: PgPool) {
+    let h = AuthAgentsHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "name": "bad-avatar",
+                        "system_prompt": "be helpful",
+                        "description": "rejected at the boundary",
+                        "avatar_url": "not-a-url",
+                    }))
+                    .unwrap(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
+}
+
+/// Issue #43: the DB CHECK only caps `avatar_url` length, so a row that
+/// bypasses the app (direct SQL, a bad migration) could hold a non-URL
+/// string. `GET /agents/{id}` must not leak it — `into_response` re-parses
+/// through `AvatarUrl` and drops the invalid value.
+#[sqlx::test]
+async fn read_drops_avatar_url_that_violates_the_url_invariant(pool: PgPool) {
+    let h = AuthAgentsHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let created =
+        create_agent_with_avatar(&app, &h, "avatar-agent", "https://cdn.example/face.png").await;
+    let id = created["id"].as_str().expect("id");
+
+    // Smuggle a length-valid but non-URL value straight into the column,
+    // bypassing the `AvatarUrl` parse every app write path enforces.
+    sqlx::query("UPDATE agents SET avatar_url = $2 WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(id).expect("uuid"))
+        .bind("not a url")
+        .execute(&h.state.pool)
+        .await
+        .expect("smuggle malformed avatar");
+
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/api/agents/{id}"))
+                .header("cookie", h.primary.cookie_header())
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let read: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        read["avatar_url"].is_null(),
+        "a row violating the URL invariant is dropped, not leaked",
+    );
 }
