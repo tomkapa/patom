@@ -129,7 +129,36 @@ resourceQuota:
     requests.memory: 1536Mi
     limits.memory: 3Gi
     count/pods: "8"
-# Postgres coordinates (the StatefulSet lives in the sibling `postgres` chart).
+# Postgres connection coordinates used by the app's NetworkPolicy egress rule
+# (templates/networkpolicy.yaml). The DB itself is either the bundled `postgresql`
+# subchart below or your own managed instance — either way the app reaches it via
+# the DATABASE_URL in the patom-config Secret.
 postgres:
   serviceName: patom-postgres
   port: 5432
+# Bundled standalone Postgres (pgvector) — vendored subchart at charts/postgresql.
+# ON by default: `helm install patom ...` brings up app + DB together (single
+# replica, default StorageClass, NO backups/HA — evaluation/standalone mode).
+#
+# For production, prefer your OWN managed pgvector Postgres: set
+# `postgresql.enabled: false` and point DATABASE_URL (secret.data) at it. The
+# managed instance MUST have the pgvector extension available. (SaaS sets
+# postgresql.enabled=false via an ArgoCD param and runs its own DB in patom-infra.)
+postgresql:
+  enabled: true
+  # REQUIRED when enabled: this password must MATCH the one embedded in
+  # secret.data.DATABASE_URL (e.g. postgres://patom:<pw>@patom-postgres:5432/patom).
+  # Empty fails the render with a clear message. See values.example.yaml.
+  auth:
+    username: patom
+    database: patom
+    password: ""
+  persistence:
+    size: 10Gi
+    storageClass: "" # "" → cluster default StorageClass
+  resources:
+    requests:
+      cpu: 100m
+      memory: 384Mi
+    limits:
+      memory: 768Mi

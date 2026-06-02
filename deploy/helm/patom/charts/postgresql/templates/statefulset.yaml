@@ -1,21 +1,19 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: patom-postgres
-  annotations:
-    argocd.argoproj.io/sync-wave: "-1"   # after its ExternalSecret (-2), before the app (0)
+  name: {{ .Values.service.name }}
   labels:
-    {{- include "postgres.labels" . | nindent 4 }}
+    {{- include "postgresql.labels" . | nindent 4 }}
 spec:
   serviceName: {{ .Values.service.name }}
   replicas: 1
   selector:
     matchLabels:
-      {{- include "postgres.selectorLabels" . | nindent 6 }}
+      {{- include "postgresql.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "postgres.selectorLabels" . | nindent 8 }}
+        {{- include "postgresql.labels" . | nindent 8 }}
     spec:
       securityContext:
         fsGroup: 999            # postgres uid/gid in the official image
@@ -41,15 +39,15 @@ spec:
             - "work_mem={{ .Values.config.workMem }}"
           env:
             - name: POSTGRES_USER
-              value: {{ .Values.user | quote }}
+              value: {{ .Values.auth.username | quote }}
             - name: POSTGRES_DB
-              value: {{ .Values.database | quote }}
+              value: {{ .Values.auth.database | quote }}
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: patom-postgres
+                  name: {{ .Values.service.name }}
                   key: POSTGRES_PASSWORD
-            # Keep data in a subdir so initdb isn't confused by lost+found on the volume.
+            # Keep data in a subdir so initdb isn't confused by lost+found.
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           ports:
@@ -57,12 +55,12 @@ spec:
               containerPort: {{ .Values.service.port }}
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", {{ .Values.user | quote }}, "-d", {{ .Values.database | quote }}]
+              command: ["pg_isready", "-U", {{ .Values.auth.username | quote }}, "-d", {{ .Values.auth.database | quote }}]
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: ["pg_isready", "-U", {{ .Values.user | quote }}, "-d", {{ .Values.database | quote }}]
+              command: ["pg_isready", "-U", {{ .Values.auth.username | quote }}, "-d", {{ .Values.auth.database | quote }}]
             initialDelaySeconds: 30
             periodSeconds: 15
           resources:
@@ -75,7 +73,9 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
+        {{- if .Values.persistence.storageClass }}
         storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
         resources:
           requests:
             storage: {{ .Values.persistence.size }}

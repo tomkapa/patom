@@ -9,13 +9,19 @@ registry. Pairs with the plain-Secret config path in
 ## TL;DR
 
 ```bash
-# Public image, no registry credentials needed.
+# Public image, no registry credentials needed. One chart brings up app + DB.
 helm install patom deploy/helm/patom -f deploy/helm/patom/values.example.yaml
-helm install patom-postgres deploy/helm/postgres   # sibling DB chart
 ```
 
-The chart defaults pull `ghcr.io/tomkapa/patom` anonymously and ship a stable,
-**pinned** image tag. No `imagePullSecrets`, no GHCR login.
+A single chart installs the app **and** a bundled Postgres (pgvector) — the
+`postgresql` subchart, ON by default. The chart pulls `ghcr.io/tomkapa/patom`
+anonymously and ships a stable, **pinned** image tag. No `imagePullSecrets`, no
+GHCR login.
+
+> **Standalone vs. managed DB.** The bundled Postgres is a single replica with
+> **no backups or HA** — fine for evaluation and small self-hosts. For production,
+> run your own managed pgvector Postgres: set `postgresql.enabled: false` and point
+> `DATABASE_URL` at it (see [§2b](#2b-bring-your-own-managed-postgres)).
 
 ---
 
@@ -27,15 +33,16 @@ anyone can pull them, no authentication:
 | Component | Image |
 |-----------|-------|
 | App + API + SPA | `ghcr.io/tomkapa/patom` |
-| Postgres backup job | `ghcr.io/tomkapa/patom-backup` |
-| Postgres + pgvector | `pgvector/pgvector:pg17` (Docker Hub, public) |
+| Postgres + pgvector (bundled DB) | `pgvector/pgvector:pg17` (Docker Hub, public) |
+
+(There is no backup image to pull: the standalone chart ships no backup job —
+backups are your responsibility, see [§5](#5-backups). Our SaaS backup tooling
+lives separately in our infra repo.)
 
 ### Pinned tags
 
-The charts pin a specific tag in their `values.yaml`
-(`image.tag` in [`deploy/helm/patom/values.yaml`](../../deploy/helm/patom/values.yaml)
-and `backup.imageTag` in
-[`deploy/helm/postgres/values.yaml`](../../deploy/helm/postgres/values.yaml)).
+The chart pins a specific app tag in
+[`deploy/helm/patom/values.yaml`](../../deploy/helm/patom/values.yaml) (`image.tag`).
 That pinned tag is your deployable, reproducible version — it is **not** rewritten
 by our CI. (Our SaaS continuous-deploy floats to the latest `main` build through a
 separate ArgoCD parameter, so it never moves your chart default.)
@@ -62,16 +69,37 @@ separate ArgoCD parameter, so it never moves your chart default.)
    `values.example.yaml` uses the **plain Kubernetes Secret** path
    (`secret.create: true`) — no External Secrets Operator / OpenBao required.
 
-2. Install:
+   Set `postgresql.auth.password` to the **same** password you put in
+   `DATABASE_URL` (the bundled DB and the app's DSN must agree).
+
+2. Install (one chart — app + bundled DB):
 
    ```bash
-   helm install patom-postgres deploy/helm/postgres
-   helm install patom          deploy/helm/patom -f my-values.yaml
+   helm install patom deploy/helm/patom -f my-values.yaml
    ```
 
 `imagePullSecrets` defaults to `[]`, so the public image pulls with no registry
 credentials. You only need a pull secret if you mirror into a private registry
 (next section).
+
+### 2b. Bring your own managed Postgres
+
+For production, point Patom at a managed pgvector Postgres instead of the bundled
+single-replica DB:
+
+```yaml
+postgresql:
+  enabled: false                      # don't deploy the bundled StatefulSet
+secret:
+  data:
+    DATABASE_URL: "postgres://USER:PW@your-db.example.com:5432/patom?sslmode=require"
+```
+
+- The instance **must have the `pgvector` extension available** (managed Postgres
+  on AWS RDS, Google Cloud SQL, Azure, Neon, Supabase, etc. all offer it). Patom's
+  first migration runs `CREATE EXTENSION vector` itself.
+- With the bundled DB disabled, **you own backups, HA, and upgrades** for that
+  database — your provider's tooling handles it, not this chart.
 
 ---
 
@@ -147,19 +175,20 @@ your nodes can reach.
 ### 3a. Pull + save (on a machine with internet)
 
 ```bash
-TAG=bd8840814367              # the pinned tag from the charts (see §1)
+TAG=bd8840814367              # the pinned app tag from the chart (see §1)
 for img in \
   ghcr.io/tomkapa/patom:$TAG \
-  ghcr.io/tomkapa/patom-backup:$TAG \
   pgvector/pgvector:pg17 ; do
     docker pull "$img"
 done
 docker save \
   ghcr.io/tomkapa/patom:$TAG \
-  ghcr.io/tomkapa/patom-backup:$TAG \
   pgvector/pgvector:pg17 \
   -o patom-images-$TAG.tar
 ```
+
+(Using a managed Postgres? Drop `pgvector/pgvector:pg17` — you only need the app
+image.)
 
 A convenience wrapper is provided:
 [`deploy/airgap-save.sh`](../../deploy/airgap-save.sh) — `./deploy/airgap-save.sh <tag>`.
@@ -169,25 +198,19 @@ A convenience wrapper is provided:
 ```bash
 docker load -i patom-images-$TAG.tar
 MIRROR=registry.internal:5000        # your registry
-for img in patom patom-backup ; do
-    docker tag ghcr.io/tomkapa/$img:$TAG $MIRROR/$img:$TAG
-    docker push $MIRROR/$img:$TAG
-done
+docker tag  ghcr.io/tomkapa/patom:$TAG $MIRROR/patom:$TAG
+docker push $MIRROR/patom:$TAG
 docker tag  pgvector/pgvector:pg17 $MIRROR/pgvector:pg17
 docker push $MIRROR/pgvector:pg17
 ```
 
-### 3c. Point the charts at the mirror
+### 3c. Point the chart at the mirror
 
 ```bash
-helm install patom-postgres deploy/helm/postgres \
-  --set image=registry.internal:5000/pgvector \
-  --set backup.image=registry.internal:5000/patom-backup \
-  --set backup.imageTag=$TAG
-
 helm install patom deploy/helm/patom -f my-values.yaml \
   --set image.repository=registry.internal:5000/patom \
-  --set image.tag=$TAG
+  --set image.tag=$TAG \
+  --set postgresql.image=registry.internal:5000/pgvector:pg17
 ```
 
 If the mirror requires auth, create a `dockerconfigjson` Secret and reference it:
@@ -209,15 +232,45 @@ helm install patom deploy/helm/patom -f my-values.yaml \
 
 - **Upgrade:** pick a newer pinned tag, then
   `helm upgrade patom deploy/helm/patom -f my-values.yaml --set image.tag=<new>`.
-  The app runs all pending sqlx migrations on boot before binding the listener;
-  the chart's `startupProbe` budget covers that.
+  The app runs **all pending sqlx migrations on boot before binding the listener**
+  — a cold start runs 100+ of them. The chart's `startupProbe` budget covers this
+  (`probes.startup.failureThreshold × periodSeconds` = 60 × 5s = **300s** by
+  default); a very slow disk or a large migration may need a higher
+  `probes.startup.failureThreshold`, or liveness will kill the pod mid-migration.
 - **Rollback:** redeploy the previous pinned tag (`--set image.tag=<old>`), or
   `helm rollback patom`. Database migrations are forward-only — roll the image
   back only to a tag whose schema your DB still satisfies.
 
 ---
 
-## 5. Observability & data egress
+## 5. Backups
+
+**Running a managed Postgres ([§2b](#2b-bring-your-own-managed-postgres))? Use your
+provider's backups** — that's the recommended production setup and this chart owns
+none of it.
+
+The **bundled** `postgresql` subchart ships **no backup job** by design (it's the
+standalone/evaluation DB). Back it up yourself with `pg_dump` against the
+in-cluster Service:
+
+```bash
+# Dump (custom format) from a one-off job / your workstation via port-forward:
+kubectl -n patom exec -i sts/patom-postgres -- \
+  pg_dump -U patom -Fc patom > patom-$(date -u +%Y%m%dT%H%M%SZ).dump
+
+# Restore into a fresh DB:
+kubectl -n patom exec -i sts/patom-postgres -- \
+  pg_restore -U patom -d patom --clean --if-exists < patom-<timestamp>.dump
+```
+
+The dump contains tenant data and `PATOM_MASTER_KEK`-encrypted MCP credentials —
+store it **encrypted and private**, and keep `PATOM_MASTER_KEK` itself somewhere
+separate (without it the encrypted columns can't be decrypted after a restore).
+Schedule the dump with your own CronJob and ship it to object storage you control.
+
+---
+
+## 6. Observability & data egress
 
 A fresh self-hosted install is **private by default** — nothing about your prompts
 leaves the cluster:

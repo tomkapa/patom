@@ -7,9 +7,11 @@ set -euo pipefail
 TAG="${1:?usage: airgap-save.sh <tag> [output.tar]}"
 OUT="${2:-patom-images-${TAG}.tar}"
 
+# App image + the bundled-DB image (pgvector). No backup image: the standalone
+# chart ships no backup job (issue #90). If you run your own managed Postgres
+# (postgresql.enabled=false), drop pgvector here too.
 IMAGES=(
   "ghcr.io/tomkapa/patom:${TAG}"
-  "ghcr.io/tomkapa/patom-backup:${TAG}"
   "pgvector/pgvector:pg17"
 )
 

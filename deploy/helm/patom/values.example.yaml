@@ -21,8 +21,10 @@ secret:
   create: true
   data:
     # --- required ---
-    # Postgres DSN. Host matches the sibling `postgres` chart's Service
-    # (postgres.serviceName / .port in values.yaml: patom-postgres:5432).
+    # Postgres DSN. With the bundled `postgresql` subchart (default, below) the
+    # host is its Service patom-postgres:5432 and the password here MUST match
+    # postgresql.auth.password. For a managed Postgres instead, set this DSN to
+    # your instance and disable the bundled DB (see the `postgresql:` block below).
     DATABASE_URL: "postgres://patom:CHANGE_ME@patom-postgres:5432/patom"
     PATOM_JWT_SECRET: "CHANGE_ME_min_32_bytes_random"        # HS256 session signing key, >= 32 bytes
     PATOM_MASTER_KEK: "CHANGE_ME_base64_32_bytes"            # envelope key for stored MCP creds; base64 of 32 bytes
@@ -66,6 +68,24 @@ secret:
     # Per-vendor MCP OAuth clients (one ID/SECRET pair per vendor, e.g. MICROSOFT_365):
     # PATOM_MICROSOFT_365_CLIENT_ID: "CHANGE_ME"
     # PATOM_MICROSOFT_365_CLIENT_SECRET: "CHANGE_ME"
+
+# --- Database ---
+# Bundled standalone Postgres (pgvector), ON by default: one-command app + DB.
+# Single replica, no backups/HA — for evaluation / small self-hosts. The password
+# here MUST match the one in DATABASE_URL above.
+postgresql:
+  enabled: true
+  auth:
+    password: "CHANGE_ME"   # must equal the password in DATABASE_URL
+  persistence:
+    size: 10Gi
+    storageClass: ""        # "" → cluster default StorageClass; set if you have none
+#
+# PRODUCTION: prefer your own managed pgvector Postgres. Comment out the block
+# above (or set enabled:false), set DATABASE_URL to your instance, and ensure the
+# pgvector extension is available there. You then own backups/HA for that DB.
+#   postgresql:
+#     enabled: false
 
 # Point the app at your own domain. This single `host` value drives the ingress
 # AND the app's redirect/web-base URLs (derived as https://<host>). Defaults are

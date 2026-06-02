@@ -1,0 +1,21 @@
+# The parent patom chart applies a namespace default-deny, so the bundled DB needs
+# an explicit ingress allow or the app can't reach it. 5432 ingress from the app
+# pods only. (No backup job / object-storage egress here — backups are a SaaS
+# concern owned by patom-infra.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-postgres
+  labels:
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    {{- include "postgresql.selectorLabels" . | nindent 4 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: patom
+      ports:
+        - { protocol: TCP, port: {{ .Values.service.port }} }

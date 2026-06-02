@@ -4,11 +4,11 @@ kind: Service
 metadata:
   name: {{ .Values.service.name }}
   labels:
-    {{- include "postgres.labels" . | nindent 4 }}
+    {{- include "postgresql.labels" . | nindent 4 }}
 spec:
   clusterIP: None
   selector:
-    {{- include "postgres.selectorLabels" . | nindent 4 }}
+    {{- include "postgresql.selectorLabels" . | nindent 4 }}
   ports:
     - name: postgres
       port: {{ .Values.service.port }}
