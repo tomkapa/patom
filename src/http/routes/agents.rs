@@ -398,9 +398,13 @@ impl AgentRowForList {
             is_default: self.is_default,
             allowed_mcp_tools: self.allowed_mcp_tools.0,
             model: self.model.map(Model::as_str),
-            // The column is DB-validated (CHECK + write-time `AvatarUrl`
-            // parse); pass the string straight through to the wire.
-            avatar_url: self.avatar_url,
+            // The DB CHECK only caps length, so re-parse through `AvatarUrl`
+            // here — as the privileged store hydrate and `model`'s sqlx
+            // decode both do on this path — and drop a row that somehow
+            // violated the URL invariant rather than leak it onto the wire.
+            avatar_url: self
+                .avatar_url
+                .filter(|s| AvatarUrl::try_from(s.as_str()).is_ok()),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }

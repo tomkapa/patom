@@ -497,6 +497,15 @@ async fn agent_avatar_upload_writes_store_keyed_by_agent(pool: PgPool) {
     let expected_key = format!("agents/{}.png", agent_id.as_uuid());
     assert!(url.ends_with(&format!("/{expected_key}")), "url = {url}");
     assert_eq!(store.len().await, 1);
+
+    // Contract: the upload stores the object only — it must NOT persist to
+    // `agents.avatar_url`. That happens on the subsequent `PUT /agents/{id}`.
+    let row: (Option<String>,) = sqlx::query_as("SELECT avatar_url FROM agents WHERE id = $1")
+        .bind(agent_id)
+        .fetch_one(&h.pool)
+        .await
+        .expect("read agent");
+    assert_eq!(row.0, None, "upload must not persist avatar_url directly");
 }
 
 #[sqlx::test]

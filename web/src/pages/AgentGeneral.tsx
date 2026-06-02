@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { FileText, Save } from "lucide-react";
 import {
@@ -46,7 +46,12 @@ export function AgentGeneral() {
   const [prompt, setPrompt] = useState<string>(serverPrompt);
   const [model, setModel] = useState<string | null>(serverModel);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(serverAvatar);
+  // Track the agent currently shown so an upload that resolves after the
+  // operator has switched agents doesn't write the stale URL into the new
+  // agent's form.
+  const agentIdRef = useRef<string | undefined>(agent?.id);
   useEffect(() => {
+    agentIdRef.current = agent?.id;
     if (agent) {
       setPrompt(agent.system_prompt ?? "");
       setModel(agent.model ?? null);
@@ -66,8 +71,11 @@ export function AgentGeneral() {
   // harmlessly overwritten next time.
   const handleAvatarUpload = async (file: File): Promise<string> => {
     if (!agent) throw new Error("agent not loaded");
-    const { url } = await api.uploadAgentAvatar(agent.id, file);
-    setAvatarUrl(url);
+    const initiatingId = agent.id;
+    const { url } = await api.uploadAgentAvatar(initiatingId, file);
+    // Drop the result if the operator navigated to a different agent
+    // while the upload was in flight.
+    if (agentIdRef.current === initiatingId) setAvatarUrl(url);
     return url;
   };
 
