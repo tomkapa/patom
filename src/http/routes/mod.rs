@@ -194,10 +194,14 @@ mod tests {
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::layer::SubscriberExt;
 
-    /// Records the `(name, level)` of every span the subscriber enables, so a
-    /// test can assert which spans survive a given filter floor.
+    /// One captured span: `(name, target, level)`. The target is what the
+    /// `tower=warn` prefix turns on, so the test asserts on it.
+    type CapturedSpan = (&'static str, &'static str, Level);
+
+    /// Records every span the subscriber enables, so a test can assert which
+    /// spans survive a given filter and on which target.
     #[derive(Clone, Default)]
-    struct SpanCapture(std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Level)>>>);
+    struct SpanCapture(std::sync::Arc<std::sync::Mutex<Vec<CapturedSpan>>>);
 
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanCapture {
         fn on_new_span(
@@ -207,10 +211,11 @@ mod tests {
             _ctx: tracing_subscriber::layer::Context<'_, S>,
         ) {
             let meta = attrs.metadata();
-            self.0
-                .lock()
-                .expect("span capture mutex")
-                .push((meta.name(), *meta.level()));
+            self.0.lock().expect("span capture mutex").push((
+                meta.name(),
+                meta.target(),
+                *meta.level(),
+            ));
         }
     }
 
@@ -249,14 +254,19 @@ mod tests {
         }
 
         let spans = sink.lock().expect("span capture mutex");
-        let request_span = spans.iter().find(|(name, _)| *name == "request");
+        // Assert the TARGET, not just the name: a `tower_http`-targeted span of
+        // the same name is exactly what `tower=warn` filters out, so pinning
+        // `patom::http` is the contract this PR restores.
+        let request_span = spans
+            .iter()
+            .find(|(name, target, _)| *name == "request" && *target == "patom::http");
         assert!(
             request_span.is_some(),
-            "request span filtered out by production global filter (tower=warn \
-             prefix-matches the tower_http target); spans seen: {spans:?}"
+            "request span missing under the patom::http target (the production \
+             tower=warn prefix filters the tower_http target); spans seen: {spans:?}"
         );
         assert_eq!(
-            request_span.expect("request span present").1,
+            request_span.expect("request span present").2,
             Level::INFO,
             "request span must be exported at INFO under the production filter"
         );
