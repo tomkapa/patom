@@ -242,6 +242,16 @@ fn assistant_to_wire(blocks: Vec<AssistantContent>) -> Vec<WireMessage> {
     let tool_calls = (!tool_calls.is_empty()).then_some(tool_calls);
     let reasoning_content = (!reasoning.is_empty()).then_some(reasoning);
 
+    // A provider requires an assistant message to carry `content` or `tool_calls`;
+    // `reasoning_content` alone is rejected (`invalid_request_error: content or
+    // tool_calls must be set`), and that invalid message wedges the session on every
+    // replay. A reasoning-only turn carries nothing the provider can act on — and the
+    // DeepSeek thinking-mode rule only requires reasoning replay *alongside tool_calls*
+    // — so we drop it from the replayed history. The block stays persisted for audit.
+    if content.is_none() && tool_calls.is_none() {
+        return Vec::new();
+    }
+
     vec![WireMessage::Assistant {
         content,
         tool_calls,
@@ -398,21 +408,16 @@ mod tests {
     }
 
     #[test]
-    fn assistant_reasoning_only_emits_reasoning_content() {
+    fn assistant_reasoning_only_is_dropped_from_wire() {
+        // A turn that produced only reasoning (the model stopped without emitting text
+        // or a tool call) has no `content` and no `tool_calls`. Emitting it with only
+        // `reasoning_content` set is rejected by the provider with
+        // `invalid_request_error: content or tool_calls must be set`, which wedges the
+        // session on every replay. Drop it from the wire instead.
         let wire = message_to_wire(ChatMessage::Assistant(vec![AssistantContent::Reasoning(
             "secret".into(),
         )]));
-        let WireMessage::Assistant {
-            content,
-            tool_calls,
-            reasoning_content,
-        } = &wire[0]
-        else {
-            panic!("expected assistant");
-        };
-        assert!(content.is_none());
-        assert!(tool_calls.is_none());
-        assert_eq!(reasoning_content.as_deref(), Some("secret"));
+        assert!(wire.is_empty());
     }
 
     #[test]
