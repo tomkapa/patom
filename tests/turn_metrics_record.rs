@@ -39,7 +39,7 @@ use patom::tools::ToolRegistry;
 use patom::types::{Participant, Prompt, ToolName};
 
 mod common;
-use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
+use common::pg::{Seed, human_to_agent_session, seed_prompt_request, seed_tenant};
 use sqlx::PgPool;
 
 /// Pluck the current prompt-version row id for `agent_id`. Seeded by
@@ -189,21 +189,17 @@ fn tool_call_response(usage: Usage) -> ChatResponse {
     }
 }
 
-#[sqlx::test]
-async fn agent_loop_records_one_row_per_provider_call(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let pvid = current_prompt_version(&pool, seed.agent_id).await;
-
-    let provider = Arc::new(ScriptedProvider::new(vec![text_response(
-        "hi back",
-        Usage {
-            input_tokens: 100,
-            output_tokens: 7,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: Some(50),
-        },
-    )]));
-    let provider: SharedProvider = provider;
+/// Build a turn-metrics-wired agent, run one `reply` driven by `script`, and
+/// return the `request_id` so the caller can assert on the recorded rows.
+/// Shared scaffold for the agent-loop tests below — they differ only in the
+/// provider script and what they assert.
+async fn run_scripted_reply(
+    pool: &PgPool,
+    seed: &Seed,
+    pvid: PromptVersionId,
+    script: Vec<ChatResponse>,
+) -> PromptRequestId {
+    let provider: SharedProvider = Arc::new(ScriptedProvider::new(script));
     let model = Model::try_from("test-model").expect("catalog");
     let clock = SystemClock::shared();
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
@@ -229,7 +225,7 @@ async fn agent_loop_records_one_row_per_provider_call(pool: PgPool) {
         seed.user_id,
     )
     .await;
-    let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
+    let request_id = seed_prompt_request(pool, session, seed.agent_id, seed.org_id).await;
     let prompt = Prompt::try_from("hello").expect("prompt");
 
     agent
@@ -245,6 +241,29 @@ async fn agent_loop_records_one_row_per_provider_call(pool: PgPool) {
         )
         .await
         .expect("reply");
+    request_id
+}
+
+#[sqlx::test]
+async fn agent_loop_records_one_row_per_provider_call(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let pvid = current_prompt_version(&pool, seed.agent_id).await;
+
+    let request_id = run_scripted_reply(
+        &pool,
+        &seed,
+        pvid,
+        vec![text_response(
+            "hi back",
+            Usage {
+                input_tokens: 100,
+                output_tokens: 7,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: Some(50),
+            },
+        )],
+    )
+    .await;
 
     let stored: (i32, i32, Option<i32>, String) = sqlx::query_as(
         "SELECT input_tokens, output_tokens, cache_read_tokens, kind FROM turn_metrics WHERE request_id = $1",
@@ -268,67 +287,31 @@ async fn agent_loop_records_one_row_per_turn_in_multi_turn_reply(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let pvid = current_prompt_version(&pool, seed.agent_id).await;
 
-    let provider = Arc::new(ScriptedProvider::new(vec![
-        // Turn 0: ask for a tool, so the loop continues to a second turn.
-        tool_call_response(Usage {
-            input_tokens: 100,
-            output_tokens: 7,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-        }),
-        // Turn 1: final answer.
-        text_response(
-            "done",
-            Usage {
-                input_tokens: 120,
-                output_tokens: 9,
+    let request_id = run_scripted_reply(
+        &pool,
+        &seed,
+        pvid,
+        vec![
+            // Turn 0: ask for a tool, so the loop continues to a second turn.
+            tool_call_response(Usage {
+                input_tokens: 100,
+                output_tokens: 7,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-            },
-        ),
-    ]));
-    let provider: SharedProvider = provider;
-    let model = Model::try_from("test-model").expect("catalog");
-    let clock = SystemClock::shared();
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
-    let memory: SharedMemory = Arc::new(StaticMemory::new("test prompt"));
-    let providers: SharedProviderRegistry = Arc::new(
-        ProviderRegistry::builder()
-            .insert(model.provider(), provider)
-            .build(),
-    );
-
-    let store: SharedTurnMetricsStore = Arc::new(PgTurnMetricsStore::new(pool.clone(), clock));
-    let agent = AgentBuilder::new(providers, sessions, memory, model)
-        .expect("builder")
-        .with_builtin_tools(ToolRegistry::builder().build())
-        .with_hooks(HookChain::new())
-        .with_turn_metrics(store, seed.agent_id, pvid)
-        .build();
-
-    let session = human_to_agent_session(
-        &PgSessionStore::new(pool.clone(), SystemClock::shared()),
-        seed.agent_id,
-        seed.org_id,
-        seed.user_id,
+            }),
+            // Turn 1: final answer.
+            text_response(
+                "done",
+                Usage {
+                    input_tokens: 120,
+                    output_tokens: 9,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                },
+            ),
+        ],
     )
     .await;
-    let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
-    let prompt = Prompt::try_from("hello").expect("prompt");
-
-    agent
-        .reply(
-            session,
-            Participant::agent(seed.agent_id),
-            vec![prompt],
-            request_id,
-            patom::auth::Caller::new(seed.user_id, seed.org_id),
-            RequestKindPayload::Normal {},
-            CancellationToken::new(),
-            None,
-        )
-        .await
-        .expect("reply");
 
     let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turn_metrics WHERE request_id = $1")
         .bind(request_id)

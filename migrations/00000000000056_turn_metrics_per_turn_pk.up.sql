@@ -24,9 +24,8 @@ ALTER TABLE turn_metrics
 ALTER TABLE turn_metrics
     ADD CONSTRAINT turn_metrics_pkey PRIMARY KEY (id);
 
--- `request_id` lost its NOT NULL when it stopped being the primary key.
-ALTER TABLE turn_metrics
-    ALTER COLUMN request_id SET NOT NULL;
+-- `request_id` stays NOT NULL: Postgres retains the column's NOT NULL when its
+-- PRIMARY KEY is dropped, so no re-assertion is needed here.
 
 -- Per-request lookups (turn-detail drawer, drilldowns) — non-unique now.
 CREATE INDEX turn_metrics_request_idx
