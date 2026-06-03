@@ -1,0 +1,66 @@
+name: chart-release
+
+# Publishes the patom Helm chart as an OCI artifact to GHCR
+# (oci://ghcr.io/tomkapa/charts/patom) so customers can install a versioned,
+# reproducible chart without cloning the repo (issue #90):
+#
+#   helm install patom oci://ghcr.io/tomkapa/charts/patom --version X.Y.Z -f my-values.yaml
+#
+# Chart.yaml `version` is the single source of truth. To release: bump it, commit,
+# then push a tag `chart-vX.Y.Z` matching it (or run this workflow manually). The
+# pinned app image.tag in values.yaml is independent of the chart version.
+on:
+  push:
+    tags:
+      - "chart-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: chart-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: Lint + render gate
+        run: ./ci/helm-test.sh
+
+      - name: Resolve + verify chart version
+        id: ver
+        run: |
+          set -euo pipefail
+          version="$(helm show chart deploy/helm/patom | awk '/^version:/ {print $2}')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          # On a tag push, the tag MUST match Chart.yaml's version (Chart.yaml is
+          # the source of truth — a mismatch means the bump commit was forgotten).
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            expected="chart-v${version}"
+            if [ "${GITHUB_REF_NAME}" != "${expected}" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} != ${expected} (Chart.yaml version ${version})"
+              exit 1
+            fi
+          fi
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package + push (OCI)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm package deploy/helm/patom --destination /tmp/chart
+          helm push "/tmp/chart/patom-${VERSION}.tgz" oci://ghcr.io/tomkapa/charts
+          echo "Published oci://ghcr.io/tomkapa/charts/patom:${VERSION}"

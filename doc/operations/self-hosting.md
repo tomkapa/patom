@@ -1,22 +1,27 @@
-# Self-hosting Patom — image distribution & install
+# Self-hosting Patom — published artifacts & install
 
-How to deploy Patom on your own Kubernetes cluster: where the container image
-comes from, how to pin it, and how to sideload it into an air-gapped / mirrored
-registry. Pairs with the plain-Secret config path in
+How to deploy Patom on your own Kubernetes cluster from published artifacts: the
+versioned Helm chart and container image, how to pin them, and how to sideload
+into an air-gapped / mirrored registry. Pairs with the plain-Secret config path in
 [`deploy/helm/patom/values.example.yaml`](../../deploy/helm/patom/values.example.yaml)
 (issue #84).
 
 ## TL;DR
 
 ```bash
-# Public image, no registry credentials needed. One chart brings up app + DB.
-helm install patom deploy/helm/patom -f deploy/helm/patom/values.example.yaml
+# Versioned chart from the public OCI registry — no repo clone, no credentials.
+helm install patom oci://ghcr.io/tomkapa/charts/patom --version 0.1.0 \
+  -f my-values.yaml
 ```
 
 A single chart installs the app **and** a bundled Postgres (pgvector) — the
-`postgresql` subchart, ON by default. The chart pulls `ghcr.io/tomkapa/patom`
-anonymously and ships a stable, **pinned** image tag. No `imagePullSecrets`, no
-GHCR login.
+`postgresql` subchart, ON by default. The chart and the `ghcr.io/tomkapa/patom`
+image both pull anonymously from public GHCR and ship a stable, **pinned** image
+tag. No `imagePullSecrets`, no GHCR login.
+
+> Prefer pinning a chart **`--version`** (see the [chart package page](https://github.com/tomkapa/patom/pkgs/container/patom%2Fpatom)
+> for available versions). The `deploy/helm/patom` path in this repo is the same
+> chart if you'd rather install from a checkout.
 
 > **Standalone vs. managed DB.** The bundled Postgres is a single replica with
 > **no backups or HA** — fine for evaluation and small self-hosts. For production,
@@ -25,19 +30,24 @@ GHCR login.
 
 ---
 
-## 1. Image distribution
+## 1. Published artifacts
 
-Patom's images are published to **public** GitHub Container Registry packages —
-anyone can pull them, no authentication:
+Everything you install is published to **public** GitHub Container Registry
+packages — anyone can pull, no authentication:
 
-| Component | Image |
-|-----------|-------|
-| App + API + SPA | `ghcr.io/tomkapa/patom` |
+| Artifact | Reference |
+|----------|-----------|
+| Helm chart (app + bundled DB) | `oci://ghcr.io/tomkapa/charts/patom` (versioned, `--version X.Y.Z`) |
+| App + API + SPA image | `ghcr.io/tomkapa/patom` |
 | Postgres + pgvector (bundled DB) | `pgvector/pgvector:pg17` (Docker Hub, public) |
 
 (There is no backup image to pull: the standalone chart ships no backup job —
 backups are your responsibility, see [§5](#5-backups). Our SaaS backup tooling
 lives separately in our infra repo.)
+
+The chart is versioned independently of the app image: `helm install --version`
+selects the **chart**, and the chart pins a specific **app image** tag in its
+`values.yaml` — so a given chart version is fully reproducible.
 
 ### Pinned tags
 
@@ -59,14 +69,15 @@ separate ArgoCD parameter, so it never moves your chart default.)
 
 ## 2. Direct install (cluster with internet egress)
 
-1. Copy the example values and fill in every `CHANGE_ME`:
+1. Get the example values and fill in every `CHANGE_ME`:
 
    ```bash
-   cp deploy/helm/patom/values.example.yaml my-values.yaml
+   # Extract the example values bundled in the chart (or copy from the repo):
+   helm show values oci://ghcr.io/tomkapa/charts/patom --version 0.1.0 > my-values.yaml
    $EDITOR my-values.yaml          # secrets, ingress.host, OAuth client IDs, ...
    ```
 
-   `values.example.yaml` uses the **plain Kubernetes Secret** path
+   The chart's `values.example.yaml` uses the **plain Kubernetes Secret** path
    (`secret.create: true`) — no External Secrets Operator / OpenBao required.
 
    Set `postgresql.auth.password` to the **same** password you put in
@@ -75,7 +86,8 @@ separate ArgoCD parameter, so it never moves your chart default.)
 2. Install (one chart — app + bundled DB):
 
    ```bash
-   helm install patom deploy/helm/patom -f my-values.yaml
+   helm install patom oci://ghcr.io/tomkapa/charts/patom --version 0.1.0 \
+     -f my-values.yaml
    ```
 
 `imagePullSecrets` defaults to `[]`, so the public image pulls with no registry
@@ -193,6 +205,12 @@ image.)
 A convenience wrapper is provided:
 [`deploy/airgap-save.sh`](../../deploy/airgap-save.sh) — `./deploy/airgap-save.sh <tag>`.
 
+Pull the **chart** too (so you don't need the repo on the air-gapped side):
+
+```bash
+helm pull oci://ghcr.io/tomkapa/charts/patom --version 0.1.0   # → patom-0.1.0.tgz
+```
+
 ### 3b. Transfer + load + push into your mirror
 
 ```bash
@@ -206,8 +224,10 @@ docker push $MIRROR/pgvector:pg17
 
 ### 3c. Point the chart at the mirror
 
+Install from the local chart tarball (from §3a), pointing images at your mirror:
+
 ```bash
-helm install patom deploy/helm/patom -f my-values.yaml \
+helm install patom ./patom-0.1.0.tgz -f my-values.yaml \
   --set image.repository=registry.internal:5000/patom \
   --set image.tag=$TAG \
   --set postgresql.image=registry.internal:5000/pgvector:pg17
@@ -220,7 +240,7 @@ kubectl create secret docker-registry mirror-cred \
   --docker-server=registry.internal:5000 \
   --docker-username=... --docker-password=... -n patom
 
-helm install patom deploy/helm/patom -f my-values.yaml \
+helm install patom ./patom-0.1.0.tgz -f my-values.yaml \
   --set image.repository=registry.internal:5000/patom \
   --set image.tag=$TAG \
   --set-json 'imagePullSecrets=[{"name":"mirror-cred"}]'
@@ -230,9 +250,11 @@ helm install patom deploy/helm/patom -f my-values.yaml \
 
 ## 4. Upgrades & rollback
 
-- **Upgrade:** pick a newer pinned tag, then
-  `helm upgrade patom deploy/helm/patom -f my-values.yaml --set image.tag=<new>`.
-  The app runs **all pending sqlx migrations on boot before binding the listener**
+- **Upgrade:** pick a newer chart version, then
+  `helm upgrade patom oci://ghcr.io/tomkapa/charts/patom --version <new> -f my-values.yaml`.
+  Each chart version pins its own app image tag, so bumping `--version` upgrades
+  both together. The app runs **all pending sqlx migrations on boot before binding
+  the listener**
   — a cold start runs 100+ of them. The chart's `startupProbe` budget covers this
   (`probes.startup.failureThreshold × periodSeconds` = 60 × 5s = **300s** by
   default); a very slow disk or a large migration may need a higher
@@ -309,5 +331,10 @@ sends data off-cluster — so only do that deliberately.
 - The image is source-available under FSL-1.1-Apache-2.0 (see the repo `LICENSE.md`).
   A public image adds no rights beyond the license. For a commercial license that
   lifts the Competing Use restriction, contact the maintainers.
-- Maintainer / SaaS prerequisite: the GHCR packages above must be set to **public**
-  visibility in GitHub package settings for anonymous pulls to work.
+- Maintainer / SaaS prerequisite: the GHCR packages above — including the chart
+  package `charts/patom` — must be set to **public** visibility in GitHub package
+  settings for anonymous pulls to work. (The chart package appears after the first
+  `chart-release` run; set it public once.)
+- **Releasing the chart:** bump `version` in `deploy/helm/patom/Chart.yaml`, commit,
+  then push a tag `chart-vX.Y.Z` matching it. The `chart-release` workflow lints,
+  packages, and pushes `oci://ghcr.io/tomkapa/charts/patom:X.Y.Z`.
