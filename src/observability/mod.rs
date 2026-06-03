@@ -30,11 +30,17 @@ use tracing_subscriber::util::SubscriberInitExt;
 const DEFAULT_CONSOLE_FILTER: &str =
     "patom=info,claudius=warn,opentelemetry=info,opentelemetry_sdk=info,opentelemetry_otlp=info";
 
-// EnvFilter directives match crate names, not prefixes — `sqlx=warn` does not
-// catch the `sqlx_core` crate, so list both. Same reason `hyper_util` is listed
-// alongside `hyper`. `opentelemetry*=info` keeps SDK self-diagnostics (auth
-// failures, dropped batches) visible so a misconfigured exporter shows up.
-const DEFAULT_GLOBAL_FILTER: &str = "info,patom=debug,claudius=warn,sqlx=warn,sqlx_core=warn,hyper=warn,hyper_util=warn,h2=warn,rustls=warn,reqwest=warn,tower=warn";
+// EnvFilter matches a directive's target as a raw PREFIX of the event target
+// (tracing_subscriber `directive.rs`: `target().starts_with(..)`), crossing
+// crate-name boundaries — so `sqlx=warn` already covers `sqlx_core` and
+// `hyper=warn` covers `hyper_util`; the extra entries are belt-and-braces.
+// The same prefix rule means `tower=warn` ALSO captures `tower_http`, which is
+// why the HTTP root span is emitted under a `patom::http` target (see
+// `http::routes::trace_layer`) — otherwise the request span is pinned to WARN+
+// and the `http.error.5xx` event is dropped for want of an active span.
+// `opentelemetry*=info` keeps SDK self-diagnostics (auth failures, dropped
+// batches) visible so a misconfigured exporter shows up.
+pub(crate) const DEFAULT_GLOBAL_FILTER: &str = "info,patom=debug,claudius=warn,sqlx=warn,sqlx_core=warn,hyper=warn,hyper_util=warn,h2=warn,rustls=warn,reqwest=warn,tower=warn";
 
 /// Flush guard returned from [`init`]. Drop shuts the OTLP provider down so
 /// buffered spans flush. Bind in `main`.
