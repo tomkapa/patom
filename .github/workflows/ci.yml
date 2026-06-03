@@ -162,3 +162,16 @@ jobs:
       - name: build
         working-directory: web
         run: bun run build
+
+  # ── Helm chart: lint + render gate (CLAUDE.md §3) ───────────────────────
+  # Asserts the bundled standalone `postgresql` subchart renders when enabled
+  # (default self-host mode) and disappears when disabled (managed/external DB),
+  # and that it carries no SaaS-internal coupling. See ci/helm-test.sh.
+  chart:
+    name: helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: helm lint + render
+        run: ./ci/helm-test.sh

@@ -4,3 +4,12 @@ description: Patom — provider-agnostic, hookable agent runtime (HTTP API + SPA
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+
+# Bundled standalone Postgres (pgvector), vendored under charts/postgresql. ON by
+# default for self-hosters (one-command app+db). Set postgresql.enabled=false to
+# bring your own managed pgvector Postgres; SaaS sets that param too and runs its
+# own DB (patom-infra). See doc/operations/self-hosting.md.
+dependencies:
+  - name: postgresql
+    version: "0.1.0"
+    condition: postgresql.enabled

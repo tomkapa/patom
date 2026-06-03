@@ -1,0 +1,10 @@
+apiVersion: v2
+name: postgresql
+description: >-
+  Minimal bundled Postgres (pgvector) for standalone self-hosting — single
+  replica, plain-Secret password, default StorageClass. No backups, HA, ESO, or
+  ArgoCD coupling. Disable (postgresql.enabled=false) and point DATABASE_URL at a
+  managed pgvector Postgres for production. SaaS runs its own DB (patom-infra).
+type: application
+version: 0.1.0
+appVersion: "17"
