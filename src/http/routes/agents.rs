@@ -946,9 +946,10 @@ struct TurnsListQuery {
     /// Filter by `turn_metrics.kind` — `normal` / `reflection` /
     /// `resolution`. Omitted = all kinds.
     kind: Option<String>,
-    /// Exclusive `started_at` cursor — pass the previous page's
-    /// `next_cursor` to walk backwards in time.
-    cursor: Option<DateTime<Utc>>,
+    /// Opaque exclusive cursor — pass the previous page's `next_cursor`
+    /// verbatim to walk backwards in time. Encodes `(started_at, id)`; see
+    /// [`encode_turn_cursor`].
+    cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -983,7 +984,32 @@ struct TurnRow {
 #[derive(Debug, Serialize)]
 struct TurnsListResponse {
     items: Vec<TurnRow>,
-    next_cursor: Option<DateTime<Utc>>,
+    /// Opaque token for the next page (see [`encode_turn_cursor`]); `None`
+    /// at the end of the range. The FE round-trips it back as `cursor`.
+    next_cursor: Option<String>,
+}
+
+/// Encode a turns-list cursor as `<started_at_micros>|<id>`. The cursor is
+/// `(started_at, id)`, not `started_at` alone: a multi-turn reply records
+/// several rows that can share a timestamp, and a timestamp-only cursor
+/// (`started_at < $cursor`) silently drops a sibling when the page break
+/// lands between two ties. The `id` tiebreaker makes the cursor total.
+fn encode_turn_cursor(started_at: DateTime<Utc>, id: TurnMetricsId) -> String {
+    format!("{}|{}", started_at.timestamp_micros(), id.as_uuid())
+}
+
+/// Parse a cursor produced by [`encode_turn_cursor`]. A malformed token is a
+/// client error (the FE only ever echoes back a value we minted), so 400.
+fn decode_turn_cursor(token: &str) -> Result<(DateTime<Utc>, TurnMetricsId), HttpError> {
+    let bad = || HttpError::BadRequest("malformed cursor".into());
+    let (micros, id) = token.split_once('|').ok_or_else(bad)?;
+    let started_at = micros
+        .parse::<i64>()
+        .ok()
+        .and_then(DateTime::from_timestamp_micros)
+        .ok_or_else(bad)?;
+    let id = TurnMetricsId::from(Uuid::parse_str(id).map_err(|_| bad())?);
+    Ok((started_at, id))
 }
 
 async fn list_agent_turns(
@@ -1013,18 +1039,16 @@ async fn list_agent_turns(
         .from
         .unwrap_or_else(|| to - chrono::Duration::hours(24));
 
+    let cursor = params
+        .cursor
+        .as_deref()
+        .map(decode_turn_cursor)
+        .transpose()?;
+
     let limit = i64::from(MAX_TURN_LIST_PAGE_SIZE);
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
-    let mut items = fetch_turn_rows(
-        &mut tx,
-        agent_id,
-        from,
-        to,
-        kind_filter,
-        params.cursor,
-        limit,
-    )
-    .await?;
+    let mut items =
+        fetch_turn_rows(&mut tx, agent_id, from, to, kind_filter, cursor, limit).await?;
     tx.commit().await.map_err(AuthError::from)?;
 
     let has_more = items.len() > usize::try_from(limit).unwrap_or(usize::MAX);
@@ -1032,7 +1056,7 @@ async fn list_agent_turns(
         items.pop();
     }
     let next_cursor = if has_more {
-        items.last().map(|r| r.started_at)
+        items.last().map(|r| encode_turn_cursor(r.started_at, r.id))
     } else {
         None
     };
@@ -1048,10 +1072,17 @@ async fn fetch_turn_rows(
     from: DateTime<Utc>,
     to: DateTime<Utc>,
     kind_filter: Option<RequestKind>,
-    cursor: Option<DateTime<Utc>>,
+    cursor: Option<(DateTime<Utc>, TurnMetricsId)>,
     limit: i64,
 ) -> Result<Vec<TurnRow>, HttpError> {
     let fetch_limit = limit.saturating_add(1);
+    let (cursor_ts, cursor_id) = match cursor {
+        Some((ts, id)) => (Some(ts), Some(id)),
+        None => (None, None),
+    };
+    // Cursor compares the whole `(started_at, id)` tuple, and ORDER BY matches
+    // it, so the walk is total — no row is skipped when timestamps tie. The
+    // `$5 IS NULL` guard covers the first (cursorless) page.
     sqlx::query_as::<_, TurnRow>(
         "SELECT tm.id, tm.request_id, tm.started_at, tm.kind, tm.model, tm.provider, \
                 tm.input_tokens, tm.output_tokens, tm.cache_creation_tokens, tm.cache_read_tokens, \
@@ -1065,15 +1096,17 @@ async fn fetch_turn_rows(
             AND tm.started_at >= $2 \
             AND tm.started_at <  $3 \
             AND ($4::text IS NULL OR tm.kind = $4) \
-            AND ($5::timestamptz IS NULL OR tm.started_at < $5) \
-          ORDER BY tm.started_at DESC \
-          LIMIT $6",
+            AND ($5::timestamptz IS NULL \
+                 OR (tm.started_at, tm.id) < ($5::timestamptz, $6::uuid)) \
+          ORDER BY tm.started_at DESC, tm.id DESC \
+          LIMIT $7",
     )
     .bind(agent_id)
     .bind(from)
     .bind(to)
     .bind(kind_filter)
-    .bind(cursor)
+    .bind(cursor_ts)
+    .bind(cursor_id)
     .bind(fetch_limit)
     .fetch_all(&mut **tx)
     .await
@@ -1329,4 +1362,41 @@ async fn next_version_number(
         None => PromptVersionNumber::FIRST,
     };
     Ok(next)
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::{decode_turn_cursor, encode_turn_cursor};
+    use crate::agent_core::turn_metrics::TurnMetricsId;
+    use chrono::{DateTime, Utc};
+
+    fn at(micros: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp_micros(micros).expect("in range")
+    }
+
+    #[test]
+    fn round_trips_started_at_and_id() {
+        let id = TurnMetricsId::new();
+        let ts = at(1_717_416_000_000_000);
+        let (got_ts, got_id) = decode_turn_cursor(&encode_turn_cursor(ts, id)).expect("decode");
+        assert_eq!(got_ts, ts);
+        assert_eq!(got_id, id);
+    }
+
+    #[test]
+    fn distinguishes_ties_by_id() {
+        // Same timestamp, different ids → different tokens. This is the whole
+        // point: a timestamp-only cursor would collide here and drop a row.
+        let ts = at(1_717_416_000_000_000);
+        let a = encode_turn_cursor(ts, TurnMetricsId::new());
+        let b = encode_turn_cursor(ts, TurnMetricsId::new());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn rejects_malformed_tokens() {
+        for bad in ["", "nope", "123", "123|not-a-uuid", "x|y", "|"] {
+            assert!(decode_turn_cursor(bad).is_err(), "expected reject: {bad}");
+        }
+    }
 }

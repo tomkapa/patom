@@ -711,6 +711,70 @@ async fn list_returns_one_row_per_turn_with_distinct_ids(pool: PgPool) {
     assert_eq!(same_request, 2, "expected two rows for the one request_id");
 }
 
+/// The turns cursor is `(started_at, id)`, not `started_at` alone: when
+/// several rows share a timestamp (common now that one reply records a row
+/// per turn), a timestamp-only `started_at < cursor` drops the sibling that
+/// falls just past the page break. Seed three rows at one instant, page from
+/// the middle id, and assert the row strictly below it still comes back — a
+/// timestamp-only cursor would return zero.
+#[sqlx::test]
+async fn turns_cursor_breaks_timestamp_ties_by_id(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let session = human_to_agent_session(
+        h.state.sessions.as_ref(),
+        h.seed.agent_id,
+        h.seed.org_id,
+        h.seed.user_id,
+    )
+    .await;
+    let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
+    let pvid = current_prompt_version(&h.state.pool, h.seed.agent_id).await;
+
+    // Three turns at one instant (in the recent past so they're in-window).
+    let t = Utc::now() - chrono::Duration::minutes(1);
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(
+            record_turn_metrics_with(
+                &h.state.pool,
+                h.seed.org_id,
+                session,
+                request,
+                h.seed.agent_id,
+                pvid,
+                100,
+                t,
+            )
+            .await,
+        );
+    }
+    ids.sort(); // ascending by id; same byte order Postgres uses for uuid
+    let (lo, mid) = (ids[0], ids[1]);
+
+    // Cursor on the middle row: the next page is everything strictly below
+    // `(t, mid)` — i.e. just `lo`. `%7C` is the encoded `|` separator.
+    let cursor = format!("{}%7C{}", t.timestamp_micros(), mid.as_uuid());
+    let uri = format!(
+        "/api/agents/{}/turns?cursor={}",
+        h.seed.agent_id.as_uuid(),
+        cursor,
+    );
+    let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "body: {body}");
+
+    let returned: Vec<&str> = body["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .filter_map(|r| r["id"].as_str())
+        .collect();
+    assert_eq!(
+        returned,
+        vec![lo.as_uuid().to_string().as_str()],
+        "expected exactly the row below the cursor (the tie-break sibling)",
+    );
+}
+
 /// Unauthenticated request ⇒ 401 from the auth layer, never reaches the
 /// route — surfaces if the route is accidentally moved outside the
 /// `require_principal` middleware.
