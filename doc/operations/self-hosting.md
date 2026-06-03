@@ -333,7 +333,8 @@ current build loads exactly one KEK (version 1) from `PATOM_MASTER_KEK` and has
   re-sealed under it. Plan downtime for those integrations.
 
 In-place KEK rotation (load old + new, re-wrap rows, retire the old version) is
-modelled by `key_version` but **not yet implemented** — tracked as future work.
+modelled by `key_version` but **not yet implemented** — tracked in
+[#111](https://github.com/tomkapa/patom/issues/111).
 
 ---
 
