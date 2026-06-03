@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use patom::agent_core::turn_metrics::{
-    DurationMs, InputTokens, OutputTokens, PgTurnMetricsStore, StopReasonLabel, TurnMetricsRow,
-    TurnMetricsStore,
+    DurationMs, InputTokens, OutputTokens, PgTurnMetricsStore, StopReasonLabel, TurnMetricsId,
+    TurnMetricsRow, TurnMetricsStore,
 };
 use patom::agents::prompt_versions::PromptVersionId;
 use patom::agents::{AgentId, SharedAgentStore};
@@ -203,6 +203,8 @@ async fn current_prompt_version(pool: &PgPool, agent_id: AgentId) -> PromptVersi
     .expect("seeded prompt version")
 }
 
+/// Record one turn with the default fixture token counts, returning the
+/// new per-row `turn_metrics.id` the detail endpoint keys on.
 async fn record_turn_metrics(
     pool: &PgPool,
     org: OrgId,
@@ -210,9 +212,27 @@ async fn record_turn_metrics(
     request: PromptRequestId,
     agent: AgentId,
     pvid: PromptVersionId,
-) {
+) -> TurnMetricsId {
+    record_turn_metrics_with(pool, org, session, request, agent, pvid, 100, Utc::now()).await
+}
+
+/// Record one turn with caller-chosen `input_tokens` / `started_at` so a
+/// test can seed several distinguishable turns under one `request_id`.
+#[allow(clippy::too_many_arguments)]
+async fn record_turn_metrics_with(
+    pool: &PgPool,
+    org: OrgId,
+    session: SessionId,
+    request: PromptRequestId,
+    agent: AgentId,
+    pvid: PromptVersionId,
+    input_tokens: u32,
+    started_at: chrono::DateTime<Utc>,
+) -> TurnMetricsId {
+    let id = TurnMetricsId::new();
     let store = PgTurnMetricsStore::new(pool.clone(), SystemClock::shared());
     let row = TurnMetricsRow {
+        id,
         request_id: request,
         org_id: org,
         session_id: session,
@@ -221,15 +241,16 @@ async fn record_turn_metrics(
         kind: patom::runtime::RequestKind::Normal,
         model: patom::provider::Model::try_from("test-model").expect("catalog"),
         provider: patom::provider::ProviderId::Anthropic,
-        input_tokens: InputTokens::try_from(100u32).expect("fits"),
+        input_tokens: InputTokens::try_from(input_tokens).expect("fits"),
         output_tokens: OutputTokens::try_from(42u32).expect("fits"),
         cache_creation_tokens: None,
         cache_read_tokens: Some(InputTokens::try_from(7u32).expect("fits")),
         duration_ms: DurationMs::saturating_from_millis(1234),
         stop_reason: StopReasonLabel::from_truncated("tool_use"),
-        started_at: Utc::now(),
+        started_at,
     };
     store.record(row).await.expect("record turn metrics");
+    id
 }
 
 struct ToolCallSeed<'a> {
@@ -327,7 +348,7 @@ async fn fetches_turn_detail_with_reasoning_and_tool_calls(pool: PgPool) {
     let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
 
     let pvid = current_prompt_version(&h.state.pool, h.seed.agent_id).await;
-    record_turn_metrics(
+    let turn_id = record_turn_metrics(
         &h.state.pool,
         h.seed.org_id,
         session,
@@ -369,11 +390,12 @@ async fn fetches_turn_detail_with_reasoning_and_tool_calls(pool: PgPool) {
     })
     .await;
 
-    let uri = format!("/api/turns/{}", request.as_uuid());
+    let uri = format!("/api/turns/{}", turn_id.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK, "body: {body}");
 
     // Turn metrics round-trip.
+    assert_eq!(body["turn"]["id"], turn_id.as_uuid().to_string());
     assert_eq!(body["turn"]["input_tokens"], 100);
     assert_eq!(body["turn"]["output_tokens"], 42);
     assert_eq!(body["turn"]["cache_read_tokens"], 7);
@@ -421,7 +443,7 @@ async fn fetches_turn_detail_with_empty_collections(pool: PgPool) {
     let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
 
     let pvid = current_prompt_version(&h.state.pool, h.seed.agent_id).await;
-    record_turn_metrics(
+    let turn_id = record_turn_metrics(
         &h.state.pool,
         h.seed.org_id,
         session,
@@ -431,7 +453,7 @@ async fn fetches_turn_detail_with_empty_collections(pool: PgPool) {
     )
     .await;
 
-    let uri = format!("/api/turns/{}", request.as_uuid());
+    let uri = format!("/api/turns/{}", turn_id.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK, "body: {body}");
 
@@ -455,7 +477,7 @@ async fn keeps_tool_calls_without_mcp_server(pool: PgPool) {
     .await;
     let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
     let pvid = current_prompt_version(&h.state.pool, h.seed.agent_id).await;
-    record_turn_metrics(
+    let turn_id = record_turn_metrics(
         &h.state.pool,
         h.seed.org_id,
         session,
@@ -477,7 +499,7 @@ async fn keeps_tool_calls_without_mcp_server(pool: PgPool) {
     })
     .await;
 
-    let uri = format!("/api/turns/{}", request.as_uuid());
+    let uri = format!("/api/turns/{}", turn_id.as_uuid());
     let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::OK);
 
@@ -491,13 +513,13 @@ async fn keeps_tool_calls_without_mcp_server(pool: PgPool) {
     );
 }
 
-/// Unknown request_id ⇒ 404 (via `visible_to` pre-gate), not 500. Guards
+/// Unknown turn id ⇒ 404 (via `visible_to` pre-gate), not 500. Guards
 /// against the route accidentally re-routing a "no metrics row" path
 /// through the 5xx auth bucket as it did before the Db variant split.
 #[sqlx::test]
 async fn returns_404_for_unknown_request(pool: PgPool) {
     let h = Harness::new(pool).await;
-    let stranger = PromptRequestId::new();
+    let stranger = TurnMetricsId::new();
 
     let uri = format!("/api/turns/{}", stranger.as_uuid());
     let (status, _) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
@@ -545,10 +567,212 @@ async fn returns_404_for_cross_org_request(pool: PgPool) {
         foreign.org_id,
     )
     .await;
+    let foreign_pvid = current_prompt_version(&h.state.pool, foreign_agent).await;
+    let foreign_turn = record_turn_metrics(
+        &h.state.pool,
+        foreign.org_id,
+        foreign_session,
+        foreign_request,
+        foreign_agent,
+        foreign_pvid,
+    )
+    .await;
 
-    let uri = format!("/api/turns/{}", foreign_request.as_uuid());
+    let uri = format!("/api/turns/{}", foreign_turn.as_uuid());
     let (status, _) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
     assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+}
+
+/// A multi-turn reply has several `turn_metrics` rows under one
+/// `request_id`. Each must be independently addressable by its own
+/// `turn_metrics.id`, and the detail endpoint must return *that* turn's
+/// metrics — not always the first. Regression guard for the per-turn
+/// drilldown (the detail endpoint formerly keyed on `request_id` and could
+/// only ever surface one turn).
+#[sqlx::test]
+async fn fetches_distinct_detail_per_turn_in_multi_turn_request(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let session = human_to_agent_session(
+        h.state.sessions.as_ref(),
+        h.seed.agent_id,
+        h.seed.org_id,
+        h.seed.user_id,
+    )
+    .await;
+    let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
+    let pvid = current_prompt_version(&h.state.pool, h.seed.agent_id).await;
+
+    // Two turns, same request_id, distinguishable by input_tokens.
+    let turn_a = record_turn_metrics_with(
+        &h.state.pool,
+        h.seed.org_id,
+        session,
+        request,
+        h.seed.agent_id,
+        pvid,
+        111,
+        Utc::now(),
+    )
+    .await;
+    let turn_b = record_turn_metrics_with(
+        &h.state.pool,
+        h.seed.org_id,
+        session,
+        request,
+        h.seed.agent_id,
+        pvid,
+        222,
+        Utc::now() + chrono::Duration::seconds(1),
+    )
+    .await;
+    assert_ne!(turn_a, turn_b, "two turns must have distinct ids");
+
+    let (status_a, body_a) = http_get(
+        h.state.clone(),
+        &format!("/api/turns/{}", turn_a.as_uuid()),
+        &h.primary.cookie_header(),
+    )
+    .await;
+    assert_eq!(status_a, axum::http::StatusCode::OK, "body: {body_a}");
+    assert_eq!(body_a["turn"]["id"], turn_a.as_uuid().to_string());
+    assert_eq!(body_a["turn"]["input_tokens"], 111);
+
+    let (status_b, body_b) = http_get(
+        h.state.clone(),
+        &format!("/api/turns/{}", turn_b.as_uuid()),
+        &h.primary.cookie_header(),
+    )
+    .await;
+    assert_eq!(status_b, axum::http::StatusCode::OK, "body: {body_b}");
+    assert_eq!(body_b["turn"]["id"], turn_b.as_uuid().to_string());
+    assert_eq!(body_b["turn"]["input_tokens"], 222);
+}
+
+/// The turns list returns one row per provider call, each carrying its own
+/// `turn_metrics.id` so the FE can key rows and open each turn's drawer.
+#[sqlx::test]
+async fn list_returns_one_row_per_turn_with_distinct_ids(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let session = human_to_agent_session(
+        h.state.sessions.as_ref(),
+        h.seed.agent_id,
+        h.seed.org_id,
+        h.seed.user_id,
+    )
+    .await;
+    let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
+    let pvid = current_prompt_version(&h.state.pool, h.seed.agent_id).await;
+
+    // Both timestamps in the recent past so they fall inside the list's
+    // default `[now-24h, now)` window (a future `started_at` would be
+    // filtered by the `tm.started_at < to` bound).
+    let turn_a = record_turn_metrics_with(
+        &h.state.pool,
+        h.seed.org_id,
+        session,
+        request,
+        h.seed.agent_id,
+        pvid,
+        111,
+        Utc::now() - chrono::Duration::seconds(2),
+    )
+    .await;
+    let turn_b = record_turn_metrics_with(
+        &h.state.pool,
+        h.seed.org_id,
+        session,
+        request,
+        h.seed.agent_id,
+        pvid,
+        222,
+        Utc::now() - chrono::Duration::seconds(1),
+    )
+    .await;
+
+    let uri = format!("/api/agents/{}/turns", h.seed.agent_id.as_uuid());
+    let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "body: {body}");
+
+    let items = body["items"].as_array().expect("items array");
+    let ids: Vec<&str> = items.iter().filter_map(|r| r["id"].as_str()).collect();
+    assert!(
+        ids.contains(&turn_a.as_uuid().to_string().as_str()),
+        "list missing turn_a id; ids={ids:?}",
+    );
+    assert!(
+        ids.contains(&turn_b.as_uuid().to_string().as_str()),
+        "list missing turn_b id; ids={ids:?}",
+    );
+    // Both turns share one request_id but appear as two distinct rows.
+    let same_request = items
+        .iter()
+        .filter(|r| r["request_id"] == request.as_uuid().to_string())
+        .count();
+    assert_eq!(same_request, 2, "expected two rows for the one request_id");
+}
+
+/// The turns cursor is `(started_at, id)`, not `started_at` alone: when
+/// several rows share a timestamp (common now that one reply records a row
+/// per turn), a timestamp-only `started_at < cursor` drops the sibling that
+/// falls just past the page break. Seed three rows at one instant, page from
+/// the middle id, and assert the row strictly below it still comes back — a
+/// timestamp-only cursor would return zero.
+#[sqlx::test]
+async fn turns_cursor_breaks_timestamp_ties_by_id(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let session = human_to_agent_session(
+        h.state.sessions.as_ref(),
+        h.seed.agent_id,
+        h.seed.org_id,
+        h.seed.user_id,
+    )
+    .await;
+    let request = seed_prompt_request(&h.state.pool, session, h.seed.agent_id, h.seed.org_id).await;
+    let pvid = current_prompt_version(&h.state.pool, h.seed.agent_id).await;
+
+    // Three turns at one instant (in the recent past so they're in-window).
+    let t = Utc::now() - chrono::Duration::minutes(1);
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(
+            record_turn_metrics_with(
+                &h.state.pool,
+                h.seed.org_id,
+                session,
+                request,
+                h.seed.agent_id,
+                pvid,
+                100,
+                t,
+            )
+            .await,
+        );
+    }
+    ids.sort(); // ascending by id; same byte order Postgres uses for uuid
+    let (lo, mid) = (ids[0], ids[1]);
+
+    // Cursor on the middle row: the next page is everything strictly below
+    // `(t, mid)` — i.e. just `lo`. `%7C` is the encoded `|` separator.
+    let cursor = format!("{}%7C{}", t.timestamp_micros(), mid.as_uuid());
+    let uri = format!(
+        "/api/agents/{}/turns?cursor={}",
+        h.seed.agent_id.as_uuid(),
+        cursor,
+    );
+    let (status, body) = http_get(h.state.clone(), &uri, &h.primary.cookie_header()).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "body: {body}");
+
+    let returned: Vec<&str> = body["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .filter_map(|r| r["id"].as_str())
+        .collect();
+    assert_eq!(
+        returned,
+        vec![lo.as_uuid().to_string().as_str()],
+        "expected exactly the row below the cursor (the tie-break sibling)",
+    );
 }
 
 /// Unauthenticated request ⇒ 401 from the auth layer, never reaches the

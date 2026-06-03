@@ -296,6 +296,7 @@ pub enum VisibilityTable {
     Agents,
     McpServers,
     PromptRequests,
+    TurnMetrics,
 }
 
 impl VisibilityTable {
@@ -304,6 +305,7 @@ impl VisibilityTable {
             Self::Agents => "agents",
             Self::McpServers => "mcp_servers",
             Self::PromptRequests => "prompt_requests",
+            Self::TurnMetrics => "turn_metrics",
         }
     }
 }

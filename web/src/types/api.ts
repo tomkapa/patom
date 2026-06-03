@@ -612,6 +612,10 @@ export type MetricsTimeseriesResponse = {
 };
 
 export type AgentTurnRow = {
+  /** Per-row `turn_metrics.id` — unique per provider call. The timeline
+   *  keys rows on this and opens each turn's drawer with it; several rows
+   *  share a `request_id` for a multi-turn reply. */
+  id: string;
   request_id: string;
   started_at: string;
   kind: TurnKind;
@@ -643,12 +647,15 @@ export type LogsKindFilter = TurnKind | "all";
 export type LogsCompareMode = "prev_window" | "none";
 
 // ─── Logs & Metrics — turn drawer ─────────────────────────────────────
-// Wire types for `GET /turns/{request_id}` (slice 2). Mirrors
+// Wire types for `GET /turns/{turn_id}` (slice 2). Mirrors
 // `src/http/routes/turns.rs::TurnDetailResponse`; see doc/logs_metrics_tab.md §5.4.
 
 /** `turn_metrics` row + the parent `prompt_requests.failure_reason`,
  *  joined into one payload for the drawer header chips. */
 export type TurnMetrics = {
+  /** Per-row `turn_metrics.id` — the key the drawer is fetched by. One per
+   *  provider call; several share a `request_id` for a multi-turn reply. */
+  id: string;
   request_id: string;
   session_id: string;
   /** Root prompt request of the human-rooted DAG this turn belongs to.
@@ -747,7 +754,7 @@ export type PromptVersion = {
   created_at: string;
 };
 
-/** Full payload for `GET /turns/{request_id}`. */
+/** Full payload for `GET /turns/{turn_id}`. */
 export type TurnDetail = {
   turn: TurnMetrics;
   reasoning_blocks: TurnReasoningBlock[];

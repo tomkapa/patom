@@ -1,6 +1,6 @@
 //! Per-turn detail endpoint (doc/logs_metrics_tab.md §5.4).
 //!
-//! `GET /turns/:request_id` returns everything the Logs & Metrics drawer
+//! `GET /turns/:turn_id` returns everything the Logs & Metrics drawer
 //! needs in one shot — the `turn_metrics` row, the reasoning blocks the
 //! assistant emitted, the tool calls it dispatched, the memory writes it
 //! produced, and the `agent_prompt_versions` snapshot it ran on. Bounded
@@ -8,7 +8,15 @@
 //! (`MAX_TOOL_CALLS_PER_TURN`, `MAX_HOOKS_PER_TURN`,
 //! `MAX_REASONING_BLOCKS_PER_TURN`, `MAX_MEMORY_WRITES_PER_TURN`).
 //!
-//! Tenant safety lives at two layers: `visible_to(PromptRequests, …)` 404s
+//! The path key is the per-row `turn_metrics.id`, so a multi-turn reply's
+//! turns are addressed individually (several rows share one `request_id`).
+//! The metrics header is therefore per-turn-exact. The sub-resources
+//! (reasoning, tool calls, memory writes) remain scoped by the turn's
+//! `request_id`: the schema relates those tables to the *request*, not to
+//! an individual provider call, so a per-turn split would need a separate
+//! migration. They are request-complete, not per-turn.
+//!
+//! Tenant safety lives at two layers: `visible_to(TurnMetrics, …)` 404s
 //! cross-org / unknown ids before we open the inner tx, and the inner tx
 //! runs `begin_as(principal)` so every join is RLS-filtered.
 
@@ -24,6 +32,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::agent_core::MAX_TOOL_CALLS_PER_TURN;
+use crate::agent_core::turn_metrics::TurnMetricsId;
 use crate::agents::AgentId;
 use crate::agents::prompt_versions::PromptVersionId;
 use crate::auth::{AuthError, Principal, UserId, VisibilityTable, visible_to};
@@ -51,7 +60,7 @@ const MAX_REASONING_BLOCKS_PER_TURN: usize = 32;
 const MAX_MEMORY_WRITES_PER_TURN: usize = 64;
 
 pub(super) fn router() -> Router<AppState> {
-    Router::new().route("/turns/{request_id}", get(read_turn_detail))
+    Router::new().route("/turns/{turn_id}", get(read_turn_detail))
 }
 
 /// One error type for this module's boundary. CLAUDE.md §12: the route
@@ -59,17 +68,13 @@ pub(super) fn router() -> Router<AppState> {
 /// glue understands.
 #[derive(Debug, Error)]
 pub enum TurnDetailError {
-    /// The request_id was not visible to the caller's principal — either
-    /// it doesn't exist or it belongs to another org. Maps to 404 (we
-    /// don't leak existence across orgs).
+    /// The turn id was not visible to the caller's principal — either it
+    /// doesn't exist or it belongs to another org. Maps to 404 (we don't
+    /// leak existence across orgs). The id *is* the `turn_metrics` row, so
+    /// there is no separate "metrics not recorded yet" state: an id that
+    /// resolves has a row by construction.
     #[error("turn {0} not found")]
-    NotFound(PromptRequestId),
-    /// The `turn_metrics` row is missing for an otherwise-visible
-    /// request. The recorder hasn't written it yet (the turn is still in
-    /// flight, or a backfill is pending). Distinct from `NotFound` so
-    /// the FE can render a "still recording…" spinner if it wants to.
-    #[error("turn {0} metrics not recorded yet")]
-    MetricsMissing(PromptRequestId),
+    NotFound(TurnMetricsId),
     /// `turn_metrics.prompt_version_id` references a row that
     /// `fetch_prompt_version` couldn't resolve. Should be impossible
     /// under the FK constraint; logged loudly and 404'd so a single
@@ -92,13 +97,13 @@ pub enum TurnDetailError {
 impl From<TurnDetailError> for HttpError {
     fn from(e: TurnDetailError) -> Self {
         match e {
-            // Request gone / metrics not yet recorded / prompt-version
-            // parent unresolvable all map to 404 on the wire — the drawer
-            // treats them the same way. PromptVersionMissing is logged
-            // inside `fetch_prompt_version` so we don't double-log here.
-            TurnDetailError::NotFound(_)
-            | TurnDetailError::MetricsMissing(_)
-            | TurnDetailError::PromptVersionMissing(_) => Self::NotFound,
+            // Turn gone / prompt-version parent unresolvable both map to
+            // 404 on the wire — the drawer treats them the same way.
+            // PromptVersionMissing is logged inside `fetch_prompt_version`
+            // so we don't double-log here.
+            TurnDetailError::NotFound(_) | TurnDetailError::PromptVersionMissing(_) => {
+                Self::NotFound
+            }
             // Bridge each remaining variant to its own HttpError seat so
             // the wire body and the 5xx tracing log identify the route,
             // not the auth subsystem. `IntoResponse for HttpError` logs
@@ -115,6 +120,9 @@ impl From<TurnDetailError> for HttpError {
 /// — the FE reads each field individually for the drawer header chips.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct TurnMetricsResponse {
+    /// Per-row primary key — what the drawer is keyed on. One per provider
+    /// call; several share a `request_id` for a multi-turn reply.
+    id: TurnMetricsId,
     request_id: PromptRequestId,
     session_id: SessionId,
     /// Root prompt request of the human-rooted DAG this turn belongs to.
@@ -215,36 +223,40 @@ struct TurnDetailResponse {
 async fn read_turn_detail(
     State(state): State<AppState>,
     principal: Principal,
-    Path(request_id): Path<Uuid>,
+    Path(turn_id): Path<Uuid>,
 ) -> Result<Json<TurnDetailResponse>, HttpError> {
-    let request_id = PromptRequestId::from(request_id);
+    let turn_id = TurnMetricsId::from(turn_id);
 
-    // Pre-gate: 404 cross-org / unknown request_ids with the same shape
-    // the rest of the surface uses. Without this a foreign id would
-    // bubble up as an inner-tx "metrics row not found" — distinguishable
-    // from "no such request" by timing, which leaks existence.
+    // Pre-gate: 404 cross-org / unknown turn ids with the same shape the
+    // rest of the surface uses. Without this a foreign id would bubble up
+    // as an inner-tx "row not found" — distinguishable from "no such turn"
+    // by timing, which leaks existence.
     if !visible_to(
         &state.pool,
         &principal,
-        VisibilityTable::PromptRequests,
-        request_id.as_uuid(),
+        VisibilityTable::TurnMetrics,
+        turn_id.as_uuid(),
     )
     .await?
     {
-        return Err(TurnDetailError::NotFound(request_id).into());
+        return Err(TurnDetailError::NotFound(turn_id).into());
     }
 
-    let detail = load_detail(&state, &principal, request_id).await?;
+    let detail = load_detail(&state, &principal, turn_id).await?;
     Ok(Json(detail))
 }
 
 async fn load_detail(
     state: &AppState,
     principal: &Principal,
-    request_id: PromptRequestId,
+    turn_id: TurnMetricsId,
 ) -> Result<TurnDetailResponse, TurnDetailError> {
     let mut tx = crate::auth::begin_as(&state.pool, principal).await?;
-    let turn = fetch_turn_row(&mut tx, request_id).await?;
+    let turn = fetch_turn_row(&mut tx, turn_id).await?;
+    // Sub-resources are request-scoped (see module docs): the tables relate
+    // to the request, not the individual provider call. Thread the turn's
+    // own `request_id` through so they fetch the right reply's activity.
+    let request_id = turn.request_id;
     let reasoning_blocks = fetch_reasoning(&mut tx, request_id).await?;
     let tool_calls = fetch_tool_calls(&mut tx, request_id).await?;
     let memory_writes = fetch_memory_writes(&mut tx, request_id).await?;
@@ -266,13 +278,16 @@ async fn load_detail(
 type TenantTx<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 
 /// 1. `turn_metrics` + the parent `prompt_requests.failure_reason`.
-///    One round-trip; both rows share the request_id PK.
+///    One round-trip, keyed on the per-row `turn_metrics.id` so each turn
+///    of a multi-turn reply resolves to its own metrics. The pre-gate
+///    already confirmed visibility; a `None` here means the row vanished
+///    between the gate and the tx (a delete race), which 404s the same way.
 async fn fetch_turn_row(
     tx: &mut TenantTx<'_>,
-    request_id: PromptRequestId,
+    turn_id: TurnMetricsId,
 ) -> Result<TurnMetricsResponse, TurnDetailError> {
     let row = sqlx::query_as::<_, TurnMetricsResponse>(
-        "SELECT tm.request_id, tm.session_id, s.root_request_id, \
+        "SELECT tm.id, tm.request_id, tm.session_id, s.root_request_id, \
                 tm.agent_id, tm.prompt_version_id, \
                 tm.kind, tm.model, tm.provider, \
                 tm.input_tokens, tm.output_tokens, \
@@ -283,12 +298,12 @@ async fn fetch_turn_row(
          FROM turn_metrics tm \
          JOIN prompt_requests pr ON pr.id = tm.request_id \
          JOIN sessions s ON s.id = tm.session_id \
-         WHERE tm.request_id = $1",
+         WHERE tm.id = $1",
     )
-    .bind(request_id)
+    .bind(turn_id)
     .fetch_optional(&mut **tx)
     .await?;
-    row.ok_or(TurnDetailError::MetricsMissing(request_id))
+    row.ok_or(TurnDetailError::NotFound(turn_id))
 }
 
 /// 2. Reasoning blocks from `session_messages`. CLAUDE.md §5: bounded

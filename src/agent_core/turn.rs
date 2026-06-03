@@ -33,7 +33,9 @@ use super::limits::MAX_TOOL_CALLS_PER_TURN;
 use super::log;
 use super::observer::SharedTurnObserver;
 use super::outcome::viewer_kind;
-use super::turn_metrics::{DurationMs, InputTokens, OutputTokens, StopReasonLabel, TurnMetricsRow};
+use super::turn_metrics::{
+    DurationMs, InputTokens, OutputTokens, StopReasonLabel, TurnMetricsId, TurnMetricsRow,
+};
 
 impl Agent {
     /// Run one provider call + its tool-call follow-up. Returns `Some(text)` when
@@ -247,6 +249,7 @@ impl Agent {
             .cache_read_input_tokens
             .and_then(|n| InputTokens::try_from(n).ok());
         let row = TurnMetricsRow {
+            id: TurnMetricsId::new(),
             request_id,
             org_id,
             session_id,

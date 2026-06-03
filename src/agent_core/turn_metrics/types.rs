@@ -11,9 +11,10 @@ use crate::session::SessionId;
 use crate::types::ParseError;
 
 crate::uuid_newtype! {
-    /// Opaque row id in `turn_metrics`. Same as `request_id` (the table's
-    /// primary key is `request_id`), but exposed as its own type so the
-    /// recorder API stays consistent with other store traits.
+    /// Opaque per-row primary key in `turn_metrics`. Generated fresh for each
+    /// provider call — `request_id` is *not* unique (it is constant across a
+    /// reply's turns, and across retries via `resume`), so it cannot key the
+    /// table. One `TurnMetricsId` ↔ one provider call.
     pub TurnMetricsId
 }
 
@@ -134,11 +135,15 @@ impl StopReasonLabel {
     }
 }
 
-/// One row to write. Built by `agent_core::turn::call_provider` after a
-/// successful provider call.
+/// One row to write. Built by `agent_core::turn::record_turn_metrics` after a
+/// successful provider call — one row per call.
 #[derive(Debug, Clone)]
 pub struct TurnMetricsRow {
-    /// Same uuid as `prompt_requests.id` — the row's primary key.
+    /// Per-row primary key, generated at record time (one per provider call).
+    pub id: TurnMetricsId,
+    /// `prompt_requests.id` for the reply this turn belongs to. Non-unique:
+    /// a multi-turn reply (and each retry) shares one `request_id` across
+    /// many rows.
     pub request_id: PromptRequestId,
     pub org_id: OrgId,
     pub session_id: SessionId,
