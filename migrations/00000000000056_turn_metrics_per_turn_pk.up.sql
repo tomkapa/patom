@@ -10,10 +10,16 @@
 -- prompt_requests (column-level REFERENCES, untouched by the PK swap) and
 -- stays NOT NULL; a non-unique index serves per-request lookups.
 --
--- Pre-launch single-step migration: dev DBs are wiped before applying
--- (feedback_no_backcompat), so no live rows need a real id backfill — the
--- transient DEFAULT only keeps the ADD COLUMN valid on a populated table.
-
+-- Production data exists, so existing rows are backfilled in place: the
+-- `DEFAULT gen_random_uuid()` populates every current row with a distinct id,
+-- then we drop the default so the app supplies the id on future inserts.
+--
+-- §14 rollout note: `gen_random_uuid()` is VOLATILE, so `ADD COLUMN ... NOT
+-- NULL DEFAULT` rewrites the whole table under an ACCESS EXCLUSIVE lock, and
+-- the index build below takes a write lock too. Fine for the current
+-- turn_metrics size; if it has grown large, switch to a batched backfill
+-- (nullable column → chunked UPDATE → SET NOT NULL → PK) under a maintenance
+-- window instead.
 ALTER TABLE turn_metrics
     ADD COLUMN id UUID NOT NULL DEFAULT gen_random_uuid();
 ALTER TABLE turn_metrics
