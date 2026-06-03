@@ -60,12 +60,13 @@ impl TurnMetricsStore for PgTurnMetricsStore {
         run_privileged::<(), TurnRecorderError>(&self.pool, async |tx| {
             sqlx::query(
                 "INSERT INTO turn_metrics \
-                     (request_id, org_id, session_id, agent_id, prompt_version_id, \
+                     (id, request_id, org_id, session_id, agent_id, prompt_version_id, \
                       kind, model, provider, \
                       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, \
                       duration_ms, stop_reason, started_at, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
             )
+            .bind(row.id)
             .bind(row.request_id)
             .bind(row.org_id)
             .bind(row.session_id)
