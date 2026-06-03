@@ -292,7 +292,53 @@ Schedule the dump with your own CronJob and ship it to object storage you contro
 
 ---
 
-## 6. Observability & data egress
+## 6. Secret & key rotation
+
+All app secrets live in the `patom-config` Secret (plain-Secret path) or your
+OpenBao KV (ESO path). The Deployment carries `reloader.stakater.com/auto: "true"`,
+so if the [stakater/reloader](https://github.com/stakater/Reloader) controller is
+installed, updating the Secret triggers a rolling restart automatically. Without
+it, restart manually after any change:
+
+```bash
+kubectl -n patom rollout restart deploy/patom
+```
+
+### Rotatable any time
+
+- **Provider / OAuth / search / embedding / S3 / telemetry keys**
+  (`DEEPSEEK_API_KEY`, `GOOGLE_CLIENT_*`, `PATOM_GITHUB_*`, `BRAVE_SEARCH_API_KEY`,
+  `EMBEDDING_API_KEY`, `PATOM_S3_*`, `HONEYCOMB_*` / `LANGFUSE_*`): update the value
+  and restart. No data migration — these are used live, not stored encrypted.
+- **Database password**: rotate it in Postgres, then update `DATABASE_URL` to match
+  (and, for the **bundled** DB, `postgresql.auth.password`), and restart.
+- **`PATOM_JWT_SECRET`** (HS256 session-cookie signing, ≥32 bytes): rotating it
+  **invalidates all existing sessions** — every user must log in again. Otherwise
+  safe; rotate on suspected compromise.
+
+### ⚠️ `PATOM_MASTER_KEK` — treat as permanent
+
+The master KEK is the root of the envelope encryption protecting **stored MCP
+credentials**. Every encrypted record is stamped with a `key_version`, but the
+current build loads exactly one KEK (version 1) from `PATOM_MASTER_KEK` and has
+**no re-wrap path**. Therefore:
+
+- **Do not change `PATOM_MASTER_KEK` on a running instance.** Existing credentials
+  were sealed under the old key; under a new key they fail to decrypt and the app
+  rejects them — every stored MCP connection breaks (silently, until next use).
+- **Back it up independently of the database.** A DB restore is useless without the
+  exact KEK that encrypted its secret columns (see [§5](#5-backups)).
+- **If the key is compromised** and must change, the only recovery today is: set the
+  new KEK, then **re-enter every MCP credential** through the app so each is
+  re-sealed under it. Plan downtime for those integrations.
+
+In-place KEK rotation (load old + new, re-wrap rows, retire the old version) is
+modelled by `key_version` but **not yet implemented** — tracked in
+[#111](https://github.com/tomkapa/patom/issues/111).
+
+---
+
+## 7. Observability & data egress
 
 A fresh self-hosted install is **private by default** — nothing about your prompts
 leaves the cluster:
