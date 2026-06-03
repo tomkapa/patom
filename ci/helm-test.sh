@@ -29,19 +29,19 @@ grep -qE '^kind: StatefulSet$' <<<"$B" && fail "StatefulSet must NOT render when
 grep -qE '^kind: Deployment$' <<<"$B" || fail "app Deployment missing in external-DB mode"
 pass "no StatefulSet; app Deployment present"
 
-echo "==> assert the bundled subchart carries no SaaS-internal coupling"
-# Scope to the subchart's own templates (the app's secret sync-wave decoupling is
-# tracked separately): the standalone DB must ship no backup CronJob, no ArgoCD
-# sync-waves, and no hardcoded internal storageClass.
-SUB="$(helm template patom "$CHART" -f "$EXAMPLE" \
-  -s charts/postgresql/templates/statefulset.yaml \
-  -s charts/postgresql/templates/service.yaml \
-  -s charts/postgresql/templates/secret.yaml \
-  -s charts/postgresql/templates/networkpolicy.yaml)"
-grep -q 'argocd.argoproj.io/sync-wave' <<<"$SUB" && fail "subchart must not carry ArgoCD sync-wave annotations"
-grep -qi 'kind: CronJob' <<<"$SUB" && fail "standalone DB must not ship a backup CronJob"
-grep -qi 'externalsecret' <<<"$SUB" && fail "standalone DB must not require External Secrets Operator"
-grep -q 'hcloud-volumes' <<<"$SUB" && fail "standalone DB must not hardcode the hcloud-volumes storageClass"
-pass "no sync-waves / CronJob / ESO / hcloud storageClass"
+echo "==> assert no SaaS-internal coupling in the default customer render"
+# The whole default render must carry no ArgoCD sync-waves, no ResourceQuota, no
+# backup CronJob, no hcloud storageClass — those are SaaS-only and gated off.
+grep -q 'argocd.argoproj.io/sync-wave' <<<"$A" && fail "no ArgoCD sync-wave should render by default (argocd.syncWaves off)"
+grep -qE '^kind: ResourceQuota$' <<<"$A" && fail "no ResourceQuota should render by default (resourceQuota.enabled off)"
+grep -qi 'kind: CronJob' <<<"$A" && fail "standalone DB must not ship a backup CronJob"
+grep -q 'hcloud-volumes' <<<"$A" && fail "must not hardcode the hcloud-volumes storageClass"
+pass "no sync-waves / ResourceQuota / CronJob / hcloud storageClass"
+
+echo "==> assert the SaaS flags re-enable sync-waves + quota"
+S="$(helm template patom "$CHART" -f "$EXAMPLE" --set argocd.syncWaves=true --set resourceQuota.enabled=true)"
+grep -q 'argocd.argoproj.io/sync-wave: "-1"' <<<"$S" || fail "argocd.syncWaves=true must add the sync-wave annotation"
+grep -qE '^kind: ResourceQuota$' <<<"$S" || fail "resourceQuota.enabled=true must render the ResourceQuota"
+pass "argocd.syncWaves + resourceQuota.enabled honoured"
 
 echo "✅ helm-test passed"
