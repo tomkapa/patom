@@ -822,6 +822,9 @@ function buildTurnsFixture(qs: URLSearchParams) {
     const promptVersion = i < 8 ? 7 : 6;
     const model = isReflection ? "claude-haiku-4-5" : "claude-opus-4-7";
     return {
+      // Per-row turn_metrics.id — distinct from request_id so the FE keys
+      // and opens drawers by turn id (several turns can share a request).
+      id: `0000ffff-0000-0000-0000-${String(i).padStart(12, "0")}`,
       request_id: `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`,
       started_at: new Date(now - i * 7 * 60 * 1000).toISOString(),
       kind: (isReflection ? "reflection" : "normal") as "normal" | "reflection" | "resolution",
@@ -871,16 +874,17 @@ type TurnDetailFixture = {
   prompt_version: Record<string, unknown>;
 };
 
-function buildTurnDetail(requestId: string): TurnDetailFixture {
-  // We treat the requested id as authoritative — it lets playwright
+function buildTurnDetail(turnId: string): TurnDetailFixture {
+  // We treat the requested turn id as authoritative — it lets playwright
   // navigate to /turns/<row id> without first looking the row up.
-  const id = requestId || TURN_DETAIL_FIXTURE_REQUEST_ID;
+  const id = turnId || TURN_DETAIL_FIXTURE_REQUEST_ID;
   const reasoning =
     "User asked for the latest CVE feed. I should query the security MCP server first, " +
     "then summarize. There's no cached result so I'll call search.cve_lookup with severity>=high " +
     "and limit 50, then de-dupe by CVE id before passing to web_search for context.";
   return {
     turn: {
+      id,
       request_id: id,
       session_id: "82a3f000-0000-0000-0000-0000000aaaaa",
       root_request_id: id,
@@ -1653,16 +1657,15 @@ const server = Bun.serve({
     }
 
     // ─── Logs & Metrics turn drawer (slice 2) ─────────────────────────
-    // GET /turns/:request_id — see doc/logs_metrics_tab.md §5.4. The
-    // mock returns one deterministic payload for any request_id so
-    // playwright can drive the drawer without depending on Slice 1's
-    // not-yet-merged timeline endpoint. When Slice 1's mock lands its
-    // /agents/:id/turns rows, their `request_id`s flow straight into
-    // this handler unchanged.
+    // GET /turns/:turn_id — see doc/logs_metrics_tab.md §5.4. Keyed on
+    // `turn_metrics.id`, so each turn of a multi-turn reply opens its own
+    // drawer. The mock returns one deterministic payload for any turn id;
+    // the `/agents/:id/turns` rows carry an `id` per row that flows
+    // straight into this handler.
     const turnDetailMatch = path.match(/^\/turns\/([^/]+)$/);
     if (turnDetailMatch && method === "GET") {
-      const requestId = turnDetailMatch[1]!;
-      return json(buildTurnDetail(requestId));
+      const turnId = turnDetailMatch[1]!;
+      return json(buildTurnDetail(turnId));
     }
 
     return empty(404);

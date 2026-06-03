@@ -262,8 +262,8 @@ export const api = {
    *  caps every join (`MAX_TOOL_CALLS_PER_TURN`,
    *  `MAX_MEMORY_WRITES_PER_TURN`, `MAX_REASONING_BLOCKS_PER_TURN`), so
    *  the response is bounded — no follow-up pagination needed. */
-  turnDetail: (requestId: string) =>
-    request<TurnDetail>(`/turns/${requestId}`),
+  turnDetail: (turnId: string) =>
+    request<TurnDetail>(`/turns/${turnId}`),
 
   // ─── Agent prompt versions (doc/logs_metrics_tab.md §4.1, §4.5) ─────
   /** Newest-first list of every (system_prompt, model) snapshot for one

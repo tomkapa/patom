@@ -1,7 +1,8 @@
 // Per-turn drawer organism for the Logs & Metrics tab
 // (doc/logs_metrics_tab.md §5.4). Renders four sections in order —
 // Reasoning, Tool calls, Memory writes, Prompt used — backed by one
-// `GET /turns/:request_id` call. Hooks: useTurnDetail (react-query).
+// `GET /turns/:turn_id` call (keyed on `turn_metrics.id`, so each turn of
+// a multi-turn reply opens its own drawer). Hooks: useTurnDetail.
 //
 // Atomic-design layering:
 //   - atoms:     Spinner (loading state)
@@ -26,8 +27,8 @@ import type {
   TurnToolCall,
 } from "../../../types/api";
 
-export function TurnDrawer({ requestId }: { requestId: string }) {
-  const { data, isLoading, isError, error } = useTurnDetail(requestId);
+export function TurnDrawer({ turnId }: { turnId: string }) {
+  const { data, isLoading, isError, error } = useTurnDetail(turnId);
 
   return (
     <div className="border-l-[3px] border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-8 py-5">

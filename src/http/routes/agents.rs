@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::types::Json as SqlxJson;
 use uuid::Uuid;
 
+use crate::agent_core::turn_metrics::TurnMetricsId;
 use crate::agent_core::{MAX_TURN_LIST_PAGE_SIZE, MAX_TURNS_PER_TIMESERIES_RESPONSE};
 use crate::agents::prompt_versions::{
     PromptVersionError, PromptVersionId, PromptVersionNumber, PromptVersionRow,
@@ -952,6 +953,10 @@ struct TurnsListQuery {
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct TurnRow {
+    /// Per-row `turn_metrics.id` — unique per provider call. The FE keys
+    /// timeline rows on this and opens each turn's drawer with it
+    /// (several rows share a `request_id` for a multi-turn reply).
+    id: TurnMetricsId,
     request_id: crate::runtime::PromptRequestId,
     started_at: DateTime<Utc>,
     kind: RequestKind,
@@ -1048,7 +1053,7 @@ async fn fetch_turn_rows(
 ) -> Result<Vec<TurnRow>, HttpError> {
     let fetch_limit = limit.saturating_add(1);
     sqlx::query_as::<_, TurnRow>(
-        "SELECT tm.request_id, tm.started_at, tm.kind, tm.model, tm.provider, \
+        "SELECT tm.id, tm.request_id, tm.started_at, tm.kind, tm.model, tm.provider, \
                 tm.input_tokens, tm.output_tokens, tm.cache_creation_tokens, tm.cache_read_tokens, \
                 tm.duration_ms, tm.stop_reason, \
                 pr.status::text AS status, pr.failure_reason::text AS failure_reason, \

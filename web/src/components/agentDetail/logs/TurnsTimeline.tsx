@@ -152,8 +152,8 @@ export function TurnsTimeline({
     }
   };
 
-  const toggleExpanded = (requestId: string) => {
-    setExpanded((cur) => (cur === requestId ? null : requestId));
+  const toggleExpanded = (turnId: string) => {
+    setExpanded((cur) => (cur === turnId ? null : turnId));
   };
 
   const toggleColumn = (id: ColumnId) => {
@@ -233,10 +233,10 @@ export function TurnsTimeline({
             />
           ) : (
             <TurnRowView
-              key={r.row.request_id}
+              key={r.row.id}
               row={r.row}
-              open={expanded === r.row.request_id}
-              onToggle={() => toggleExpanded(r.row.request_id)}
+              open={expanded === r.row.id}
+              onToggle={() => toggleExpanded(r.row.id)}
               visibleColumnDefs={visibleColumnDefs}
               gridTemplate={gridTemplate}
             />
@@ -552,7 +552,7 @@ function TurnRowView({
           {open ? "▾" : "▸"}
         </span>
       </button>
-      {open ? <TurnDrawer requestId={row.request_id} /> : null}
+      {open ? <TurnDrawer turnId={row.id} /> : null}
     </>
   );
 }
