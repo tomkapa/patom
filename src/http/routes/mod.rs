@@ -28,8 +28,7 @@ use tower_http::classify::{ServerErrorsAsFailures, SharedClassifier};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
-use tower_http::trace::{DefaultMakeSpan, TraceLayer};
-use tracing::Level;
+use tower_http::trace::{MakeSpan, TraceLayer};
 
 use super::auth_layer::require_principal;
 use super::csrf::require_csrf;
@@ -79,17 +78,38 @@ fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
 
 /// HTTP request-tracing layer.
 ///
-/// The request span is pinned to `INFO`. `DefaultMakeSpan` defaults to
-/// `DEBUG`, and the span's target is the `tower_http` crate — which is not
-/// named in `observability::DEFAULT_GLOBAL_FILTER`, so it inherits the `info`
-/// floor. At `DEBUG` the span is therefore never enabled, which (a) leaves
-/// every `#[instrument]` work span parentless (no per-request root) and (b)
-/// silently drops the `http.error.5xx` event that `HttpError::into_response`
-/// emits, because the OTel bridge discards events fired with no active span.
-/// `INFO` clears the floor so every request is rooted and every 5xx is
-/// attributable.
-fn trace_layer() -> TraceLayer<SharedClassifier<ServerErrorsAsFailures>, DefaultMakeSpan> {
-    TraceLayer::new_for_http().make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+/// The root span is emitted under the `patom::http` target (see
+/// [`PatomHttpMakeSpan`]) rather than `tower_http`'s default. The deployed
+/// `observability::DEFAULT_GLOBAL_FILTER` carries a `tower=warn` directive,
+/// and `EnvFilter` matches targets by raw prefix (`directive.rs`:
+/// `meta.target().starts_with(..)`), so `tower` *also* captures
+/// `tower_http::trace`. A span made by `DefaultMakeSpan` (target `tower_http`)
+/// is therefore pinned to WARN+ and filtered out at any sane level — which
+/// leaves every `#[instrument]` work span parentless AND silently drops the
+/// `http.error.5xx` event `HttpError::into_response` emits, because the OTel
+/// bridge discards events fired with no active span. Rooting under
+/// `patom::http` rides the `patom` directive instead, so the INFO span is
+/// always enabled: every request is rooted and every 5xx is attributable.
+fn trace_layer() -> TraceLayer<SharedClassifier<ServerErrorsAsFailures>, PatomHttpMakeSpan> {
+    TraceLayer::new_for_http().make_span_with(PatomHttpMakeSpan)
+}
+
+/// [`MakeSpan`] that roots the per-request span under the `patom::http`
+/// target at INFO so it survives the `tower=warn` prefix in the global
+/// filter. See [`trace_layer`] for why the target — not the level — is the
+/// thing that matters.
+#[derive(Clone, Copy, Debug)]
+struct PatomHttpMakeSpan;
+
+impl<B> MakeSpan<B> for PatomHttpMakeSpan {
+    fn make_span(&mut self, request: &axum::http::Request<B>) -> tracing::Span {
+        tracing::info_span!(
+            target: "patom::http",
+            "request",
+            http.request.method = %request.method(),
+            url.path = request.uri().path(),
+        )
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -170,13 +190,18 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
     use tower::ServiceExt;
+    use tracing::Level;
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::layer::SubscriberExt;
 
-    /// Records the `(name, level)` of every span the subscriber enables, so a
-    /// test can assert which spans survive a given filter floor.
+    /// One captured span: `(name, target, level)`. The target is what the
+    /// `tower=warn` prefix turns on, so the test asserts on it.
+    type CapturedSpan = (&'static str, &'static str, Level);
+
+    /// Records every span the subscriber enables, so a test can assert which
+    /// spans survive a given filter and on which target.
     #[derive(Clone, Default)]
-    struct SpanCapture(std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Level)>>>);
+    struct SpanCapture(std::sync::Arc<std::sync::Mutex<Vec<CapturedSpan>>>);
 
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanCapture {
         fn on_new_span(
@@ -186,26 +211,32 @@ mod tests {
             _ctx: tracing_subscriber::layer::Context<'_, S>,
         ) {
             let meta = attrs.metadata();
-            self.0
-                .lock()
-                .expect("span capture mutex")
-                .push((meta.name(), *meta.level()));
+            self.0.lock().expect("span capture mutex").push((
+                meta.name(),
+                meta.target(),
+                *meta.level(),
+            ));
         }
     }
 
-    // Regression for the dropped `http.error.5xx` event: the HTTP request span
-    // must open at INFO so it clears the `info` global filter floor
-    // (observability::DEFAULT_GLOBAL_FILTER). At DefaultMakeSpan's DEBUG it is
-    // filtered out entirely — leaving work spans parentless and discarding the
-    // span-less 5xx error event the OTel bridge can't attach.
+    // Regression for the dropped `http.error.5xx` event. The HTTP request span
+    // must survive the *real* `DEFAULT_GLOBAL_FILTER`, which carries
+    // `tower=warn`. EnvFilter matches targets by raw prefix, so `tower` also
+    // captures `tower_http::trace` — a `DefaultMakeSpan` span (target
+    // `tower_http`) is pinned to WARN+ and filtered out at INFO, orphaning work
+    // spans and discarding the span-less 5xx error event the OTel bridge can't
+    // attach. Rooting under `patom::http` (PatomHttpMakeSpan) is what makes it
+    // survive. With the default tower_http target this test fails (no span at
+    // all is captured).
     #[tokio::test]
-    async fn request_span_opens_at_info_above_filter_floor() {
+    async fn request_span_survives_production_global_filter() {
         let capture = SpanCapture::default();
         let sink = capture.0.clone();
-        // Mirror production's floor. A DEBUG request span is filtered here and
-        // never reaches the capture layer; an INFO one passes.
+        // The REAL production directives — notably `tower=warn`. If EnvFilter
+        // prefix-matches `tower` against the `tower_http::trace` target, the
+        // request span is pinned to WARN+ and filtered out at INFO.
         let subscriber = tracing_subscriber::registry()
-            .with(EnvFilter::new("info"))
+            .with(EnvFilter::new(crate::observability::DEFAULT_GLOBAL_FILTER))
             .with(capture);
 
         let router = Router::new()
@@ -223,15 +254,21 @@ mod tests {
         }
 
         let spans = sink.lock().expect("span capture mutex");
-        let request_span = spans.iter().find(|(name, _)| *name == "request");
+        // Assert the TARGET, not just the name: a `tower_http`-targeted span of
+        // the same name is exactly what `tower=warn` filters out, so pinning
+        // `patom::http` is the contract this PR restores.
+        let request_span = spans
+            .iter()
+            .find(|(name, target, _)| *name == "request" && *target == "patom::http");
         assert!(
             request_span.is_some(),
-            "request span missing under info floor; spans seen: {spans:?}"
+            "request span missing under the patom::http target (the production \
+             tower=warn prefix filters the tower_http target); spans seen: {spans:?}"
         );
         assert_eq!(
-            request_span.expect("request span present").1,
+            request_span.expect("request span present").2,
             Level::INFO,
-            "request span must be INFO to clear the info filter floor"
+            "request span must be exported at INFO under the production filter"
         );
     }
 
