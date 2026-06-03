@@ -120,10 +120,19 @@ probes:
   readiness:
     periodSeconds: 10
     failureThreshold: 6
-# Namespace-level quota (co-located with the app; platform onboarding doesn't
-# need a separate step). Sized for app + Postgres + backup job on the 4 GB node.
+# ArgoCD-specific behaviour, OFF by default so the customer chart carries no
+# GitOps coupling. When true, the patom-config Secret/ExternalSecret get a
+# sync-wave -1 annotation so they're created before the Deployment. Plain `helm
+# install` applies everything together and needs none of this; SaaS (ArgoCD)
+# turns it on via a Helm parameter (patom-infra kubernetes/apps/patom.yaml).
+argocd:
+  syncWaves: false
+# Namespace-level ResourceQuota. OFF by default: the `hard` sizing below is sized
+# for our managed node, not your cluster — imposing it on a self-host is wrong.
+# Enable it (and tune `hard`) if you want a namespace quota. SaaS re-enables it
+# via a Helm parameter (patom-infra kubernetes/apps/patom.yaml).
 resourceQuota:
-  enabled: true
+  enabled: false
   hard:
     requests.cpu: 1
     requests.memory: 1536Mi
