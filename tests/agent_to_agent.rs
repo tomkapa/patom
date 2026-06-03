@@ -15,7 +15,9 @@
 //! - Step 3 — DAG budget seeded on the human POST; bumped four times across
 //!   the conversation, well under cap.
 //! - Step 4 — `send_message` agent-receiver branch (Coordinator → Translator
-//!   and Translator → Coordinator).
+//!   and Translator → Coordinator). Each agent-receiver send also publishes
+//!   a best-effort `AgentMessage` on the DAG stream so the handoff is visible
+//!   to observers (Slack pump, web SSE) — not just the final reply.
 //! - Step 6 — `send_message(Human)` publishes `AgentMessage` on the root
 //!   stream.
 //! - Step 7 — every turn calls `send_message`, so the ping-pong guard
@@ -347,22 +349,48 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
         view.failure_reason,
     );
 
-    // Coordinator delivered exactly one AgentMessage to the human, and the
-    // content matches what its second run sent.
-    let agent_messages: Vec<&ResponseChunk> = chunks
+    // Every send_message — agent→agent and agent→human alike — publishes an
+    // AgentMessage on the DAG stream so observers (Slack pump, web SSE) see
+    // the whole exchange, not just the final reply to the human. This DAG
+    // has three sends:
+    //   Coordinator → Translator   ("translate 'hello' …")
+    //   Translator  → Coordinator  ("bonjour")
+    //   Coordinator → Human        ("The translation is 'bonjour'.")
+    let agent_messages: Vec<(&AgentId, &String)> = chunks
         .iter()
-        .filter(|c| matches!(c, ResponseChunk::AgentMessage { .. }))
+        .filter_map(|c| match c {
+            ResponseChunk::AgentMessage { from, content, .. } => Some((from, content)),
+            _ => None,
+        })
         .collect();
     assert_eq!(
         agent_messages.len(),
-        1,
-        "expected one AgentMessage on root; got {} (chunks={chunks:?})",
+        3,
+        "expected three AgentMessages (two agent↔agent, one agent→human); got {} (chunks={chunks:?})",
         agent_messages.len(),
     );
-    if let ResponseChunk::AgentMessage { from, content, .. } = agent_messages[0] {
-        assert_eq!(*from, coordinator_id, "Coordinator authored the reply");
-        assert_eq!(content, "The translation is 'bonjour'.");
-    }
+    // Coordinator → Translator delegation is now visible.
+    assert!(
+        agent_messages.iter().any(
+            |(from, content)| **from == coordinator_id && content.contains("translate 'hello'")
+        ),
+        "coordinator→translator handoff should surface; got {agent_messages:?}",
+    );
+    // Translator → Coordinator reply is now visible.
+    assert!(
+        agent_messages
+            .iter()
+            .any(|(from, content)| **from == translator_id && content.as_str() == "bonjour"),
+        "translator→coordinator reply should surface; got {agent_messages:?}",
+    );
+    // Coordinator → Human final answer (unchanged).
+    assert!(
+        agent_messages
+            .iter()
+            .any(|(from, content)| **from == coordinator_id
+                && content.as_str() == "The translation is 'bonjour'."),
+        "coordinator→human answer should surface; got {agent_messages:?}",
+    );
 
     // Both providers consumed the full script — no script entries left
     // unused (which would mean the conversation ended early) and no

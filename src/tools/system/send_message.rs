@@ -565,6 +565,9 @@ impl SendMessageTool {
             ToolError::Backend(format!("send_message: bad idempotency: {e}"))
         })?;
         let preview_str = preview(content.as_str());
+        // Capture the body before the queue takes ownership — the
+        // visibility publish below re-surfaces it as an `AgentMessage`.
+        let visible_content = content.as_str().to_owned();
         let from = ctx
             .viewer
             .agent_id()
@@ -590,6 +593,13 @@ impl SendMessageTool {
                 ToolError::Backend(format!("send_message: enqueue failed: {e}"))
             })?;
 
+        // Surface the handoff to stream observers (Slack pump, web SSE) so an
+        // agent↔agent exchange is visible just like an agent→human reply. The
+        // queue row above is the authoritative delivery; this publish is
+        // observation only, so a failure must not fail the tool.
+        self.publish_agent_visibility(ctx, from, receiver_session, visible_content)
+            .await;
+
         set_outcome("agent_delivered");
         info!(
             patom.request.id = %outcome.request_id(),
@@ -604,6 +614,44 @@ impl SendMessageTool {
             request_id: Some(outcome.request_id()),
             delivery: "queued",
         })
+    }
+
+    /// Best-effort visibility publish for an agent→agent delivery.
+    ///
+    /// Emits the same [`ResponseChunk::AgentMessage`] shape an agent→human
+    /// reply produces, keyed to the agent-pair `receiver_session`. The Slack
+    /// stream pump routes it by `to_session` and mints a per-pair thread, so
+    /// the human watching the channel sees the agents talk. Published on
+    /// `ctx.request_id` (the caller's open claim sink) for the same reason
+    /// [`Self::publish_to_human`] is — see that method's note.
+    ///
+    /// Unlike `publish_to_human`, the authoritative delivery is the enqueued
+    /// queue row that drives the receiver's turn; a publish failure here is
+    /// logged and swallowed rather than surfaced as a tool error.
+    async fn publish_agent_visibility(
+        &self,
+        ctx: &ToolCallContext,
+        from: AgentId,
+        to_session: SessionId,
+        content: String,
+    ) {
+        let chunk = ResponseChunk::AgentMessage {
+            from,
+            to_session,
+            content,
+        };
+        if let Err(e) = self
+            .sink
+            .publish_for_user(ctx.acting_user_id, ctx.request_id, chunk)
+            .await
+        {
+            warn!(
+                error = %e,
+                patom.request.id = %ctx.request_id,
+                patom.dag.root = %ctx.root_request_id,
+                "send_message.agent_visibility.publish_failed",
+            );
+        }
     }
 }
 
