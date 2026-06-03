@@ -81,7 +81,11 @@ impl LlmProvider for AnthropicProvider {
         let tools = (!request.tools.is_empty())
             .then(|| request.tools.iter().map(tool_spec_to_param).collect());
 
-        let messages = request.messages.into_iter().map(message_to_param).collect();
+        let messages = request
+            .messages
+            .into_iter()
+            .filter_map(message_to_param)
+            .collect();
 
         let mut params = MessageCreateParams::new(request.max_output_tokens.get(), messages, model)
             .with_system_string(request.system.to_string());

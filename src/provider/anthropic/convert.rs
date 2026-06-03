@@ -13,19 +13,26 @@ use crate::provider::chat::{
 };
 use crate::types::ToolName;
 
-/// Map a provider-agnostic message into a claudius `MessageParam`.
-pub(super) fn message_to_param(msg: ChatMessage) -> MessageParam {
+/// Map a provider-agnostic message into a claudius `MessageParam`. Returns `None` for a
+/// message that would serialize to an empty block list — Anthropic rejects an
+/// empty-content message, so the caller drops it from the replayed history.
+pub(super) fn message_to_param(msg: ChatMessage) -> Option<MessageParam> {
     match msg {
         ChatMessage::User(content) => {
             let blocks = content.into_iter().map(user_content_to_block).collect();
-            MessageParam::new_with_blocks(blocks, MessageRole::User)
+            Some(MessageParam::new_with_blocks(blocks, MessageRole::User))
         }
         ChatMessage::Assistant(content) => {
-            let blocks = content
+            let blocks: Vec<ContentBlock> = content
                 .into_iter()
                 .filter_map(assistant_content_to_block)
                 .collect();
-            MessageParam::new_with_blocks(blocks, MessageRole::Assistant)
+            // Reasoning blocks drop out (no Anthropic signature to replay), so a
+            // reasoning-only turn leaves an empty block list. Emitting an empty-content
+            // assistant message is rejected and wedges the session on every replay, so
+            // omit it from the wire entirely. The block stays persisted for audit.
+            (!blocks.is_empty())
+                .then(|| MessageParam::new_with_blocks(blocks, MessageRole::Assistant))
         }
     }
 }
@@ -106,5 +113,25 @@ pub(super) fn map_stop_reason(stop: Option<ClaudiusStop>) -> StopReason {
         Some(ClaudiusStop::ToolUse) => StopReason::ToolUse,
         Some(ClaudiusStop::MaxTokens) => StopReason::MaxTokens,
         Some(other) => StopReason::Other(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reasoning_only_assistant_message_is_dropped() {
+        // Reasoning blocks have no Anthropic signature to replay, so a reasoning-only
+        // turn would serialize to an empty-content message — which Anthropic rejects and
+        // which wedges the session on every replay. It must be omitted from the wire.
+        let msg = ChatMessage::Assistant(vec![AssistantContent::Reasoning("secret".into())]);
+        assert!(message_to_param(msg).is_none());
+    }
+
+    #[test]
+    fn assistant_message_with_text_is_kept() {
+        let msg = ChatMessage::Assistant(vec![AssistantContent::Text("hello".into())]);
+        assert!(message_to_param(msg).is_some());
     }
 }
