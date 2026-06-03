@@ -112,7 +112,13 @@ export function Sidebar({
               <SidebarRow
                 key={a.id}
                 icon={
-                  <Monogram name={a.name} id={a.id} size={20} tone="moss" />
+                  <Monogram
+                    name={a.name}
+                    id={a.id}
+                    size={20}
+                    tone="moss"
+                    avatarUrl={a.avatar_url}
+                  />
                 }
                 label={a.name}
                 trailing={

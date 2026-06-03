@@ -385,7 +385,13 @@ function AgentReplyCard({
       )}
     >
       <header className="flex items-center gap-2">
-        <Monogram name={agentName} id={agentMonogramId} size={22} tone="moss" />
+        <Monogram
+          name={agentName}
+          id={agentMonogramId}
+          size={22}
+          tone="moss"
+          avatarUrl={agent?.avatar_url}
+        />
         <span className="font-[var(--font-display)] text-[13px] font-bold text-[var(--color-ink)]">
           {agentName}
         </span>
