@@ -24,10 +24,12 @@ mod uploads;
 use axum::Router;
 use axum::http::{HeaderName, HeaderValue, Method, header};
 use axum::middleware;
+use tower_http::classify::{ServerErrorsAsFailures, SharedClassifier};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, TraceLayer};
+use tracing::Level;
 
 use super::auth_layer::require_principal;
 use super::csrf::require_csrf;
@@ -73,6 +75,21 @@ fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
                 HeaderName::from_static("x-csrf-token"),
             ]),
     )
+}
+
+/// HTTP request-tracing layer.
+///
+/// The request span is pinned to `INFO`. `DefaultMakeSpan` defaults to
+/// `DEBUG`, and the span's target is the `tower_http` crate — which is not
+/// named in `observability::DEFAULT_GLOBAL_FILTER`, so it inherits the `info`
+/// floor. At `DEBUG` the span is therefore never enabled, which (a) leaves
+/// every `#[instrument]` work span parentless (no per-request root) and (b)
+/// silently drops the `http.error.5xx` event that `HttpError::into_response`
+/// emits, because the OTel bridge discards events fired with no active span.
+/// `INFO` clears the floor so every request is rooted and every 5xx is
+/// attributable.
+fn trace_layer() -> TraceLayer<SharedClassifier<ServerErrorsAsFailures>, DefaultMakeSpan> {
+    TraceLayer::new_for_http().make_span_with(DefaultMakeSpan::new().level(Level::INFO))
 }
 
 pub fn router(state: AppState) -> Router {
@@ -143,7 +160,7 @@ pub fn router(state: AppState) -> Router {
         .fallback_service(spa_fallback)
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(REQUEST_BODY_LIMIT_BYTES))
-        .layer(TraceLayer::new_for_http())
+        .layer(trace_layer())
 }
 
 #[cfg(test)]
@@ -153,6 +170,70 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
     use tower::ServiceExt;
+    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// Records the `(name, level)` of every span the subscriber enables, so a
+    /// test can assert which spans survive a given filter floor.
+    #[derive(Clone, Default)]
+    struct SpanCapture(std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Level)>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanCapture {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::span::Id,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let meta = attrs.metadata();
+            self.0
+                .lock()
+                .expect("span capture mutex")
+                .push((meta.name(), *meta.level()));
+        }
+    }
+
+    // Regression for the dropped `http.error.5xx` event: the HTTP request span
+    // must open at INFO so it clears the `info` global filter floor
+    // (observability::DEFAULT_GLOBAL_FILTER). At DefaultMakeSpan's DEBUG it is
+    // filtered out entirely — leaving work spans parentless and discarding the
+    // span-less 5xx error event the OTel bridge can't attach.
+    #[tokio::test]
+    async fn request_span_opens_at_info_above_filter_floor() {
+        let capture = SpanCapture::default();
+        let sink = capture.0.clone();
+        // Mirror production's floor. A DEBUG request span is filtered here and
+        // never reaches the capture layer; an INFO one passes.
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new("info"))
+            .with(capture);
+
+        let router = Router::new()
+            .route("/probe", get(|| async { "ok" }))
+            .layer(trace_layer());
+
+        let req = Request::builder()
+            .uri("/probe")
+            .body(Body::empty())
+            .expect("request");
+        {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            let res = router.oneshot(req).await.expect("response");
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+
+        let spans = sink.lock().expect("span capture mutex");
+        let request_span = spans.iter().find(|(name, _)| *name == "request");
+        assert!(
+            request_span.is_some(),
+            "request span missing under info floor; spans seen: {spans:?}"
+        );
+        assert_eq!(
+            request_span.expect("request span present").1,
+            Level::INFO,
+            "request span must be INFO to clear the info filter floor"
+        );
+    }
 
     /// Minimal router applying the real `build_cors_layer` output to a
     /// stand-in `/api/me`. Exercises the production helper without a

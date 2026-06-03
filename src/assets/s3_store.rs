@@ -17,7 +17,7 @@ use aws_config::Region;
 use aws_credential_types::Credentials;
 use aws_credential_types::provider::SharedCredentialsProvider;
 use aws_sdk_s3::Client as S3Client;
-use aws_sdk_s3::config::BehaviorVersion;
+use aws_sdk_s3::config::{BehaviorVersion, RequestChecksumCalculation, ResponseChecksumValidation};
 use aws_sdk_s3::primitives::ByteStream;
 use bytes::Bytes;
 use tokio::time::timeout;
@@ -50,6 +50,18 @@ impl S3AssetStore {
     /// and trailing slashes), so this constructor doesn't re-check them.
     #[must_use]
     pub fn new(settings: &ObjectStorageSettings) -> Self {
+        Self {
+            client: S3Client::from_conf(Self::build_s3_config(settings)),
+            bucket: Arc::from(settings.bucket.as_str()),
+            public_host: Arc::from(settings.public_host.as_str()),
+        }
+    }
+
+    /// Assemble the S3 client config from validated settings. Split out of
+    /// [`Self::new`] so the addressing + checksum invariants are unit-testable
+    /// without standing up a live client (config assembly is pure data — no
+    /// network round-trip happens until the first PutObject).
+    fn build_s3_config(settings: &ObjectStorageSettings) -> aws_sdk_s3::config::Config {
         let credentials = Credentials::new(
             settings.access_key_id.expose(),
             settings.secret_access_key.expose(),
@@ -63,18 +75,21 @@ impl S3AssetStore {
             .endpoint_url(&settings.endpoint)
             .credentials_provider(SharedCredentialsProvider::new(credentials))
             .build();
-        let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
+        aws_sdk_s3::config::Builder::from(&sdk_config)
             // Path-style addressing (`<endpoint>/<bucket>/<key>`) works
             // universally — MinIO and R2 require it, AWS still supports it.
             // The SDK's virtual-host default (`<bucket>.<endpoint>`) breaks
             // MinIO/R2, so we force path-style for every backend.
             .force_path_style(true)
-            .build();
-        Self {
-            client: S3Client::from_conf(s3_config),
-            bucket: Arc::from(settings.bucket.as_str()),
-            public_host: Arc::from(settings.public_host.as_str()),
-        }
+            // Scope flexible checksums to `when_required`. With
+            // `behavior-version-latest` the SDK otherwise defaults to
+            // `when_supported`, attaching a CRC32 to every PutObject — which
+            // Cloudflare R2 rejects with a fast 4xx, surfacing as
+            // `AssetError::StoragePut` → HTTP 500 on avatar upload. AWS S3 is
+            // unaffected by the narrower setting; R2/MinIO need it.
+            .request_checksum_calculation(RequestChecksumCalculation::WhenRequired)
+            .response_checksum_validation(ResponseChecksumValidation::WhenRequired)
+            .build()
     }
 
     fn build_public_url(&self, key: &ObjectKey) -> Result<AssetUrl, AssetError> {
@@ -269,5 +284,46 @@ impl AssetStore for InMemoryAssetStore {
     async fn delete(&self, key: ObjectKey) -> Result<(), AssetError> {
         self.objects.lock().await.remove(key.as_str());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::SecretString;
+    use aws_sdk_s3::config::{RequestChecksumCalculation, ResponseChecksumValidation};
+
+    fn r2_settings() -> ObjectStorageSettings {
+        ObjectStorageSettings {
+            endpoint: "https://acct.r2.cloudflarestorage.com".to_owned(),
+            region: "auto".to_owned(),
+            bucket: "patom-assets".to_owned(),
+            access_key_id: SecretString::try_from("AKIDEXAMPLE".to_owned())
+                .expect("non-empty access key id"),
+            secret_access_key: SecretString::try_from("secret-access-key".to_owned())
+                .expect("non-empty secret access key"),
+            public_host: "https://asset.example".to_owned(),
+        }
+    }
+
+    // Cloudflare R2 rejects the AWS SDK's default flexible checksums that
+    // `behavior-version-latest` enables (`when_supported` attaches a CRC32 to
+    // every PutObject), failing avatar uploads with a fast 4xx that surfaces as
+    // `AssetError::StoragePut` → HTTP 500. The client must pin both checksum
+    // knobs to `when_required` so we only send/verify a checksum when the
+    // operation model demands one.
+    #[test]
+    fn s3_config_scopes_checksums_to_when_required() {
+        let config = S3AssetStore::build_s3_config(&r2_settings());
+        assert_eq!(
+            config.request_checksum_calculation(),
+            Some(&RequestChecksumCalculation::WhenRequired),
+            "request checksum calculation must be when_required for R2",
+        );
+        assert_eq!(
+            config.response_checksum_validation(),
+            Some(&ResponseChecksumValidation::WhenRequired),
+            "response checksum validation must be when_required for R2",
+        );
     }
 }
