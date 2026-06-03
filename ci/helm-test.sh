@@ -44,4 +44,14 @@ grep -q 'argocd.argoproj.io/sync-wave: "-1"' <<<"$S" || fail "argocd.syncWaves=t
 grep -qE '^kind: ResourceQuota$' <<<"$S" || fail "resourceQuota.enabled=true must render the ResourceQuota"
 pass "argocd.syncWaves + resourceQuota.enabled honoured"
 
+echo "==> package the chart (the artifact chart-release publishes to OCI)"
+pkgdir="$(mktemp -d)"
+helm package "$CHART" --destination "$pkgdir" >/dev/null || fail "helm package failed"
+ver="$(helm show chart "$CHART" | awk '/^version:/ {print $2}')"
+test -f "$pkgdir/patom-${ver}.tgz" || fail "expected packaged chart patom-${ver}.tgz"
+tar tzf "$pkgdir/patom-${ver}.tgz" | grep -q 'patom/charts/postgresql/Chart.yaml' \
+  || fail "packaged chart is missing the vendored postgresql subchart"
+rm -rf "$pkgdir"
+pass "packages to patom-${ver}.tgz with the postgresql subchart"
+
 echo "✅ helm-test passed"
