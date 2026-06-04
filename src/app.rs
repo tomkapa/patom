@@ -829,7 +829,14 @@ pub async fn build_server(
 
     let orgs_store: crate::orgs::SharedOrgStore =
         Arc::new(crate::orgs::PgOrgStore::new(pieces.pool.clone()));
-    let mailer: crate::orgs::SharedMailer = Arc::new(crate::orgs::LogMailer);
+    // Mailer seam (issue #120). A configured SMTP relay delivers real invite
+    // mail; with `PATOM_SMTP_*` unset we fall back to `LogMailer`, which keeps
+    // the link recoverable from logs — a first-class shape for local dev and
+    // relay-less deployments. A bad relay config fails fast here at startup.
+    let mailer: crate::orgs::SharedMailer = match settings.smtp.as_ref() {
+        Some(cfg) => Arc::new(crate::orgs::SmtpMailer::try_new(cfg)?),
+        None => Arc::new(crate::orgs::LogMailer),
+    };
 
     let state = AppState {
         queue: pieces.queue,

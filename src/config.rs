@@ -10,7 +10,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::auth::limits::MAX_CORS_ALLOWED_ORIGINS;
-use crate::auth::{CookieDomain, IssuerUrl};
+use crate::auth::{CookieDomain, Email, IssuerUrl};
 use crate::provider::{Model, ProviderId};
 use crate::types::SecretString;
 
@@ -101,6 +101,18 @@ pub enum SettingsError {
 
     #[error("s3: PATOM_S3_{field} must not be empty")]
     EmptyS3Field { field: &'static str },
+
+    #[error(
+        "smtp: partial configuration; set all of PATOM_SMTP_HOST, \
+         PATOM_SMTP_USERNAME, PATOM_SMTP_PASSWORD, PATOM_EMAIL_FROM — or none"
+    )]
+    PartialSmtpConfig,
+
+    #[error("smtp: PATOM_SMTP_{field} must not be empty")]
+    EmptySmtpField { field: &'static str },
+
+    #[error("smtp: PATOM_EMAIL_FROM {raw:?} is not a valid email address ({reason})")]
+    InvalidEmailFrom { raw: String, reason: &'static str },
 }
 
 /// Process-wide configuration loaded once at startup. Secrets are wrapped in
@@ -145,6 +157,36 @@ pub struct Settings {
     /// configured" — deployments that don't care about avatar/icon uploads
     /// stay first-class.
     pub object_storage: Option<ObjectStorageSettings>,
+    /// Outbound SMTP relay for transactional mail (member invites). Present
+    /// iff the required `PATOM_SMTP_*` / `PATOM_EMAIL_FROM` env vars are set.
+    /// When `None`, [`crate::orgs::LogMailer`] is wired and invite links are
+    /// recoverable from the structured logs — a first-class deployment for
+    /// local dev and operators who haven't provisioned a relay yet.
+    pub smtp: Option<SmtpSettings>,
+}
+
+/// Outbound SMTP relay configuration for transactional mail.
+///
+/// The four credential/identity fields are required as a group; `port` is
+/// optional (defaults to [`DEFAULT_SMTP_PORT`]). The `TryFrom<RawSettings>`
+/// impl rejects partial sets via [`SettingsError::PartialSmtpConfig`] and
+/// parses `from` through [`Email`] at the boundary (CLAUDE.md §1) so the
+/// mailer never re-validates an address.
+#[derive(Debug, Clone)]
+pub struct SmtpSettings {
+    /// Relay hostname (e.g. `smtp.example.com`). Non-empty after trim.
+    pub host: String,
+    /// Submission port. 587 (STARTTLS) by default; 465 for implicit TLS.
+    pub port: u16,
+    /// SMTP AUTH username.
+    pub username: SecretString,
+    /// SMTP AUTH password / API token.
+    pub password: SecretString,
+    /// Envelope + header `From` address. Parsed through [`Email`] so it is
+    /// a structurally valid mailbox by construction.
+    pub from: Email,
+    /// Optional display name rendered alongside `from` (e.g. `Patom`).
+    pub from_name: Option<String>,
 }
 
 /// S3-compatible object-storage configuration.
@@ -535,6 +577,22 @@ struct RawSettings {
     patom_s3_secret_access_key: Option<SecretString>,
     #[serde(default)]
     patom_s3_public_host: Option<String>,
+
+    // SMTP relay — same all-or-nothing rule as Slack/S3 for the four
+    // required fields. `port` is optional (defaulted to 587) and
+    // `from_name` is genuinely optional.
+    #[serde(default)]
+    patom_smtp_host: Option<String>,
+    #[serde(default)]
+    patom_smtp_port: Option<u16>,
+    #[serde(default)]
+    patom_smtp_username: Option<SecretString>,
+    #[serde(default)]
+    patom_smtp_password: Option<SecretString>,
+    #[serde(default)]
+    patom_email_from: Option<String>,
+    #[serde(default)]
+    patom_email_from_name: Option<String>,
 }
 
 fn default_web_dist() -> PathBuf {
@@ -862,6 +920,14 @@ impl TryFrom<RawSettings> for Settings {
             raw.patom_s3_secret_access_key,
             raw.patom_s3_public_host,
         )?;
+        let smtp = resolve_smtp(
+            raw.patom_smtp_host,
+            raw.patom_smtp_port,
+            raw.patom_smtp_username,
+            raw.patom_smtp_password,
+            raw.patom_email_from,
+            raw.patom_email_from_name,
+        )?;
         Ok(Self {
             providers,
             brave_search_api_key: raw.brave_search_api_key,
@@ -874,14 +940,74 @@ impl TryFrom<RawSettings> for Settings {
             web_dist: raw.patom_web_dist,
             slack,
             object_storage,
+            smtp,
         })
     }
+}
+
+/// Resolve the optional SMTP relay settings from the raw env fields. The
+/// four credential/identity fields are required as a group: all unset →
+/// `None` (transactional mail logged via [`crate::orgs::LogMailer`], a
+/// first-class deployment); all set → `Some`; any mixed subset →
+/// [`SettingsError::PartialSmtpConfig`]. `port` defaults to
+/// [`DEFAULT_SMTP_PORT`]; `from` is parsed through [`Email`] at the
+/// boundary (CLAUDE.md §1).
+fn resolve_smtp(
+    host: Option<String>,
+    port: Option<u16>,
+    username: Option<SecretString>,
+    password: Option<SecretString>,
+    from: Option<String>,
+    from_name: Option<String>,
+) -> Result<Option<SmtpSettings>, SettingsError> {
+    match (host, username, password, from) {
+        (None, None, None, None) => Ok(None),
+        (Some(host_raw), Some(username), Some(password), Some(from_raw)) => {
+            let host = require_non_empty_smtp(host_raw, "HOST")?;
+            let from = Email::try_from(from_raw.as_str()).map_err(|e| {
+                SettingsError::InvalidEmailFrom {
+                    raw: from_raw.clone(),
+                    reason: parse_error_reason(&e),
+                }
+            })?;
+            // An empty display name is meaningless — treat it as absent so
+            // the mailer renders a bare address rather than `<>` noise.
+            let from_name = from_name.filter(|n| !n.trim().is_empty());
+            Ok(Some(SmtpSettings {
+                host,
+                port: port.unwrap_or(DEFAULT_SMTP_PORT),
+                username,
+                password,
+                from,
+                from_name,
+            }))
+        }
+        _ => Err(SettingsError::PartialSmtpConfig),
+    }
+}
+
+/// Reject an empty / whitespace-only required SMTP field. `field` is the
+/// env var suffix (e.g. `HOST`) used in [`SettingsError::EmptySmtpField`].
+/// Returns the value unchanged when non-empty.
+fn require_non_empty_smtp(raw: String, field: &'static str) -> Result<String, SettingsError> {
+    if raw.trim().is_empty() {
+        return Err(SettingsError::EmptySmtpField { field });
+    }
+    Ok(raw)
 }
 
 /// Default SigV4 region when `PATOM_S3_REGION` is unset. MinIO ignores
 /// the region; AWS accepts `us-east-1` as the canonical default; R2 wants
 /// `auto` (set explicitly by the operator).
 const DEFAULT_S3_REGION: &str = "us-east-1";
+
+/// Default SMTP submission port when `PATOM_SMTP_PORT` is unset. 587 is the
+/// RFC 6409 message-submission port; the mailer always uses STARTTLS on it
+/// (see [`crate::orgs::SmtpMailer`]). Operators override the port only for a
+/// relay on a non-standard STARTTLS endpoint — the TLS mode is fixed.
+/// Resolved at the config boundary so [`SmtpSettings::port`] is always
+/// concrete.
+const DEFAULT_SMTP_PORT: u16 = 587;
 
 /// Resolve the optional S3 object-storage settings from the raw env
 /// fields. The five non-region fields are required as a group: all unset
@@ -1054,6 +1180,12 @@ mod tests {
             patom_s3_access_key_id: None,
             patom_s3_secret_access_key: None,
             patom_s3_public_host: None,
+            patom_smtp_host: None,
+            patom_smtp_port: None,
+            patom_smtp_username: None,
+            patom_smtp_password: None,
+            patom_email_from: None,
+            patom_email_from_name: None,
         }
     }
 
@@ -1427,5 +1559,97 @@ mod tests {
         raw.anthropic_api_key = Some(secret("sk-ant"));
         let s = Settings::try_from(raw).expect("valid");
         assert!(s.object_storage.is_none());
+    }
+
+    fn with_smtp(raw: &mut RawSettings) {
+        raw.patom_smtp_host = Some("smtp.example.com".to_string());
+        raw.patom_smtp_username = Some(secret("smtp-user"));
+        raw.patom_smtp_password = Some(secret("smtp-pass"));
+        raw.patom_email_from = Some("invites@patom.app".to_string());
+    }
+
+    #[test]
+    fn smtp_resolves() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_smtp(&mut raw);
+        raw.patom_email_from_name = Some("Patom".to_string());
+        let s = Settings::try_from(raw).expect("valid");
+        let smtp = s.smtp.expect("configured");
+        assert_eq!(smtp.host, "smtp.example.com");
+        assert_eq!(smtp.username.expose(), "smtp-user");
+        assert_eq!(smtp.from.as_str(), "invites@patom.app");
+        assert_eq!(smtp.from_name.as_deref(), Some("Patom"));
+    }
+
+    #[test]
+    fn smtp_port_default_is_587() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_smtp(&mut raw);
+        let s = Settings::try_from(raw).expect("valid");
+        assert_eq!(s.smtp.expect("configured").port, DEFAULT_SMTP_PORT);
+    }
+
+    #[test]
+    fn smtp_explicit_port_flows_through() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_smtp(&mut raw);
+        // A non-standard STARTTLS submission port (e.g. SES's 2587).
+        raw.patom_smtp_port = Some(2587);
+        let s = Settings::try_from(raw).expect("valid");
+        assert_eq!(s.smtp.expect("configured").port, 2587);
+    }
+
+    #[test]
+    fn partial_smtp_group_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        // Host set, the rest unset — a mixed subset.
+        raw.patom_smtp_host = Some("smtp.example.com".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::PartialSmtpConfig));
+    }
+
+    #[test]
+    fn empty_smtp_host_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_smtp(&mut raw);
+        raw.patom_smtp_host = Some("   ".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(
+            err,
+            SettingsError::EmptySmtpField { field: "HOST" }
+        ));
+    }
+
+    #[test]
+    fn invalid_email_from_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_smtp(&mut raw);
+        raw.patom_email_from = Some("not-an-email".to_string());
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::InvalidEmailFrom { .. }));
+    }
+
+    #[test]
+    fn blank_from_name_is_treated_as_absent() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_smtp(&mut raw);
+        raw.patom_email_from_name = Some("   ".to_string());
+        let s = Settings::try_from(raw).expect("valid");
+        assert!(s.smtp.expect("configured").from_name.is_none());
+    }
+
+    #[test]
+    fn no_smtp_is_ok() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        let s = Settings::try_from(raw).expect("valid");
+        assert!(s.smtp.is_none());
     }
 }
