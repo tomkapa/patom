@@ -580,6 +580,8 @@ const en = {
   "settings.budget.warnThreshold.helper":
     "Send a soft alert once spend crosses this percentage of the cap.",
   "settings.budget.memberHint": "Only an owner or admin can change the budget.",
+  "settings.budget.betaNote":
+    "New workspaces start with a default monthly cap during the free public beta. Raise it here if you need more.",
   "settings.budget.error": "Couldn't save the budget. Try again.",
 
   // Chat — budget exceeded

@@ -14,7 +14,7 @@ use tracing::info;
 
 use super::error::AuthError;
 use super::language::Language;
-use super::limits::MAX_SLUG_RETRIES;
+use super::limits::{MAX_ORGS_PER_WINDOW, MAX_SLUG_RETRIES, ORG_CREATE_RATE_WINDOW};
 use super::locale_hint::LocaleHint;
 use super::org_rule::OrganizationRule;
 use super::store::{ConsumedOAuthState, NewOrg, OAuthStateRow, UpsertedUser, UserStore};
@@ -22,6 +22,7 @@ use super::types::{
     Email, OAuthState, OidcNonce, OidcProfile, OrgId, OrgMembership, OrgSlug, PkceVerifier, Role,
     User, UserId,
 };
+use crate::budget::limits::{DEFAULT_ORG_MONTHLY_CAP_MICROS, DEFAULT_WARN_BPS};
 use crate::types::AvatarUrl;
 
 pub struct PgUserStore {
@@ -155,6 +156,9 @@ impl UserStore for PgUserStore {
         language: Language,
         now: DateTime<Utc>,
     ) -> Result<NewOrg, AuthError> {
+        // Global org-creation rate limit (issue #121): refuse before minting any
+        // slug or row once the window is full.
+        self.check_org_creation_rate(now).await?;
         let base = sanitize_slug(suggested_slug);
         let mut attempt = 0;
         loop {
@@ -223,6 +227,8 @@ impl UserStore for PgUserStore {
         // we never insert a row the CHECK would reject.
         let slug = OrgSlug::try_from(sanitize_slug(suggested_slug)).map_err(AuthError::Parse)?;
         let id = OrgId::new();
+        // Self-host bootstrap: no default cap — the operator runs their own
+        // instance and pays their own provider bill (issue #121).
         insert_org_and_owner(
             &mut tx,
             id,
@@ -231,6 +237,7 @@ impl UserStore for PgUserStore {
             display_name,
             language,
             now,
+            None,
         )
         .await?;
         tx.commit().await?;
@@ -509,6 +516,39 @@ impl UserStore for PgUserStore {
 }
 
 impl PgUserStore {
+    /// Global org-creation rate limit (issue #121). Counts orgs created within
+    /// [`ORG_CREATE_RATE_WINDOW`] and refuses once the count reaches
+    /// [`MAX_ORGS_PER_WINDOW`]. An advisory lock serializes the decision so a
+    /// burst can't all read the same stale count and slip through together.
+    ///
+    /// Reuses `organizations.created_at` — no throttle table — and reads the
+    /// window from the caller-supplied `now` (Clock-driven, §11). The bound is
+    /// approximate: the lock guards the count, not the subsequent insert, so a
+    /// simultaneous burst can over-admit by ~the concurrency count. That's fine
+    /// — the cap exists to bound a flood, not to be exact to the row.
+    async fn check_org_creation_rate(&self, now: DateTime<Utc>) -> Result<(), AuthError> {
+        let window = chrono::Duration::from_std(ORG_CREATE_RATE_WINDOW)
+            .expect("invariant: ORG_CREATE_RATE_WINDOW fits chrono::Duration");
+        let since = now - window;
+        let mut tx = super::begin_privileged(&self.pool).await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind("patom:org-create-throttle")
+            .execute(&mut *tx)
+            .await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM organizations WHERE created_at > $1")
+                .bind(since)
+                .fetch_one(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        // §6: count(*) is never negative; a corrupt read crashes here.
+        assert!(count >= 0, "invariant: count(*) is never negative");
+        if count >= MAX_ORGS_PER_WINDOW {
+            return Err(AuthError::OrgCreationThrottled);
+        }
+        Ok(())
+    }
+
     async fn try_insert_org(
         &self,
         user_id: UserId,
@@ -519,7 +559,19 @@ impl PgUserStore {
     ) -> Result<NewOrg, AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
         let id = OrgId::new();
-        insert_org_and_owner(&mut tx, id, user_id, slug, display_name, language, now).await?;
+        // Cloud self-service: every new org is born capped at the beta default
+        // (issue #121) so an uncapped org can never drain the provider budget.
+        insert_org_and_owner(
+            &mut tx,
+            id,
+            user_id,
+            slug,
+            display_name,
+            language,
+            now,
+            Some(DEFAULT_ORG_MONTHLY_CAP_MICROS),
+        )
+        .await?;
         tx.commit().await?;
         Ok(NewOrg {
             id,
@@ -534,7 +586,20 @@ impl PgUserStore {
 /// existing transaction. The org-creation SQL lives here once and is
 /// shared by the self-service (`try_insert_org`) and first-admin
 /// (`bootstrap_initial_org_as_owner`) paths, which differ only in their
-/// surrounding guards (slug-collision retry vs. empty-table assertion).
+/// surrounding guards (slug-collision retry vs. empty-table assertion) and the
+/// `default_cap` they stamp (issue #121: `Some` for cloud, `None` for self-host).
+///
+/// The `org_budgets` write lives here, not in [`crate::budget::service`], on
+/// purpose: stamping the cap in the *same* transaction as the org is what makes
+/// "a cloud org never exists uncapped" an atomic invariant rather than a
+/// best-effort follow-up that a crash between two transactions could skip. This
+/// is the one place the auth module writes `org_budgets`; all later edits go
+/// through `BudgetService`. Don't "fix" the layering by moving it out — the
+/// atomicity is the point.
+// Flat parameter list mirrors the `organizations` / `org_members` / `org_budgets`
+// columns being written; a wrapper struct would add indirection without making
+// the single call sites clearer.
+#[allow(clippy::too_many_arguments)]
 async fn insert_org_and_owner(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: OrgId,
@@ -543,6 +608,7 @@ async fn insert_org_and_owner(
     display_name: &str,
     language: Language,
     now: DateTime<Utc>,
+    default_cap: Option<i64>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at)
@@ -564,6 +630,24 @@ async fn insert_org_and_owner(
     .bind(now)
     .execute(&mut **tx)
     .await?;
+    // Stamp the beta default budget cap (issue #121) atomically with the org so
+    // it is never created uncapped. `None` (self-host bootstrap) leaves the org
+    // without a row — i.e. unlimited, the operator's own bill.
+    if let Some(cap) = default_cap {
+        // §6: a stamped cap is positive (the column CHECK rejects <= 0).
+        assert!(cap > 0, "invariant: default org cap must be positive");
+        sqlx::query(
+            "INSERT INTO org_budgets
+                 (org_id, monthly_cap_micro_usd, warn_threshold_bps, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $4)",
+        )
+        .bind(id)
+        .bind(cap)
+        .bind(i32::from(DEFAULT_WARN_BPS))
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(())
 }
 

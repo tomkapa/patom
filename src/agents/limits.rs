@@ -69,3 +69,15 @@ pub const MAX_ALLOWED_MCP_CATALOGS_PER_AGENT: usize = 32;
 /// schema `CHECK` on `allowed_mcp_tools` enforces the same number on the
 /// DB side.
 pub const MAX_ALLOWED_MCP_TOOLS_PER_CATALOG_PER_AGENT: usize = 64;
+
+/// Maximum number of agents one org may own (issue #121 abuse guardrail).
+///
+/// A single account multiplies its spend surface by spinning up agents — each
+/// agent can run turns, and every create embeds its description through a *paid*
+/// external call. So an unbounded agent count is both a spend and an
+/// embedding-API abuse vector during the free beta. 50 bounds the blast radius
+/// per org while staying generous for a real multi-role workspace. Enforced in
+/// `create_in_tx`; the system `seed_default` path (the org's first agent) is
+/// exempt because it runs through separate SQL. Tunable here.
+pub const MAX_AGENTS_PER_ORG: i64 = 50;
+const _: () = assert!(MAX_AGENTS_PER_ORG > 0);

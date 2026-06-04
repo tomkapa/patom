@@ -49,6 +49,12 @@ pub enum AuthError {
     #[error("jwt: {0}")]
     Jwt(String),
 
+    /// The global org-creation rate limit was hit (issue #121 abuse
+    /// guardrail). The signup is refused; the user can retry once the
+    /// window drains. Maps to `429 Too Many Requests`.
+    #[error("org creation temporarily throttled")]
+    OrgCreationThrottled,
+
     /// Smart-constructor failure when parsing OAuth profile fields.
     #[error("parse: {0}")]
     Parse(#[from] ParseError),

@@ -118,6 +118,8 @@ impl IntoResponse for HttpError {
             Self::Session(SessionError::MessageCapExceeded { .. })
             | Self::Prompt(PromptError::PendingCapExceeded { .. })
             | Self::Mcp(McpError::ServerCapExceeded { .. })
+            | Self::Agent(AgentStoreError::OrgAgentCapExceeded { .. })
+            | Self::Auth(AuthError::OrgCreationThrottled)
             | Self::Budget(BudgetError::Exceeded { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, self.to_string())
             }

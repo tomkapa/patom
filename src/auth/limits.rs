@@ -18,6 +18,27 @@ pub const JWT_TTL: Duration = Duration::from_hours(24 * 7);
 /// coffee, then complete consent.
 pub const OAUTH_STATE_TTL: Duration = Duration::from_mins(10);
 
+/// Rolling window for the global org-creation throttle (issue #121).
+///
+/// Org creation is the moment new provider-spend liability is born. The
+/// throttle counts orgs created within this window and refuses new ones past
+/// [`MAX_ORGS_PER_WINDOW`], so a launch-day spike or a scripted signup loop is
+/// rate-limited rather than able to mint thousands of (capped, but still
+/// billable) orgs in minutes. One hour balances "absorbs an organic burst"
+/// against "bounds a sustained attack".
+pub const ORG_CREATE_RATE_WINDOW: Duration = Duration::from_hours(1);
+
+/// Max orgs created globally within [`ORG_CREATE_RATE_WINDOW`] during the beta.
+///
+/// Even with every org capped at [`crate::budget::limits::DEFAULT_ORG_MONTHLY_CAP_MICROS`],
+/// N orgs is $N of new monthly liability — so we throttle the *rate* at which
+/// liability is created. 60/hour is comfortably above genuine organic beta
+/// signups while throttling an automated flood. Global (not per-IP): an
+/// attacker rotating IPs or a Google-account farm can't sidestep it, and the
+/// blast radius we care about is the aggregate, not any single source. Tunable.
+pub const MAX_ORGS_PER_WINDOW: i64 = 60;
+const _: () = assert!(MAX_ORGS_PER_WINDOW > 0);
+
 /// Maximum slug-collision retries when minting the personal org.
 ///
 /// Each retry appends a 4-char random suffix; after 5 attempts we fail

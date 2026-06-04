@@ -198,6 +198,13 @@ export function SettingsBilling() {
             }
             bodyClassName="grid grid-cols-1 gap-5 px-5 py-5"
           >
+            <p
+              className="text-[12px] text-[var(--color-muted-foreground)]"
+              data-testid="settings-budget-beta-note"
+            >
+              {t("settings.budget.betaNote")}
+            </p>
+
             {!canEdit ? (
               <div className="font-[var(--font-mono)] text-[11px] tracking-[0.06em] text-[var(--color-muted-foreground)] uppercase">
                 {t("settings.budget.memberHint")}

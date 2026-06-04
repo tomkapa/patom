@@ -63,6 +63,34 @@ fn cat(id: &str) -> McpCatalogId {
 }
 
 #[sqlx::test]
+async fn create_rejects_once_org_hits_agent_cap(pool: PgPool) {
+    // seed_tenant already seeds one (default) agent, so fill the rest up to the
+    // cap, then assert the next create is refused (issue #121 guardrail).
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+
+    for i in 1..patom::agents::MAX_AGENTS_PER_ORG {
+        store
+            .create(new_agent(seed.org_id, &format!("agent-{i}"), "p", false))
+            .await
+            .unwrap_or_else(|e| panic!("create #{i} under the cap should succeed: {e}"));
+    }
+
+    let err = store
+        .create(new_agent(seed.org_id, "one-too-many", "p", false))
+        .await
+        .expect_err("the create that would exceed the cap must fail");
+    assert!(
+        matches!(
+            err,
+            AgentStoreError::OrgAgentCapExceeded { max, .. }
+                if max == patom::agents::MAX_AGENTS_PER_ORG
+        ),
+        "expected OrgAgentCapExceeded, got {err:?}"
+    );
+}
+
+#[sqlx::test]
 async fn seed_default_is_idempotent(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);

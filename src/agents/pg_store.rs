@@ -24,6 +24,7 @@ use crate::pg_vector;
 use crate::provider::{SharedEmbeddingProvider, embed_one};
 
 use super::error::AgentStoreError;
+use super::limits::MAX_AGENTS_PER_ORG;
 use super::prompt_versions::PromptVersionId;
 use super::store::{AgentStore, AgentUpdate, NewAgent};
 use super::types::{
@@ -558,6 +559,8 @@ async fn create_in_tx(
     let embedding_literal = pg_vector::encode(embedding);
     let now = store.now();
 
+    assert_under_agent_cap(tx, payload.org_id).await?;
+
     // Promoting a new row to default first demotes the existing
     // default in the same org so the partial unique index
     // `agents_default_unique` on `(org_id) WHERE is_default` stays
@@ -625,6 +628,30 @@ async fn create_in_tx(
         created_at: now,
         updated_at: now,
     })
+}
+
+/// Reject a create when the org already owns [`MAX_AGENTS_PER_ORG`] agents
+/// (issue #121 abuse guardrail). The system `seed_default` path doesn't route
+/// through `create_in_tx`, so the org's first agent is never blocked. Soft cap:
+/// a simultaneous burst could over-admit by ~the concurrency count — acceptable
+/// for a beta guardrail; the cap's job is to bound, not to be exact.
+async fn assert_under_agent_cap(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org_id: OrgId,
+) -> Result<(), AgentStoreError> {
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM agents WHERE org_id = $1")
+        .bind(org_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    // §6: count(*) is never negative; a corrupt read crashes here.
+    assert!(count >= 0, "invariant: count(*) is never negative");
+    if count >= MAX_AGENTS_PER_ORG {
+        return Err(AgentStoreError::OrgAgentCapExceeded {
+            org: org_id,
+            max: MAX_AGENTS_PER_ORG,
+        });
+    }
+    Ok(())
 }
 
 /// INSERT a new `MAX(version) + 1` row in `agent_prompt_versions`.

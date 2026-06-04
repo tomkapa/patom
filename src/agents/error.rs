@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use crate::auth::OrgId;
 use crate::types::ParseError;
 
 use super::types::{AgentId, AgentName};
@@ -41,6 +42,12 @@ pub enum AgentStoreError {
     /// session history of agents that ever existed is preserved.
     #[error("agent {0:?} is referenced by one or more sessions")]
     InUse(AgentId),
+
+    /// The org already owns [`crate::agents::MAX_AGENTS_PER_ORG`] agents and
+    /// cannot create another (issue #121 abuse guardrail). Carries the cap so
+    /// the HTTP layer can report it; maps to `429 Too Many Requests`.
+    #[error("org {org} has reached its limit of {max} agents")]
+    OrgAgentCapExceeded { org: OrgId, max: i64 },
 
     #[error("agent record decode: {0}")]
     Parse(#[from] ParseError),

@@ -580,6 +580,8 @@ const vi: TranslationTable = {
   "settings.budget.warnThreshold.helper":
     "Gửi cảnh báo nhẹ khi chi tiêu vượt phần trăm này của giới hạn.",
   "settings.budget.memberHint": "Chỉ chủ sở hữu hoặc quản trị viên mới đổi được ngân sách.",
+  "settings.budget.betaNote":
+    "Workspace mới bắt đầu với giới hạn hằng tháng mặc định trong giai đoạn beta công khai miễn phí. Nâng giới hạn tại đây nếu bạn cần thêm.",
   "settings.budget.error": "Không thể lưu ngân sách. Hãy thử lại.",
 
   // Chat — budget exceeded

@@ -10,6 +10,19 @@ use super::types::Price;
 /// hit the wall" point.
 pub const DEFAULT_WARN_BPS: u16 = 8000;
 
+/// Default monthly spend cap applied to every newly-created *cloud* org, in
+/// micro-USD (issue #121).
+///
+/// Free public beta: Patom pays the provider bill, so an org with no cap is
+/// open-ended liability — one bad actor, a scripted signup loop, or a launch
+/// spike can drain the provider budget. $1.00 is deliberately tight: enough to
+/// *try* the product, bounded enough that N scripted signups cost $N rather
+/// than N×∞. Owners/admins raise it from Settings → Billing. The self-host
+/// bootstrap org is exempt (the operator pays their own bill) — only the cloud
+/// self-service path stamps this. Mirrored by the migration-57 backfill SQL;
+/// keep the two in sync. Tunable here.
+pub const DEFAULT_ORG_MONTHLY_CAP_MICROS: i64 = 1_000_000; // $1.00
+
 /// Pessimistic price for a `(model, provider)` pair with no catalog entry
 /// (CLAUDE.md §5: *unknown bound → pick a pessimistic one and add a metric*).
 ///
@@ -43,3 +56,6 @@ pub const MAX_SINGLE_TURN_COST_MICROS: i64 = 100_000_000; // $100
 const _: () = assert!(DEFAULT_WARN_BPS > 0);
 const _: () = assert!(DEFAULT_WARN_BPS <= 10_000);
 const _: () = assert!(MAX_SINGLE_TURN_COST_MICROS > 0);
+// §5: the default org cap must satisfy the `org_budgets` column CHECK (> 0) so
+// a freshly-stamped row can never be rejected by the database.
+const _: () = assert!(DEFAULT_ORG_MONTHLY_CAP_MICROS > 0);
