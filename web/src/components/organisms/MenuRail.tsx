@@ -2,19 +2,15 @@ import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { useAuthStore } from "../../stores/authStore";
-import { useActiveOrg } from "../../hooks/useMe";
 import { indicatorSpring } from "../../lib/motion";
 import { useNavItems } from "../../lib/nav";
+import { OrgSwitcher } from "./OrgSwitcher";
 import { UserMenu } from "./UserMenu";
-import appLogoUrl from "../../../assets/favicon-192.png";
 
 export function MenuRail() {
   const nav = useNavigate();
   const { pathname } = useLocation();
   const me = useAuthStore((s) => s.me);
-  const activeOrg = useActiveOrg();
-  const workspaceLogo = activeOrg?.avatar_url ?? appLogoUrl;
-  const workspaceName = activeOrg?.name ?? "Patom";
 
   const items = useNavItems();
 
@@ -23,12 +19,7 @@ export function MenuRail() {
       className="hidden h-full w-[72px] shrink-0 flex-col items-center gap-1.5 bg-[var(--color-rail-brand)] p-2 md:flex"
       aria-label="Menu rail"
     >
-      <img
-        src={workspaceLogo}
-        alt={workspaceName}
-        aria-label={workspaceName}
-        className="h-9 w-9 shrink-0 object-cover select-none"
-      />
+      <OrgSwitcher />
 
       <div className="my-0.5 h-px w-6 bg-white/20" aria-hidden />
 

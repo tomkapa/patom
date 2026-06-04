@@ -1,5 +1,4 @@
 import { useMemo } from "react";
-import type { ReactNode } from "react";
 import { Bot, ChevronDown, Hash, Plus, Search } from "lucide-react";
 import { Button } from "../atoms/Button";
 import { Kbd } from "../atoms/Kbd";
@@ -16,7 +15,6 @@ export function Sidebar({
   selectedAgentId,
   onSelectChannel,
   onSelectAgent,
-  orgSwitcher,
 }: {
   workspace?: string;
   threads: ThreadSummary[];
@@ -25,7 +23,6 @@ export function Sidebar({
   selectedAgentId: string | null;
   onSelectChannel: (channel: string) => void;
   onSelectAgent: (agentId: string) => void;
-  orgSwitcher?: ReactNode;
 }) {
   const { t } = useT();
   const channels = [{ name: "general", icon: Hash, count: threads.length }];
@@ -42,21 +39,17 @@ export function Sidebar({
       className="flex h-full w-[300px] shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-paper)]"
       aria-label="Channels and threads"
     >
-      {/* Workspace picker — either the OrgSwitcher slot or a static fallback. */}
-      <header className="flex items-center justify-between gap-2 border-b border-[var(--color-line)] px-4 py-3">
-        {orgSwitcher ?? (
-          <>
-            <div className="min-w-0">
-              <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
-                {t("sidebar.brand")}
-              </div>
-              <div className="mt-0.5 truncate font-[var(--font-display)] text-[18px] font-bold tracking-tight text-[var(--color-ink)]">
-                {workspace}
-              </div>
-            </div>
-            <ChevronDown className="h-4 w-4 shrink-0 text-[var(--color-muted-foreground)]" />
-          </>
-        )}
+      {/* Static workspace label. Switching workspaces lives on the menu
+          rail avatar (OrgSwitcher), not here. */}
+      <header className="flex items-center gap-2 border-b border-[var(--color-line)] px-4 py-3">
+        <div className="min-w-0">
+          <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
+            {t("sidebar.brand")}
+          </div>
+          <div className="mt-0.5 truncate font-[var(--font-display)] text-[18px] font-bold tracking-tight text-[var(--color-ink)]">
+            {workspace}
+          </div>
+        </div>
       </header>
 
       {/* Search */}

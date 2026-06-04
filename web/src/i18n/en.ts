@@ -21,7 +21,7 @@ const en = {
   "signin.error.oauth_down":
     "Sign-in is temporarily unavailable. Please try again.",
 
-  "sidebar.brand": "Patom",
+  "sidebar.brand": "Workspace",
   "sidebar.channels": "Channels",
   "sidebar.dms": "Direct Messages",
   "sidebar.empty_agents": "No agents registered.",

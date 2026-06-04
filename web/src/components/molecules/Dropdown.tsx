@@ -8,7 +8,11 @@ import { cn } from "../../lib/utils";
 /** Pop-over anchor relative to the trigger. The default `bottom-start`
  *  drops below the trigger, left-aligned — covers Select, the sidebar
  *  switchers, and the user-menu anchor. */
-export type DropdownPlacement = "bottom-start" | "bottom-stretch" | "right-bottom";
+export type DropdownPlacement =
+  | "bottom-start"
+  | "bottom-stretch"
+  | "right-bottom"
+  | "right-top";
 
 export type DropdownState = {
   /** Whether the popover is currently shown. */
@@ -96,6 +100,12 @@ export function Dropdown({
         top = tRect.bottom - mRect.height;
         left = tRect.right + TRIGGER_GAP * 2;
         break;
+      case "right-top":
+        // Anchored to the right edge of the trigger, top-aligned with it
+        // — drops downward (menu rail's workspace avatar at the top).
+        top = tRect.top;
+        left = tRect.right + TRIGGER_GAP * 2;
+        break;
       case "bottom-start":
       default:
         top = tRect.bottom + TRIGGER_GAP;
@@ -181,4 +191,5 @@ const ORIGIN: Record<DropdownPlacement, string> = {
   "bottom-start": "top left",
   "bottom-stretch": "top center",
   "right-bottom": "bottom left",
+  "right-top": "top left",
 };

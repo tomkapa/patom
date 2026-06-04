@@ -17,7 +17,7 @@ const vi: TranslationTable = {
   "signin.error.forbidden": "Truy cập bị từ chối.",
   "signin.error.oauth_down": "Hiện không thể đăng nhập. Vui lòng thử lại sau.",
 
-  "sidebar.brand": "Patom",
+  "sidebar.brand": "Workspace",
   "sidebar.channels": "Kênh",
   "sidebar.dms": "Tin nhắn riêng",
   "sidebar.empty_agents": "Chưa có agent nào được đăng ký.",
