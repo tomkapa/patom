@@ -167,6 +167,17 @@ fn render_invite(mail: &InviteMail<'_>) -> RenderedInvite {
     }
 }
 
+/// Whether `email` is a mailbox the SMTP layer can actually deliver to.
+///
+/// The boundary [`Email`] newtype is permissive (length + a single `@`);
+/// lettre enforces the stricter RFC 5321 grammar (e.g. it rejects an embedded
+/// space). Invite issuance calls this so an address that would otherwise only
+/// fail later inside `send_invite` — logged and silently dropped — is rejected
+/// up front, before an undeliverable row is written to `org_invites`.
+pub fn is_deliverable(email: &Email) -> bool {
+    email.as_str().parse::<Address>().is_ok()
+}
+
 /// Parse an [`Email`] (already structurally validated at the config/HTTP
 /// boundary) into a lettre [`Mailbox`], attaching an optional display name.
 fn mailbox(email: &Email, name: Option<&str>) -> Result<Mailbox, MailError> {
@@ -417,6 +428,15 @@ mod tests {
         assert!(rendered.contains("invitee@acme.test"));
         assert!(rendered.contains("invites@patom.app"));
         assert!(rendered.contains("multipart/alternative"));
+    }
+
+    #[test]
+    fn is_deliverable_matches_lettre_rules() {
+        // Passes the permissive `Email` newtype AND lettre.
+        assert!(is_deliverable(&email("dev@acme.test")));
+        // Passes `Email` (has a single `@`, no leading/trailing) but lettre's
+        // RFC 5321 grammar rejects the embedded space — must be caught here.
+        assert!(!is_deliverable(&email("a b@acme.test")));
     }
 
     #[test]

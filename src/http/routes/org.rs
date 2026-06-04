@@ -505,6 +505,18 @@ async fn invite_members(
         .iter()
         .map(|e| Email::try_from(e.as_str()))
         .collect::<Result<_, _>>()?;
+    // An address can satisfy `Email` (length + a single `@`) yet be unsendable
+    // per RFC 5321 (e.g. an embedded space). Reject before persisting, so we
+    // never write an invite row the mailer would only silently drop.
+    if let Some(bad) = emails
+        .iter()
+        .find(|e| !crate::orgs::mailer::is_deliverable(e))
+    {
+        return Err(HttpError::BadRequest(format!(
+            "{} is not a deliverable email address",
+            bad.as_str()
+        )));
+    }
     let now = state.clock.now_utc();
     let ttl = ChronoDuration::from_std(INVITE_TTL).map_err(|_| HttpError::Internal)?;
     let issued = state

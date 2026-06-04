@@ -988,12 +988,15 @@ fn resolve_smtp(
 
 /// Reject an empty / whitespace-only required SMTP field. `field` is the
 /// env var suffix (e.g. `HOST`) used in [`SettingsError::EmptySmtpField`].
-/// Returns the value unchanged when non-empty.
+/// Returns the trimmed value so the stored host honours the "non-empty after
+/// trim" contract — otherwise `" smtp.host "` would pass config here and only
+/// fail later when `SmtpMailer::try_new` hands it to the relay builder.
 fn require_non_empty_smtp(raw: String, field: &'static str) -> Result<String, SettingsError> {
-    if raw.trim().is_empty() {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
         return Err(SettingsError::EmptySmtpField { field });
     }
-    Ok(raw)
+    Ok(trimmed.to_owned())
 }
 
 /// Default SigV4 region when `PATOM_S3_REGION` is unset. MinIO ignores
@@ -1580,6 +1583,16 @@ mod tests {
         assert_eq!(smtp.username.expose(), "smtp-user");
         assert_eq!(smtp.from.as_str(), "invites@patom.app");
         assert_eq!(smtp.from_name.as_deref(), Some("Patom"));
+    }
+
+    #[test]
+    fn smtp_host_is_trimmed() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        with_smtp(&mut raw);
+        raw.patom_smtp_host = Some("  smtp.example.com  ".to_string());
+        let s = Settings::try_from(raw).expect("valid");
+        assert_eq!(s.smtp.expect("configured").host, "smtp.example.com");
     }
 
     #[test]
