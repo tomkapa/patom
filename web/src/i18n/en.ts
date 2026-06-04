@@ -31,6 +31,9 @@ const en = {
   "nav.aria.openMenu": "Open navigation",
   "nav.aria.closeMenu": "Close navigation",
 
+  "orgswitcher.aria.switch": "Switch workspace",
+  "orgswitcher.aria.list": "Workspaces",
+
   "usermenu.signout": "Sign out",
   "usermenu.language.label": "Language",
   "usermenu.language.en": "English",

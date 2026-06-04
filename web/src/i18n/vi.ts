@@ -27,6 +27,9 @@ const vi: TranslationTable = {
   "nav.aria.openMenu": "Mở điều hướng",
   "nav.aria.closeMenu": "Đóng điều hướng",
 
+  "orgswitcher.aria.switch": "Chuyển không gian làm việc",
+  "orgswitcher.aria.list": "Không gian làm việc",
+
   "usermenu.signout": "Đăng xuất",
   "usermenu.language.label": "Ngôn ngữ",
   "usermenu.language.en": "English",

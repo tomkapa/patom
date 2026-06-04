@@ -2,6 +2,7 @@ import { Check } from "lucide-react";
 import { useAuthStore } from "../../stores/authStore";
 import { useActiveOrg } from "../../hooks/useMe";
 import { useSwitchOrg } from "../../hooks/useSwitchOrg";
+import { useT } from "../../i18n";
 import { Dropdown } from "../molecules/Dropdown";
 import { Monogram } from "../atoms/Monogram";
 import { Spinner } from "../atoms/Spinner";
@@ -13,6 +14,7 @@ import appLogoUrl from "../../../assets/favicon-192.png";
  *  right. When signed-out / no active org it renders a static tile so
  *  the rail still shows the brand mark. */
 export function OrgSwitcher() {
+  const { t } = useT();
   const me = useAuthStore((s) => s.me);
   const activeOrg = useActiveOrg();
   const switchOrg = useSwitchOrg();
@@ -41,7 +43,7 @@ export function OrgSwitcher() {
           type="button"
           aria-haspopup="listbox"
           aria-expanded={open}
-          aria-label="Switch workspace"
+          aria-label={t("orgswitcher.aria.switch")}
           onClick={toggle}
           disabled={switchOrg.isPending}
           className="flex h-9 w-full cursor-pointer items-center justify-center outline-none transition-opacity duration-150 ease-out hover:opacity-90 focus-visible:ring-1 focus-visible:ring-white disabled:cursor-not-allowed"
@@ -59,7 +61,7 @@ export function OrgSwitcher() {
       )}
     >
       {({ close }) => (
-        <ul role="listbox" aria-label="Workspaces">
+        <ul role="listbox" aria-label={t("orgswitcher.aria.list")}>
           {me.orgs.map((org) => {
             const isActive = org.id === me.active_org_id;
             const onPick = () => {
