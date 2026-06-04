@@ -176,11 +176,16 @@ impl Collaborators {
         // (see `seed_default_agent_for_org` and `auth::callback`); the
         // composition root no longer mints a global default because there
         // is no global org to own it.
-        let agents_impl = Arc::new(PgAgentStore::new(
-            pool.clone(),
-            clock.clone(),
-            embedding_provider.clone(),
-        ));
+        // The issue-#121 beta abuse guardrails (default org cap, org-creation
+        // rate limit, per-org agent cap) apply on the managed cloud beta, where
+        // Patom pays the provider bill, but not on a self-host deployment, where
+        // the operator does. `PATOM_BOOTSTRAP_ADMIN` is the existing cloud
+        // vs. self-host signal, so the guardrails ride on its inverse.
+        let beta_limits = !settings.auth.bootstrap_admin;
+        let agents_impl = Arc::new(
+            PgAgentStore::new(pool.clone(), clock.clone(), embedding_provider.clone())
+                .with_beta_limits(beta_limits),
+        );
         let agents: SharedAgentStore = agents_impl;
 
         let sessions: SharedSessionStore =
@@ -221,7 +226,8 @@ impl Collaborators {
         // `AgentMemory` so the resolver can be cloned into it; the
         // resolver also rides on `AppState` so the PATCH
         // /me/org/language handler can invalidate after a switch.
-        let users: SharedUserStore = Arc::new(PgUserStore::new(pool.clone()));
+        let users: SharedUserStore =
+            Arc::new(PgUserStore::new(pool.clone()).with_beta_limits(beta_limits));
         let prompts = Arc::new(Prompts::load());
         let language_resolver: SharedOrgLanguageResolver = Arc::new(PgOrgLanguageResolver::new(
             agents.clone(),

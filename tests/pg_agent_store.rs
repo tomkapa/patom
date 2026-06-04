@@ -91,6 +91,34 @@ async fn create_rejects_once_org_hits_agent_cap(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn create_ignores_agent_cap_when_beta_limits_off(pool: PgPool) {
+    // Self-host deployment (beta_limits = false): the per-org agent cap is not
+    // enforced, so an org can hold more than MAX_AGENTS_PER_ORG agents.
+    let seed = seed_tenant(&pool).await;
+    let store =
+        common::pg::agent_store_with_beta_limits(pool.clone(), SystemClock::shared(), false);
+
+    // seed_tenant seeded one; create MAX more. Under the beta cap the create
+    // that reaches the cap would fail — here every one must succeed.
+    for i in 0..patom::agents::MAX_AGENTS_PER_ORG {
+        store
+            .create(new_agent(seed.org_id, &format!("agent-{i}"), "p", false))
+            .await
+            .unwrap_or_else(|e| panic!("self-host create #{i} must succeed past the cap: {e}"));
+    }
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM agents WHERE org_id = $1")
+        .bind(seed.org_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count agents");
+    assert!(
+        count > patom::agents::MAX_AGENTS_PER_ORG,
+        "self-host org exceeded the beta cap ({count} agents)"
+    );
+}
+
+#[sqlx::test]
 async fn seed_default_is_idempotent(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);

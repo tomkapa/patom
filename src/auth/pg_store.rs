@@ -28,12 +28,30 @@ use crate::types::AvatarUrl;
 
 pub struct PgUserStore {
     pool: PgPool,
+    /// Whether the issue-#121 beta abuse guardrails apply on the org-creation
+    /// path (default cap + creation rate limit). `true` for the cloud beta;
+    /// a self-host deployment sets this `false` (the operator pays their own
+    /// provider bill), wired from `!PATOM_BOOTSTRAP_ADMIN` in `app.rs`.
+    beta_limits: bool,
 }
 
 impl PgUserStore {
+    /// Construct a store in the beta posture (guardrails on). Call
+    /// [`PgUserStore::with_beta_limits`] to flip it for a self-host deployment.
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            beta_limits: true,
+        }
+    }
+
+    /// Set whether the issue-#121 beta guardrails apply (default cap + creation
+    /// rate limit). `false` exempts the deployment — used by self-host.
+    #[must_use]
+    pub fn with_beta_limits(mut self, beta_limits: bool) -> Self {
+        self.beta_limits = beta_limits;
+        self
     }
 }
 
@@ -158,8 +176,11 @@ impl UserStore for PgUserStore {
         now: DateTime<Utc>,
     ) -> Result<NewOrg, AuthError> {
         // Global org-creation rate limit (issue #121): refuse before minting any
-        // slug or row once the window is full.
-        self.check_org_creation_rate(now).await?;
+        // slug or row once the window is full. Beta-only — a self-host
+        // deployment provisions orgs at its own pace.
+        if self.beta_limits {
+            self.check_org_creation_rate(now).await?;
+        }
         let base = sanitize_slug(suggested_slug);
         let mut attempt = 0;
         loop {
@@ -560,12 +581,14 @@ impl PgUserStore {
     ) -> Result<NewOrg, AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
         let id = OrgId::new();
-        // Cloud self-service: every new org is born capped at the beta default
-        // (issue #121) so an uncapped org can never drain the provider budget.
-        // The constant is compile-time-asserted positive, so the parse can't
-        // fail (CLAUDE.md §6 named assertion).
-        let default_cap = MonthlyCapMicros::try_from(DEFAULT_ORG_MONTHLY_CAP_MICROS)
-            .expect("invariant: DEFAULT_ORG_MONTHLY_CAP_MICROS is positive");
+        // Beta cloud orgs are born capped at the beta default (issue #121) so an
+        // uncapped org can never drain the provider budget; self-host orgs are
+        // unlimited (`None`). The constant is compile-time-asserted positive, so
+        // the parse can't fail (CLAUDE.md §6 named assertion).
+        let default_cap = self.beta_limits.then(|| {
+            MonthlyCapMicros::try_from(DEFAULT_ORG_MONTHLY_CAP_MICROS)
+                .expect("invariant: DEFAULT_ORG_MONTHLY_CAP_MICROS is positive")
+        });
         insert_org_and_owner(
             &mut tx,
             id,
@@ -574,7 +597,7 @@ impl PgUserStore {
             display_name,
             language,
             now,
-            Some(default_cap),
+            default_cap,
         )
         .await?;
         tx.commit().await?;

@@ -113,12 +113,30 @@ pub async fn seed_tenant(pool: &PgPool) -> Seed {
 /// Construct a `PgAgentStore` wired with the fake embedding provider used
 /// by every test path. Returns the concrete `Arc<PgAgentStore>`; callers
 /// that need the trait object can coerce with `as SharedAgentStore`.
+///
+/// Defaults to the beta posture (per-org agent cap enforced), matching the
+/// `PgAgentStore::new` default; use [`agent_store_with_beta_limits`] for the
+/// self-host (cap-exempt) variant.
 pub fn agent_store(pool: PgPool, clock: SharedClock) -> Arc<PgAgentStore> {
-    Arc::new(PgAgentStore::new(
-        pool,
-        clock,
-        super::embedding::FakeEmbeddingProvider::shared(),
-    ))
+    agent_store_with_beta_limits(pool, clock, true)
+}
+
+/// Like [`agent_store`] but lets a test pick the deployment posture:
+/// `beta_limits = false` models a self-host instance where the per-org agent
+/// cap is not enforced (issue #121).
+pub fn agent_store_with_beta_limits(
+    pool: PgPool,
+    clock: SharedClock,
+    beta_limits: bool,
+) -> Arc<PgAgentStore> {
+    Arc::new(
+        PgAgentStore::new(
+            pool,
+            clock,
+            super::embedding::FakeEmbeddingProvider::shared(),
+        )
+        .with_beta_limits(beta_limits),
+    )
 }
 
 /// `SharedAgentStore`-typed handle for callers that want the trait object

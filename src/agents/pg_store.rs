@@ -76,16 +76,31 @@ pub struct PgAgentStore {
     pool: PgPool,
     clock: SharedClock,
     embeddings: SharedEmbeddingProvider,
+    /// Whether the issue-#121 per-org agent cap applies. `true` for the cloud
+    /// beta; a self-host deployment sets this `false` (its agents run on the
+    /// operator's own bill), wired from `!PATOM_BOOTSTRAP_ADMIN` in `app.rs`.
+    beta_limits: bool,
 }
 
 impl PgAgentStore {
+    /// Construct a store in the beta posture (agent cap enforced). Call
+    /// [`PgAgentStore::with_beta_limits`] to flip it for a self-host deployment.
     #[must_use]
     pub fn new(pool: PgPool, clock: SharedClock, embeddings: SharedEmbeddingProvider) -> Self {
         Self {
             pool,
             clock,
             embeddings,
+            beta_limits: true,
         }
+    }
+
+    /// Set whether the issue-#121 per-org agent cap applies. `false` exempts the
+    /// deployment — used by self-host.
+    #[must_use]
+    pub fn with_beta_limits(mut self, beta_limits: bool) -> Self {
+        self.beta_limits = beta_limits;
+        self
     }
 
     fn now(&self) -> DateTime<Utc> {
@@ -559,7 +574,11 @@ async fn create_in_tx(
     let embedding_literal = pg_vector::encode(embedding);
     let now = store.now();
 
-    assert_under_agent_cap(tx, payload.org_id).await?;
+    // Beta-only guardrail (issue #121): a self-host deployment doesn't cap
+    // agents per org.
+    if store.beta_limits {
+        assert_under_agent_cap(tx, payload.org_id).await?;
+    }
 
     // Promoting a new row to default first demotes the existing
     // default in the same org so the partial unique index

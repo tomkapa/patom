@@ -79,6 +79,37 @@ async fn org_creation_is_throttled_at_the_window_cap(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn self_host_creation_skips_throttle_and_default_cap(pool: PgPool) {
+    // `with_beta_limits(false)` models a self-host deployment: the operator pays
+    // their own provider bill, so neither the rate limit nor the default cap
+    // applies (issue #121).
+    let store = PgUserStore::new(pool.clone()).with_beta_limits(false);
+    let now: DateTime<Utc> = "2026-06-04T12:00:00Z".parse().expect("ts");
+
+    // Fill the window to (and past) the cap — a beta deployment would throttle.
+    seed_orgs_at(&pool, MAX_ORGS_PER_WINDOW, now).await;
+
+    let user = seed_user(&pool).await;
+    let org = store
+        .create_personal_org(user, "selfhost", "Self Host", Language::DEFAULT, now)
+        .await
+        .expect("self-host org creation is never throttled");
+
+    // And the org is born uncapped — no org_budgets row.
+    let budget: Option<(Option<i64>, i32)> = sqlx::query_as(
+        "SELECT monthly_cap_micro_usd, warn_threshold_bps FROM org_budgets WHERE org_id = $1",
+    )
+    .bind(org.id)
+    .fetch_optional(&pool)
+    .await
+    .expect("read budget");
+    assert!(
+        budget.is_none(),
+        "self-host org gets no default cap — unlimited, the operator's own bill"
+    );
+}
+
+#[sqlx::test]
 async fn org_creation_under_the_cap_succeeds(pool: PgPool) {
     let store = PgUserStore::new(pool.clone());
     let now: DateTime<Utc> = "2026-06-04T12:00:00Z".parse().expect("ts");
