@@ -632,13 +632,21 @@ async fn create_in_tx(
 
 /// Reject a create when the org already owns [`MAX_AGENTS_PER_ORG`] agents
 /// (issue #121 abuse guardrail). The system `seed_default` path doesn't route
-/// through `create_in_tx`, so the org's first agent is never blocked. Soft cap:
-/// a simultaneous burst could over-admit by ~the concurrency count — acceptable
-/// for a beta guardrail; the cap's job is to bound, not to be exact.
+/// through `create_in_tx`, so the org's first agent is never blocked.
+///
+/// A per-org advisory lock, held for the rest of `create_in_tx`'s transaction,
+/// serializes concurrent creates within one org so the count-then-insert can't
+/// race past the cap. The lock is keyed on `org_id`, so it never blocks creates
+/// in other tenants, and the embedding call happens before the tx opens, so the
+/// lock is never held across a network round-trip.
 async fn assert_under_agent_cap(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     org_id: OrgId,
 ) -> Result<(), AgentStoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("patom:agent-cap:{org_id}"))
+        .execute(&mut **tx)
+        .await?;
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM agents WHERE org_id = $1")
         .bind(org_id)
         .fetch_one(&mut **tx)

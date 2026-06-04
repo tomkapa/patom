@@ -22,6 +22,7 @@ use super::types::{
     Email, OAuthState, OidcNonce, OidcProfile, OrgId, OrgMembership, OrgSlug, PkceVerifier, Role,
     User, UserId,
 };
+use crate::budget::MonthlyCapMicros;
 use crate::budget::limits::{DEFAULT_ORG_MONTHLY_CAP_MICROS, DEFAULT_WARN_BPS};
 use crate::types::AvatarUrl;
 
@@ -561,6 +562,10 @@ impl PgUserStore {
         let id = OrgId::new();
         // Cloud self-service: every new org is born capped at the beta default
         // (issue #121) so an uncapped org can never drain the provider budget.
+        // The constant is compile-time-asserted positive, so the parse can't
+        // fail (CLAUDE.md §6 named assertion).
+        let default_cap = MonthlyCapMicros::try_from(DEFAULT_ORG_MONTHLY_CAP_MICROS)
+            .expect("invariant: DEFAULT_ORG_MONTHLY_CAP_MICROS is positive");
         insert_org_and_owner(
             &mut tx,
             id,
@@ -569,7 +574,7 @@ impl PgUserStore {
             display_name,
             language,
             now,
-            Some(DEFAULT_ORG_MONTHLY_CAP_MICROS),
+            Some(default_cap),
         )
         .await?;
         tx.commit().await?;
@@ -608,7 +613,7 @@ async fn insert_org_and_owner(
     display_name: &str,
     language: Language,
     now: DateTime<Utc>,
-    default_cap: Option<i64>,
+    default_cap: Option<MonthlyCapMicros>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at)
@@ -634,15 +639,16 @@ async fn insert_org_and_owner(
     // it is never created uncapped. `None` (self-host bootstrap) leaves the org
     // without a row — i.e. unlimited, the operator's own bill.
     if let Some(cap) = default_cap {
-        // §6: a stamped cap is positive (the column CHECK rejects <= 0).
-        assert!(cap > 0, "invariant: default org cap must be positive");
+        // The `MonthlyCapMicros` newtype guarantees `> 0` (its `TryFrom`), so the
+        // value can't violate the `org_budgets` column CHECK — no hand-rolled
+        // assert needed (CLAUDE.md §1: the bound lives in the type).
         sqlx::query(
             "INSERT INTO org_budgets
                  (org_id, monthly_cap_micro_usd, warn_threshold_bps, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $4)",
         )
         .bind(id)
-        .bind(cap)
+        .bind(cap.get())
         .bind(i32::from(DEFAULT_WARN_BPS))
         .bind(now)
         .execute(&mut **tx)
