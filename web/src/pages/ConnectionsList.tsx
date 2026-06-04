@@ -12,6 +12,7 @@ import { Monogram } from "../components/atoms/Monogram";
 import { CatalogIcon } from "../components/atoms/CatalogIcon";
 import { Switch } from "../components/atoms/Switch";
 import { EmptyState } from "../components/molecules/EmptyState";
+import { ConfirmDialog } from "../components/molecules/ConfirmDialog";
 import { ConnectModal } from "../components/organisms/ConnectModal";
 import { TableScroll } from "../components/core/TableScroll";
 import { useT } from "../i18n";
@@ -42,6 +43,7 @@ export function ConnectionsList() {
   const updateServer = useUpdateMcpServer();
   const deleteServer = useDeleteMcpServer();
   const [reconnectTarget, setReconnectTarget] = useState<McpServer | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<McpServer | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusTone | "all">("all");
   const [showFilter, setShowFilter] = useState(false);
 
@@ -179,17 +181,7 @@ export function ConnectionsList() {
                   updateServer.mutate({ id: server.id, patch: { enabled } })
                 }
                 onReconnect={() => setReconnectTarget(server)}
-                onRemove={() => {
-                  if (
-                    window.confirm(
-                      `${t("connections.confirm.removeTitle")}\n\n${t(
-                        "connections.confirm.removeBody",
-                      )}`,
-                    )
-                  ) {
-                    deleteServer.mutate(server.id);
-                  }
-                }}
+                onRemove={() => setRemoveTarget(server)}
               />
             ))}
             {rows.length === 0 ? (
@@ -208,6 +200,20 @@ export function ConnectionsList() {
           onClose={() => setReconnectTarget(null)}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={removeTarget !== null}
+        title={t("connections.confirm.removeTitle")}
+        body={t("connections.confirm.removeBody")}
+        confirmLabel={t("connections.confirm.confirm")}
+        cancelLabel={t("connections.confirm.cancel")}
+        confirmBusy={deleteServer.isPending}
+        onConfirm={() => {
+          if (removeTarget) deleteServer.mutate(removeTarget.id);
+          setRemoveTarget(null);
+        }}
+        onCancel={() => setRemoveTarget(null)}
+      />
     </ConnectionsLayout>
   );
 }
