@@ -237,6 +237,26 @@ infer = { version = "0.16", default-features = false }
 # without leaking transitive re-exports. Owner: assets/.
 bytes = { version = "1", default-features = false }
 
+# §8 (zero-dep bias): SMTP client for transactional mail — the member-invite
+# email (orgs/mailer.rs) and any future verification/notification mail. The SMTP
+# protocol (AUTH, STARTTLS upgrade, MIME multipart encoding, CRLF dot-stuffing,
+# connection pooling) is well over the 200-LOC bar and a security-sensitive wire
+# format; `lettre` is the de-facto Rust implementation. Defaults are disabled to
+# exclude `native-tls`: we re-enable only the `tokio1-rustls` async transport on
+# the same rustls 0.23 + `ring` stack already pulled by `reqwest`/`oauth2`, so no
+# second TLS or crypto backend enters the tree. `webpki-roots` ships the trust
+# anchors so the container needs no system cert store; `pool` reuses connections
+# across sends (CLAUDE.md §9). Owner: orgs/.
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "pool",
+    "tokio1",
+    "tokio1-rustls",
+    "ring",
+    "webpki-roots",
+] }
+
 # Binary entry only (CLAUDE.md §12 — `anyhow` may not appear in library signatures).
 anyhow = "1"
 
