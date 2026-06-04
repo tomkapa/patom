@@ -6,7 +6,6 @@ import { Composer } from "../components/organisms/Composer";
 import { MessageList } from "../components/organisms/MessageList";
 import { Sidebar } from "../components/organisms/Sidebar";
 import { ThreadPanel } from "../components/organisms/ThreadPanel";
-import { OrgSwitcher } from "../components/organisms/OrgSwitcher";
 import { useAgents } from "../hooks/useAgents";
 import { useActiveOrg } from "../hooks/useMe";
 import { useAuthStore } from "../stores/authStore";
@@ -225,7 +224,6 @@ export function ChatView() {
             setSelectedAgentId(id);
             setSelectedRoot(null);
           }}
-          orgSwitcher={me ? <OrgSwitcher /> : undefined}
         />
       }
       main={

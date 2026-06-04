@@ -21,7 +21,7 @@ const en = {
   "signin.error.oauth_down":
     "Sign-in is temporarily unavailable. Please try again.",
 
-  "sidebar.brand": "Patom",
+  "sidebar.brand": "Workspace",
   "sidebar.channels": "Channels",
   "sidebar.dms": "Direct Messages",
   "sidebar.empty_agents": "No agents registered.",
@@ -30,6 +30,9 @@ const en = {
   "menu.agent": "Agent",
   "nav.aria.openMenu": "Open navigation",
   "nav.aria.closeMenu": "Close navigation",
+
+  "orgswitcher.aria.switch": "Switch workspace",
+  "orgswitcher.aria.list": "Workspaces",
 
   "usermenu.signout": "Sign out",
   "usermenu.language.label": "Language",

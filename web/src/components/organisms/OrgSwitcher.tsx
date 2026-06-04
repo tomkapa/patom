@@ -1,52 +1,67 @@
-import { Check, ChevronDown } from "lucide-react";
+import { Check } from "lucide-react";
 import { useAuthStore } from "../../stores/authStore";
 import { useActiveOrg } from "../../hooks/useMe";
 import { useSwitchOrg } from "../../hooks/useSwitchOrg";
+import { useT } from "../../i18n";
 import { Dropdown } from "../molecules/Dropdown";
 import { Monogram } from "../atoms/Monogram";
 import { Spinner } from "../atoms/Spinner";
 // Default tile for workspaces without a custom avatar.
 import appLogoUrl from "../../../assets/favicon-192.png";
 
+/** Workspace avatar that doubles as the switcher trigger. Lives at the
+ *  top of the menu rail; clicking it opens the workspace list to the
+ *  right. When signed-out / no active org it renders a static tile so
+ *  the rail still shows the brand mark. */
 export function OrgSwitcher() {
+  const { t } = useT();
   const me = useAuthStore((s) => s.me);
   const activeOrg = useActiveOrg();
   const switchOrg = useSwitchOrg();
 
-  if (!me || !activeOrg) return null;
+  const workspaceLogo = activeOrg?.avatar_url ?? appLogoUrl;
+  const workspaceName = activeOrg?.name ?? "Patom";
+
+  if (!me || !activeOrg) {
+    return (
+      <img
+        src={workspaceLogo}
+        alt={workspaceName}
+        aria-label={workspaceName}
+        className="h-9 w-9 shrink-0 object-cover select-none"
+      />
+    );
+  }
 
   return (
     <Dropdown
+      placement="right-top"
       rootClassName="w-full"
-      menuClassName="max-h-[60vh] overflow-y-auto border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md scroll-thin"
+      menuClassName="w-64 max-h-[60vh] overflow-y-auto border border-[var(--color-line)] bg-[var(--color-card)] py-1 shadow-md scroll-thin"
       renderTrigger={({ open, toggle }) => (
         <button
           type="button"
           aria-haspopup="listbox"
           aria-expanded={open}
-          aria-label="Switch organization"
+          aria-label={t("orgswitcher.aria.switch")}
           onClick={toggle}
           disabled={switchOrg.isPending}
-          className="flex w-full cursor-pointer items-center justify-between gap-2 text-left outline-none transition-colors duration-150 ease-out focus-visible:ring-1 focus-visible:ring-[var(--color-ink)] disabled:cursor-not-allowed"
+          className="flex h-9 w-full cursor-pointer items-center justify-center outline-none transition-opacity duration-150 ease-out hover:opacity-90 focus-visible:ring-1 focus-visible:ring-white disabled:cursor-not-allowed"
         >
-          <div className="min-w-0">
-            <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
-              Patom
-            </div>
-            <div className="mt-0.5 truncate font-[var(--font-display)] text-[18px] font-bold tracking-tight text-[var(--color-ink)]">
-              {activeOrg.name}
-            </div>
-          </div>
           {switchOrg.isPending ? (
-            <Spinner size={14} />
+            <Spinner size={16} />
           ) : (
-            <ChevronDown className="h-4 w-4 shrink-0 text-[var(--color-muted-foreground)]" />
+            <img
+              src={workspaceLogo}
+              alt={workspaceName}
+              className="h-9 w-9 object-cover select-none"
+            />
           )}
         </button>
       )}
     >
       {({ close }) => (
-        <ul role="listbox" aria-label="Organizations">
+        <ul role="listbox" aria-label={t("orgswitcher.aria.list")}>
           {me.orgs.map((org) => {
             const isActive = org.id === me.active_org_id;
             const onPick = () => {
