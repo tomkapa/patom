@@ -71,6 +71,16 @@ pub const CSRF_HEADER_NAME: &str = "X-CSRF-Token";
 /// and gets rejected before constant-time comparison.
 pub const CSRF_TOKEN_MAX_LEN: usize = 64;
 
+/// Maximum accepted length of an inbound `Origin` / `Referer` header
+/// before the Origin/Referer CSRF check treats it as untrusted.
+///
+/// A real same-origin or SPA-origin value is `scheme://host[:port]` (tens
+/// of bytes); a `Referer` adds a path but stays well under this. 2 KiB is
+/// generous headroom for a long path while capping the string the check
+/// parses through `url::Url` — anything larger is junk and rejected
+/// before allocation (CLAUDE.md §5).
+pub const ORIGIN_HEADER_MAX_LEN: usize = 2048;
+
 /// Maximum byte length of a per-org rule string (`organizations.default_rule`).
 ///
 /// Bounds the `<organization-rule>` body that the agent worker injects
