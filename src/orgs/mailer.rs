@@ -130,127 +130,14 @@ fn html_escape(raw: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// Responsive, dark-mode-aware HTML invite. Table-based with inline styles
-/// for broad client support (Gmail/Outlook/Apple Mail); the logo is a hosted
-/// PNG (clients strip SVG / inline images). Three `{{TOKENS}}` are filled by
-/// [`render_invite`]; the standalone source lives in
-/// `invite-email-template.html` at the repo root for design preview.
-const INVITE_HTML_TEMPLATE: &str = r##"<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "https://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-  <meta name="color-scheme" content="light dark" />
-  <meta name="supported-color-schemes" content="light dark" />
-  <title>You're invited to join {{ORG_NAME}} on Patom</title>
-  <!--[if mso]>
-  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
-  <![endif]-->
-  <style>
-    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
-    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
-    img { -ms-interpolation-mode: bicubic; border: 0; line-height: 100%; outline: none; text-decoration: none; }
-    body { margin: 0; padding: 0; width: 100% !important; height: 100% !important; }
-    a { color: #15803d; }
-    @media (prefers-color-scheme: dark) {
-      .bg-page  { background: #0b0b0c !important; }
-      .bg-card  { background: #161618 !important; border-color: #262629 !important; }
-      .t-strong { color: #f4f4f5 !important; }
-      .t-body   { color: #a1a1aa !important; }
-      .t-muted  { color: #71717a !important; }
-      .divider  { border-color: #262629 !important; }
-      .link-fallback { color: #a1a1aa !important; }
-    }
-    @media only screen and (max-width: 600px) {
-      .container { width: 100% !important; }
-      .px { padding-left: 24px !important; padding-right: 24px !important; }
-      .btn-a { display: block !important; }
-    }
-  </style>
-</head>
-<body class="bg-page" style="margin:0; padding:0; background:#f4f4f5;">
-  <div style="display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">
-    Accept your invitation to join {{ORG_NAME}} on Patom as {{ROLE}}.
-  </div>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="bg-page" style="background:#f4f4f5;">
-    <tr>
-      <td align="center" style="padding: 40px 16px;">
-        <table role="presentation" width="480" cellpadding="0" cellspacing="0" border="0" class="container bg-card" style="width:480px; max-width:480px; background:#ffffff; border:1px solid #e4e4e7; border-radius:14px; overflow:hidden;">
-          <tr>
-            <td class="px" style="padding: 32px 40px 0 40px;">
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-                <tr>
-                  <td style="padding-right:10px; vertical-align:middle;">
-                    <img src="https://asset.patom.app/email/favicon-512.png" width="32" height="32" alt="Patom" style="display:block; width:32px; height:32px; border:0;" />
-                  </td>
-                  <td style="vertical-align:middle;">
-                    <span class="t-strong" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:18px; font-weight:700; letter-spacing:-0.2px; color:#18181b;">Patom</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          <tr>
-            <td class="px" style="padding: 24px 40px 0 40px;">
-              <h1 class="t-strong" style="margin:0 0 12px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:22px; line-height:30px; font-weight:700; letter-spacing:-0.3px; color:#18181b;">
-                You're invited to join {{ORG_NAME}}
-              </h1>
-              <p class="t-body" style="margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:15px; line-height:24px; color:#52525b;">
-                You've been added to the <strong class="t-strong" style="color:#18181b; font-weight:600;">{{ORG_NAME}}</strong> workspace on Patom as <strong class="t-strong" style="color:#18181b; font-weight:600;">{{ROLE}}</strong>. Accept the invitation to set up your account and get started.
-              </p>
-            </td>
-          </tr>
-          <tr>
-            <td class="px" style="padding: 28px 40px 4px 40px;">
-              <!--[if mso]>
-              <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{ACCEPT_URL}}" style="height:44px;v-text-anchor:middle;width:240px;" arcsize="14%" stroke="f" fillcolor="#15803d">
-                <w:anchorlock/>
-                <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:bold;">Accept invitation</center>
-              </v:roundrect>
-              <![endif]-->
-              <!--[if !mso]><!-- -->
-              <a class="btn-a" href="{{ACCEPT_URL}}" style="display:inline-block; background:#15803d; color:#ffffff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:15px; font-weight:600; line-height:44px; text-align:center; text-decoration:none; border-radius:10px; padding:0 28px;">
-                Accept invitation
-              </a>
-              <!--<![endif]-->
-            </td>
-          </tr>
-          <tr>
-            <td class="px" style="padding: 16px 40px 0 40px;">
-              <p class="t-muted" style="margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:13px; line-height:20px; color:#71717a;">
-                Or paste this link into your browser:<br />
-                <a class="link-fallback" href="{{ACCEPT_URL}}" style="color:#15803d; word-break:break-all;">{{ACCEPT_URL}}</a>
-              </p>
-            </td>
-          </tr>
-          <tr>
-            <td class="px" style="padding: 28px 40px 0 40px;">
-              <div class="divider" style="border-top:1px solid #e4e4e7; line-height:1px; font-size:1px;">&nbsp;</div>
-            </td>
-          </tr>
-          <tr>
-            <td class="px" style="padding: 20px 40px 32px 40px;">
-              <p class="t-muted" style="margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:13px; line-height:20px; color:#71717a;">
-                This invitation link expires in 7 days. If you weren't expecting it, you can safely ignore this email.
-              </p>
-            </td>
-          </tr>
-        </table>
-        <table role="presentation" width="480" cellpadding="0" cellspacing="0" border="0" class="container" style="width:480px; max-width:480px;">
-          <tr>
-            <td align="center" style="padding: 24px 40px;">
-              <p class="t-muted" style="margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:12px; line-height:18px; color:#a1a1aa;">
-                Sent by Patom &middot; <a href="https://patom.app" style="color:#a1a1aa; text-decoration:underline;">patom.app</a>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>"##;
+/// Responsive, dark-mode-aware HTML invite — the authoritative copy of the
+/// member-invite email. Table-based with inline styles for broad client
+/// support (Gmail/Outlook/Apple Mail); the logo is a hosted PNG (clients
+/// strip SVG / inline images). `include_str!` compiles the single on-disk
+/// source in, so there is no second hand-maintained copy to drift — open
+/// `src/orgs/invite-email-template.html` in a browser to preview. The three
+/// `{{TOKENS}}` are substituted by [`render_invite`].
+const INVITE_HTML_TEMPLATE: &str = include_str!("invite-email-template.html");
 
 /// Render the invite into subject + plain-text + HTML parts. Pure: no I/O,
 /// no clock, fully determined by `mail`.
