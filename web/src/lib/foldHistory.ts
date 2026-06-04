@@ -112,6 +112,19 @@ export function foldHistory(
 
   let rootMessage: RootMessage | undefined;
 
+  // A `send_message` whose tool_result errored never reached its recipient
+  // (e.g. the model passed `receiver` as a JSON-encoded string, the call
+  // failed to parse, and the model retried with the same text). Without
+  // this guard the failed attempt still renders — as a second, identical
+  // reply bubble. The result lands in a later (system) row than the call,
+  // so collect the failed call ids in a pre-pass before the fold.
+  const failedCallIds = new Set<string>();
+  for (const m of history) {
+    for (const tr of decodeBody(m.body).toolResults) {
+      if (tr.is_error) failedCallIds.add(tr.call_id);
+    }
+  }
+
   const sessionAgentKey = (session: string, agent: string | null) =>
     `${session}|${agent ?? ""}`;
   const getPending = (k: string): Pending => {
@@ -159,36 +172,53 @@ export function foldHistory(
       }
 
       if (sendCalls.length > 0) {
-        // This row delivers the agent's accumulated work. Its own reasoning
-        // belongs to the same turn that produced the send_message and joins
-        // pending.reasoning in the new bubble.
-        const reasoning = joinText(p.reasoning, decoded.reasoning);
-        const tools = p.tool_calls;
-        for (const tc of sendCalls) {
-          sendMessageCallIds.add(tc.id);
-          const input = (tc.input ?? {}) as SendMessageInput;
-          const recv = input.receiver ?? null;
-          const a = aid ? (agentsById.get(aid) ?? null) : null;
-          const bubble: Bubble = {
-            kind: "agent",
-            key: `h:${m.session_id}:${m.seq}:${tc.id}`,
-            request_id: m.request_id,
-            agent_id: aid,
-            agent_name: a?.name ?? null,
-            human_name: null,
-            human_id: null,
-            human_avatar_url: null,
-            ts: m.created_at,
-            text: prefixWithReceiver(input.content ?? "", recv, agentsById),
-            reasoning,
-            tool_calls: tools,
-            wire_requests: [],
-            phase: "persisted",
-          };
-          bubbles.push(bubble);
-          lastBubble.set(k, bubble);
+        // send_message results are private plumbing — mark every send id
+        // (delivered or failed) so its tool_result never decorates another
+        // bubble via attachResults.
+        for (const tc of sendCalls) sendMessageCallIds.add(tc.id);
+
+        // Only sends whose tool_result did not error actually reached the
+        // recipient; a failed send delivered nothing and must not render.
+        const deliveredCalls = sendCalls.filter(
+          (tc) => !failedCallIds.has(tc.id),
+        );
+
+        if (deliveredCalls.length > 0) {
+          // This row delivers the agent's accumulated work. Its own reasoning
+          // belongs to the same turn that produced the send_message and joins
+          // pending.reasoning in the new bubble.
+          const reasoning = joinText(p.reasoning, decoded.reasoning);
+          const tools = p.tool_calls;
+          for (const tc of deliveredCalls) {
+            const input = (tc.input ?? {}) as SendMessageInput;
+            const recv = input.receiver ?? null;
+            const a = aid ? (agentsById.get(aid) ?? null) : null;
+            const bubble: Bubble = {
+              kind: "agent",
+              key: `h:${m.session_id}:${m.seq}:${tc.id}`,
+              request_id: m.request_id,
+              agent_id: aid,
+              agent_name: a?.name ?? null,
+              human_name: null,
+              human_id: null,
+              human_avatar_url: null,
+              ts: m.created_at,
+              text: prefixWithReceiver(input.content ?? "", recv, agentsById),
+              reasoning,
+              tool_calls: tools,
+              wire_requests: [],
+              phase: "persisted",
+            };
+            bubbles.push(bubble);
+            lastBubble.set(k, bubble);
+          }
+          pending.set(k, newPending());
+        } else if (decoded.reasoning) {
+          // Every send in this row failed to deliver. Keep the reasoning
+          // accumulating toward the eventual successful delivery rather than
+          // flushing pending, so the delivered bubble still carries it.
+          p.reasoning = joinText(p.reasoning, decoded.reasoning);
         }
-        pending.set(k, newPending());
       } else if (decoded.reasoning) {
         // No send in this row. If the agent already shipped a bubble in this
         // session and pending has no in-flight tool calls, the reasoning is
