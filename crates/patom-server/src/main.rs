@@ -25,7 +25,13 @@ async fn main() -> Result<()> {
     // the same token and react to Ctrl+C in lockstep.
     let cancel = CancellationToken::new();
 
-    let server = app::build_server(settings, cancel.clone())
+    // Cloud composition seam (#131): under `--features cloud` this is where the
+    // billing-backed `CloudBuilder` (Lemon Squeezy) gets injected; the default
+    // OSS / self-host binary passes `None` and links no cloud code. The
+    // concrete builder lands with the Lemon Squeezy impl in `patom-cloud`.
+    let cloud: Option<std::sync::Arc<dyn app::CloudBuilder>> = None;
+
+    let server = app::build_server(settings, cancel.clone(), cloud)
         .await
         .context("compose server")?;
 

@@ -113,7 +113,24 @@ impl<B> MakeSpan<B> for PatomHttpMakeSpan {
 }
 
 pub fn router(state: AppState) -> Router {
-    let public = Router::new()
+    router_with_cloud(state, None, None)
+}
+
+/// [`router`] plus optional cloud-contributed route groups (issue #131).
+///
+/// `cloud_public` (e.g. the Lemon Squeezy webhook) merges into the
+/// unauthenticated group; `cloud_private` (e.g. checkout) merges into the
+/// authenticated group **before** its `route_layer` chain so it inherits
+/// `require_principal` / CSRF / trusted-origin exactly like every other
+/// `/api` route. Both are `None` for the OSS build. The cloud routers carry
+/// their own dependencies via an `Extension` layer, so no billing type leaks
+/// into [`AppState`].
+pub fn router_with_cloud(
+    state: AppState,
+    cloud_public: Option<Router<AppState>>,
+    cloud_private: Option<Router<AppState>>,
+) -> Router {
+    let mut public = Router::new()
         .merge(auth::router())
         .merge(healthz::router())
         // The MCP OAuth callback runs without a session cookie — the
@@ -130,7 +147,13 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::slack::interactions::router())
         .merge(crate::slack::oauth::public_router());
 
-    let private = Router::new()
+    // Cloud webhook(s) sit outside the cookie gate — each authenticates its
+    // own request (HMAC signature), exactly like the Slack webhook above.
+    if let Some(routes) = cloud_public {
+        public = public.merge(routes);
+    }
+
+    let mut private = Router::new()
         .merge(prompts::router())
         .merge(agents::router())
         .merge(mcp::router())
@@ -142,7 +165,16 @@ pub fn router(state: AppState) -> Router {
         .merge(org::router())
         .merge(uploads::router())
         // Slack install endpoint — signed-in user only.
-        .merge(crate::slack::oauth::private_router())
+        .merge(crate::slack::oauth::private_router());
+
+    // Cloud private routes (e.g. checkout) merge in *before* the route-layer
+    // chain below so they inherit `require_principal` / CSRF / trusted-origin
+    // like every other authenticated `/api` route.
+    if let Some(routes) = cloud_private {
+        private = private.merge(routes);
+    }
+
+    let private = private
         // Origin/Referer check — the second CSRF layer (alongside the
         // double-submit token below). Rejects state-changing requests
         // naming an untrusted origin. Needs `AppState` for the trusted

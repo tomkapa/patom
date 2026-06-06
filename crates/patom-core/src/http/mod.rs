@@ -12,5 +12,5 @@ mod state;
 pub use membership_cache::MembershipCache;
 
 pub use error::HttpError;
-pub use routes::router;
+pub use routes::{router, router_with_cloud};
 pub use state::AppState;
