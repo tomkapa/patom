@@ -523,6 +523,12 @@ pub struct OrgMembership {
     pub default_rule: Option<super::org_rule::OrganizationRule>,
     /// `organizations.avatar_url`. `None` → FE renders the default tile.
     pub avatar_url: Option<AvatarUrl>,
+    /// `organizations.onboarded_at IS NOT NULL`. `false` means the user
+    /// hasn't walked the /onboarding wizard yet — the FE gate routes
+    /// them there until the wizard's final step flips this via PATCH
+    /// /me/org { onboarded: true }. Existing rows backfill to true in
+    /// migration 57 so live users aren't shoved into the wizard.
+    pub onboarded: bool,
 }
 
 /// What every authed HTTP request hands to its handler. Built by the

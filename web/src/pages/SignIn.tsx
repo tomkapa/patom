@@ -1,10 +1,10 @@
-import { useLayoutEffect, useMemo } from "react";
+import { useMemo } from "react";
 import { useLocation } from "react-router-dom";
 import { AlertTriangle, Radio } from "lucide-react";
 import { Banner } from "../components/molecules/Banner";
 import { Button } from "../components/atoms/Button";
 import signinArtwork from "../assets/signin.png";
-import { applyTheme, getStoredTheme } from "../lib/theme";
+import { useLightModeOnly } from "../lib/theme";
 import { useT } from "../i18n";
 
 function GoogleG() {
@@ -39,18 +39,7 @@ function GoogleG() {
 export function SignIn() {
   const location = useLocation();
   const { t } = useT();
-
-  // The sign-in screen is always presented in the light palette regardless
-  // of the user's theme preference — it pairs the forest-green brand panel
-  // with the green artwork, which only reads correctly in light mode. Force
-  // light on mount (before paint, so dark never flashes) and restore the
-  // stored theme on unmount.
-  useLayoutEffect(() => {
-    const root = document.documentElement;
-    root.classList.remove("dark");
-    root.style.colorScheme = "light";
-    return () => applyTheme(getStoredTheme());
-  }, []);
+  useLightModeOnly();
 
   const { oauthDown, returnTo } = useMemo(() => {
     const params = new URLSearchParams(location.search);
