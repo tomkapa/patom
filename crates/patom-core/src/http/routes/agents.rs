@@ -224,7 +224,8 @@ async fn create_agent(
         &*state.entitlements,
         principal.active_org_id,
         current,
-    )?;
+    )
+    .await?;
     let record = state
         .agents
         .create(NewAgent {

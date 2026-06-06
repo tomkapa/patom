@@ -41,11 +41,12 @@ struct CappedTestEntitlements {
     max: u32,
 }
 
+#[async_trait::async_trait]
 impl Entitlements for CappedTestEntitlements {
-    fn agent_limit(&self, _org: OrgId) -> AgentLimit {
+    async fn agent_limit(&self, _org: OrgId) -> AgentLimit {
         AgentLimit::Max(self.max)
     }
-    fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
+    async fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
         false
     }
 }

@@ -93,6 +93,11 @@ test-catalog = []
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 patom-core = { workspace = true, features = ["test-catalog"] }
+# Integration tests provide a restrictive `Entitlements` impl standing in for
+# the cloud billing-backed policy; the trait is `#[async_trait]`, so the macro
+# is needed in the test crate (a separate compilation unit that sees dev-deps
+# only, not the library's own `[dependencies]`).
+async-trait.workspace = true
 
 [lints]
 workspace = true
