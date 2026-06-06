@@ -136,6 +136,7 @@ impl PromptsHarness {
             assets: None,
             orgs: std::sync::Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
             mailer: std::sync::Arc::new(patom::orgs::LogMailer),
+            entitlements: std::sync::Arc::new(patom::entitlements::UnlimitedEntitlements),
         };
 
         Self {

@@ -26,7 +26,7 @@ the default binary's dependency graph.
 | Goes in `patom-cloud` | Stays in `patom-core` |
 |---|---|
 | Charging / payment integration (Lemon Squeezy, #131) | The product itself (agents, sessions, MCP, auth, orgs) |
-| The concrete `Entitlements` implementation backed by billing (#134) | The `Entitlements` **trait** + free-tier stub (the seam, #134) |
+| The concrete `Entitlements` impl + the `Tier`→agent-cap table, backed by billing (#131) | The `Entitlements` **trait** + permissive default stub (the seam, #134) |
 | `billing`-schema migrations + stores | Core schema migrations |
 
 Rule of thumb: if a self-hoster on the free tier shouldn't run it, it lives

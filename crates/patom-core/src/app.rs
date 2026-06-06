@@ -875,6 +875,11 @@ pub async fn build_server(
         assets,
         orgs: orgs_store,
         mailer,
+        // Entitlement policy (#134). This one line is the policy seam: the OSS
+        // build runs the permissive default; `patom-cloud` swaps it for a
+        // billing-backed impl behind `--features cloud` (#131), and a future
+        // self-host limit would swap it here too.
+        entitlements: Arc::new(crate::entitlements::UnlimitedEntitlements),
     };
 
     Ok(Server {

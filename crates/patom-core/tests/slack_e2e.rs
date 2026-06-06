@@ -308,6 +308,7 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         assets: None,
         orgs: Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
         mailer: Arc::new(patom::orgs::LogMailer),
+        entitlements: Arc::new(patom::entitlements::UnlimitedEntitlements),
     };
 
     // Fire the signed `app_mention` webhook through the real router. The
