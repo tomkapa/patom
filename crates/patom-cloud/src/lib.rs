@@ -14,4 +14,5 @@ pub mod lemon_squeezy;
 mod migrate;
 
 pub use builder::LemonSqueezyCloud;
+pub use lemon_squeezy::LemonSqueezyConfig;
 pub use migrate::run_migrations;

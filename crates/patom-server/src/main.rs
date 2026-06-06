@@ -25,10 +25,24 @@ async fn main() -> Result<()> {
     // the same token and react to Ctrl+C in lockstep.
     let cancel = CancellationToken::new();
 
-    // Cloud composition seam (#131): under `--features cloud` this is where the
-    // billing-backed `CloudBuilder` (Lemon Squeezy) gets injected; the default
-    // OSS / self-host binary passes `None` and links no cloud code. The
-    // concrete builder lands with the Lemon Squeezy impl in `patom-cloud`.
+    // Cloud composition seam (#131): under `--features cloud`, build the Lemon
+    // Squeezy `CloudBuilder` from the `PATOM_LEMON_SQUEEZY_*` env (absent → no
+    // billing). The default OSS / self-host binary links no cloud code and
+    // always passes `None`.
+    #[cfg(feature = "cloud")]
+    let cloud: Option<std::sync::Arc<dyn app::CloudBuilder>> = {
+        let app_base_url = settings.auth.web_base_url.clone();
+        patom_cloud::LemonSqueezyConfig::from_env()
+            .context("load lemon squeezy config")?
+            .map(|cfg| {
+                // Typed binding coerces the concrete builder to the trait object
+                // without an `as` cast (CLAUDE.md §7).
+                let builder: std::sync::Arc<dyn app::CloudBuilder> =
+                    std::sync::Arc::new(patom_cloud::LemonSqueezyCloud::new(cfg, app_base_url));
+                builder
+            })
+    };
+    #[cfg(not(feature = "cloud"))]
     let cloud: Option<std::sync::Arc<dyn app::CloudBuilder>> = None;
 
     let server = app::build_server(settings, cancel.clone(), cloud)
