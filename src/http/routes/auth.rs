@@ -257,6 +257,14 @@ async fn resolve_active_org(
     {
         return Ok(org_id);
     }
+    // `None` also covers the race where a concurrent callback for the same
+    // user claimed the invite between its SELECT and UPDATE (see pg_store
+    // `join_pending_invites`) — that winner already inserted the
+    // membership. Re-check before minting a duplicate personal org.
+    let orgs = state.users.list_user_orgs(user.id).await?;
+    if let Some(first) = orgs.first() {
+        return Ok(first.org_id);
+    }
     // Otherwise every new user gets a personal org.
     let new_org = state
         .users

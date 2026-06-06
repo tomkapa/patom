@@ -194,3 +194,39 @@ async fn accept_invite_rejects_unknown_token(pool: PgPool) {
         "an unknown token is a 404, got {outcome:?}",
     );
 }
+
+#[sqlx::test]
+async fn accept_invite_returns_effective_role_for_existing_member(pool: PgPool) {
+    // The admin already owns the org. They accept a *member* invite minted
+    // for their own address — the existing owner membership must win (no
+    // demotion), and the returned role must be the persisted Owner, not
+    // the invite's Member.
+    let now = chrono::Utc::now();
+    let (orgs, users, org_id, admin) = seed_org(&pool, now).await;
+    let token = issue_invite(
+        &orgs,
+        org_id,
+        admin,
+        "admin@corp.test",
+        Role::Member,
+        now,
+        chrono::Duration::hours(48),
+    )
+    .await;
+
+    let accepted = orgs
+        .accept_invite(admin, &token, now)
+        .await
+        .expect("accept succeeds");
+    assert_eq!(accepted.org_id, org_id, "stays in the org");
+    assert_eq!(
+        accepted.role,
+        Role::Owner,
+        "returns the effective persisted role, not the invite's Member",
+    );
+    assert_eq!(
+        users.membership(admin, org_id).await.expect("membership"),
+        Some(Role::Owner),
+        "the existing owner membership is not demoted",
+    );
+}

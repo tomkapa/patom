@@ -586,6 +586,7 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         Ok(active)
     }
 
+    #[tracing::instrument(skip(self, token), fields(patom.target.user_id = %user_id))]
     async fn accept_invite(
         &self,
         user_id: UserId,
@@ -614,12 +615,15 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         }
         let org_id = OrgId::from(row.get::<uuid::Uuid, _>("org_id"));
         let invite_id = row.get::<uuid::Uuid, _>("id");
-        let role_raw: String = row.get("role");
+        let invite_role_raw: String = row.get("role");
         // §6: the column CHECK guarantees this; the assertion detects
         // corruption rather than silently inserting a bad membership.
-        let role = Role::parse(&role_raw);
-        assert!(role.is_some(), "org_invites.role must be a known role");
-        let role = role.expect("invariant: role validated by assert above");
+        let invite_role = Role::parse(&invite_role_raw);
+        assert!(
+            invite_role.is_some(),
+            "org_invites.role must be a known role"
+        );
+        let invite_role = invite_role.expect("invariant: role validated by assert above");
         // Claim FIRST: the conditional UPDATE is the atomic gate. Two
         // concurrent accepts of the same token race here; exactly one
         // wins the row, the loser sees zero rows and reports the invite
@@ -637,21 +641,29 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
             tx.commit().await?;
             return Err(OrgError::InviteAlreadyConsumed);
         }
-        // Idempotent on (org_id, user_id): a user who is somehow already
-        // a member keeps their existing row and still switches into the
-        // org. The `role` was validated by the assertion above.
-        sqlx::query(
+        // Join the org. A user who is already a member keeps their
+        // existing role (the no-op `DO UPDATE SET role = org_members.role`
+        // exists only so `RETURNING` yields the *effective* persisted role
+        // on conflict). We return that, not the invite's role, so an
+        // already-member accepting a lower-privileged invite isn't
+        // mis-reported as demoted.
+        let effective_role_raw: String = sqlx::query_scalar(
             "INSERT INTO org_members (org_id, user_id, role, created_at)
              VALUES ($1, $2, $3, $4)
-             ON CONFLICT (org_id, user_id) DO NOTHING",
+             ON CONFLICT (org_id, user_id) DO UPDATE SET role = org_members.role
+             RETURNING role",
         )
         .bind(org_id)
         .bind(user_id)
-        .bind(role.as_str())
+        .bind(invite_role.as_str())
         .bind(now)
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
+        // §6: the column CHECK guarantees a known role here too.
+        let role = Role::parse(&effective_role_raw);
+        assert!(role.is_some(), "org_members.role must be a known role");
+        let role = role.expect("invariant: role validated by assert above");
         Ok(AcceptedInvite { org_id, role })
     }
 }

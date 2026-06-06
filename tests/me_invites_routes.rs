@@ -186,17 +186,22 @@ async fn accept_invite_endpoint_joins_and_switches_active_org(pool: PgPool) {
         "redeeming a valid token succeeds"
     );
     // The response re-mints the session cookie so the switch takes hold.
-    let set_cookie = res
+    let cookie_name = patom::auth::limits::COOKIE_NAME;
+    let set_cookies = res
         .headers()
         .get_all("set-cookie")
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        set_cookie.contains(patom::auth::limits::COOKIE_NAME),
-        "a fresh session cookie is set, got headers: {set_cookie}"
-    );
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    // Pull the re-minted session cookie's `name=value` pair so a follow-up
+    // request can prove the new JWT actually carries the inviting org.
+    let session_cookie = set_cookies
+        .iter()
+        .filter_map(|c| c.split(';').next())
+        .find(|pair| pair.starts_with(cookie_name))
+        .map(str::to_owned)
+        .expect("a fresh session cookie is set");
 
     let body = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
@@ -216,5 +221,27 @@ async fn accept_invite_endpoint_joins_and_switches_active_org(pool: PgPool) {
             .await
             .expect("membership"),
         Some(Role::Member),
+    );
+
+    // Boundary check: the re-minted cookie genuinely carries the new active
+    // org — replay it on GET /me and confirm the server agrees.
+    let me_res = router(state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/me")
+                .header("cookie", &session_cookie)
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("me response");
+    assert_eq!(me_res.status(), axum::http::StatusCode::OK);
+    let me_body = axum::body::to_bytes(me_res.into_body(), usize::MAX)
+        .await
+        .expect("collect me");
+    let me_json: serde_json::Value = serde_json::from_slice(&me_body).expect("me json");
+    assert_eq!(
+        me_json["active_org_id"], expected_org,
+        "the new session resolves to the inviting org on a fresh request",
     );
 }
