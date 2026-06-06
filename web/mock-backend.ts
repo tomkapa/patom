@@ -1388,6 +1388,18 @@ const server = Bun.serve({
       return json({ active_org_id: ORG_ID, role: "owner" });
     }
 
+    // Token-redeem behind the `/i/{slug}/{token}` invite link. Mirrors
+    // src/http/routes/me.rs::accept_invite. Special tokens drive the
+    // error states for visual verification; anything else succeeds.
+    if (path === "/me/invites/accept" && method === "POST") {
+      const body = (await req.json()) as { token?: string };
+      const tok = body.token ?? "";
+      if (tok === "expired") return json({ error: "invite.expired" }, 410);
+      if (tok === "consumed") return json({ error: "invite.consumed" }, 409);
+      if (tok === "unknown") return json({ error: "not found" }, 404);
+      return json({ active_org_id: ORG_ID, role: "member" });
+    }
+
     // ─── Workspace settings ───────────────────────────────────────────
     // Mirrors src/http/routes/org.rs.
     if (path === "/me/org" && method === "GET") {

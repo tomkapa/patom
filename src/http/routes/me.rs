@@ -11,7 +11,8 @@ use cookie::time::Duration as CookieDuration;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{
-    AuthError, Language, OrgId, OrgMembership, OrganizationRule, Principal, Role, User,
+    AuthError, InviteToken, Language, OrgId, OrgMembership, OrganizationRule, Principal, Role,
+    User,
     limits::{COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_TOKEN_MAX_LEN},
 };
 
@@ -25,6 +26,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/me", get(me))
         .route("/auth/logout", post(logout))
         .route("/auth/switch-org", post(switch_org))
+        .route("/me/invites/accept", post(accept_invite))
         .route("/me/org/language", patch(set_org_language))
         .route("/me/org/rule", patch(set_org_rule))
 }
@@ -178,6 +180,54 @@ async fn switch_org(
     Ok((
         jar,
         Json(serde_json::json!({ "active_org_id": req.org_id, "role": role })),
+    )
+        .into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct AcceptInviteRequest {
+    /// Cleartext URL token from the invite link (`/i/{slug}/{token}`).
+    token: String,
+}
+
+/// `POST /me/invites/accept` — redeem an invite by its URL token. The
+/// caller is already authenticated (logged-out clicks bounce through
+/// `/sign-in` first), so this joins the inviting org on their behalf and
+/// re-mints the session with that org active — mirroring `switch_org` —
+/// so the invitee lands in the inviting workspace. Possession of the
+/// token is the authorisation (§1: parse it at the boundary).
+async fn accept_invite(
+    State(state): State<AppState>,
+    principal: Principal,
+    jar: CookieJar,
+    Json(req): Json<AcceptInviteRequest>,
+) -> Result<Response, HttpError> {
+    let token = InviteToken::try_from(req.token.as_str()).map_err(HttpError::Parse)?;
+    let now = state.clock.now_utc();
+    let accepted = state
+        .orgs
+        .accept_invite(principal.user_id, &token, now)
+        .await?;
+    let session = state.jwt.mint(principal.user_id, accepted.org_id)?;
+    let session_cookie = build_session_cookie(
+        session,
+        state.cookie_secure(),
+        state.jwt.ttl_secs(),
+        state.cookie_domain(),
+    );
+    let csrf_cookie = build_csrf_cookie(
+        mint_csrf_token(),
+        state.cookie_secure(),
+        state.jwt.ttl_secs(),
+        state.cookie_domain(),
+    );
+    let jar = jar.add(session_cookie).add(csrf_cookie);
+    Ok((
+        jar,
+        Json(serde_json::json!({
+            "active_org_id": accepted.org_id,
+            "role": accepted.role,
+        })),
     )
         .into_response())
 }

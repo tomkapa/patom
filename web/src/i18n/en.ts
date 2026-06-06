@@ -718,6 +718,17 @@ const en = {
   "settings.invite.count.many": "{n} invites will be sent",
   "settings.invite.error.lastOwner":
     "At least one owner must remain in the workspace.",
+
+  "invite.accept.joining.title": "Joining {slug}…",
+  "invite.accept.joining.body":
+    "Hang tight while we add you to the workspace.",
+  "invite.accept.error.title": "This invitation can't be opened",
+  "invite.accept.error.expired":
+    "This invitation has expired. Ask the workspace admin to send a new one.",
+  "invite.accept.error.consumed": "This invitation has already been used.",
+  "invite.accept.error.generic":
+    "This invitation link is invalid or no longer available.",
+  "invite.accept.error.cta": "Go to your workspace",
 } as const;
 
 export type TranslationKey = keyof typeof en;

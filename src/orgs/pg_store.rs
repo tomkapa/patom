@@ -17,8 +17,8 @@ use sqlx::{PgPool, Row};
 
 use super::error::OrgError;
 use super::store::{
-    InviteRow, IssuedInvite, MemberFilter, MemberPage, MemberRow, MemberStatus, OrgDetails,
-    OrgStore, OrgUpdate,
+    AcceptedInvite, InviteRow, IssuedInvite, MemberFilter, MemberPage, MemberRow, MemberStatus,
+    OrgDetails, OrgStore, OrgUpdate,
 };
 use crate::auth;
 use crate::auth::{Email, InviteId, InviteToken, Language, OrgId, OrgName, OrgSlug, Role, UserId};
@@ -584,6 +584,75 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         // concurrent login can have claimed every invite between our SELECT
         // and our UPDATE. The caller treats None as "no org" and denies.
         Ok(active)
+    }
+
+    async fn accept_invite(
+        &self,
+        user_id: UserId,
+        token: &InviteToken,
+        now: DateTime<Utc>,
+    ) -> Result<AcceptedInvite, OrgError> {
+        let token_hash = hash_token(token);
+        let mut tx = auth::begin_privileged(&self.pool).await?;
+        // Look up by token hash regardless of state so we can return a
+        // precise error (expired vs. consumed vs. unknown) to the FE.
+        let row = sqlx::query(
+            "SELECT id, org_id, role, consumed_at, expires_at
+             FROM org_invites WHERE token_hash = $1",
+        )
+        .bind(&token_hash)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(OrgError::NotFound)?;
+        if row.get::<Option<DateTime<Utc>>, _>("consumed_at").is_some() {
+            tx.commit().await?;
+            return Err(OrgError::InviteAlreadyConsumed);
+        }
+        if row.get::<DateTime<Utc>, _>("expires_at") <= now {
+            tx.commit().await?;
+            return Err(OrgError::InviteExpired);
+        }
+        let org_id = OrgId::from(row.get::<uuid::Uuid, _>("org_id"));
+        let invite_id = row.get::<uuid::Uuid, _>("id");
+        let role_raw: String = row.get("role");
+        // §6: the column CHECK guarantees this; the assertion detects
+        // corruption rather than silently inserting a bad membership.
+        let role = Role::parse(&role_raw);
+        assert!(role.is_some(), "org_invites.role must be a known role");
+        let role = role.expect("invariant: role validated by assert above");
+        // Claim FIRST: the conditional UPDATE is the atomic gate. Two
+        // concurrent accepts of the same token race here; exactly one
+        // wins the row, the loser sees zero rows and reports the invite
+        // as already consumed — a single invite never admits twice.
+        let claimed = sqlx::query(
+            "UPDATE org_invites SET consumed_at = $2
+             WHERE id = $1 AND consumed_at IS NULL
+             RETURNING id",
+        )
+        .bind(invite_id)
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if claimed.is_none() {
+            tx.commit().await?;
+            return Err(OrgError::InviteAlreadyConsumed);
+        }
+        // Idempotent on (org_id, user_id): a user who is somehow already
+        // a member keeps their existing row and still switches into the
+        // org. The `role` was validated by the assertion above.
+        sqlx::query(
+            "INSERT INTO org_members (org_id, user_id, role, created_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (org_id, user_id) DO NOTHING",
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .bind(role.as_str())
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(AcceptedInvite { org_id, role })
     }
 }
 
