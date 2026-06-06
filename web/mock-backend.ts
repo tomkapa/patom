@@ -405,10 +405,12 @@ const MODEL_CATALOG: { id: string; provider: string }[] = [
 ];
 
 /** The always-on default agent the real backend seeds on first sign-in.
- *  Used as both the first row of the normal `AGENTS` seed AND the only
- *  row left behind on `?fresh=1` so the wizard's hire-team step starts
- *  from a clean canvas. Keep `is_default: true` so the FE's
- *  default-agent lookups still work. */
+ *  In this mock only used by the `?fresh=1` path on `/me`, which clears
+ *  `agentsById` and re-inserts just this single row so the wizard's
+ *  hire-team step starts from a clean canvas. The normal `AGENTS` seed
+ *  below intentionally simulates an already-onboarded workspace
+ *  (Atlas + Beacon) and does NOT include this Recruiter. Keep
+ *  `is_default: true` so the FE's default-agent lookups still work. */
 const RECRUITER_SEED: AgentRow = {
   id: "aaaaaaaa-0000-0000-0000-00000000000a",
   name: "Recruiter",

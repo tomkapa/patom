@@ -20,6 +20,7 @@ import {
 } from "../../data/teamPresets";
 import { useAuthStore } from "../../stores/authStore";
 import { api } from "../../lib/api";
+import { ApiError } from "../../lib/errors";
 import { LucideByName } from "./LucideByName";
 
 /** Step 2 — pick a preset team and hire its agents. The Recruiter (the
@@ -46,18 +47,28 @@ export function StepChooseTeam({
 
   const m = useMutation({
     mutationFn: async (preset: TeamPreset) => {
-      // Sequential to keep error semantics clean: if the 3rd agent
-      // 5xx's, the 1st and 2nd are already hired and the user can
-      // retry from where it broke. parallel() would clobber the order.
+      // Sequential so per-agent failures are observable. Agent names
+      // are unique per org on the BE — on retry a previously-hired
+      // agent surfaces as a 409 Conflict; we treat that as "already
+      // done" and march on, which is what makes the loop honestly
+      // resumable from the failing slot.
       for (const a of preset.agents) {
-        await api.createAgent({
-          name: a.name,
-          description: a.description,
-          system_prompt: renderPrompt(a.system_prompt, workspaceName),
-          model: a.model,
-          is_default: false,
-          allowed_mcp_tools: {},
-        });
+        try {
+          await api.createAgent({
+            name: a.name,
+            description: a.description,
+            system_prompt: renderPrompt(a.system_prompt, workspaceName),
+            model: a.model,
+            is_default: false,
+            allowed_mcp_tools: {},
+          });
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 409) {
+            // Already hired on a previous attempt — skip and continue.
+            continue;
+          }
+          throw err;
+        }
       }
     },
     onSuccess: (_data, preset) => onContinue(preset.id),

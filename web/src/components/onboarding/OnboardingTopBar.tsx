@@ -9,13 +9,16 @@ const STEPS: { key: StepKey; n: number; label: string }[] = [
   { key: "invite", n: 3, label: "Invite" },
 ];
 
+const STEP_ORDER: readonly StepKey[] = STEPS.map((s) => s.key);
+
 type Status = "done" | "active" | "pending";
 
 function stepStatus(step: StepKey, current: StepKey, allDone: boolean): Status {
   if (allDone) return "done";
   if (step === current) return "active";
-  const order: StepKey[] = ["name", "team", "invite"];
-  return order.indexOf(step) < order.indexOf(current) ? "done" : "pending";
+  return STEP_ORDER.indexOf(step) < STEP_ORDER.indexOf(current)
+    ? "done"
+    : "pending";
 }
 
 /** Top bar shared across all four onboarding screens. Logo + a 3-step

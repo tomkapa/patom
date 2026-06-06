@@ -64,10 +64,11 @@ export function Onboarding() {
         {step === "done" && (
           <StepProvisioned
             preset={presetId ? findPreset(presetId) : findPreset("scratch")}
-            onOpenWorkspace={() => {
-              // Now refetch /me so the gate sees onboarded:true on the
-              // next render at /, then navigate.
-              void qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+            onOpenWorkspace={async () => {
+              // Await the refetch before navigating — otherwise the gate
+              // could observe the stale `onboarded:false` /me and bounce
+              // us straight back to /onboarding.
+              await qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
               navigate("/", { replace: true });
             }}
           />

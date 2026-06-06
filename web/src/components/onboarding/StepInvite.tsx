@@ -30,19 +30,28 @@ export function StepInvite({ onFinished }: { onFinished: () => void }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("member");
   const [copied, setCopied] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
 
   const inviteLink = `patom.app/join/${orgSlug}`;
 
   function addPending() {
     const trimmed = email.trim().toLowerCase();
-    if (!trimmed) return;
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return;
+    if (!trimmed) {
+      setAddError("Enter an email address first.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setAddError("That doesn't look like a valid email.");
+      return;
+    }
     if (pending.some((p) => p.email === trimmed)) {
+      setAddError(`${trimmed} is already on the invite list.`);
       setEmail("");
       return;
     }
     setPending((prev) => [...prev, { email: trimmed, role }]);
     setEmail("");
+    setAddError(null);
   }
 
   function removePending(target: string) {
@@ -109,7 +118,10 @@ export function StepInvite({ onFinished }: { onFinished: () => void }) {
               id="onboarding-invite-email"
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                if (addError) setAddError(null);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -119,6 +131,8 @@ export function StepInvite({ onFinished }: { onFinished: () => void }) {
               placeholder="name@company.com"
               className="flex-1 bg-transparent text-[14px] text-[var(--color-moss-deep)] outline-none placeholder:text-[var(--color-fg-muted)]"
               data-testid="onboarding-invite-email"
+              aria-invalid={addError !== null}
+              aria-describedby={addError ? "onboarding-invite-email-error" : undefined}
             />
           </div>
 
@@ -146,6 +160,16 @@ export function StepInvite({ onFinished }: { onFinished: () => void }) {
             Add
           </button>
         </div>
+
+        {addError && (
+          <p
+            id="onboarding-invite-email-error"
+            role="alert"
+            className="text-[12px] text-[var(--color-rose)]"
+          >
+            {addError}
+          </p>
+        )}
 
         {pending.length > 0 && (
           <ul
@@ -203,9 +227,18 @@ export function StepInvite({ onFinished }: { onFinished: () => void }) {
           <button
             type="button"
             onClick={() => {
-              void navigator.clipboard.writeText(`https://${inviteLink}`);
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1500);
+              // navigator.clipboard rejects in non-secure contexts and
+              // when the permission was denied. The "Copied" affirmation
+              // must only show if the write actually succeeded; on
+              // failure we leave the UI as-is so the user can try again
+              // or copy the text manually.
+              navigator.clipboard
+                .writeText(`https://${inviteLink}`)
+                .then(() => {
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 1500);
+                })
+                .catch(() => {});
             }}
             className="inline-flex cursor-pointer items-center justify-center gap-1.5 bg-[var(--color-surface-primary)] px-3 py-2 text-[13px] font-medium text-[var(--color-moss-deep)] ring-1 ring-[var(--color-border-subtle)]"
             data-testid="onboarding-invite-copy"
