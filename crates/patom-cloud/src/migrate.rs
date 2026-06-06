@@ -10,9 +10,6 @@
 //! `public` membership helper. `public` is kept on the path so
 //! `public.app_user_is_member` resolves during `CREATE POLICY`.
 
-use std::future::Future;
-use std::pin::Pin;
-
 use patom::AppError;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -32,47 +29,36 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 /// # Errors
 /// Returns [`AppError::Migrate`] if a migration fails, or
 /// [`AppError::Misconfigured`] if the schema / `search_path` setup fails.
-// Returns an explicitly-boxed `Send` future rather than `async fn` on purpose:
-// boxing erases the future's type so it can be awaited inside the
-// `#[async_trait]` `CloudBuilder::migrate` impl. Crucially the Migrator runs on
-// a `&Pool`, not a `&mut Connection` — the connection form trips a sqlx
-// `Acquire is not general enough` HRTB bound once a `Send` future is required.
-#[allow(clippy::manual_async_fn)]
-pub fn run_migrations(
-    pool: &PgPool,
-) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>> {
-    // Reuse the live pool's connection options (host / credentials / db) for the
-    // dedicated migration pool below.
-    let connect_options = (*pool.connect_options()).clone();
-    Box::pin(async move {
-        // The schema must exist before the Migrator creates its tracking table
-        // (which lands in the first schema on `search_path`).
-        sqlx::query("CREATE SCHEMA IF NOT EXISTS cloud")
-            .execute(pool)
-            .await
-            .map_err(|e| AppError::Misconfigured(format!("create cloud schema: {e}")))?;
+pub async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
+    // The schema must exist before the Migrator creates its tracking table
+    // (which lands in the first schema on `search_path`).
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS cloud")
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Misconfigured(format!("create cloud schema: {e}")))?;
 
-        // A short-lived pool whose every connection pins `search_path` to
-        // `cloud, public`: sqlx then writes `cloud._sqlx_migrations` (first
-        // schema on the path) and the policies still resolve
-        // `public.app_user_is_member`. Single connection — this runs once at
-        // boot. Closed at the end so no pinned connection lingers.
-        let cloud_pool = PgPoolOptions::new()
-            .max_connections(1)
-            .after_connect(|conn, _meta| {
-                Box::pin(async move {
-                    sqlx::query("SET search_path TO cloud, public")
-                        .execute(conn)
-                        .await
-                        .map(|_| ())
-                })
+    // A short-lived pool whose every connection pins `search_path` to
+    // `cloud, public`: sqlx then writes `cloud._sqlx_migrations` (first schema
+    // on the path) and the policies still resolve `public.app_user_is_member`.
+    // Single connection — this runs once at boot. Closed at the end so no pinned
+    // connection lingers. Running the Migrator on a `&Pool` (not a
+    // `&mut Connection`) keeps this `Send` — the connection form trips a sqlx
+    // `Acquire is not general enough` bound under the `#[async_trait]` caller.
+    let cloud_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET search_path TO cloud, public")
+                    .execute(conn)
+                    .await
+                    .map(|_| ())
             })
-            .connect_with(connect_options)
-            .await
-            .map_err(|source| AppError::DbConnect { source })?;
+        })
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .map_err(|source| AppError::DbConnect { source })?;
 
-        let result = MIGRATOR.run(&cloud_pool).await;
-        cloud_pool.close().await;
-        result.map_err(|source| AppError::Migrate { source })
-    })
+    let result = MIGRATOR.run(&cloud_pool).await;
+    cloud_pool.close().await;
+    result.map_err(|source| AppError::Migrate { source })
 }

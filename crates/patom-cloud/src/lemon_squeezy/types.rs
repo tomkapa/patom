@@ -71,8 +71,11 @@ ls_string_id! {
     LsVariantId, "ls_variant_id"
 }
 ls_string_id! {
-    /// Lemon Squeezy event id (`X-Event-Name` / payload `meta`), used as the
-    /// idempotency key so a redelivered webhook is applied exactly once.
+    /// Per-event idempotency key for an inbound webhook.
+    ///
+    /// Ensures a redelivery is applied exactly once. Lemon Squeezy sends no
+    /// stable event id, so we derive it from the SHA-256 of the raw body
+    /// (redeliveries are byte-identical); see `webhook::body_event_id`.
     LsEventId, "ls_event_id"
 }
 

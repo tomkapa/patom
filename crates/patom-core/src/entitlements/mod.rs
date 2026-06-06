@@ -9,11 +9,11 @@
 //!
 //! Two questions live behind one object-safe trait:
 //! - [`Entitlements::agent_limit`] — the agent-count quota that monetization
-//!   actually scales on. Wired into `POST /agents` via
-//!   [`require_agent_capacity`].
+//!   actually scales on. Resolved per-org and enforced in-transaction by the
+//!   agent store on every creation path (#131).
 //! - [`Entitlements::allows`] — a boolean [`Feature`] gate for capabilities a
 //!   plan may withhold. Inert today (no real features gated); the hook exists
-//!   so the first gate is an additive change.
+//!   so the first gate is an additive change, via [`require_feature`].
 
 mod error;
 mod types;

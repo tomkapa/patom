@@ -15,7 +15,7 @@ pub enum AgentLimit {
     /// [`super::UnlimitedEntitlements`]) and the Cloud Enterprise tier.
     Unlimited,
     /// At most `cap` agents may exist in the org. A would-be `cap+1`-th
-    /// creation is refused with 402 by [`super::require_agent_capacity`].
+    /// creation is refused with 402 by the agent store's in-tx cap gate (#131).
     Max(u32),
 }
 

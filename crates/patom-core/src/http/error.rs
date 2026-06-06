@@ -148,10 +148,14 @@ impl IntoResponse for HttpError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "default agent not seeded".into(),
             ),
-            // Org is at its agent cap (entitlement gate, #131) → 402, same as
-            // `LicenseError` below. Matched explicitly before the `Agent(_)`
+            // Org is at its agent cap (entitlement gate, #131) → 402, like the
+            // `LicenseError` arm below. Matched explicitly before the `Agent(_)`
             // 500 catch-all so the upgrade prompt isn't masked as a server
-            // error; the message carries the limit that was hit.
+            // error; the message carries the limit that was hit. Kept a
+            // separate arm from the feature-license 402 (same body) so the two
+            // distinct error families each force their own edit if their status
+            // ever diverges (§1).
+            #[allow(clippy::match_same_arms)]
             Self::Agent(AgentStoreError::AgentLimitReached { .. }) => {
                 (StatusCode::PAYMENT_REQUIRED, self.to_string())
             }
@@ -252,12 +256,12 @@ impl IntoResponse for HttpError {
             Self::Org(OrgError::Db(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "org store error".into())
             }
-            // Both license failures are "your plan doesn't cover this" → 402.
-            // Matched explicitly (not `License(_)`) so a future LicenseError
-            // variant with a different status forces an edit here (§1).
-            Self::License(
-                LicenseError::FeatureNotLicensed { .. } | LicenseError::AgentLimitReached { .. },
-            ) => (StatusCode::PAYMENT_REQUIRED, self.to_string()),
+            // "Your plan doesn't cover this" → 402. Matched explicitly (not
+            // `License(_)`) so a future LicenseError variant with a different
+            // status forces an edit here (§1).
+            Self::License(LicenseError::FeatureNotLicensed { .. }) => {
+                (StatusCode::PAYMENT_REQUIRED, self.to_string())
+            }
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
         };
         // CLAUDE.md §2: every error response that maps to a 5xx is a
