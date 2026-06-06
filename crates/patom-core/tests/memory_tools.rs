@@ -41,6 +41,7 @@ struct Fixture {
     store: SharedMemoryStore,
     session: patom::session::SessionId,
     agent_id: patom::agents::AgentId,
+    agent_colleague_id: patom::colleagues::ColleagueId,
     user_id: patom::auth::UserId,
     org_id: patom::auth::OrgId,
 }
@@ -75,13 +76,18 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
         clock,
     );
     let session =
-        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+        human_to_agent_session(pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let agent_colleague_id =
+        patom::colleagues::resolve_agent_colleague(pool, seed.org_id, seed.agent_id)
+            .await
+            .expect("seed agent colleague");
     Fixture {
         deps: MemoryToolDeps::new(loader.clone()),
         loader,
         store,
         session,
         agent_id: seed.agent_id,
+        agent_colleague_id,
         user_id: seed.user_id,
         org_id: seed.org_id,
     }
@@ -90,7 +96,7 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
 fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
     ToolCallContext {
         session_id: f.session,
-        viewer: Participant::agent(f.agent_id),
+        viewer: Participant::agent(f.agent_colleague_id, f.agent_id),
         root_request_id: request_id,
         request_id,
         kind_payload: patom::runtime::RequestKindPayload::Normal {},
@@ -412,7 +418,7 @@ fn ctx_with_target(
 ) -> ToolCallContext {
     ToolCallContext {
         session_id: f.session,
-        viewer: Participant::agent(f.agent_id),
+        viewer: Participant::agent(f.agent_colleague_id, f.agent_id),
         root_request_id: request_id,
         request_id,
         kind_payload: patom::runtime::RequestKindPayload::Resolution {

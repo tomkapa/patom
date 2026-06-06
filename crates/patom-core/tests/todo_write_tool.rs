@@ -24,7 +24,6 @@ use patom::tools::system::todos::{
     TodoToolDeps, TodoWriteTool,
 };
 use patom::tools::{Tool, ToolCallContext, ToolError};
-use patom::types::Participant;
 use serde_json::{Value, json};
 
 mod common;
@@ -36,6 +35,7 @@ struct Fixture {
     store: SharedSessionTodoStore,
     session: patom::session::SessionId,
     agent_id: patom::agents::AgentId,
+    agent_colleague_id: patom::colleagues::ColleagueId,
     user_id: patom::auth::UserId,
     org_id: patom::auth::OrgId,
 }
@@ -46,13 +46,20 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let store: SharedSessionTodoStore =
         Arc::new(PgSessionTodoStore::new(pool.clone(), clock.clone()));
     let session =
-        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let tool = TodoWriteTool::new(TodoToolDeps::new(store.clone()));
     Fixture {
         tool,
         store,
         session,
         agent_id: seed.agent_id,
+        agent_colleague_id: patom::colleagues::resolve_agent_colleague(
+            pool,
+            seed.org_id,
+            seed.agent_id,
+        )
+        .await
+        .expect("seed agent colleague"),
         user_id: seed.user_id,
         org_id: seed.org_id,
     }
@@ -61,7 +68,7 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
 fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
     ToolCallContext {
         session_id: f.session,
-        viewer: Participant::agent(f.agent_id),
+        viewer: patom::types::Participant::agent(f.agent_colleague_id, f.agent_id),
         root_request_id: request_id,
         request_id,
         kind_payload: patom::runtime::RequestKindPayload::Normal {},
@@ -224,7 +231,7 @@ async fn per_turn_rate_cap_blocks_runaway_writes(pool: PgPool) {
 async fn list_is_isolated_to_its_session(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
-    let other_session = human_to_agent_session(
+    let other_session = human_to_agent_session(&pool, 
         &PgSessionStore::new(pool.clone(), SystemClock::shared()),
         f.agent_id,
         f.org_id,

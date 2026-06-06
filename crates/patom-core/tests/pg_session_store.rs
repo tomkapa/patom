@@ -11,7 +11,7 @@ use patom::clock::SystemClock;
 use patom::provider::{ChatMessage, UserContent};
 use patom::runtime::PromptRequestId;
 use patom::session::{PgSessionStore, SessionError, SessionId, SessionStore};
-use patom::types::{MessageSender, Participant};
+use patom::types::MessageSender;
 use sqlx::PgPool;
 
 mod common;
@@ -26,13 +26,13 @@ async fn create_append_snapshot_roundtrip(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
-    let agent = Participant::agent(seed.agent_id);
-    let id = human_to_agent_session(store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let agent = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
+    let id = human_to_agent_session(&pool, store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let req = seed_prompt_request(&pool, id, seed.agent_id, seed.org_id).await;
     store
         .append(
             id,
-            MessageSender::Human,
+            common::pg::human_sender(&pool, seed.org_id, seed.user_id).await,
             agent,
             ChatMessage::User(vec![UserContent::Text("hi".into())]),
             req,
@@ -42,7 +42,7 @@ async fn create_append_snapshot_roundtrip(pool: PgPool) {
     store
         .append(
             id,
-            MessageSender::Human,
+            common::pg::human_sender(&pool, seed.org_id, seed.user_id).await,
             agent,
             ChatMessage::User(vec![UserContent::Text("again".into())]),
             req,
@@ -52,7 +52,7 @@ async fn create_append_snapshot_roundtrip(pool: PgPool) {
 
     // Viewer = the agent. Both rows came from human → render as User to the
     // agent.
-    let snap = store.snapshot(id, agent).await.expect("snapshot");
+    let snap = store.snapshot(id, agent.colleague_id().expect("real colleague")).await.expect("snapshot");
     assert_eq!(snap.len(), 2);
     let ChatMessage::User(contents) = &snap[0] else {
         panic!("first message should be user");
@@ -66,14 +66,14 @@ async fn missing_session_is_not_found(pool: PgPool) {
     let store = store(&pool);
 
     let id = SessionId::new();
-    let viewer = Participant::agent(seed.agent_id);
-    let err = store.snapshot(id, viewer).await.expect_err("absent");
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
+    let err = store.snapshot(id, viewer.colleague_id().expect("real colleague")).await.expect_err("absent");
     assert!(matches!(err, SessionError::NotFound(_)));
 
     let err = store
         .append(
             id,
-            MessageSender::Human,
+            common::pg::human_sender(&pool, seed.org_id, seed.user_id).await,
             viewer,
             ChatMessage::User(vec![UserContent::Text("hi".into())]),
             PromptRequestId::new(),
@@ -94,14 +94,14 @@ async fn enforces_message_cap(pool: PgPool) {
         SystemClock::shared(),
         2,
     ));
-    let id = human_to_agent_session(store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let id = human_to_agent_session(&pool, store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let req = seed_prompt_request(&pool, id, seed.agent_id, seed.org_id).await;
-    let agent = Participant::agent(seed.agent_id);
+    let agent = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
     for _ in 0..2 {
         store
             .append(
                 id,
-                MessageSender::Human,
+                common::pg::human_sender(&pool, seed.org_id, seed.user_id).await,
                 agent,
                 ChatMessage::User(vec![UserContent::Text("x".into())]),
                 req,
@@ -112,7 +112,7 @@ async fn enforces_message_cap(pool: PgPool) {
     let err = store
         .append(
             id,
-            MessageSender::Human,
+            common::pg::human_sender(&pool, seed.org_id, seed.user_id).await,
             agent,
             ChatMessage::User(vec![UserContent::Text("over".into())]),
             req,
@@ -126,13 +126,13 @@ async fn enforces_message_cap(pool: PgPool) {
 async fn delete_cascades_messages(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
-    let id = human_to_agent_session(store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let id = human_to_agent_session(&pool, store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let req = seed_prompt_request(&pool, id, seed.agent_id, seed.org_id).await;
-    let agent = Participant::agent(seed.agent_id);
+    let agent = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
     store
         .append(
             id,
-            MessageSender::Human,
+            common::pg::human_sender(&pool, seed.org_id, seed.user_id).await,
             agent,
             ChatMessage::User(vec![UserContent::Text("hi".into())]),
             req,
@@ -141,7 +141,7 @@ async fn delete_cascades_messages(pool: PgPool) {
         .expect("append");
 
     store.delete(id).await.expect("delete");
-    let err = store.snapshot(id, agent).await.expect_err("gone");
+    let err = store.snapshot(id, agent.colleague_id().expect("real colleague")).await.expect_err("gone");
     assert!(matches!(err, SessionError::NotFound(_)));
 }
 
@@ -150,35 +150,47 @@ async fn create_with_unknown_agent_returns_agent_not_found(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
-    // Random uuid that does not exist in the agents table — the FK on
-    // participant_*_agent_id should reject the insert and surface as
-    // SessionError::AgentNotFound.
-    let phantom = AgentId::new();
+    // Random colleague id that does not exist in the colleagues table — the
+    // FK on participant_*_colleague_id should reject the insert and surface
+    // as SessionError::ColleagueNotFound. We construct a synthetic agent
+    // Participant with an unmapped colleague id rather than going through
+    // `agent_participant`, which assumes the colleague trigger has fired.
+    let phantom_colleague = patom::colleagues::ColleagueId::new();
+    let phantom_agent = AgentId::new();
+    let agent =
+        patom::types::Participant::agent(phantom_colleague, phantom_agent);
     let root = PromptRequestId::new();
     let err = store
         .resolve_or_create_for_pair(
             root,
-            Participant::Human,
-            Participant::agent(phantom),
+            common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+            agent,
             None,
             seed.org_id,
             seed.user_id,
         )
         .await
         .expect_err("fk");
-    assert!(matches!(err, SessionError::AgentNotFound(_)));
+    assert!(matches!(err, SessionError::ColleagueNotFound(_)));
 }
 
 #[sqlx::test]
 async fn participants_round_trip_through_session(pool: PgPool) {
-    // Canonical order is Agent < Human (matches SQL CHECK).
+    // Canonical order (Stage 3a): real colleagues sort by `colleague_id` UUID.
+    // Whichever participant has the lower UUID lands in slot `a`; the test
+    // asserts the pair contains both ends and uses `canonical_pair` to
+    // canonicalise so the ordering is deterministic for the assertion.
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
-    let id = human_to_agent_session(store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let id = human_to_agent_session(&pool, store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let (a, b) = store.participants(id).await.expect("resolve");
-    assert_eq!(a, Participant::agent(seed.agent_id));
-    assert_eq!(b, Participant::Human);
+    let human = common::pg::human_participant(&pool, seed.org_id, seed.user_id).await;
+    let agent = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
+    let (canonical_a, canonical_b) =
+        patom::types::Participant::canonical_pair(human, agent).expect("distinct");
+    assert_eq!(a, canonical_a);
+    assert_eq!(b, canonical_b);
 }
 
 #[sqlx::test]
@@ -187,15 +199,15 @@ async fn snapshot_renders_messages_from_viewer_perspective(pool: PgPool) {
     // contract of the new viewer-mapped snapshot.
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
-    let agent = Participant::agent(seed.agent_id);
+    let agent = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
 
-    let id = human_to_agent_session(store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let id = human_to_agent_session(&pool, store.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let req = seed_prompt_request(&pool, id, seed.agent_id, seed.org_id).await;
     // Human → Agent: text prompt.
     store
         .append(
             id,
-            MessageSender::Human,
+            common::pg::human_sender(&pool, seed.org_id, seed.user_id).await,
             agent,
             ChatMessage::User(vec![UserContent::Text("ping".into())]),
             req,
@@ -207,7 +219,7 @@ async fn snapshot_renders_messages_from_viewer_perspective(pool: PgPool) {
         .append(
             id,
             MessageSender::from_participant(agent),
-            Participant::Human,
+            common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
             ChatMessage::Assistant(vec![patom::provider::AssistantContent::Text("pong".into())]),
             req,
         )
@@ -215,13 +227,13 @@ async fn snapshot_renders_messages_from_viewer_perspective(pool: PgPool) {
         .expect("append");
 
     // Viewer = agent: the human's row is User, agent's row is Assistant.
-    let snap = store.snapshot(id, agent).await.expect("agent view");
+    let snap = store.snapshot(id, agent.colleague_id().expect("real colleague")).await.expect("agent view");
     assert!(matches!(&snap[0], ChatMessage::User(_)));
     assert!(matches!(&snap[1], ChatMessage::Assistant(_)));
 
     // Viewer = human: the human's row is Assistant, agent's row is User.
     let snap = store
-        .snapshot(id, Participant::Human)
+        .snapshot(id, patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id).await.expect("colleague"))
         .await
         .expect("human view");
     assert!(matches!(&snap[0], ChatMessage::Assistant(_)));

@@ -334,7 +334,15 @@ impl Agent {
     ) -> Result<ChatRequest, AgentError> {
         let kind = kind_payload.kind();
         let span = tracing::Span::current();
-        let own = self.sessions().snapshot(session, viewer).await?;
+        // §6: worker turns only ever run for an agent viewer (real colleague).
+        // Surface a backend-error rather than panic if a caller breaks the
+        // invariant — the trait signature speaks `ColleagueId` honestly.
+        let viewer_colleague = viewer.colleague_id().ok_or_else(|| {
+            crate::session::SessionError::Backend(
+                "build_chat_request called with System viewer; worker invariant".to_string(),
+            )
+        })?;
+        let own = self.sessions().snapshot(session, viewer_colleague).await?;
         assert!(
             !own.is_empty(),
             "session must contain at least the user prompt"
@@ -349,7 +357,7 @@ impl Agent {
         // `context_summary`, with `get_session` for deeper lookups.
         let parent = self
             .sessions()
-            .parent_history_for_viewer(session, viewer)
+            .parent_history_for_viewer(session, viewer_colleague)
             .await?;
         span.record("patom.parent_session.included", !parent.is_empty());
         span.record("patom.parent_session.history.count", parent.len());

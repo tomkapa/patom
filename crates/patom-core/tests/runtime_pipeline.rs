@@ -102,9 +102,21 @@ struct Harness {
     hub: Arc<PgResponseHub>,
     sessions: SharedSessionStore,
     default_agent_id: patom::agents::AgentId,
+    default_agent_colleague_id: patom::colleagues::ColleagueId,
     default_org_id: patom::auth::OrgId,
     default_user_id: patom::auth::UserId,
+    default_user_colleague_id: patom::colleagues::ColleagueId,
     pool: patom::runtime::WorkerPoolHandle,
+}
+
+impl Harness {
+    fn default_human_participant(&self) -> patom::types::Participant {
+        patom::types::Participant::human(self.default_user_colleague_id, self.default_user_id)
+    }
+    #[allow(dead_code)]
+    fn default_agent_participant(&self) -> patom::types::Participant {
+        patom::types::Participant::agent(self.default_agent_colleague_id, self.default_agent_id)
+    }
 }
 
 async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness {
@@ -123,6 +135,8 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
             .build(),
     );
     let agent_store: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
+    let colleagues: patom::colleagues::SharedColleagueStore =
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
     // The worker's ping-pong guard requires every successful turn to call
     // send_message, so test scripts must invoke it.
@@ -132,6 +146,7 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
             queue_impl.clone(),
             dag.clone(),
             agent_store.clone(),
+            colleagues.clone(),
             hub.clone(),
         )))
         .build();
@@ -178,10 +193,20 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
     )
     .spawn();
 
+    let default_agent_colleague_id =
+        patom::colleagues::resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
+            .await
+            .expect("agent colleague");
+    let default_user_colleague_id =
+        patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+            .await
+            .expect("user colleague");
     Harness {
         default_agent_id: seed.agent_id,
+        default_agent_colleague_id,
         default_org_id: seed.org_id,
         default_user_id: seed.user_id,
+        default_user_colleague_id,
         queue: queue_impl,
         hub,
         sessions,
@@ -191,6 +216,7 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
 
 fn req(
     session: patom::session::SessionId,
+    sender: patom::types::Participant,
     agent_id: patom::agents::AgentId,
     content: &str,
     key: &str,
@@ -199,7 +225,7 @@ fn req(
 ) -> NewPromptRequest {
     NewPromptRequest {
         session: Some(session),
-        sender: patom::types::Participant::Human,
+        sender,
         receiver_agent_id: agent_id,
         parent_session: None,
         content: Prompt::try_from(content).expect("p"),
@@ -215,6 +241,7 @@ fn req(
 /// any test whose script invokes `send_message`, since the tool's
 /// `dag.bump_or_fail` needs the DAG row to exist.
 fn req_root(
+    sender: patom::types::Participant,
     agent_id: patom::agents::AgentId,
     content: &str,
     key: &str,
@@ -223,7 +250,7 @@ fn req_root(
 ) -> NewPromptRequest {
     NewPromptRequest {
         session: None,
-        sender: patom::types::Participant::Human,
+        sender,
         receiver_agent_id: agent_id,
         parent_session: None,
         content: Prompt::try_from(content).expect("p"),
@@ -291,10 +318,11 @@ async fn round_trip_publishes_done_chunk(pool: PgPool) {
         cursor: AtomicUsize::new(0),
         delay: Duration::ZERO,
     });
-    let h = build_harness(pool, provider).await;
+    let h = build_harness(pool.clone(), provider).await;
     let id = h
         .queue
         .enqueue(req_root(
+            h.default_human_participant(),
             h.default_agent_id,
             "hi",
             "k1",
@@ -325,8 +353,8 @@ async fn cancellation_finishes_inflight_and_skips_next_turn(pool: PgPool) {
         cursor: AtomicUsize::new(0),
         delay: Duration::from_millis(150),
     });
-    let h = build_harness(pool, provider).await;
-    let s = human_to_agent_session(
+    let h = build_harness(pool.clone(), provider).await;
+    let s = human_to_agent_session(&pool, 
         h.sessions.as_ref(),
         h.default_agent_id,
         h.default_org_id,
@@ -337,6 +365,7 @@ async fn cancellation_finishes_inflight_and_skips_next_turn(pool: PgPool) {
         .queue
         .enqueue(req(
             s,
+            h.default_human_participant(),
             h.default_agent_id,
             "first",
             "k-first",
@@ -354,6 +383,7 @@ async fn cancellation_finishes_inflight_and_skips_next_turn(pool: PgPool) {
         .queue
         .enqueue(req(
             s,
+            h.default_human_participant(),
             h.default_agent_id,
             "second",
             "k-second",
@@ -389,10 +419,11 @@ async fn streaming_emits_text_before_done(pool: PgPool) {
         cursor: AtomicUsize::new(0),
         delay: Duration::ZERO,
     });
-    let h = build_harness(pool, provider).await;
+    let h = build_harness(pool.clone(), provider).await;
     let id = h
         .queue
         .enqueue(req_root(
+            h.default_human_participant(),
             h.default_agent_id,
             "hi",
             "stream-key",
@@ -436,8 +467,8 @@ async fn mid_turn_cancellation_aborts_in_flight_turn(pool: PgPool) {
         cursor: AtomicUsize::new(0),
         delay: Duration::from_secs(2),
     });
-    let h = build_harness(pool, provider).await;
-    let s = human_to_agent_session(
+    let h = build_harness(pool.clone(), provider).await;
+    let s = human_to_agent_session(&pool, 
         h.sessions.as_ref(),
         h.default_agent_id,
         h.default_org_id,
@@ -448,6 +479,7 @@ async fn mid_turn_cancellation_aborts_in_flight_turn(pool: PgPool) {
         .queue
         .enqueue(req(
             s,
+            h.default_human_participant(),
             h.default_agent_id,
             "slow",
             "k-mid-cancel",
@@ -490,8 +522,8 @@ async fn idempotent_repeat_returns_same_request_id(pool: PgPool) {
         cursor: AtomicUsize::new(0),
         delay: Duration::ZERO,
     });
-    let h = build_harness(pool, provider).await;
-    let s = human_to_agent_session(
+    let h = build_harness(pool.clone(), provider).await;
+    let s = human_to_agent_session(&pool, 
         h.sessions.as_ref(),
         h.default_agent_id,
         h.default_org_id,
@@ -502,6 +534,7 @@ async fn idempotent_repeat_returns_same_request_id(pool: PgPool) {
         .queue
         .enqueue(req(
             s,
+            h.default_human_participant(),
             h.default_agent_id,
             "hi",
             "same-key",
@@ -515,6 +548,7 @@ async fn idempotent_repeat_returns_same_request_id(pool: PgPool) {
         .queue
         .enqueue(req(
             s,
+            h.default_human_participant(),
             h.default_agent_id,
             "hi",
             "same-key",

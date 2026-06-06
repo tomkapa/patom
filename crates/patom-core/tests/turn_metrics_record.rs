@@ -36,7 +36,7 @@ use patom::provider::{
 use patom::runtime::{PromptRequestId, RequestKindPayload};
 use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::tools::ToolRegistry;
-use patom::types::{Participant, Prompt, ToolName};
+use patom::types::{Prompt, ToolName};
 
 mod common;
 use common::pg::{Seed, human_to_agent_session, seed_prompt_request, seed_tenant};
@@ -92,7 +92,7 @@ async fn pg_store_records_a_row(pool: PgPool) {
     let sessions: SharedSessionStore =
         Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
     let session =
-        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
     let pvid = current_prompt_version(&pool, seed.agent_id).await;
 
@@ -117,7 +117,7 @@ async fn pg_store_trigger_rejects_org_mismatch(pool: PgPool) {
     let sessions: SharedSessionStore =
         Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
     let session =
-        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
     let pvid = current_prompt_version(&pool, seed.agent_id).await;
 
@@ -218,7 +218,7 @@ async fn run_scripted_reply(
         .with_turn_metrics(store, seed.agent_id, pvid)
         .build();
 
-    let session = human_to_agent_session(
+    let session = human_to_agent_session(&pool, 
         &PgSessionStore::new(pool.clone(), SystemClock::shared()),
         seed.agent_id,
         seed.org_id,
@@ -231,7 +231,7 @@ async fn run_scripted_reply(
     agent
         .reply(
             session,
-            Participant::agent(seed.agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
             vec![prompt],
             request_id,
             patom::auth::Caller::new(seed.user_id, seed.org_id),

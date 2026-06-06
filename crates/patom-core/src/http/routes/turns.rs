@@ -42,7 +42,8 @@ use crate::provider::{Model, ProviderId};
 use crate::runtime::{PromptRequestId, RequestKind};
 use crate::session::SessionId;
 use crate::tools::ToolCallRowId;
-use crate::types::MessageSenderKind;
+// MessageSenderKind was the old wire-typed enum; after Stage 3 the kind is
+// joined from colleagues so the route binds the literal "agent" string.
 
 use super::super::error::HttpError;
 use super::super::state::AppState;
@@ -321,13 +322,14 @@ async fn fetch_reasoning(
     request_id: PromptRequestId,
 ) -> Result<Vec<ReasoningBlock>, TurnDetailError> {
     let bodies: Vec<(SqlxJson<JsonValue>,)> = sqlx::query_as(
-        "SELECT body FROM session_messages \
-         WHERE request_id = $1 AND sender_kind = $2 \
-         ORDER BY seq ASC \
+        "SELECT sm.body FROM session_messages sm \
+         JOIN colleagues sc ON sc.id = sm.sender_colleague_id \
+         WHERE sm.request_id = $1 AND sc.kind = $2 \
+         ORDER BY sm.seq ASC \
          LIMIT $3",
     )
     .bind(request_id)
-    .bind(MessageSenderKind::Agent)
+    .bind("agent")
     .bind(i64::try_from(MAX_REASONING_BLOCKS_PER_TURN).unwrap_or(i64::MAX))
     .fetch_all(&mut **tx)
     .await?;

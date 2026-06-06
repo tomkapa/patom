@@ -96,6 +96,9 @@ pub struct BridgeDeps {
     pub queue: SharedPromptQueue,
     pub agents: SharedAgentStore,
     pub sessions: SharedSessionStore,
+    /// Colleague directory — resolves linked-human `(org_id, user_id)`
+    /// to a colleague id so Slack events enqueue colleague-backed senders.
+    pub colleagues: crate::colleagues::SharedColleagueStore,
     pub workspaces: SharedSlackWorkspaceStore,
     pub identities: SharedSlackIdentityStore,
     pub threads: SharedSlackThreadStore,
@@ -271,9 +274,14 @@ async fn enqueue_and_bind(
         channel = event.channel_id.as_str(),
         ts = event.event_ts.as_str(),
     ))?;
+    let human_colleague = deps
+        .colleagues
+        .resolve_user(workspace.org_id, user_id)
+        .await
+        .map_err(|e| SlackError::Internal(format!("resolve human colleague: {e}")))?;
     let req = NewPromptRequest::normal(
         existing.map(|m| m.session_id),
-        Participant::human(),
+        Participant::human(human_colleague, user_id),
         receiver_agent_id,
         None,
         prompt,
@@ -456,9 +464,14 @@ pub async fn enqueue_from_slash(
         view = submit.view_id,
     ))?;
     let prompt_text = submit.prompt.as_str().to_owned();
+    let human_colleague = deps
+        .colleagues
+        .resolve_user(workspace.org_id, user_id)
+        .await
+        .map_err(|e| SlackError::Internal(format!("resolve human colleague: {e}")))?;
     let req = NewPromptRequest::normal(
         None,
-        Participant::human(),
+        Participant::human(human_colleague, user_id),
         submit.agent_id,
         None,
         submit.prompt,

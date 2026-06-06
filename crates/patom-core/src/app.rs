@@ -115,6 +115,7 @@ struct Collaborators {
     pool: PgPool,
     sessions: SharedSessionStore,
     agents: SharedAgentStore,
+    colleagues: crate::colleagues::SharedColleagueStore,
     memory: SharedMemory,
     memory_store: SharedMemoryStore,
     clock: SharedClock,
@@ -185,6 +186,9 @@ impl Collaborators {
 
         let sessions: SharedSessionStore =
             Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+
+        let colleagues: crate::colleagues::SharedColleagueStore =
+            Arc::new(crate::colleagues::PgColleagueStore::new(pool.clone()));
 
         let cache = AgentPromptCache::new(
             AGENT_PROMPT_CACHE_CAP,
@@ -322,6 +326,7 @@ impl Collaborators {
             queue: queue.clone(),
             dag: dag.clone(),
             agents: agents.clone(),
+            colleagues: colleagues.clone(),
             sink: sink.clone(),
             memory_tools,
             todo_tools,
@@ -344,6 +349,7 @@ impl Collaborators {
             pool,
             sessions,
             agents,
+            colleagues,
             memory,
             memory_store,
             clock,
@@ -452,6 +458,7 @@ struct BuiltinToolDeps<'a> {
     queue: SharedPromptQueue,
     dag: SharedDagBudget,
     agents: SharedAgentStore,
+    colleagues: crate::colleagues::SharedColleagueStore,
     sink: SharedResponseSink,
     memory_tools: MemoryToolDeps,
     todo_tools: TodoToolDeps,
@@ -484,6 +491,7 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.queue.clone(),
             deps.dag.clone(),
             deps.agents.clone(),
+            deps.colleagues.clone(),
             deps.sink.clone(),
         )))
         .with(Arc::new(GetSessionTool::new(deps.sessions.clone())))
@@ -695,6 +703,7 @@ pub async fn build_server(
     let scheduling_scheduler = ScheduledTaskScheduler::spawn(
         pieces.scheduled_tasks.clone(),
         pieces.queue.clone(),
+        pieces.colleagues.clone(),
         pieces.clock.clone(),
         cancel.clone(),
     );
@@ -790,6 +799,7 @@ pub async fn build_server(
                     queue: pieces.queue.clone(),
                     agents: pieces.agents.clone(),
                     sessions: pieces.sessions.clone(),
+                    colleagues: pieces.colleagues.clone(),
                     workspaces: workspaces.clone(),
                     identities: identities.clone(),
                     threads: threads_store.clone(),
@@ -844,6 +854,7 @@ pub async fn build_server(
         responses: pieces.responses,
         sessions: pieces.sessions,
         agents: pieces.agents,
+        colleagues: pieces.colleagues,
         dag: pieces.dag,
         budget,
         memory_store: pieces.memory_store.clone(),

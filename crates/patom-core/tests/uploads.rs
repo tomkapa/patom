@@ -122,6 +122,7 @@ impl UploadsHarness {
             responses,
             sessions,
             agents,
+            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),

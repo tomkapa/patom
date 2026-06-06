@@ -22,7 +22,7 @@ use patom::runtime::{
     SharedResponseSource, SharedThreadStream,
 };
 use patom::session::{PgSessionStore, SharedSessionStore};
-use patom::types::{Participant, Prompt};
+use patom::types::Prompt;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -95,6 +95,7 @@ impl PromptsHarness {
             responses,
             sessions,
             agents: agents.clone(),
+            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),
@@ -207,7 +208,7 @@ async fn post_json(
 /// `agent X is not a participant of session Y`, and the run errored out.
 #[sqlx::test]
 async fn followup_with_session_id_routes_to_session_agent(pool: PgPool) {
-    let h = PromptsHarness::new(pool).await;
+    let h = PromptsHarness::new(pool.clone()).await;
 
     // The session is bound to a non-default agent — exactly the DM scenario
     // that exposed the bug ("when I reply thread in thread detail in direct
@@ -220,7 +221,7 @@ async fn followup_with_session_id_routes_to_session_agent(pool: PgPool) {
         .queue
         .enqueue(NewPromptRequest {
             session: None,
-            sender: Participant::Human,
+            sender: common::pg::human_participant(&pool, h.seed.org_id, h.seed.user_id).await,
             receiver_agent_id: translator,
             parent_session: None,
             content: Prompt::try_from("hi").expect("prompt"),
@@ -251,7 +252,7 @@ async fn followup_with_session_id_routes_to_session_agent(pool: PgPool) {
 
     // Confirm the persisted row has receiver = translator, NOT the default.
     let row: (Uuid,) =
-        sqlx::query_as("SELECT receiver_agent_id FROM prompt_requests WHERE id = $1::uuid")
+        sqlx::query_as("SELECT rc.agent_id FROM prompt_requests pr JOIN colleagues rc ON rc.id = pr.receiver_colleague_id WHERE pr.id = $1::uuid")
             .bind(request_id_str)
             .fetch_one(&h.pool)
             .await
@@ -281,7 +282,7 @@ async fn followup_with_session_id_routes_to_session_agent(pool: PgPool) {
     assert_eq!(status, axum::http::StatusCode::ACCEPTED);
     let request_id_str = body["request_id"].as_str().expect("request_id");
     let row: (Uuid,) =
-        sqlx::query_as("SELECT receiver_agent_id FROM prompt_requests WHERE id = $1::uuid")
+        sqlx::query_as("SELECT rc.agent_id FROM prompt_requests pr JOIN colleagues rc ON rc.id = pr.receiver_colleague_id WHERE pr.id = $1::uuid")
             .bind(request_id_str)
             .fetch_one(&h.pool)
             .await
@@ -297,7 +298,7 @@ async fn followup_with_session_id_routes_to_session_agent(pool: PgPool) {
 /// only path the legacy behavior is still correct on.
 #[sqlx::test]
 async fn new_session_without_agent_id_uses_default(pool: PgPool) {
-    let h = PromptsHarness::new(pool).await;
+    let h = PromptsHarness::new(pool.clone()).await;
 
     let (status, body) = post_json(
         h.state.clone(),
@@ -313,7 +314,7 @@ async fn new_session_without_agent_id_uses_default(pool: PgPool) {
     let request_id_str = body["request_id"].as_str().expect("request_id");
 
     let row: (Uuid,) =
-        sqlx::query_as("SELECT receiver_agent_id FROM prompt_requests WHERE id = $1::uuid")
+        sqlx::query_as("SELECT rc.agent_id FROM prompt_requests pr JOIN colleagues rc ON rc.id = pr.receiver_colleague_id WHERE pr.id = $1::uuid")
             .bind(request_id_str)
             .fetch_one(&h.pool)
             .await
@@ -325,7 +326,7 @@ async fn new_session_without_agent_id_uses_default(pool: PgPool) {
 /// `POST /prompts` before any work is enqueued.
 #[sqlx::test]
 async fn over_budget_org_is_rejected_with_429(pool: PgPool) {
-    let h = PromptsHarness::new(pool).await;
+    let h = PromptsHarness::new(pool.clone()).await;
 
     // Cap the org at 1 micro-USD and record 1000 already spent this period.
     common::pg::set_budget(&h.pool, h.seed.org_id, Some(1), 8000).await;

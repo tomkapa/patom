@@ -26,7 +26,7 @@ use patom::provider::{
 use patom::runtime::RequestKindPayload;
 use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::tools::ToolRegistry;
-use patom::types::{Participant, Prompt};
+use patom::types::Prompt;
 use sqlx::PgPool;
 
 mod common;
@@ -117,13 +117,13 @@ async fn completed_turn_settles_its_cost(pool: PgPool) {
     let (agent, sessions) = budgeted_agent(&pool, provider);
 
     let session =
-        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
 
     agent
         .reply(
             session,
-            Participant::agent(seed.agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
             vec![Prompt::try_from("hello").expect("prompt")],
             request_id,
             patom::auth::Caller::new(seed.user_id, seed.org_id),
@@ -158,13 +158,13 @@ async fn over_cap_org_blocks_the_turn_before_the_provider(pool: PgPool) {
     let (agent, sessions) = budgeted_agent(&pool, provider);
 
     let session =
-        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
 
     let err = agent
         .reply(
             session,
-            Participant::agent(seed.agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
             vec![Prompt::try_from("hello").expect("prompt")],
             request_id,
             patom::auth::Caller::new(seed.user_id, seed.org_id),

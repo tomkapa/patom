@@ -15,7 +15,7 @@ use patom::runtime::{
     DagBudget, IdempotencyKey, NewPromptRequest, PgDagBudget, PgPromptQueue, PromptRequestId,
     WorkerId,
 };
-use patom::types::{Participant, Prompt};
+use patom::types::Prompt;
 use sqlx::PgPool;
 
 mod common;
@@ -27,13 +27,14 @@ fn queue(pool: &PgPool) -> Arc<PgPromptQueue> {
 
 async fn enqueue_root(
     q: &Arc<PgPromptQueue>,
+    sender: patom::types::Participant,
     agent_id: patom::agents::AgentId,
     org_id: patom::auth::OrgId,
     user_id: patom::auth::UserId,
 ) -> PromptRequestId {
     q.enqueue(NewPromptRequest {
         session: None,
-        sender: Participant::Human,
+        sender,
         receiver_agent_id: agent_id,
         parent_session: None,
         content: Prompt::try_from("hi").expect("prompt"),
@@ -53,7 +54,7 @@ async fn pending_row_keeps_dag_live(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let q = queue(&pool);
     let dag = PgDagBudget::new(pool.clone());
-    let root = enqueue_root(&q, seed.agent_id, seed.org_id, seed.user_id).await;
+    let root = enqueue_root(&q, common::pg::human_participant(&pool, seed.org_id, seed.user_id).await, seed.agent_id, seed.org_id, seed.user_id).await;
 
     assert!(
         !dag.quiescent(root).await.expect("query"),
@@ -66,7 +67,7 @@ async fn processing_row_keeps_dag_live(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let q = queue(&pool);
     let dag = PgDagBudget::new(pool.clone());
-    let root = enqueue_root(&q, seed.agent_id, seed.org_id, seed.user_id).await;
+    let root = enqueue_root(&q, common::pg::human_participant(&pool, seed.org_id, seed.user_id).await, seed.agent_id, seed.org_id, seed.user_id).await;
     // Claim moves the row from pending → processing without finishing it.
     let _ = q
         .claim_next_session(WorkerId::new())
@@ -84,7 +85,7 @@ async fn done_row_drains_dag(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let q = queue(&pool);
     let dag = PgDagBudget::new(pool.clone());
-    let root = enqueue_root(&q, seed.agent_id, seed.org_id, seed.user_id).await;
+    let root = enqueue_root(&q, common::pg::human_participant(&pool, seed.org_id, seed.user_id).await, seed.agent_id, seed.org_id, seed.user_id).await;
     let claim = q
         .claim_next_session(WorkerId::new())
         .await
@@ -116,7 +117,7 @@ async fn second_pending_row_still_blocks_quiescence(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let q = queue(&pool);
     let dag = PgDagBudget::new(pool.clone());
-    let root = enqueue_root(&q, seed.agent_id, seed.org_id, seed.user_id).await;
+    let root = enqueue_root(&q, common::pg::human_participant(&pool, seed.org_id, seed.user_id).await, seed.agent_id, seed.org_id, seed.user_id).await;
 
     // Claim & mark done the first row.
     let claim = q
@@ -130,7 +131,7 @@ async fn second_pending_row_still_blocks_quiescence(pool: PgPool) {
     let session = claim.session;
     q.enqueue(NewPromptRequest {
         session: Some(session),
-        sender: Participant::Human,
+        sender: common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
         receiver_agent_id: seed.agent_id,
         parent_session: None,
         content: Prompt::try_from("again").expect("prompt"),

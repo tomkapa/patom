@@ -18,13 +18,13 @@ use std::sync::Arc;
 use tracing::warn;
 
 use crate::agents::AgentId;
+use crate::colleagues::ColleagueId;
 use crate::memory::ContradictionEventId;
 use crate::provider::{
     ChatMessage, EmbeddingProvider, SharedEmbeddingProvider, UserContent, embed_one,
 };
 use crate::runtime::RequestKindPayload;
 use crate::session::{SessionId, SharedSessionStore};
-use crate::types::Participant;
 
 use super::composer::{MemorySection, compose_memory_section};
 use super::limits::CONTEXTUAL_TOP_K;
@@ -124,8 +124,12 @@ impl MemorySectionLoader {
                     .map_err(|e| MemoryError::Backend(e.to_string()))?;
                 let reserved = resolve_reserved_pair(&*store, contradiction).await?;
 
-                let viewer = Participant::Agent { agent_id: agent };
-                let opening = match sessions.snapshot(session, viewer).await {
+                // Resolve the agent's colleague_id via the session row so
+                // `snapshot`'s self-detection matches the right end. Cheaper
+                // than threading a `ColleagueStore` through the loader.
+                let viewer_colleague =
+                    agent_colleague_in_session(&sessions, session, agent).await?;
+                let opening = match sessions.snapshot(session, viewer_colleague).await {
                     Ok(snap) => first_user_text(&snap),
                     Err(e) => {
                         warn!(
@@ -258,4 +262,36 @@ async fn retrieve_contextual(
             Vec::new()
         }
     }
+}
+
+/// Resolve `agent`'s `ColleagueId` within `session` by inspecting the session
+/// participants and finding the side whose `agent_id` matches. The session
+/// row already stores the colleague_id; this avoids threading a separate
+/// `ColleagueStore` through the loader/AgentMemory plumbing for one lookup.
+async fn agent_colleague_in_session(
+    sessions: &SharedSessionStore,
+    session: SessionId,
+    agent: AgentId,
+) -> Result<ColleagueId, MemoryError> {
+    let (a, b) = sessions
+        .participants(session)
+        .await
+        .map_err(|e| MemoryError::Backend(format!("session participants: {e}")))?;
+    let candidate = if a.agent_id() == Some(agent) {
+        Some(a)
+    } else if b.agent_id() == Some(agent) {
+        Some(b)
+    } else {
+        None
+    };
+    let participant = candidate.ok_or_else(|| {
+        MemoryError::Backend(format!(
+            "agent {agent:?} is not a participant of session {session:?}"
+        ))
+    })?;
+    participant.colleague_id().ok_or_else(|| {
+        MemoryError::Backend(format!(
+            "agent participant in session {session:?} has no colleague_id"
+        ))
+    })
 }

@@ -43,12 +43,14 @@ impl ScheduledTaskScheduler {
     pub fn spawn(
         store: SharedScheduledTaskStore,
         queue: SharedPromptQueue,
+        colleagues: crate::colleagues::SharedColleagueStore,
         clock: SharedClock,
         parent: CancellationToken,
     ) -> Self {
         Self::spawn_with_cadence(
             store,
             queue,
+            colleagues,
             clock,
             scheduled_task_poll_interval(),
             Some(parent),
@@ -61,6 +63,7 @@ impl ScheduledTaskScheduler {
     pub fn spawn_with_cadence(
         store: SharedScheduledTaskStore,
         queue: SharedPromptQueue,
+        colleagues: crate::colleagues::SharedColleagueStore,
         clock: SharedClock,
         poll_interval: Duration,
         parent: Option<CancellationToken>,
@@ -68,6 +71,7 @@ impl ScheduledTaskScheduler {
         let inner = Arc::new(SchedulerInner {
             store,
             queue,
+            colleagues,
             clock,
             batch_limit: SCHEDULED_TASK_BATCH_LIMIT,
         });
@@ -87,6 +91,7 @@ impl ScheduledTaskScheduler {
 struct SchedulerInner {
     store: SharedScheduledTaskStore,
     queue: SharedPromptQueue,
+    colleagues: crate::colleagues::SharedColleagueStore,
     clock: SharedClock,
     batch_limit: usize,
 }
@@ -133,9 +138,14 @@ impl SchedulerInner {
         // `org_id` + `created_by_user_id` to `scheduled_tasks`, so the
         // scheduler no longer needs to JOIN through `agents` /
         // `org_members` at fire-time.
+        let human_colleague = self
+            .colleagues
+            .resolve_user(task.org_id, task.created_by_user_id)
+            .await
+            .map_err(|e| ScheduledTaskError::Backend(format!("resolve human colleague: {e}")))?;
         let req = NewPromptRequest::normal(
             None,
-            Participant::Human,
+            Participant::human(human_colleague, task.created_by_user_id),
             task.owner_agent_id,
             None,
             prompt,

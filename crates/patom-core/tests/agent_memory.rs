@@ -26,7 +26,6 @@ use patom::memory::{
 };
 use patom::prompts::Prompts;
 use patom::session::{PgSessionStore, SharedSessionStore};
-use patom::types::Participant;
 use sqlx::PgPool;
 
 mod common;
@@ -96,14 +95,14 @@ async fn assembles_core_then_role_in_order(pool: PgPool) {
     let clock: SharedClock = Arc::new(TestClock::new());
     let f = build_memory(&pool, &seed, clock);
 
-    let session = human_to_agent_session(
+    let session = human_to_agent_session(&pool, 
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
         seed.user_id,
     )
     .await;
-    let viewer = Participant::agent(seed.agent_id);
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
     let prompt = f
         .memory
         .system_prompt(
@@ -152,12 +151,12 @@ async fn date_section_sits_between_role_and_memory(pool: PgPool) {
         .expect("write");
 
     let session =
-        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+        human_to_agent_session(&pool, f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
     let prompt = f
         .memory
         .system_prompt(
             session,
-            Participant::agent(agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, agent_id).await,
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -195,7 +194,7 @@ async fn empty_memory_skips_memory_section(pool: PgPool) {
     let clock: SharedClock = Arc::new(TestClock::new());
     let f = build_memory(&pool, &seed, clock);
 
-    let session = human_to_agent_session(
+    let session = human_to_agent_session(&pool, 
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
@@ -206,7 +205,7 @@ async fn empty_memory_skips_memory_section(pool: PgPool) {
         .memory
         .system_prompt(
             session,
-            Participant::agent(seed.agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -238,12 +237,12 @@ async fn renders_memory_section_after_role(pool: PgPool) {
         .expect("write");
 
     let session =
-        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+        human_to_agent_session(&pool, f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
     let prompt = f
         .memory
         .system_prompt(
             session,
-            Participant::agent(agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, agent_id).await,
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -274,8 +273,8 @@ async fn frozen_during_session_returns_identical_prompt(pool: PgPool) {
     let f = build_memory(&pool, &seed, clock);
     let agent_id = seed.agent_id;
     let session =
-        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
-    let viewer = Participant::agent(agent_id);
+        human_to_agent_session(&pool, f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, agent_id).await;
 
     let first = f
         .memory
@@ -341,13 +340,13 @@ async fn resolve_handle_round_trips_to_memory_id(pool: PgPool) {
         .expect("write");
 
     let session =
-        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+        human_to_agent_session(&pool, f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
     // Compose the section so the handle map is populated.
     let _ = f
         .memory
         .system_prompt(
             session,
-            Participant::agent(agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, agent_id).await,
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -435,14 +434,14 @@ async fn org_rule_block_sits_between_core_and_role(pool: PgPool) {
     let rule = OrganizationRule::try_from("Cite file:line on every claim.").expect("valid");
     let f = build_memory_with_rule(&pool, &seed, clock, Some(rule.clone()));
 
-    let session = human_to_agent_session(
+    let session = human_to_agent_session(&pool, 
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
         seed.user_id,
     )
     .await;
-    let viewer = Participant::agent(seed.agent_id);
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
     let prompt = f
         .memory
         .system_prompt(
@@ -475,14 +474,14 @@ async fn org_rule_block_omitted_when_unset(pool: PgPool) {
     let clock: SharedClock = Arc::new(TestClock::new());
     let f = build_memory_with_rule(&pool, &seed, clock, None);
 
-    let session = human_to_agent_session(
+    let session = human_to_agent_session(&pool, 
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
         seed.user_id,
     )
     .await;
-    let viewer = Participant::agent(seed.agent_id);
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
     let prompt = f
         .memory
         .system_prompt(

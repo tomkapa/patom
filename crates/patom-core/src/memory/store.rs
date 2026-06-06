@@ -71,6 +71,12 @@ pub enum MemoryStoreError {
     #[error("memory store db error: {0}")]
     Db(#[from] sqlx::Error),
 
+    /// Cross-subsystem backend failure surfaced by callers that wrap the store
+    /// (e.g. librarian resolving a colleague during enqueue). Distinct from
+    /// `Db` so the source string carries the upstream subsystem's identity.
+    #[error("memory store backend: {0}")]
+    Backend(String),
+
     /// Embedding provider call failed during a mutation. `MemoryStore::apply`
     /// propagates this so a missing embedding never produces a row that
     /// retrieval cannot match.

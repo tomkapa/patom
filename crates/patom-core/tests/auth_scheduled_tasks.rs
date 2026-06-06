@@ -46,6 +46,7 @@ struct AuthSchedHarness {
     agents: SharedAgentStore,
     store: SharedScheduledTaskStore,
     queue: SharedPromptQueue,
+    colleagues: patom::colleagues::SharedColleagueStore,
     clock: patom::clock::SharedClock,
     default_agent_id: AgentId,
     default_org_id: OrgId,
@@ -60,11 +61,14 @@ impl AuthSchedHarness {
         let store: SharedScheduledTaskStore =
             Arc::new(PgScheduledTaskStore::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
+        let colleagues: patom::colleagues::SharedColleagueStore =
+            Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
         Self {
             pool: pool.clone(),
             agents,
             store,
             queue,
+            colleagues,
             clock,
             default_agent_id: seed.agent_id,
             default_org_id: seed.org_id,
@@ -262,6 +266,7 @@ async fn scheduler_fires_both_orgs_in_one_privileged_tick(pool: PgPool) {
     let scheduler = ScheduledTaskScheduler::spawn_with_cadence(
         h.store.clone(),
         h.queue.clone(),
+        h.colleagues.clone(),
         h.clock.clone(),
         Duration::from_millis(50),
         None,

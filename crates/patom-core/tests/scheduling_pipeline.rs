@@ -25,7 +25,7 @@ use patom::scheduling::{
     ScheduledTaskName, ScheduledTaskScheduler, ScheduledTaskState, SharedScheduledTaskStore,
     TimeOfDay, Timezone, Weekdays,
 };
-use patom::types::{Participant, Prompt};
+use patom::types::Prompt;
 use sqlx::PgPool;
 
 mod common;
@@ -35,10 +35,18 @@ struct Fixture {
     pool: PgPool,
     store: SharedScheduledTaskStore,
     queue: SharedPromptQueue,
+    colleagues: patom::colleagues::SharedColleagueStore,
     clock: SharedClock,
     default_agent_id: patom::agents::AgentId,
     default_org_id: patom::auth::OrgId,
     default_user_id: patom::auth::UserId,
+    default_user_colleague_id: patom::colleagues::ColleagueId,
+}
+
+impl Fixture {
+    fn default_human_participant(&self) -> patom::types::Participant {
+        patom::types::Participant::human(self.default_user_colleague_id, self.default_user_id)
+    }
 }
 
 async fn fresh(pool: PgPool) -> Fixture {
@@ -47,14 +55,22 @@ async fn fresh(pool: PgPool) -> Fixture {
     let store: SharedScheduledTaskStore =
         Arc::new(PgScheduledTaskStore::new(pool.clone(), clock.clone()));
     let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
+    let colleagues: patom::colleagues::SharedColleagueStore =
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
+    let default_user_colleague_id =
+        patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+            .await
+            .expect("user colleague");
     Fixture {
         pool,
         store,
         queue,
+        colleagues,
         clock,
         default_agent_id: seed.agent_id,
         default_org_id: seed.org_id,
         default_user_id: seed.user_id,
+        default_user_colleague_id,
     }
 }
 
@@ -97,6 +113,7 @@ async fn scheduler_fires_due_once_task_and_marks_done(pool: PgPool) {
     let scheduler = ScheduledTaskScheduler::spawn_with_cadence(
         f.store.clone(),
         f.queue.clone(),
+        f.colleagues.clone(),
         f.clock.clone(),
         Duration::from_millis(50),
         None,
@@ -138,8 +155,11 @@ async fn scheduler_fires_due_once_task_and_marks_done(pool: PgPool) {
     // And its sender_kind is `human` (the scheduler enqueues as if a
     // human had submitted the prompt — see app.rs system-prompt point 9).
     let (sender_kind, receiver_agent_id, status): (String, uuid::Uuid, String) = sqlx::query_as(
-        "SELECT sender_kind, receiver_agent_id, status FROM prompt_requests \
-         WHERE idempotency_key LIKE $1 LIMIT 1",
+        "SELECT sc.kind, rc.agent_id, pr.status \
+         FROM prompt_requests pr \
+         JOIN colleagues sc ON sc.id = pr.sender_colleague_id \
+         JOIN colleagues rc ON rc.id = pr.receiver_colleague_id \
+         WHERE pr.idempotency_key LIKE $1 LIMIT 1",
     )
     .bind(format!("sched-{task_id}-%"))
     .fetch_one(&f.pool)
@@ -177,6 +197,7 @@ async fn scheduler_advances_recurring_task_after_fire(pool: PgPool) {
     let scheduler = ScheduledTaskScheduler::spawn_with_cadence(
         f.store.clone(),
         f.queue.clone(),
+        f.colleagues.clone(),
         f.clock.clone(),
         Duration::from_millis(50),
         None,
@@ -260,7 +281,7 @@ async fn scheduler_idempotent_on_repeated_ticks_for_same_fire(pool: PgPool) {
     let make_req = |k: IdempotencyKey| {
         NewPromptRequest::normal(
             None,
-            Participant::Human,
+            f.default_human_participant(),
             f.default_agent_id,
             None,
             Prompt::try_from(task.prompt.as_str().to_string()).expect("p"),

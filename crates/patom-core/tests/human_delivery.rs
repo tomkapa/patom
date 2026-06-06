@@ -23,7 +23,7 @@ use patom::provider::{
 };
 use patom::runtime::queue::PromptQueue as _;
 use patom::runtime::{IdempotencyKey, NewPromptRequest, ResponseChunk, StreamEvent};
-use patom::types::{Participant, Prompt, ToolName};
+use patom::types::{Prompt, ToolName};
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -68,7 +68,7 @@ async fn send_message_human_publishes_agent_message_on_root_stream(pool: PgPool)
         .queue
         .enqueue(NewPromptRequest {
             session: None,
-            sender: Participant::Human,
+            sender: h.default_human_participant(),
             receiver_agent_id: h.default_agent_id,
             parent_session: None,
             content: Prompt::try_from("ping the agent").expect("prompt"),
@@ -125,7 +125,7 @@ async fn send_message_human_keeps_tool_call_and_result_adjacent(pool: PgPool) {
         .queue
         .enqueue(NewPromptRequest {
             session: None,
-            sender: Participant::Human,
+            sender: h.default_human_participant(),
             receiver_agent_id: h.default_agent_id,
             parent_session: None,
             content: Prompt::try_from("ping the agent").expect("prompt"),
@@ -143,10 +143,10 @@ async fn send_message_human_keeps_tool_call_and_result_adjacent(pool: PgPool) {
     // snapshot the session — otherwise we may inspect a half-written log.
     let _ = drain_chunks(&h, request_id, Duration::from_secs(8)).await;
 
-    let viewer = Participant::agent(h.default_agent_id);
+    let viewer = h.default_agent_participant();
     let messages = h
         .sessions
-        .snapshot(session_id, viewer)
+        .snapshot(session_id, viewer.colleague_id().expect("real colleague"))
         .await
         .expect("snapshot");
 
@@ -200,7 +200,7 @@ async fn followup_prompt_publishes_agent_message_on_open_sink(pool: PgPool) {
         .queue
         .enqueue(NewPromptRequest {
             session: None,
-            sender: Participant::Human,
+            sender: h.default_human_participant(),
             receiver_agent_id: h.default_agent_id,
             parent_session: None,
             content: Prompt::try_from("first prompt").expect("prompt"),
@@ -218,7 +218,7 @@ async fn followup_prompt_publishes_agent_message_on_open_sink(pool: PgPool) {
         .queue
         .enqueue(NewPromptRequest {
             session: Some(session_id),
-            sender: Participant::Human,
+            sender: h.default_human_participant(),
             receiver_agent_id: h.default_agent_id,
             parent_session: None,
             content: Prompt::try_from("second prompt").expect("prompt"),

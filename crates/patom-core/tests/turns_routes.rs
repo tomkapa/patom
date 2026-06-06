@@ -106,6 +106,7 @@ impl Harness {
             responses,
             sessions,
             agents: agents.clone(),
+            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),
@@ -336,10 +337,10 @@ async fn http_get(
 /// response carries the seeded data.
 #[sqlx::test]
 async fn fetches_turn_detail_with_reasoning_and_tool_calls(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    let h = Harness::new(pool.clone()).await;
     let server = h.seed_mcp(h.seed.org_id, h.seed.user_id, "notion").await;
 
-    let session = human_to_agent_session(
+    let session = human_to_agent_session(&pool, 
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -366,9 +367,16 @@ async fn fetches_turn_detail_with_reasoning_and_tool_calls(pool: PgPool) {
         .append(
             session,
             patom::types::MessageSender::Agent {
+                colleague_id: patom::colleagues::resolve_agent_colleague(
+                    &pool,
+                    h.seed.org_id,
+                    h.seed.agent_id,
+                )
+                .await
+                .expect("agent colleague"),
                 agent_id: h.seed.agent_id,
             },
-            patom::types::Participant::Human,
+            common::pg::human_participant(&pool, h.seed.org_id, h.seed.user_id).await,
             ChatMessage::Assistant(vec![
                 AssistantContent::Reasoning("thinking step 1".into()),
                 AssistantContent::Text("hello".into()),
@@ -432,9 +440,9 @@ async fn fetches_turn_detail_with_reasoning_and_tool_calls(pool: PgPool) {
 /// empty collections — not a 500.
 #[sqlx::test]
 async fn fetches_turn_detail_with_empty_collections(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    let h = Harness::new(pool.clone()).await;
 
-    let session = human_to_agent_session(
+    let session = human_to_agent_session(&pool, 
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -468,8 +476,8 @@ async fn fetches_turn_detail_with_empty_collections(pool: PgPool) {
 /// null `mcp_server_catalog_id` instead of dropping it.
 #[sqlx::test]
 async fn keeps_tool_calls_without_mcp_server(pool: PgPool) {
-    let h = Harness::new(pool).await;
-    let session = human_to_agent_session(
+    let h = Harness::new(pool.clone()).await;
+    let session = human_to_agent_session(&pool, 
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -519,7 +527,7 @@ async fn keeps_tool_calls_without_mcp_server(pool: PgPool) {
 /// through the 5xx auth bucket as it did before the Db variant split.
 #[sqlx::test]
 async fn returns_404_for_unknown_request(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    let h = Harness::new(pool.clone()).await;
     let stranger = TurnMetricsId::new();
 
     let uri = format!("/api/turns/{}", stranger.as_uuid());
@@ -532,7 +540,7 @@ async fn returns_404_for_unknown_request(pool: PgPool) {
 /// can't be checked by sneaking a foreign id into the URL.
 #[sqlx::test]
 async fn returns_404_for_cross_org_request(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    let h = Harness::new(pool.clone()).await;
     let foreign = seed_principal(&h.state.pool, &h.state.jwt).await;
 
     // Seed a request in the *foreign* org, then ask for it with the
@@ -554,7 +562,7 @@ async fn returns_404_for_cross_org_request(pool: PgPool) {
         .await
         .expect("create foreign agent")
         .id;
-    let foreign_session = human_to_agent_session(
+    let foreign_session = human_to_agent_session(&pool, 
         h.state.sessions.as_ref(),
         foreign_agent,
         foreign.org_id,
@@ -592,8 +600,8 @@ async fn returns_404_for_cross_org_request(pool: PgPool) {
 /// only ever surface one turn).
 #[sqlx::test]
 async fn fetches_distinct_detail_per_turn_in_multi_turn_request(pool: PgPool) {
-    let h = Harness::new(pool).await;
-    let session = human_to_agent_session(
+    let h = Harness::new(pool.clone()).await;
+    let session = human_to_agent_session(&pool, 
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -653,8 +661,8 @@ async fn fetches_distinct_detail_per_turn_in_multi_turn_request(pool: PgPool) {
 /// `turn_metrics.id` so the FE can key rows and open each turn's drawer.
 #[sqlx::test]
 async fn list_returns_one_row_per_turn_with_distinct_ids(pool: PgPool) {
-    let h = Harness::new(pool).await;
-    let session = human_to_agent_session(
+    let h = Harness::new(pool.clone()).await;
+    let session = human_to_agent_session(&pool, 
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -720,8 +728,8 @@ async fn list_returns_one_row_per_turn_with_distinct_ids(pool: PgPool) {
 /// timestamp-only cursor would return zero.
 #[sqlx::test]
 async fn turns_cursor_breaks_timestamp_ties_by_id(pool: PgPool) {
-    let h = Harness::new(pool).await;
-    let session = human_to_agent_session(
+    let h = Harness::new(pool.clone()).await;
+    let session = human_to_agent_session(&pool, 
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -781,7 +789,7 @@ async fn turns_cursor_breaks_timestamp_ties_by_id(pool: PgPool) {
 /// `require_principal` middleware.
 #[sqlx::test]
 async fn returns_401_without_session(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    let h = Harness::new(pool.clone()).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(

@@ -42,7 +42,10 @@ async fn fresh_agent(pool: &PgPool, seed: &common::pg::Seed, name: &str) -> Part
         })
         .await
         .expect("create agent");
-    Participant::agent(record.id)
+    let cid = patom::colleagues::resolve_agent_colleague(pool, seed.org_id, record.id)
+        .await
+        .expect("agent colleague");
+    Participant::agent(cid, record.id)
 }
 
 #[sqlx::test]
@@ -50,8 +53,8 @@ async fn same_pair_same_dag_returns_same_session(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
     let root = PromptRequestId::new();
-    let a = Participant::Human;
-    let b = Participant::agent(seed.agent_id);
+    let a = common::pg::human_participant(&pool, seed.org_id, seed.user_id).await;
+    let b = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
 
     let first = store
         .resolve_or_create_for_pair(root, a, b, None, seed.org_id, seed.user_id)
@@ -71,8 +74,8 @@ async fn reversed_pair_canonicalises_to_same_session(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
     let root = PromptRequestId::new();
-    let h = Participant::Human;
-    let a = Participant::agent(seed.agent_id);
+    let h = common::pg::human_participant(&pool, seed.org_id, seed.user_id).await;
+    let a = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
 
     let forward = store
         .resolve_or_create_for_pair(root, h, a, None, seed.org_id, seed.user_id)
@@ -89,7 +92,7 @@ async fn reversed_pair_canonicalises_to_same_session(pool: PgPool) {
 async fn different_dags_get_distinct_sessions(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
-    let pair = (Participant::Human, Participant::agent(seed.agent_id));
+    let pair = (common::pg::human_participant(&pool, seed.org_id, seed.user_id).await, common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await);
 
     let dag_a = PromptRequestId::new();
     let dag_b = PromptRequestId::new();
@@ -112,13 +115,13 @@ async fn parent_session_is_recorded(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
     let root = PromptRequestId::new();
-    let agent_a = Participant::agent(seed.agent_id);
+    let agent_a = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
     let agent_b = fresh_agent(&pool, &seed, "second").await;
 
     let parent_id = store
         .resolve_or_create_for_pair(
             root,
-            Participant::Human,
+            common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
             agent_a,
             None,
             seed.org_id,
@@ -152,12 +155,12 @@ async fn participants_are_returned_in_canonical_order(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
     let root = PromptRequestId::new();
-    let agent_p = Participant::agent(seed.agent_id);
+    let agent_p = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
 
     let id = store
         .resolve_or_create_for_pair(
             root,
-            Participant::Human,
+            common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
             agent_p,
             None,
             seed.org_id,
@@ -167,7 +170,7 @@ async fn participants_are_returned_in_canonical_order(pool: PgPool) {
         .expect("session");
     let (a, b) = store.participants(id).await.expect("participants");
     assert_eq!(a, agent_p);
-    assert_eq!(b, Participant::Human);
+    assert_eq!(b, common::pg::human_participant(&pool, seed.org_id, seed.user_id).await);
 }
 
 #[sqlx::test]
@@ -178,8 +181,8 @@ async fn root_request_id_round_trips(pool: PgPool) {
     let id = store
         .resolve_or_create_for_pair(
             root,
-            Participant::Human,
-            Participant::agent(seed.agent_id),
+            common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
             None,
             seed.org_id,
             seed.user_id,
@@ -198,8 +201,8 @@ async fn self_session_is_rejected(pool: PgPool) {
     let err = store
         .resolve_or_create_for_pair(
             root,
-            Participant::agent(seed.agent_id),
-            Participant::agent(seed.agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
             None,
             seed.org_id,
             seed.user_id,

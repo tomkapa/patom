@@ -102,6 +102,9 @@ pub struct SendMessageTool {
     queue: SharedPromptQueue,
     dag: SharedDagBudget,
     agents: SharedAgentStore,
+    /// Resolves Human/Agent receivers to colleague-backed `Participant`s for
+    /// the new schema (Stage 3).
+    colleagues: crate::colleagues::SharedColleagueStore,
     /// Publish-side handle on the response broadcast hub. Human-receiver
     /// deliveries publish a [`ResponseChunk::AgentMessage`] on the root
     /// request's stream so the SSE client sees the agent's message as a
@@ -143,6 +146,7 @@ impl SendMessageTool {
         queue: SharedPromptQueue,
         dag: SharedDagBudget,
         agents: SharedAgentStore,
+        colleagues: crate::colleagues::SharedColleagueStore,
         sink: SharedResponseSink,
     ) -> Self {
         let name = ToolName::try_from(TOOL_NAME).expect("invariant: send_message is a valid name");
@@ -184,6 +188,7 @@ impl SendMessageTool {
             queue,
             dag,
             agents,
+            colleagues,
             sink,
         }
     }
@@ -226,7 +231,7 @@ impl SendMessageTool {
             .agent_id()
             .expect("invariant: viewer guard above rejects non-agent callers");
         let receiver = self
-            .resolve_receiver(viewer_agent_id, input.receiver)
+            .resolve_receiver(viewer_agent_id, input.receiver, ctx)
             .await?;
 
         // Self-message would create a one-party session: representationally
@@ -255,9 +260,23 @@ impl SendMessageTool {
         &self,
         viewer: crate::agents::AgentId,
         raw: SendMessageReceiver,
+        ctx: &ToolCallContext,
     ) -> Result<Participant, ToolError> {
         let name = match raw {
-            SendMessageReceiver::Human => return Ok(Participant::Human),
+            SendMessageReceiver::Human => {
+                // The root human's colleague is resolved via `(org_id, acting_user_id)`
+                // — the tool context's acting_user is the DAG-root human under
+                // whose authority every send_message runs.
+                let cid = self
+                    .colleagues
+                    .resolve_user(ctx.org_id, ctx.acting_user_id)
+                    .await
+                    .map_err(|e| {
+                        set_outcome("backend_error");
+                        ToolError::Backend(format!("send_message: resolve human colleague: {e}"))
+                    })?;
+                return Ok(Participant::human(cid, ctx.acting_user_id));
+            }
             SendMessageReceiver::Agent { name } => name,
         };
         let record = self
@@ -276,9 +295,18 @@ impl SendMessageTool {
                     ToolError::Backend(format!("send_message: agent lookup: {err}"))
                 }
             })?;
-        Ok(Participant::Agent {
-            agent_id: record.id,
-        })
+        // Resolve the agent's colleague_id in its own org. The agent record
+        // carries org_id, so we use that — the directory partial-unique on
+        // `(org_id, agent_id)` guarantees one row per agent.
+        let cid = self
+            .colleagues
+            .resolve_agent(record.org_id, record.id)
+            .await
+            .map_err(|e| {
+                set_outcome("backend_error");
+                ToolError::Backend(format!("send_message: resolve agent colleague: {e}"))
+            })?;
+        Ok(Participant::agent(cid, record.id))
     }
 
     /// Opening framing — only on a freshly-minted receiver session, and only
@@ -298,9 +326,13 @@ impl SendMessageTool {
         if trimmed.is_empty() {
             return Ok(());
         }
+        // §6: receiver is never System here (System is rejected upstream).
+        let receiver_colleague = receiver.colleague_id().ok_or_else(|| {
+            ToolError::Backend("send_message: opening-note receiver missing colleague".to_string())
+        })?;
         let snapshot = self
             .sessions
-            .snapshot(receiver_session, receiver)
+            .snapshot(receiver_session, receiver_colleague)
             .await
             .map_err(|e| ToolError::Backend(format!("send_message: snapshot failed: {e}")))?;
         if !snapshot.is_empty() {
@@ -405,7 +437,7 @@ impl SendMessageTool {
         // which OpenAI rejects. The cross-session human path (e.g. a
         // descendant agent first reaching the human) still needs the append
         // because the caller's tool_call lives in a different session.
-        if matches!(receiver, Participant::Human) && receiver_session != ctx.session_id {
+        if receiver.is_human() && receiver_session != ctx.session_id {
             self.sessions
                 .append_for_user(
                     ctx.acting_user_id,
@@ -473,11 +505,11 @@ impl SendMessageTool {
         // request's stream and is non-blocking (no queue row). Agent
         // delivery enqueues a `prompt_requests` row for the worker.
         match receiver {
-            Participant::Human => {
+            Participant::Human { .. } => {
                 self.publish_to_human(ctx, receiver_session, content.as_str())
                     .await
             }
-            Participant::Agent { agent_id } => {
+            Participant::Agent { agent_id, .. } => {
                 self.enqueue_for_agent(ctx, receiver_session, agent_id, content, tenancy)
                     .await
             }

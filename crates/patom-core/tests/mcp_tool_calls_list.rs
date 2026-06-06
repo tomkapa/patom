@@ -90,6 +90,7 @@ impl Harness {
             responses,
             sessions,
             agents: agents.clone(),
+            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),
@@ -258,11 +259,11 @@ async fn http_get(
 
 #[sqlx::test]
 async fn lists_tool_calls_for_server_with_agent_name_and_error_message(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    let h = Harness::new(pool.clone()).await;
     let server = h.seed_mcp(h.org_id, h.user_id, "primary").await;
 
     let session =
-        human_to_agent_session(h.state.sessions.as_ref(), h.agent_id, h.org_id, h.user_id).await;
+        human_to_agent_session(&pool, h.state.sessions.as_ref(), h.agent_id, h.org_id, h.user_id).await;
     let request = seed_prompt_request(&h.state.pool, session, h.agent_id, h.org_id).await;
 
     let now = Utc::now();
@@ -333,10 +334,10 @@ async fn lists_tool_calls_for_server_with_agent_name_and_error_message(pool: PgP
 
 #[sqlx::test]
 async fn cursor_pagination_walks_backward_in_time(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    let h = Harness::new(pool.clone()).await;
     let server = h.seed_mcp(h.org_id, h.user_id, "paged").await;
     let session =
-        human_to_agent_session(h.state.sessions.as_ref(), h.agent_id, h.org_id, h.user_id).await;
+        human_to_agent_session(&pool, h.state.sessions.as_ref(), h.agent_id, h.org_id, h.user_id).await;
     let request = seed_prompt_request(&h.state.pool, session, h.agent_id, h.org_id).await;
 
     let base = Utc::now();
@@ -403,7 +404,7 @@ async fn cursor_pagination_walks_backward_in_time(pool: PgPool) {
 
 #[sqlx::test]
 async fn cross_org_server_returns_404(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    let h = Harness::new(pool.clone()).await;
     // Seed the row under a *different* org than `h.primary`.
     let foreign = seed_principal(&h.state.pool, &h.state.jwt).await;
     let server = h.seed_mcp(foreign.org_id, foreign.user_id, "theirs").await;
@@ -415,7 +416,7 @@ async fn cross_org_server_returns_404(pool: PgPool) {
 
 #[sqlx::test]
 async fn limit_above_cap_is_clamped(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    let h = Harness::new(pool.clone()).await;
     let server = h.seed_mcp(h.org_id, h.user_id, "capped").await;
     // No rows seeded — empty list is fine. We're asserting the parser
     // accepts a large `limit` (clamped by the handler) instead of 4xx-ing.
@@ -427,7 +428,7 @@ async fn limit_above_cap_is_clamped(pool: PgPool) {
 
 #[sqlx::test]
 async fn unauthenticated_request_returns_401(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    let h = Harness::new(pool.clone()).await;
     let app = router(h.state.clone());
     let res = app
         .oneshot(

@@ -93,7 +93,7 @@ async fn setup_session_and_request(
     let sessions: SharedSessionStore =
         Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
     let session =
-        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
     let request_id = seed_prompt_request(pool, session, seed.agent_id, seed.org_id).await;
     (session, request_id)
 }

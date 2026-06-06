@@ -63,7 +63,7 @@ use patom::runtime::{
 use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::tools::system::SendMessageTool;
 use patom::tools::{ToolBox, ToolRegistry};
-use patom::types::{Participant, Prompt, ToolName};
+use patom::types::{Prompt, ToolName};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 
@@ -216,12 +216,15 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
     let model = Model::try_from("test-model").expect("catalog");
 
+    let colleagues: patom::colleagues::SharedColleagueStore =
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
     let tool_registry = ToolRegistry::builder()
         .with(Arc::new(SendMessageTool::new(
             sessions.clone(),
             queue.clone(),
             dag.clone(),
             agent_store.clone(),
+            colleagues.clone(),
             sink.clone(),
         )))
         .build();
@@ -319,7 +322,7 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
     let outcome = queue
         .enqueue(NewPromptRequest {
             session: None,
-            sender: Participant::Human,
+            sender: common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
             receiver_agent_id: coordinator_id,
             parent_session: None,
             content: Prompt::try_from("translate 'hello' to French please").expect("prompt"),

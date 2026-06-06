@@ -17,7 +17,7 @@ use patom::runtime::{
     ResponseChunk, ResponseSink as _, ResponseSource as _, StreamEvent,
 };
 use patom::session::{PgSessionStore, SessionId};
-use patom::types::{Participant, Prompt};
+use patom::types::Prompt;
 use sqlx::PgPool;
 
 mod common;
@@ -32,7 +32,7 @@ async fn stage_request(
     agent_id: AgentId,
 ) -> (SessionId, PromptRequestId) {
     let session_store = PgSessionStore::new(pool.clone(), clock.clone());
-    let session = human_to_agent_session(&session_store, agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(&pool, &session_store, agent_id, seed.org_id, seed.user_id).await;
 
     let queue = Arc::new(PgPromptQueue::with_caps(
         pool.clone(),
@@ -45,7 +45,7 @@ async fn stage_request(
     let id = queue
         .enqueue(NewPromptRequest {
             session: Some(session),
-            sender: Participant::Human,
+            sender: common::pg::human_participant(pool, seed.org_id, seed.user_id).await,
             receiver_agent_id: agent_id,
             parent_session: None,
             content: Prompt::try_from("hi").expect("prompt"),

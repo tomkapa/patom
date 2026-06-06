@@ -377,10 +377,14 @@ async fn fetch_item(
     // `GET /threads/{root}/stream` gate which runs `begin_as`
     // before subscribing.
     let mut tx = crate::auth::begin_privileged(pool).await?;
+    // `receiver_agent_id` is joined out of the receiver colleague — the
+    // prompt_requests table only stores `receiver_colleague_id` after
+    // migration 59.
     let row: Option<(serde_json::Value, AgentId)> = sqlx::query_as(
-        "SELECT prc.payload, pr.receiver_agent_id
+        "SELECT prc.payload, rc.agent_id
          FROM prompt_response_chunks prc
          JOIN prompt_requests pr ON pr.id = prc.request_id
+         JOIN colleagues rc ON rc.id = pr.receiver_colleague_id
          WHERE prc.request_id = $1 AND prc.seq = $2",
     )
     .bind(payload.request_id)
