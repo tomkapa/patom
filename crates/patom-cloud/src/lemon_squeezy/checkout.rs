@@ -133,6 +133,13 @@ mod tests {
             *self.seen.lock().expect("lock") = Some(req);
             Ok("https://checkout.example/abc".to_string())
         }
+        async fn get_subscription(
+            &self,
+            _id: &super::super::types::LsSubscriptionId,
+        ) -> Result<super::super::client::RemoteSubscription, LemonSqueezyError> {
+            // Not exercised by the checkout tests.
+            Err(LemonSqueezyError::Upstream { status: 501 })
+        }
     }
 
     fn config() -> LemonSqueezyConfig {

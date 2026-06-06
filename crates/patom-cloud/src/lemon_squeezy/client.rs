@@ -6,6 +6,7 @@
 //! every call with a timeout (§5).
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use patom::auth::OrgId;
 use patom::types::SecretString;
 use reqwest::Client;
@@ -13,7 +14,7 @@ use serde::Deserialize;
 
 use super::error::LemonSqueezyError;
 use super::limits::LS_API_TIMEOUT;
-use super::types::LsVariantId;
+use super::types::{LsCustomerId, LsSubscriptionId, LsVariantId, SubscriptionStatus};
 
 /// Default Lemon Squeezy API base. Overridable (sandbox / tests) at construction.
 pub const LEMON_SQUEEZY_API_BASE: &str = "https://api.lemonsqueezy.com";
@@ -31,7 +32,17 @@ pub struct CheckoutCreate {
     pub redirect_url: Option<String>,
 }
 
-/// The Lemon Squeezy checkout API.
+/// A subscription's current state as read back from the Lemon Squeezy API —
+/// the fields reconciliation refreshes when a webhook was missed.
+#[derive(Debug, Clone)]
+pub struct RemoteSubscription {
+    pub variant_id: Option<LsVariantId>,
+    pub customer_id: Option<LsCustomerId>,
+    pub status: SubscriptionStatus,
+    pub current_period_end: Option<DateTime<Utc>>,
+}
+
+/// The Lemon Squeezy REST API (checkout creation + subscription read).
 #[async_trait]
 pub trait LsCheckoutClient: std::fmt::Debug + Send + Sync {
     /// Create a hosted checkout and return its URL.
@@ -40,6 +51,16 @@ pub trait LsCheckoutClient: std::fmt::Debug + Send + Sync {
     /// [`LemonSqueezyError::Http`] on transport failure or
     /// [`LemonSqueezyError::Upstream`] on a non-success status.
     async fn create_checkout(&self, req: CheckoutCreate) -> Result<String, LemonSqueezyError>;
+
+    /// Fetch a subscription's current state (reconciliation backfill).
+    ///
+    /// # Errors
+    /// [`LemonSqueezyError::Http`] / [`LemonSqueezyError::Upstream`] on the API
+    /// call, or [`LemonSqueezyError::Parse`] if the returned status is unknown.
+    async fn get_subscription(
+        &self,
+        id: &LsSubscriptionId,
+    ) -> Result<RemoteSubscription, LemonSqueezyError>;
 }
 
 /// Cheap-clone handle to a checkout client.
@@ -127,4 +148,71 @@ impl LsCheckoutClient for HttpLemonSqueezyClient {
         let parsed: CheckoutResponse = response.json().await?;
         Ok(parsed.data.attributes.url)
     }
+
+    async fn get_subscription(
+        &self,
+        id: &LsSubscriptionId,
+    ) -> Result<RemoteSubscription, LemonSqueezyError> {
+        let response = self
+            .http
+            .get(format!(
+                "{}/v1/subscriptions/{}",
+                self.base_url,
+                id.as_str()
+            ))
+            .header("Authorization", format!("Bearer {}", self.api_key.expose()))
+            .header("Accept", "application/vnd.api+json")
+            .timeout(LS_API_TIMEOUT)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(LemonSqueezyError::Upstream {
+                status: status.as_u16(),
+            });
+        }
+        let parsed: SubscriptionResponse = response.json().await?;
+        let attrs = parsed.data.attributes;
+        let sub_status = SubscriptionStatus::parse(&attrs.status).ok_or_else(|| {
+            LemonSqueezyError::Parse(patom::types::ParseError::Malformed {
+                field: "subscription.status",
+                detail: "unknown Lemon Squeezy status",
+            })
+        })?;
+        Ok(RemoteSubscription {
+            variant_id: attrs
+                .variant_id
+                .map(|v| LsVariantId::try_from(v.to_string()))
+                .transpose()?,
+            customer_id: attrs
+                .customer_id
+                .map(|c| LsCustomerId::try_from(c.to_string()))
+                .transpose()?,
+            status: sub_status,
+            current_period_end: attrs.renews_at.or(attrs.ends_at),
+        })
+    }
+}
+
+/// Minimal slice of the JSON:API subscription response we read.
+#[derive(Deserialize)]
+struct SubscriptionResponse {
+    data: SubscriptionResponseData,
+}
+#[derive(Deserialize)]
+struct SubscriptionResponseData {
+    attributes: SubscriptionResponseAttrs,
+}
+#[derive(Deserialize)]
+struct SubscriptionResponseAttrs {
+    status: String,
+    #[serde(default)]
+    variant_id: Option<i64>,
+    #[serde(default)]
+    customer_id: Option<i64>,
+    #[serde(default)]
+    renews_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    ends_at: Option<DateTime<Utc>>,
 }

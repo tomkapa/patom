@@ -16,18 +16,23 @@ pub mod lifecycle;
 pub mod limits;
 pub mod payload;
 pub mod pg_store;
+pub mod reconcile;
 pub mod store;
 pub mod types;
 pub mod verify;
 pub mod webhook;
 
 pub use checkout::{CHECKOUT_PATH, CheckoutRequest, CheckoutResponse, checkout_router};
-pub use client::{CheckoutCreate, HttpLemonSqueezyClient, LsCheckoutClient, SharedCheckoutClient};
+pub use client::{
+    CheckoutCreate, HttpLemonSqueezyClient, LsCheckoutClient, RemoteSubscription,
+    SharedCheckoutClient,
+};
 pub use config::LemonSqueezyConfig;
 pub use deps::CloudDeps;
 pub use entitlements::BillingEntitlements;
 pub use error::LemonSqueezyError;
 pub use pg_store::PgSubscriptionStore;
+pub use reconcile::{ReconcileDeps, reconcile_once};
 pub use store::{NewSubscription, SharedSubscriptionStore, SubscriptionRecord, SubscriptionStore};
 pub use types::{
     LsCustomerId, LsEventId, LsOrderId, LsSubscriptionId, LsVariantId, Plan, SubscriptionId,

@@ -116,6 +116,8 @@ pub struct Server {
     /// Cloud-contributed private routes (e.g. checkout), merged into the
     /// authenticated group so they inherit `require_principal` / CSRF.
     pub cloud_private: Option<Router<AppState>>,
+    /// Cloud-owned background tasks (e.g. reconciliation), joined on shutdown.
+    pub cloud_tasks: Vec<crate::scheduling::ScheduledTask>,
 }
 
 /// Live runtime handles handed to a [`CloudBuilder`].
@@ -128,6 +130,9 @@ pub struct CloudCtx {
     pub pool: PgPool,
     pub clock: SharedClock,
     pub http: Client,
+    /// Process-wide shutdown signal; cloud background tasks (e.g. the billing
+    /// reconciliation poll) wire into it so Ctrl+C stops them in lockstep.
+    pub cancel: CancellationToken,
 }
 
 /// What a [`CloudBuilder`] hands back.
@@ -142,6 +147,9 @@ pub struct CloudParts {
     pub entitlements: SharedEntitlements,
     pub public_routes: Router<AppState>,
     pub private_routes: Router<AppState>,
+    /// Cloud-owned background tasks (e.g. reconciliation). `run_server` joins
+    /// them on shutdown via [`ScheduledTask::shutdown`], so none float (§7).
+    pub background: Vec<crate::scheduling::ScheduledTask>,
 }
 
 /// Composition seam the `patom-cloud` crate implements (issue #131).
@@ -181,6 +189,9 @@ struct Collaborators {
     /// `build_agent` (no HTTP surface).
     cloud_public: Option<Router<AppState>>,
     cloud_private: Option<Router<AppState>>,
+    /// Cloud-owned background tasks (empty without `--features cloud`); joined
+    /// on shutdown by `run_server`.
+    cloud_background: Vec<crate::scheduling::ScheduledTask>,
     memory: SharedMemory,
     memory_store: SharedMemoryStore,
     clock: SharedClock,
@@ -229,6 +240,7 @@ impl Collaborators {
     async fn new(
         settings: &Settings,
         cloud: Option<Arc<dyn CloudBuilder>>,
+        cancel: CancellationToken,
     ) -> Result<Self, AppError> {
         let http = build_http_client()?;
         let clock = SystemClock::shared();
@@ -248,15 +260,18 @@ impl Collaborators {
         // schema, no extra routes. With it, the cloud crate runs its own
         // migrations and answers the seam. This `match` is the entire policy
         // swap.
-        let (entitlements, cloud_public, cloud_private): (
+        #[allow(clippy::type_complexity)]
+        let (entitlements, cloud_public, cloud_private, cloud_background): (
             SharedEntitlements,
             Option<Router<AppState>>,
             Option<Router<AppState>>,
+            Vec<crate::scheduling::ScheduledTask>,
         ) = match cloud {
             None => (
                 Arc::new(crate::entitlements::UnlimitedEntitlements),
                 None,
                 None,
+                Vec::new(),
             ),
             Some(builder) => {
                 builder.migrate(&pool).await?;
@@ -264,11 +279,13 @@ impl Collaborators {
                     pool: pool.clone(),
                     clock: clock.clone(),
                     http: http.clone(),
+                    cancel: cancel.clone(),
                 });
                 (
                     parts.entitlements,
                     Some(parts.public_routes),
                     Some(parts.private_routes),
+                    parts.background,
                 )
             }
         };
@@ -449,6 +466,7 @@ impl Collaborators {
             entitlements,
             cloud_public,
             cloud_private,
+            cloud_background,
             memory,
             memory_store,
             clock,
@@ -676,8 +694,9 @@ pub async fn seed_default_agent_for_org(
 /// through `build_server`'s per-agent factory below.
 pub async fn build_agent(settings: Settings) -> Result<Agent, AppError> {
     // The standalone agent has no HTTP surface, so it never needs cloud routes
-    // or a billing-backed policy: always the OSS default.
-    let pieces = Collaborators::new(&settings, None).await?;
+    // or a billing-backed policy: always the OSS default. A throwaway cancel
+    // token satisfies the signature; nothing wires into it here.
+    let pieces = Collaborators::new(&settings, None, CancellationToken::new()).await?;
     Ok(build_agent_from(&pieces, &settings))
 }
 
@@ -712,7 +731,7 @@ pub async fn build_server(
     cancel: CancellationToken,
     cloud: Option<Arc<dyn CloudBuilder>>,
 ) -> Result<Server, AppError> {
-    let pieces = Collaborators::new(&settings, cloud).await?;
+    let pieces = Collaborators::new(&settings, cloud, cancel.clone()).await?;
     // Per-agent MCP scope: the factory reads the row's `allowed_mcp_servers`
     // and builds a `ScopedMcpSource` so the agent's `ToolBox` only sees the
     // permitted servers' tools. Everything else (provider, sessions, memory,
@@ -1001,6 +1020,7 @@ pub async fn build_server(
         slack_bridge: slack_bridge_handle,
         cloud_public: pieces.cloud_public,
         cloud_private: pieces.cloud_private,
+        cloud_tasks: pieces.cloud_background,
     })
 }
 
@@ -1019,6 +1039,7 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
         slack_bridge,
         cloud_public,
         cloud_private,
+        cloud_tasks,
     } = server;
     // The supervisor task that owns the stream-pump JoinSet is held
     // behind `state.slack`. Clone the handle out before the state
@@ -1046,6 +1067,11 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
     info!("librarian_scheduler.shutdown.complete");
     scheduling_scheduler.shutdown().await;
     info!("scheduling_scheduler.shutdown.complete");
+    // Cloud-owned background tasks (e.g. billing reconciliation). Each already
+    // saw `cancel`; joining drains them rather than leaving them floating (§7).
+    for task in cloud_tasks {
+        task.shutdown().await;
+    }
     mcp_refresher.shutdown().await;
     info!("mcp.refresher.shutdown.complete");
     if let Some(bridge) = slack_bridge {

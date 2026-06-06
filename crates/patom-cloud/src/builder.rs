@@ -12,11 +12,14 @@ use async_trait::async_trait;
 use patom::{AppError, CloudBuilder, CloudCtx, CloudParts, SharedEntitlements};
 use sqlx::PgPool;
 
-use crate::lemon_squeezy::client::{HttpLemonSqueezyClient, LEMON_SQUEEZY_API_BASE};
+use crate::lemon_squeezy::client::{
+    HttpLemonSqueezyClient, LEMON_SQUEEZY_API_BASE, SharedCheckoutClient,
+};
 use crate::lemon_squeezy::config::LemonSqueezyConfig;
 use crate::lemon_squeezy::deps::CloudDeps;
 use crate::lemon_squeezy::entitlements::BillingEntitlements;
 use crate::lemon_squeezy::pg_store::PgSubscriptionStore;
+use crate::lemon_squeezy::reconcile::{self, ReconcileDeps};
 use crate::lemon_squeezy::store::SharedSubscriptionStore;
 use crate::lemon_squeezy::{checkout, webhook};
 use crate::run_migrations;
@@ -51,7 +54,7 @@ impl CloudBuilder for LemonSqueezyCloud {
             ctx.pool.clone(),
             ctx.clock.clone(),
         ));
-        let checkout_client = Arc::new(HttpLemonSqueezyClient::new(
+        let checkout_client: SharedCheckoutClient = Arc::new(HttpLemonSqueezyClient::new(
             ctx.http.clone(),
             self.config.api_key.clone(),
             LEMON_SQUEEZY_API_BASE.to_string(),
@@ -60,6 +63,20 @@ impl CloudBuilder for LemonSqueezyCloud {
             subscriptions.clone(),
             ctx.clock.clone(),
         ));
+
+        // Reconciliation poll — the safety net for missed webhooks. Wired to
+        // the process cancel token so it stops on shutdown; `run_server` joins
+        // it (CloudParts.background), so it never floats (§7).
+        let reconcile = reconcile::spawn(
+            ReconcileDeps {
+                client: checkout_client.clone(),
+                subscriptions: subscriptions.clone(),
+                config: self.config.clone(),
+                clock: ctx.clock.clone(),
+            },
+            ctx.cancel,
+        );
+
         let deps = Arc::new(CloudDeps {
             subscriptions,
             checkout_client,
@@ -71,6 +88,7 @@ impl CloudBuilder for LemonSqueezyCloud {
             entitlements,
             public_routes: webhook::webhook_router(deps.clone()),
             private_routes: checkout::checkout_router(deps),
+            background: vec![reconcile],
         }
     }
 }

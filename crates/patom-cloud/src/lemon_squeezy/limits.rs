@@ -30,3 +30,19 @@ pub const LS_API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 /// no-subscription cap. Provisional — tune here without touching the gate
 /// logic (#131).
 pub const PAST_DUE_GRACE_DAYS: i64 = 3;
+
+/// How often the reconciliation poll sweeps for stale subscriptions.
+///
+/// Each sweep re-fetches drifted subscriptions from Lemon Squeezy — the safety
+/// net for webhooks we never received. Hourly is ample: webhooks are the
+/// primary path.
+pub const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_hours(1);
+
+/// A subscription is "stale" (eligible for a reconcile fetch) once it hasn't
+/// been updated for this long — long enough that a normal webhook would have
+/// refreshed it.
+pub const RECONCILE_STALE_AFTER_SECS: i64 = 6 * 60 * 60;
+
+/// Max subscriptions refreshed per reconcile tick — bounds the outbound API
+/// calls and DB writes one sweep can do (CLAUDE.md §5).
+pub const RECONCILE_BATCH: i64 = 100;

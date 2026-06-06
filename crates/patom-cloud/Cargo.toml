@@ -42,6 +42,8 @@ subtle = { workspace = true }
 serde_json = { workspace = true }
 # `tokio::time::timeout` bounds the webhook handler (CLAUDE.md §5).
 tokio = { workspace = true }
+# CancellationToken wires the reconciliation poll into process shutdown.
+tokio-util = { workspace = true }
 # REST client for checkout creation + reconciliation polling. Reuses the shared
 # `reqwest::Client` (passed in via CloudCtx); features match the workspace.
 reqwest = { workspace = true }

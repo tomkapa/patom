@@ -74,6 +74,17 @@ pub trait SubscriptionStore: fmt::Debug + Send + Sync {
         event_id: &LsEventId,
         org: Option<OrgId>,
     ) -> Result<bool, LemonSqueezyError>;
+
+    /// Subscriptions not updated since `cutoff`, oldest first, capped at
+    /// `limit`. Drives the reconciliation poll's backfill of missed webhooks.
+    ///
+    /// # Errors
+    /// [`LemonSqueezyError::Db`] on a storage failure.
+    async fn list_stale(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<SubscriptionRecord>, LemonSqueezyError>;
 }
 
 /// Cheap-clone handle to a [`SubscriptionStore`].

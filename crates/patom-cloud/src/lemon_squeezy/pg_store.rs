@@ -159,4 +159,24 @@ impl SubscriptionStore for PgSubscriptionStore {
         .await?;
         Ok(inserted == 1)
     }
+
+    async fn list_stale(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<SubscriptionRecord>, LemonSqueezyError> {
+        let sql = format!(
+            "SELECT {SUBSCRIPTION_SELECT} WHERE updated_at < $1 ORDER BY updated_at ASC LIMIT $2"
+        );
+        let rows =
+            run_privileged::<Vec<SubscriptionRow>, LemonSqueezyError>(&self.pool, async |tx| {
+                Ok(sqlx::query_as::<_, SubscriptionRow>(&sql)
+                    .bind(cutoff)
+                    .bind(limit)
+                    .fetch_all(&mut **tx)
+                    .await?)
+            })
+            .await?;
+        rows.into_iter().map(SubscriptionRecord::try_from).collect()
+    }
 }
