@@ -1,16 +1,31 @@
-[package]
-name = "patom"
+# Patom workspace root.
+#
+# Open-core layout (issue #133): `patom-core` is the FSL product library;
+# `patom-server` is the binary / composition root; `patom-cloud` holds paid-tier
+# / billing code and is compiled only under `patom-server`'s `cloud` feature, so
+# the default OSS build never links it.
+#
+# Dependency convention: every external dependency is declared ONCE here in
+# `[workspace.dependencies]` (version + features + the §8 justification
+# comments). Each member crate only *enables* what it needs via
+# `name.workspace = true`. This is the single source of truth for versions —
+# members never pin their own.
+[workspace]
+resolver = "3"
+members = ["crates/patom-core", "crates/patom-cloud", "crates/patom-server"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "Provider-agnostic, hookable agent runtime in Rust."
 license = "LicenseRef-FSL-1.1-Apache-2.0"
 repository = "https://github.com/tomkapa/patom"
-readme = "CLAUDE.md"
-keywords = ["agent", "llm", "ai", "anthropic"]
-categories = ["asynchronous"]
-publish = false
 
-[dependencies]
+[workspace.dependencies]
+# ── Internal crates ──────────────────────────────────────────────────────
+patom-core = { path = "crates/patom-core" }
+patom-cloud = { path = "crates/patom-cloud" }
+
+# ── External crates ──────────────────────────────────────────────────────
 async-openai = { version = "0.36", default-features = false, features = ["rustls", "chat-completion", "byot", "embedding"] }
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "tower-log", "tracing", "macros", "query", "multipart"] }
@@ -260,24 +275,12 @@ lettre = { version = "0.11", default-features = false, features = [
 # Binary entry only (CLAUDE.md §12 — `anyhow` may not appear in library signatures).
 anyhow = "1"
 
-[features]
-# Adds sentinel catalog models (`test-model`, `test-model-openai`) so
-# integration tests in `tests/` can construct `Model` values without
-# committing real production model names to the assertion surface. Enabled
-# automatically when test binaries link the lib (see the `patom` entry
-# in `[dev-dependencies]`); never enabled in `cargo build --release`.
-test-catalog = []
-
-[dev-dependencies]
-tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
-patom = { path = ".", features = ["test-catalog"] }
-
 [profile.release]
 panic = "abort"
 codegen-units = 1
 lto = "thin"
 
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "warn"
 missing_debug_implementations = "warn"
@@ -285,7 +288,7 @@ nonstandard_style = { level = "deny", priority = -1 }
 future_incompatible = { level = "deny", priority = -1 }
 rust_2024_compatibility = { level = "warn", priority = -1 }
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }

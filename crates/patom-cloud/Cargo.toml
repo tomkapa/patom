@@ -1,0 +1,22 @@
+# patom-cloud — paid-tier / billing crate (open-core, issue #133).
+#
+# License: LicenseRef-FSL-1.1-Apache-2.0 (inherited from the workspace). Source
+# is public under FSL, but this crate is compiled ONLY under `patom-server`'s
+# `cloud` feature, so the default OSS / self-host binary never links it.
+#
+# Currently an empty scaffold. The entitlement implementation lands in #134 and
+# the Lemon Squeezy billing payload in #131. See README.md for the boundary.
+[package]
+name = "patom-cloud"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Patom paid-tier / billing — excluded from the default OSS build."
+publish = false
+
+[dependencies]
+patom-core = { workspace = true }
+
+[lints]
+workspace = true

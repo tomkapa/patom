@@ -35,6 +35,24 @@ jobs:
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      # Open-core boundary (#133): the default build must NOT link patom-cloud.
+      # patom-cloud is an optional dep behind the `cloud` feature; if it ever
+      # shows up in the default dependency graph, paid code has leaked into the
+      # OSS / self-host binary.
+      - name: open-core boundary (patom-cloud excluded from default build)
+        run: |
+          set -euo pipefail
+          if cargo tree -p patom-server -e normal | grep -q patom-cloud; then
+            echo "::error::patom-cloud leaked into the default (OSS) binary"
+            exit 1
+          fi
+          # Positive control: patom-cloud MUST appear with --features cloud. Without
+          # this, a rename or a broken grep would make the check above pass vacuously.
+          if ! cargo tree -p patom-server --features cloud -e normal | grep -q patom-cloud; then
+            echo "::error::open-core guard is stale: patom-cloud not linked even with --features cloud"
+            exit 1
+          fi
+          echo "ok: patom-cloud absent by default, present under --features cloud"
 
   # ── Test suite against a real Postgres (CLAUDE.md §3) ───────────────────
   test:
@@ -106,14 +124,16 @@ jobs:
       - name: up → revert-all → up (proves every .down.sql reverses)
         run: |
           set -uo pipefail
-          sqlx migrate run
+          # Migrations live in the patom-core crate after the workspace split (#133).
+          SRC=crates/patom-core/migrations
+          sqlx migrate run --source "$SRC"
           # `revert` undoes one step; loop until none remain. Migration 1 is an
           # irreversible init (no .down.sql), so revert stops there with
           # "No migrations available to revert" — that is the expected floor,
           # not a failure. Any non-zero exit before that is a broken .down.sql.
           # 100 is a safe cap over the 52 migrations (§5).
           for _ in $(seq 1 100); do
-            out=$(sqlx migrate revert 2>&1); rc=$?
+            out=$(sqlx migrate revert --source "$SRC" 2>&1); rc=$?
             echo "$out"
             if echo "$out" | grep -q "No migrations available to revert"; then
               break
@@ -123,7 +143,7 @@ jobs:
               exit 1
             fi
           done
-          sqlx migrate run
+          sqlx migrate run --source "$SRC"
 
   # ── Supply-chain gates (CLAUDE.md §8) ───────────────────────────────────
   # cargo-deny: licenses + advisories + bans + sources, configured by deny.toml.

@@ -1,0 +1,98 @@
+# patom-core — the FSL product crate (the OSS / self-host build).
+#
+# License: LicenseRef-FSL-1.1-Apache-2.0 (inherited from the workspace).
+#
+# Dependency convention (see the workspace root Cargo.toml): every dependency
+# below is `name.workspace = true` — versions + features live once in
+# `[workspace.dependencies]`. Add a per-crate `features = [...]` here only to
+# *extend* the workspace default (features are additive), never to pin a version.
+[package]
+name = "patom-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Provider-agnostic, hookable agent runtime in Rust."
+readme = "../../CLAUDE.md"
+keywords = ["agent", "llm", "ai", "anthropic"]
+categories = ["asynchronous"]
+publish = false
+
+# Keep the library import name `patom` (not `patom_core`) so the entire source
+# tree and test suite keep using `use patom::...`. The binary lives in the
+# thin `patom-server` composition-root crate (it depends on this lib + the
+# optional `patom-cloud`); a `bin` here would force a `patom-core → patom-cloud
+# → patom-core` dependency cycle, which Cargo rejects.
+[lib]
+name = "patom"
+path = "src/lib.rs"
+
+[dependencies]
+async-openai.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+cookie.workspace = true
+base64.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+claudius.workspace = true
+config.workspace = true
+dotenvy.workspace = true
+futures.workspace = true
+htmd.workspace = true
+http.workspace = true
+jsonwebtoken.workspace = true
+oauth2.workspace = true
+openidconnect.workspace = true
+reqwest.workspace = true
+rmcp.workspace = true
+sse-stream.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry-semantic-conventions.workspace = true
+tracing-opentelemetry.workspace = true
+url.workspace = true
+uuid.workspace = true
+aes-gcm.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+rand.workspace = true
+hmac.workspace = true
+subtle.workspace = true
+aws-sdk-s3.workspace = true
+aws-config.workspace = true
+aws-credential-types.workspace = true
+infer.workspace = true
+bytes.workspace = true
+lettre.workspace = true
+anyhow.workspace = true
+
+[features]
+# Adds sentinel catalog models (`test-model`, `test-model-openai`) so
+# integration tests in `tests/` can construct `Model` values without
+# committing real production model names to the assertion surface. Enabled
+# automatically when test binaries link the lib (see the `patom-core` entry
+# in `[dev-dependencies]`); never enabled in `cargo build --release`.
+test-catalog = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+patom-core = { workspace = true, features = ["test-catalog"] }
+
+[lints]
+workspace = true

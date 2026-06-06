@@ -45,12 +45,26 @@ bun install
 bun run dev
 ```
 
-Environment variables are documented in `src/config.rs` (the `Settings` struct). Required for most workflows:
+Environment variables are documented in `crates/patom-core/src/config.rs` (the `Settings` struct). Required for most workflows:
 
 - `DATABASE_URL`
 - `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY`
 - `PATOM_JWT_SECRET`
 - `PATOM_ORG_KEK`
+
+---
+
+## Repository layout (open-core)
+
+Patom is a Cargo workspace with three crates:
+
+- **`crates/patom-core`** — the product library (agents, sessions, MCP, auth, orgs, …). FSL-licensed; its import name is `patom`. Core migrations live in `crates/patom-core/migrations`.
+- **`crates/patom-server`** — the binary / composition root. Produces the `patom` binary. Depends on `patom-core` always and `patom-cloud` only under its `cloud` feature. (The binary lives here rather than in `patom-core` to avoid a `patom-core → patom-cloud → patom-core` dependency cycle.)
+- **`crates/patom-cloud`** — paid-tier / billing code (entitlement impl, Lemon Squeezy). Source-available under the same FSL, but compiled **only** under `patom-server`'s `cloud` feature, so `cargo build` (the default) never links it. CI fails if it leaks into the default binary.
+
+Where does my code go? If a free-tier self-hoster shouldn't run it, it belongs in `patom-cloud`. The seam between free and paid is a **trait in core**; the paid implementation lives in `patom-cloud`. See [`crates/patom-cloud/README.md`](./crates/patom-cloud/README.md).
+
+**Dependencies** are declared once in the root `[workspace.dependencies]` (version + features + the §8 justification). Member crates only enable them with `name.workspace = true` — never pin a version in a member `Cargo.toml`.
 
 ---
 
