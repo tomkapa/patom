@@ -148,6 +148,13 @@ impl IntoResponse for HttpError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "default agent not seeded".into(),
             ),
+            // Org is at its agent cap (entitlement gate, #131) → 402, same as
+            // `LicenseError` below. Matched explicitly before the `Agent(_)`
+            // 500 catch-all so the upgrade prompt isn't masked as a server
+            // error; the message carries the limit that was hit.
+            Self::Agent(AgentStoreError::AgentLimitReached { .. }) => {
+                (StatusCode::PAYMENT_REQUIRED, self.to_string())
+            }
             Self::Agent(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "agent store error".into(),

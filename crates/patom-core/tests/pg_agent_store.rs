@@ -19,10 +19,36 @@ use patom::types::AvatarUrl;
 use sqlx::PgPool;
 
 mod common;
-use common::pg::{agent_store, human_to_agent_session, seed_tenant};
+use common::pg::{agent_store, agent_store_with_entitlements, human_to_agent_session, seed_tenant};
 
 fn store(pool: &PgPool) -> Arc<PgAgentStore> {
     agent_store(pool.clone(), SystemClock::shared())
+}
+
+/// Capped policy standing in for the cloud billing-backed impl, for the in-tx
+/// agent-cap gate tests (#131): caps every org at `max` agents.
+#[derive(Debug)]
+struct CappedEntitlements {
+    max: u32,
+}
+
+#[async_trait::async_trait]
+impl patom::entitlements::Entitlements for CappedEntitlements {
+    async fn agent_limit(&self, _org: OrgId) -> patom::entitlements::AgentLimit {
+        patom::entitlements::AgentLimit::Max(self.max)
+    }
+    async fn allows(&self, _org: OrgId, _feature: patom::entitlements::Feature) -> bool {
+        true
+    }
+}
+
+/// Agent store whose policy caps each org at `max` agents.
+fn capped_store(pool: &PgPool, max: u32) -> Arc<PgAgentStore> {
+    agent_store_with_entitlements(
+        pool.clone(),
+        SystemClock::shared(),
+        Arc::new(CappedEntitlements { max }),
+    )
 }
 
 fn default_seed(name: &str, prompt: &str) -> DefaultAgentSeed {
@@ -570,4 +596,69 @@ async fn delete_refuses_when_referenced_by_a_session(pool: PgPool) {
 
     let err = store.delete(agent.id).await.expect_err("in use");
     assert!(matches!(err, AgentStoreError::InUse(_)));
+}
+
+#[sqlx::test]
+async fn create_refuses_past_the_agent_cap(pool: PgPool) {
+    // Entitlement gate (#131): cap of 2. `seed_tenant` already inserted the
+    // org's one default agent, so one more create fits, but the third is over
+    // the ceiling and is refused with `AgentLimitReached`.
+    let seed = seed_tenant(&pool).await;
+    let store = capped_store(&pool, 2);
+
+    store
+        .create(new_agent(seed.org_id, "second", "be helpful", false))
+        .await
+        .expect("second agent fits under the cap of 2");
+
+    let err = store
+        .create(new_agent(seed.org_id, "third", "be helpful", false))
+        .await
+        .expect_err("third agent is over the cap");
+    assert!(
+        matches!(err, AgentStoreError::AgentLimitReached { limit: 2 }),
+        "got: {err:?}",
+    );
+}
+
+#[sqlx::test]
+async fn create_cap_is_race_free_under_concurrency(pool: PgPool) {
+    // Closes the count-then-insert TOCTOU: cap of 2, org already holds its one
+    // default agent, so exactly one free slot remains. Two creates fired
+    // concurrently must not both land — the per-org advisory xact lock
+    // serialises them, so one succeeds and the other hits the cap.
+    let seed = seed_tenant(&pool).await;
+    let store = capped_store(&pool, 2);
+
+    let a = store.clone();
+    let b = store.clone();
+    let org = seed.org_id;
+    let (ra, rb) = tokio::join!(
+        async move {
+            a.create(new_agent(org, "racer-a", "be helpful", false))
+                .await
+        },
+        async move {
+            b.create(new_agent(org, "racer-b", "be helpful", false))
+                .await
+        },
+    );
+
+    let oks = [&ra, &rb].iter().filter(|r| r.is_ok()).count();
+    let capped = [&ra, &rb]
+        .iter()
+        .filter(|r| matches!(r, Err(AgentStoreError::AgentLimitReached { limit: 2 })))
+        .count();
+    assert_eq!(
+        oks, 1,
+        "exactly one concurrent create may win the last slot"
+    );
+    assert_eq!(
+        capped, 1,
+        "the loser must be refused with the cap, not a race error"
+    );
+
+    // Ground truth: the org holds exactly its cap of 2 (default + one winner).
+    let count = store.list_for_org(org).await.expect("list").len();
+    assert_eq!(count, 2, "no over-create slipped through");
 }

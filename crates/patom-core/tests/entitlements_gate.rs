@@ -14,7 +14,9 @@
 
 use std::sync::Arc;
 
-use patom::agents::{AgentDescription, AgentName, AgentSystemPrompt, AllowedMcpTools, NewAgent};
+use patom::agents::{
+    AgentDescription, AgentName, AgentSystemPrompt, AllowedMcpTools, NewAgent, SharedAgentStore,
+};
 use patom::auth::OrgId;
 use patom::clock::SystemClock;
 use patom::entitlements::{AgentLimit, Entitlements, Feature, SharedEntitlements};
@@ -74,7 +76,15 @@ impl Harness {
 
         let sessions: SharedSessionStore =
             Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
-        let agents = common::pg::shared_agent_store(pool.clone(), clock.clone());
+        // The cap is enforced in-tx by the agent store (#131), so the capped
+        // policy is wired into the *store*, not just `AppState`. Same `Arc`
+        // feeds both so the HTTP layer and the gate can never disagree.
+        let entitlements: SharedEntitlements = Arc::new(CappedTestEntitlements { max });
+        let agents: SharedAgentStore = common::pg::agent_store_with_entitlements(
+            pool.clone(),
+            clock.clone(),
+            entitlements.clone(),
+        );
         let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
         let mcp_store: SharedMcpServerStore =
@@ -102,8 +112,6 @@ impl Harness {
         // Fresh principal in its own (empty) org — the right baseline for the
         // capacity assertions below.
         let primary = seed_principal(pool, &jwt).await;
-
-        let entitlements: SharedEntitlements = Arc::new(CappedTestEntitlements { max });
 
         let state = AppState {
             queue,

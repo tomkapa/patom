@@ -71,27 +71,11 @@ impl Entitlements for UnlimitedEntitlements {
     }
 }
 
-/// Gate: refuse a new agent when `org` is at its [`AgentLimit`].
-///
-/// `current` is the org's present agent count. Returns
-/// [`LicenseError::AgentLimitReached`] (→ 402) when the limit does not admit
-/// one more. Inert under [`UnlimitedEntitlements`] (always admits).
-///
-/// # Errors
-/// [`LicenseError::AgentLimitReached`] if `org` already holds its cap.
-pub async fn require_agent_capacity(
-    ent: &dyn Entitlements,
-    org: OrgId,
-    current: u32,
-) -> Result<(), LicenseError> {
-    match ent.agent_limit(org).await {
-        AgentLimit::Unlimited => Ok(()),
-        AgentLimit::Max(cap) if current < cap => Ok(()),
-        // Only a `Max` ceiling can deny, so the cap surfaced on the 402 is
-        // exactly the one that was hit.
-        AgentLimit::Max(cap) => Err(LicenseError::AgentLimitReached { limit: cap }),
-    }
-}
+// The agent-count gate is no longer a free pre-flight helper: enforcement
+// moved into `AgentStore` (issue #131), where the count-then-insert runs in one
+// transaction under a per-org advisory lock, so every creation path is covered
+// and the old count-then-insert TOCTOU is closed. `agent_limit` above is still
+// the seam that resolves the cap; the store consults it directly.
 
 /// Gate: refuse a [`Feature`] the org's plan does not license.
 ///
@@ -114,8 +98,7 @@ pub async fn require_feature(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentLimit, Entitlements, Feature, LicenseError, UnlimitedEntitlements,
-        require_agent_capacity, require_feature,
+        AgentLimit, Entitlements, Feature, LicenseError, UnlimitedEntitlements, require_feature,
     };
     use crate::auth::OrgId;
 
@@ -149,29 +132,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_capacity_gate_never_trips() {
-        let ent = UnlimitedEntitlements;
-        assert!(
-            require_agent_capacity(&ent, OrgId::new(), 10_000)
-                .await
-                .is_ok()
-        );
-    }
-
-    #[tokio::test]
-    async fn capped_capacity_gate_denies_at_ceiling() {
-        let ent = CappedEntitlements { max: 1 };
-        let result = require_agent_capacity(&ent, OrgId::new(), 1).await;
-        assert!(matches!(
-            result,
-            Err(LicenseError::AgentLimitReached { limit: 1 })
-        ));
-    }
-
-    #[tokio::test]
-    async fn capped_capacity_gate_admits_below_ceiling() {
+    async fn capped_policy_reports_its_ceiling() {
+        // The agent-count *enforcement* now lives in `AgentStore` (tested end
+        // to end against Postgres in `tests/entitlements_gate.rs` and
+        // `tests/pg_agent_store.rs`); here we only assert the seam reports the
+        // ceiling a capped policy resolves to.
         let ent = CappedEntitlements { max: 3 };
-        assert!(require_agent_capacity(&ent, OrgId::new(), 2).await.is_ok());
+        assert_eq!(ent.agent_limit(OrgId::new()).await, AgentLimit::Max(3));
     }
 
     #[tokio::test]

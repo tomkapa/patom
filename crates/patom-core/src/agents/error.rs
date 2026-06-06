@@ -42,6 +42,14 @@ pub enum AgentStoreError {
     #[error("agent {0:?} is referenced by one or more sessions")]
     InUse(AgentId),
 
+    /// The org is at its agent ceiling (entitlement gate, #131). Enforced
+    /// in-transaction by the store under a per-org advisory lock so every
+    /// creation path is covered and the count-then-insert cannot race.
+    /// `limit` is the cap that was hit, for the 402 upgrade prompt the FE
+    /// renders. Mapped to **402 Payment Required** by the HTTP layer.
+    #[error("agent limit reached: {limit}")]
+    AgentLimitReached { limit: u32 },
+
     #[error("agent record decode: {0}")]
     Parse(#[from] ParseError),
 

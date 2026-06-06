@@ -30,6 +30,7 @@ use crate::auth::{
 use crate::clock::{SharedClock, SystemClock};
 use crate::config::{EmbeddingSettings, Settings};
 use crate::crypto::OrgEncryptor;
+use crate::entitlements::SharedEntitlements;
 use crate::error::AppError;
 use crate::hook::HookChain;
 use crate::http::{AppState, router};
@@ -115,6 +116,9 @@ struct Collaborators {
     pool: PgPool,
     sessions: SharedSessionStore,
     agents: SharedAgentStore,
+    /// Entitlement policy, built once and shared by the agent store (which
+    /// enforces the per-org agent cap) and the HTTP `AppState`.
+    entitlements: SharedEntitlements,
     memory: SharedMemory,
     memory_store: SharedMemoryStore,
     clock: SharedClock,
@@ -172,6 +176,14 @@ impl Collaborators {
         let embedding_provider: SharedEmbeddingProvider =
             build_embedding_provider(&settings.embedding);
 
+        // Entitlement policy (#134/#131). Built here — once — so the agent
+        // store enforces the same per-org cap that the rest of the app reads,
+        // and so the agent-store construction below can hold it. The OSS /
+        // self-host build runs the permissive default; `patom-cloud` swaps
+        // this one line for a billing-backed impl behind `--features cloud`
+        // (the seam that injects it lands in #133's composition wiring).
+        let entitlements: SharedEntitlements = Arc::new(crate::entitlements::UnlimitedEntitlements);
+
         // Per-org default-agent seeding happens lazily on first sign-up
         // (see `seed_default_agent_for_org` and `auth::callback`); the
         // composition root no longer mints a global default because there
@@ -180,6 +192,7 @@ impl Collaborators {
             pool.clone(),
             clock.clone(),
             embedding_provider.clone(),
+            entitlements.clone(),
         ));
         let agents: SharedAgentStore = agents_impl;
 
@@ -344,6 +357,7 @@ impl Collaborators {
             pool,
             sessions,
             agents,
+            entitlements,
             memory,
             memory_store,
             clock,
@@ -875,11 +889,11 @@ pub async fn build_server(
         assets,
         orgs: orgs_store,
         mailer,
-        // Entitlement policy (#134). This one line is the policy seam: the OSS
-        // build runs the permissive default; `patom-cloud` swaps it for a
-        // billing-backed impl behind `--features cloud` (#131), and a future
-        // self-host limit would swap it here too.
-        entitlements: Arc::new(crate::entitlements::UnlimitedEntitlements),
+        // Entitlement policy (#134/#131). The same instance the agent store
+        // was built with (see `Collaborators::new`), so the HTTP layer and the
+        // in-tx cap gate can never disagree. `patom-cloud` swaps the one
+        // construction site behind `--features cloud`.
+        entitlements: pieces.entitlements,
     };
 
     Ok(Server {
