@@ -1,6 +1,6 @@
 # Keep the build context small and the image clean. The Rust build needs
-# Cargo.*, rust-toolchain.toml, src/, migrations/; the web stage needs
-# web/ (minus node_modules + dist). Everything below is excluded.
+# Cargo.*, rust-toolchain.toml, and the crates/ tree (src/ + migrations/); the
+# web stage needs web/ (minus node_modules + dist). Everything below is excluded.
 
 # Rust build artifacts (the big one)
 /target
@@ -25,8 +25,8 @@ docker-compose.yml
 .claude
 .playwright-mcp
 
-# Tests are not compiled by `cargo build --bin patom`
-tests
+# Tests are not compiled by `cargo build --bin patom` (now under each crate)
+crates/*/tests
 
 # Docs / design / misc — not needed to build
 doc

@@ -2905,7 +2905,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
-name = "patom"
+name = "patom-cloud"
+version = "0.1.0"
+dependencies = [
+ "patom-core",
+]
+
+[[package]]
+name = "patom-core"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
@@ -2939,7 +2946,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "patom",
+ "patom-core",
  "rand 0.8.6",
  "reqwest 0.13.3",
  "rmcp",
@@ -2962,6 +2969,19 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "patom-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dotenvy",
+ "patom-cloud",
+ "patom-core",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
