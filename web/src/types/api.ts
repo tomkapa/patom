@@ -19,6 +19,11 @@ export type Org = {
   default_language: Language;
   /** `null` → FE renders the default tile in the OrgSwitcher. */
   avatar_url: string | null;
+  /** `false` → the user has not walked the /onboarding wizard yet;
+   *  `OnboardingGate` redirects them there. Flipped by the wizard's
+   *  final step via `PATCH /me/org { onboarded: true }`. Backfilled to
+   *  `true` for every pre-existing org in migration 57. */
+  onboarded: boolean;
 };
 
 export type User = {
@@ -50,6 +55,8 @@ export type OrgDetails = {
   role: Role;
   /** See {@link Org.avatar_url}. */
   avatar_url: string | null;
+  /** See {@link Org.onboarded}. */
+  onboarded: boolean;
 };
 
 /** Per-org monthly spend budget: configured cap + warn threshold + this

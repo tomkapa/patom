@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useMe } from "../../hooks/useMe";
 import { Spinner } from "../atoms/Spinner";
 import { AuthRedirect } from "../../lib/errors";
+import { OnboardingGate } from "./OnboardingGate";
 
 export function Protected({ children }: { children: ReactNode }) {
   const { data, isLoading, isError, error } = useMe();
@@ -23,5 +24,5 @@ export function Protected({ children }: { children: ReactNode }) {
 
   if (!data) return null;
 
-  return <>{children}</>;
+  return <OnboardingGate>{children}</OnboardingGate>;
 }

@@ -136,7 +136,15 @@ export const api = {
   // ─── Workspace settings (src/http/routes/org.rs) ────────────────────
   /** Read the General-tab payload for the active workspace. */
   org: () => request<OrgDetails>("/me/org"),
-  updateOrg: (patch: { name?: string; slug?: string }) =>
+  /** Update the active workspace. Body fields are independent — pass
+   *  any subset. `onboarded: true` flips the org's `onboarded_at` from
+   *  NULL to NOW() (idempotent via COALESCE; never un-marks); the FE
+   *  wizard's final step uses this to release the `OnboardingGate`. */
+  updateOrg: (patch: {
+    name?: string;
+    slug?: string;
+    onboarded?: boolean;
+  }) =>
     request<OrgDetails>("/me/org", {
       method: "PATCH",
       body: JSON.stringify(patch),
@@ -210,6 +218,23 @@ export const api = {
 
   agents: () => request<Agent[]>("/agents"),
   agent: (id: string) => request<Agent>(`/agents/${id}`),
+  /** Create one agent. Mirrors `src/http/routes/agents.rs::CreateAgentRequest`.
+   *  Used by the onboarding wizard to hire each preset agent
+   *  ({@link teamPresets}) sequentially — the entitlements gate fires
+   *  per call so cloud quotas still apply. */
+  createAgent: (payload: {
+    name: string;
+    system_prompt: string;
+    description: string;
+    is_default?: boolean;
+    allowed_mcp_tools?: Record<string, string[] | null>;
+    model?: string | null;
+    avatar_url?: string | null;
+  }) =>
+    request<Agent>("/agents", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   updateAgent: (id: string, patch: UpdateAgentRequest) =>
     request<Agent>(`/agents/${id}`, {
       method: "PUT",
