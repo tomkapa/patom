@@ -2,6 +2,7 @@
 //! idempotency ledger.
 
 use std::fmt;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -74,3 +75,6 @@ pub trait SubscriptionStore: fmt::Debug + Send + Sync {
         org: Option<OrgId>,
     ) -> Result<bool, LemonSqueezyError>;
 }
+
+/// Cheap-clone handle to a [`SubscriptionStore`].
+pub type SharedSubscriptionStore = Arc<dyn SubscriptionStore>;

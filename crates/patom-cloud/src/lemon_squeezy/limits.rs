@@ -7,3 +7,13 @@
 /// short numeric strings today; 128 bytes is generous headroom while still
 /// capping anything that crosses the trust boundary into a `TEXT` column.
 pub const MAX_LS_ID_BYTES: usize = 128;
+
+/// Max accepted webhook body size. Lemon Squeezy payloads are a few KB of JSON;
+/// 64 KiB is generous headroom and a hard ceiling on what we buffer + HMAC
+/// before rejecting (CLAUDE.md §5).
+pub const MAX_WEBHOOK_BODY_BYTES: usize = 64 * 1024;
+
+/// Wall-clock budget for handling one webhook end to end (verify + parse +
+/// store writes). Bounds the handler so a stuck DB can't pin a connection
+/// indefinitely (CLAUDE.md §5).
+pub const WEBHOOK_HANDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);

@@ -32,9 +32,21 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 # Object-safe async `SubscriptionStore` / `Entitlements` impls.
 async-trait = { workspace = true }
+# Webhook + checkout routes merged into the core router as `Router<AppState>`.
+axum = { workspace = true }
+# Webhook X-Signature: HMAC-SHA256 over the raw body, constant-time compared.
+hmac = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+# Lemon Squeezy webhook / API payloads are JSON.
+serde_json = { workspace = true }
+# `tokio::time::timeout` bounds the webhook handler (CLAUDE.md §5).
+tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+# `ServiceExt::oneshot` drives the router in handler tests.
+tower = { workspace = true }
 
 [lints]
 workspace = true
