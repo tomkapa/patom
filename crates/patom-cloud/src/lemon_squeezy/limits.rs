@@ -22,3 +22,11 @@ pub const WEBHOOK_HANDLE_TIMEOUT: std::time::Duration = std::time::Duration::fro
 /// creation, reconciliation fetch). Bounds every I/O await (CLAUDE.md §5)
 /// independently of the shared client's default timeout.
 pub const LS_API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Grace window (days) after `current_period_end` for a `past_due` sub.
+///
+/// During it the subscription keeps its paid agent cap, giving Lemon Squeezy's
+/// dunning time to recover the payment before we downgrade to the
+/// no-subscription cap. Provisional — tune here without touching the gate
+/// logic (#131).
+pub const PAST_DUE_GRACE_DAYS: i64 = 3;

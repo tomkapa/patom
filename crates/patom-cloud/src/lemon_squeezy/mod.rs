@@ -10,6 +10,7 @@ pub mod checkout;
 pub mod client;
 pub mod config;
 pub mod deps;
+pub mod entitlements;
 pub mod error;
 pub mod lifecycle;
 pub mod limits;
@@ -24,6 +25,7 @@ pub use checkout::{CHECKOUT_PATH, CheckoutRequest, CheckoutResponse, checkout_ro
 pub use client::{CheckoutCreate, HttpLemonSqueezyClient, LsCheckoutClient, SharedCheckoutClient};
 pub use config::LemonSqueezyConfig;
 pub use deps::CloudDeps;
+pub use entitlements::BillingEntitlements;
 pub use error::LemonSqueezyError;
 pub use pg_store::PgSubscriptionStore;
 pub use store::{NewSubscription, SharedSubscriptionStore, SubscriptionRecord, SubscriptionStore};

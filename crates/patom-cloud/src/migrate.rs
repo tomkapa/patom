@@ -10,8 +10,12 @@
 //! `public` membership helper. `public` is kept on the path so
 //! `public.app_user_is_member` resolves during `CREATE POLICY`.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use patom::AppError;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
 /// Billing migrations embedded at compile time. Versioned in a high, distinct
 /// range (`2000000000000x`) so that — even if this stream were ever pointed at
@@ -28,34 +32,47 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 /// # Errors
 /// Returns [`AppError::Migrate`] if a migration fails, or
 /// [`AppError::Misconfigured`] if the schema / `search_path` setup fails.
-pub async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
-    // One connection for the whole run: the `search_path` we set below is
-    // session state, so it must persist across the Migrator's per-migration
-    // transactions — that only holds if every statement runs on the same
-    // connection.
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|source| AppError::DbConnect { source })?;
+// Returns an explicitly-boxed `Send` future rather than `async fn` on purpose:
+// boxing erases the future's type so it can be awaited inside the
+// `#[async_trait]` `CloudBuilder::migrate` impl. Crucially the Migrator runs on
+// a `&Pool`, not a `&mut Connection` — the connection form trips a sqlx
+// `Acquire is not general enough` HRTB bound once a `Send` future is required.
+#[allow(clippy::manual_async_fn)]
+pub fn run_migrations(
+    pool: &PgPool,
+) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>> {
+    // Reuse the live pool's connection options (host / credentials / db) for the
+    // dedicated migration pool below.
+    let connect_options = (*pool.connect_options()).clone();
+    Box::pin(async move {
+        // The schema must exist before the Migrator creates its tracking table
+        // (which lands in the first schema on `search_path`).
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS cloud")
+            .execute(pool)
+            .await
+            .map_err(|e| AppError::Misconfigured(format!("create cloud schema: {e}")))?;
 
-    sqlx::query("CREATE SCHEMA IF NOT EXISTS cloud")
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| AppError::Misconfigured(format!("create cloud schema: {e}")))?;
-    sqlx::query("SET search_path TO cloud, public")
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| AppError::Misconfigured(format!("pin cloud search_path: {e}")))?;
+        // A short-lived pool whose every connection pins `search_path` to
+        // `cloud, public`: sqlx then writes `cloud._sqlx_migrations` (first
+        // schema on the path) and the policies still resolve
+        // `public.app_user_is_member`. Single connection — this runs once at
+        // boot. Closed at the end so no pinned connection lingers.
+        let cloud_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET search_path TO cloud, public")
+                        .execute(conn)
+                        .await
+                        .map(|_| ())
+                })
+            })
+            .connect_with(connect_options)
+            .await
+            .map_err(|source| AppError::DbConnect { source })?;
 
-    let result = MIGRATOR.run(&mut *conn).await;
-
-    // Return the connection to the pool clean: leaving `search_path` pinned to
-    // `cloud, public` would subtly change unqualified name resolution for
-    // whatever core query grabs this connection next. Best-effort — if the run
-    // already failed, boot aborts regardless.
-    let _ = sqlx::query("SET search_path TO DEFAULT")
-        .execute(&mut *conn)
-        .await;
-
-    result.map_err(|source| AppError::Migrate { source })
+        let result = MIGRATOR.run(&cloud_pool).await;
+        cloud_pool.close().await;
+        result.map_err(|source| AppError::Migrate { source })
+    })
 }

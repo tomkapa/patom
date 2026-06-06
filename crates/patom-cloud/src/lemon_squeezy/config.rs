@@ -13,7 +13,7 @@ use patom::types::SecretString;
 use super::types::{LsVariantId, Plan};
 
 /// Everything the Lemon Squeezy subsystem needs from configuration.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LemonSqueezyConfig {
     /// Webhook signing secret — verifies the `X-Signature` HMAC.
     pub webhook_secret: SecretString,
