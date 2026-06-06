@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from "react-router-dom";
+import { AcceptInvite } from "./pages/AcceptInvite";
 import { AgentGeneral } from "./pages/AgentGeneral";
 import { AgentLogs } from "./pages/AgentLogs";
 import { AgentMemory } from "./pages/AgentMemory";
@@ -27,6 +28,11 @@ export function App() {
   return (
     <Routes>
       <Route path="/sign-in" element={<SignIn />} />
+      {/* Invite landing — the page redeems the token itself and drives
+          its own auth (a 401 bounces through /sign-in), so it is not
+          wrapped in <Protected>. Must precede the /* catch-all. */}
+      <Route path="/i/:slug/:token" element={<AcceptInvite />} />
+
       <Route
         path="/connections"
         element={

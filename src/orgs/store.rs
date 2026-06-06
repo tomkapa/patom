@@ -122,6 +122,17 @@ pub struct IssuedInvite {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Result of [`OrgStore::accept_invite`].
+///
+/// Carries the org the caller joined and the role they joined with. The
+/// caller re-mints the session with `org_id` as the active org so the
+/// invitee lands in the inviting workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcceptedInvite {
+    pub org_id: OrgId,
+    pub role: Role,
+}
+
 #[async_trait]
 pub trait OrgStore: std::fmt::Debug + Send + Sync + 'static {
     /// Read the General-tab payload for the caller's active org.
@@ -202,6 +213,30 @@ pub trait OrgStore: std::fmt::Debug + Send + Sync + 'static {
         email: &Email,
         now: DateTime<Utc>,
     ) -> Result<Option<OrgId>, OrgError>;
+
+    /// Accept a single invite by its cleartext URL token (the link the
+    /// invitee clicked). Unlike [`Self::join_pending_invites`], this is
+    /// keyed on the token — possession of the secret is the
+    /// authorisation — so it works for an already-authenticated user
+    /// regardless of which email their account carries, and it switches
+    /// them into the inviting org.
+    ///
+    /// Atomically claims the matching pending, non-expired invite
+    /// (stamping `consumed_at`), inserts the `org_members` row with the
+    /// invited role, and returns the joined org + role. Runs privileged
+    /// (the user is by definition not yet a member, so RLS would hide
+    /// the invite row).
+    ///
+    /// Errors distinguish the failure modes for the FE:
+    /// [`OrgError::NotFound`] (no such token), [`OrgError::InviteExpired`]
+    /// (past `expires_at`), [`OrgError::InviteAlreadyConsumed`] (already
+    /// redeemed, including losing a concurrent-accept race).
+    async fn accept_invite(
+        &self,
+        user_id: UserId,
+        token: &InviteToken,
+        now: DateTime<Utc>,
+    ) -> Result<AcceptedInvite, OrgError>;
 
     /// Set (or clear, with `None`) the workspace avatar URL.
     async fn set_avatar_url(

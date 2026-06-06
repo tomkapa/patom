@@ -111,6 +111,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ org_id: orgId }),
     }),
+  /** Redeem an invite by its URL token (the `/i/{slug}/{token}` link).
+   *  The server joins the inviting org and re-mints the session so it
+   *  becomes the active workspace — same response shape as `switchOrg`.
+   *  A 401 here means the visitor isn't signed in; `request()` bounces
+   *  them through `/sign-in` and back to the invite URL automatically. */
+  acceptInvite: (token: string) =>
+    request<SwitchOrgResponse>("/me/invites/accept", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
 
   /** Owner/admin only — mutates the active org's `default_language`.

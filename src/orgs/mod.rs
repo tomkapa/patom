@@ -21,6 +21,6 @@ pub use limits::{INVITE_TTL, MAX_INVITE_BATCH, MAX_MEMBERS_PER_PAGE};
 pub use mailer::{LogMailer, MailError, Mailer, SharedMailer, SmtpMailer};
 pub use pg_store::PgOrgStore;
 pub use store::{
-    InviteRow, IssuedInvite, MemberFilter, MemberPage, MemberRow, MemberStatus, OrgDetails,
-    OrgStore, OrgUpdate, SharedOrgStore,
+    AcceptedInvite, InviteRow, IssuedInvite, MemberFilter, MemberPage, MemberRow, MemberStatus,
+    OrgDetails, OrgStore, OrgUpdate, SharedOrgStore,
 };
