@@ -111,6 +111,7 @@ async fn build_state(pool: PgPool) -> (AppState, patom::mcp::McpRefresher) {
         assets: None,
         orgs: Arc::new(PgOrgStore::new(pool.clone())),
         mailer: Arc::new(patom::orgs::LogMailer),
+        entitlements: Arc::new(patom::entitlements::UnlimitedEntitlements),
     };
     (state, refresher)
 }

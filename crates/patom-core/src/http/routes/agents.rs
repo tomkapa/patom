@@ -213,6 +213,18 @@ async fn create_agent(
         .map(AvatarUrl::try_from)
         .transpose()
         .map_err(HttpError::Parse)?;
+    // Entitlement gate (#134): refuse creation past the org's agent cap.
+    // Count tenant-scoped (RLS limits it to the caller's org, mirroring
+    // `list_agents`) then ask the policy. Inert under the OSS default
+    // (`Unlimited` always admits); a capped cloud impl returns 402. The
+    // count-then-insert window is a benign TOCTOU — acceptable while the
+    // shipped default is unlimited; a real cap should enforce in-tx (#131).
+    let current = count_agents_for_org(&state, &principal).await?;
+    crate::entitlements::require_agent_capacity(
+        &*state.entitlements,
+        principal.active_org_id,
+        current,
+    )?;
     let record = state
         .agents
         .create(NewAgent {
@@ -228,6 +240,21 @@ async fn create_agent(
         })
         .await?;
     Ok((StatusCode::CREATED, Json(record.into())))
+}
+
+/// Tenant-scoped count of the caller's agents, for the entitlement gate.
+/// Opens an RLS tx so `count(*)` sees only the principal's org (mirrors
+/// [`list_agents`]). Static SQL — no interpolation (§10).
+async fn count_agents_for_org(state: &AppState, principal: &Principal) -> Result<u32, HttpError> {
+    let mut tx = crate::auth::begin_as(&state.pool, principal).await?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM agents")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
+    tx.commit().await.map_err(AuthError::from)?;
+    // `count(*)` is non-negative; saturate the (impossible) overflow rather
+    // than panic — a larger value only makes the cap stricter.
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 async fn list_agents(
