@@ -2913,6 +2913,7 @@ dependencies = [
  "chrono",
  "hmac 0.12.1",
  "patom-core",
+ "reqwest 0.13.3",
  "serde",
  "serde_json",
  "sha2 0.10.9",

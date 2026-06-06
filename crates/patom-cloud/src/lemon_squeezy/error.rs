@@ -24,6 +24,19 @@ pub enum LemonSqueezyError {
     #[error("parse: {0}")]
     Parse(#[from] ParseError),
 
+    /// Checkout requested a variant this store doesn't sell (not in the
+    /// configured variant→plan map). → 400.
+    #[error("unknown checkout variant")]
+    UnknownVariant,
+
+    /// Transport error talking to the Lemon Squeezy REST API. → 502.
+    #[error("lemon squeezy request failed: {0}")]
+    Http(#[from] reqwest::Error),
+
+    /// Lemon Squeezy returned a non-success status. → 502.
+    #[error("lemon squeezy returned status {status}")]
+    Upstream { status: u16 },
+
     /// Postgres error from the subscription store / idempotency ledger.
     #[error(transparent)]
     Db(#[from] sqlx::Error),

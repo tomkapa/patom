@@ -17,3 +17,8 @@ pub const MAX_WEBHOOK_BODY_BYTES: usize = 64 * 1024;
 /// store writes). Bounds the handler so a stuck DB can't pin a connection
 /// indefinitely (CLAUDE.md §5).
 pub const WEBHOOK_HANDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Per-call timeout for an outbound Lemon Squeezy REST request (checkout
+/// creation, reconciliation fetch). Bounds every I/O await (CLAUDE.md §5)
+/// independently of the shared client's default timeout.
+pub const LS_API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);

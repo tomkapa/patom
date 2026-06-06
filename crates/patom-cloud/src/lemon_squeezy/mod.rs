@@ -6,6 +6,8 @@
 //! subscription store; the webhook, checkout, client, and billing-backed
 //! entitlement impl build on top.
 
+pub mod checkout;
+pub mod client;
 pub mod config;
 pub mod deps;
 pub mod error;
@@ -18,6 +20,8 @@ pub mod types;
 pub mod verify;
 pub mod webhook;
 
+pub use checkout::{CHECKOUT_PATH, CheckoutRequest, CheckoutResponse, checkout_router};
+pub use client::{CheckoutCreate, HttpLemonSqueezyClient, LsCheckoutClient, SharedCheckoutClient};
 pub use config::LemonSqueezyConfig;
 pub use deps::CloudDeps;
 pub use error::LemonSqueezyError;

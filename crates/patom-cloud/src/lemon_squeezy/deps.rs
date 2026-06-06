@@ -6,6 +6,7 @@
 
 use patom::clock::SharedClock;
 
+use super::client::SharedCheckoutClient;
 use super::config::LemonSqueezyConfig;
 use super::store::SharedSubscriptionStore;
 
@@ -13,6 +14,10 @@ use super::store::SharedSubscriptionStore;
 #[derive(Debug)]
 pub struct CloudDeps {
     pub subscriptions: SharedSubscriptionStore,
+    pub checkout_client: SharedCheckoutClient,
     pub config: LemonSqueezyConfig,
     pub clock: SharedClock,
+    /// Base URL the buyer is redirected back to after checkout (derived from
+    /// the app's web base URL). `None` falls back to the store's default.
+    pub app_base_url: Option<String>,
 }

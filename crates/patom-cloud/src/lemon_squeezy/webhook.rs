@@ -146,6 +146,7 @@ mod tests {
     use sqlx::PgPool;
     use tower::ServiceExt;
 
+    use crate::lemon_squeezy::client::{HttpLemonSqueezyClient, LEMON_SQUEEZY_API_BASE};
     use crate::lemon_squeezy::config::LemonSqueezyConfig;
     use crate::lemon_squeezy::pg_store::PgSubscriptionStore;
     use crate::lemon_squeezy::types::{LsVariantId, Plan};
@@ -171,8 +172,14 @@ mod tests {
                 pool.clone(),
                 SystemClock::shared(),
             )),
+            checkout_client: Arc::new(HttpLemonSqueezyClient::new(
+                reqwest::Client::new(),
+                SecretString::try_from("api".to_string()).expect("api key"),
+                LEMON_SQUEEZY_API_BASE.to_string(),
+            )),
             config,
             clock: SystemClock::shared(),
+            app_base_url: None,
         })
     }
 
