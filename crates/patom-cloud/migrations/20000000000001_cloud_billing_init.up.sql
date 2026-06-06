@@ -54,3 +54,12 @@ CREATE POLICY webhook_events_org_isolation ON cloud.webhook_events
     FOR ALL TO PUBLIC
     USING      (org_id IS NULL OR public.app_user_is_member(org_id))
     WITH CHECK (org_id IS NULL OR public.app_user_is_member(org_id));
+
+-- Core's grants (migration 14) only cover the `public` schema, so the
+-- tenant-scoped `patom_app` role (used by `auth::begin_as*`) needs explicit
+-- access to read subscriptions under the RLS policy above — for a future
+-- "billing status for my org" read. Writes stay privileged (the webhook only),
+-- and the idempotency ledger is internal, so neither gets a grant here.
+-- `patom_app` is created by core migration 14, which always runs first.
+GRANT USAGE ON SCHEMA cloud TO patom_app;
+GRANT SELECT ON cloud.subscriptions TO patom_app;

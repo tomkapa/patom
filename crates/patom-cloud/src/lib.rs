@@ -9,6 +9,7 @@
 //! migration stream ([`run_migrations`]) — see `README.md` for what belongs
 //! here versus in `patom-core`.
 
+pub mod lemon_squeezy;
 mod migrate;
 
 pub use migrate::run_migrations;

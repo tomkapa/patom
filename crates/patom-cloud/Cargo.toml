@@ -23,6 +23,15 @@ patom-core = { workspace = true }
 # the rest of the workspace.
 sqlx = { workspace = true }
 tracing = { workspace = true }
+# Newtype boilerplate (`uuid_newtype!` / `str_enum!`) emits sqlx + serde impls
+# over `::uuid` / `::serde`, and Lemon Squeezy ids/enums deserialize from JSON.
+uuid = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+# One `thiserror` error enum at the module boundary (CLAUDE.md §12).
+thiserror = { workspace = true }
+# Object-safe async `SubscriptionStore` / `Entitlements` impls.
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
