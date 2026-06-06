@@ -413,3 +413,127 @@ async fn get_without_csrf_passes_through(pool: PgPool) {
         .expect("response");
     assert_eq!(res.status(), axum::http::StatusCode::OK);
 }
+
+// ---- Origin/Referer CSRF probes -----------------------------------------
+//
+// The `require_trusted_origin` layer rejects state-changing requests
+// whose `Origin` (or, absent that, `Referer`) names an origin that is
+// neither this server's own origin (`oauth_redirect_base`), the
+// configured SPA origin (`web_base_url`), nor a CORS-allowlisted origin.
+// It runs alongside the double-submit token, so every request here also
+// carries a matching cookie + `x-csrf-token`. The harness state uses
+// `oauth_redirect_base = http://localhost:8080`.
+
+#[sqlx::test]
+async fn post_with_cross_origin_header_returns_403(pool: PgPool) {
+    let h = AuthPromptsHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/prompts")
+                .header("content-type", "application/json")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("origin", "https://evil.example")
+                .body(axum::body::Body::from(
+                    serde_json::json!({
+                        "content": "cross-origin",
+                        "idempotency_key": "k-origin-evil",
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+async fn post_with_same_origin_header_passes(pool: PgPool) {
+    let h = AuthPromptsHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/prompts")
+                .header("content-type", "application/json")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                // Matches the harness `oauth_redirect_base` origin.
+                .header("origin", "http://localhost:8080")
+                .body(axum::body::Body::from(
+                    serde_json::json!({
+                        "content": "same-origin",
+                        "idempotency_key": "k-origin-same",
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::ACCEPTED);
+}
+
+#[sqlx::test]
+async fn post_with_configured_spa_origin_passes(pool: PgPool) {
+    let h = AuthPromptsHarness::new(&pool).await;
+    // Split deployment: the SPA lives on a different origin than the API.
+    let mut state = h.state.clone();
+    state.web_base_url = Some(std::sync::Arc::from("http://localhost:5173"));
+    let app = router(state);
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/prompts")
+                .header("content-type", "application/json")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("origin", "http://localhost:5173")
+                .body(axum::body::Body::from(
+                    serde_json::json!({
+                        "content": "spa-origin",
+                        "idempotency_key": "k-origin-spa",
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::ACCEPTED);
+}
+
+#[sqlx::test]
+async fn post_with_cross_origin_referer_returns_403(pool: PgPool) {
+    // No `Origin` header — the check falls back to `Referer`, whose
+    // origin is untrusted.
+    let h = AuthPromptsHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/prompts")
+                .header("content-type", "application/json")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("referer", "https://evil.example/attack")
+                .body(axum::body::Body::from(
+                    serde_json::json!({
+                        "content": "cross-origin referer",
+                        "idempotency_key": "k-referer-evil",
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::FORBIDDEN);
+}

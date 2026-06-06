@@ -245,7 +245,27 @@ async fn resolve_active_org(
         ));
     }
 
-    // Cloud self-service: every new user gets a personal org.
+    // Cloud self-service. An email-matched pending invite wins so an
+    // invited newcomer who arrives via the sign-in redirect lands in the
+    // inviting org instead of a throwaway personal one (the token-accept
+    // endpoint covers already-logged-in users). Only reached when the
+    // user has no orgs yet, so there is no active org to surprise-switch.
+    if let Some(org_id) = state
+        .orgs
+        .join_pending_invites(user.id, &user.email, now)
+        .await?
+    {
+        return Ok(org_id);
+    }
+    // `None` also covers the race where a concurrent callback for the same
+    // user claimed the invite between its SELECT and UPDATE (see pg_store
+    // `join_pending_invites`) — that winner already inserted the
+    // membership. Re-check before minting a duplicate personal org.
+    let orgs = state.users.list_user_orgs(user.id).await?;
+    if let Some(first) = orgs.first() {
+        return Ok(first.org_id);
+    }
+    // Otherwise every new user gets a personal org.
     let new_org = state
         .users
         .create_personal_org(user.id, slug_seed, &display, language, now)

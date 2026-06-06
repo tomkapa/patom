@@ -56,6 +56,12 @@ secret:
     # PATOM_S3_ENDPOINT: "CHANGE_ME"            # e.g. http://minio:9000 or https://<acct>.r2.cloudflarestorage.com
     # PATOM_S3_ACCESS_KEY_ID: "CHANGE_ME"
     # PATOM_S3_SECRET_ACCESS_KEY: "CHANGE_ME"
+    # Transactional email — SMTP relay for member-invite mail. ALL-OR-NOTHING:
+    # to enable, set this secret (the relay password / API key) AND the non-secret
+    # group (PATOM_SMTP_HOST / _USERNAME / PATOM_EMAIL_FROM) in `env` below. Leave
+    # all of it commented to log invite links instead of mailing them (LogMailer).
+    # Resend example: host smtp.resend.com, username "resend", password = API key.
+    # PATOM_SMTP_PASSWORD: "CHANGE_ME"          # relay password / API key (e.g. Resend re_...)
     # Telemetry exporter credentials (see the `env:` observability block below for
     # the full on-cluster opt-in). Leave all three commented to stay console-only:
     # with no backend keys set the app exports NOTHING off-cluster (stderr logs
@@ -134,3 +140,13 @@ ingress:
 #   PATOM_S3_PUBLIC_HOST: "https://assets.example.com"   # or http://minio.patom.svc:9000/patom
 #   PATOM_S3_BUCKET: "patom"
 #   PATOM_S3_REGION: "us-east-1"
+#   # Transactional email — the NON-SECRET group. Set together with
+#   # PATOM_SMTP_PASSWORD in secret.data above (all-or-nothing). The mailer always
+#   # uses STARTTLS submission; PORT defaults to 587 (override only for a relay on a
+#   # non-standard STARTTLS port). EMAIL_FROM must be a verified sender on the relay.
+#   # Resend: HOST smtp.resend.com, USERNAME "resend".
+#   PATOM_SMTP_HOST: "smtp.resend.com"
+#   PATOM_SMTP_USERNAME: "resend"
+#   # PATOM_SMTP_PORT: "587"
+#   PATOM_EMAIL_FROM: "invites@patom.example.com"
+#   PATOM_EMAIL_FROM_NAME: "Patom"

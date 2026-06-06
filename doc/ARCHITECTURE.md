@@ -580,7 +580,7 @@ Tables whose RLS predicate would otherwise JOIN through a parent (e.g. `session_
 
 ### Cookie posture
 
-`HttpOnly; Path=/; SameSite=Lax; Max-Age=604800`; `Secure` when `PATOM_COOKIE_SECURE=true`. SameSite=Lax blocks cross-site GETs but not same-eTLD+1 POSTs — Origin/Referer check on state-changing endpoints is the pre-public-deploy hardening item.
+`HttpOnly; Path=/; SameSite=Lax; Max-Age=604800`; `Secure` when `PATOM_COOKIE_SECURE=true`. SameSite=Lax blocks cross-site GETs but not same-eTLD+1 POSTs, so state-changing requests carry two CSRF layers inside the authenticated `/api` subtree: a double-submit `patom_csrf` cookie/`X-CSRF-Token` header, and an Origin/Referer check (`require_trusted_origin`) that validates the request's `Origin` — or, absent that, `Referer` — against this server's own origin (`oauth_redirect_base`), the configured SPA origin (`web_base_url`), and the CORS allowlist (`cors_allowed_origins`). The Origin check is lenient on absent headers (a browser always attaches `Origin` to a cross-origin unsafe request, so the attack is still rejected; the double-submit token covers non-browser clients) and rejects a `null` (opaque) origin.
 
 ---
 

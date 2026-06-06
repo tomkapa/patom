@@ -722,6 +722,17 @@ const vi: TranslationTable = {
   "settings.invite.count.many": "{n} lời mời sẽ được gửi",
   "settings.invite.error.lastOwner":
     "Workspace phải còn ít nhất một owner.",
+
+  "invite.accept.joining.title": "Đang tham gia {slug}…",
+  "invite.accept.joining.body":
+    "Vui lòng chờ trong khi chúng tôi thêm bạn vào workspace.",
+  "invite.accept.error.title": "Không thể mở lời mời này",
+  "invite.accept.error.expired":
+    "Lời mời đã hết hạn. Hãy nhờ quản trị viên workspace gửi lại lời mời mới.",
+  "invite.accept.error.consumed": "Lời mời này đã được sử dụng.",
+  "invite.accept.error.generic":
+    "Liên kết lời mời không hợp lệ hoặc không còn khả dụng.",
+  "invite.accept.error.cta": "Đến workspace của bạn",
 };
 
 export default vi;

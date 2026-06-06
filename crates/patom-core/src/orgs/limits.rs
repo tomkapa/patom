@@ -16,3 +16,12 @@ pub const MAX_INVITE_BATCH: usize = 25;
 /// `u32`, so a `usize` would just sprout `try_from` boilerplate at
 /// every seam.
 pub const MAX_MEMBERS_PER_PAGE: u32 = 50;
+
+/// Wall-clock budget for one outbound invite email (connect + AUTH +
+/// send) before the [`crate::orgs::SmtpMailer`] gives up (CLAUDE.md §5 —
+/// every I/O `await` is bounded). Invite delivery is fire-and-forget and
+/// off the request's critical path, so the bound is generous: a slow but
+/// eventually-succeeding relay should still deliver rather than time out,
+/// while a black-holed connection must not pin a task indefinitely. 15s
+/// comfortably covers a STARTTLS handshake to a healthy relay.
+pub(super) const EMAIL_SEND_TIMEOUT: Duration = Duration::from_secs(15);

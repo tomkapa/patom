@@ -25,11 +25,12 @@ ENV CARGO_TERM_COLOR=never
 # Dependency + build caching is handled by the BuildKit cache mounts below
 # (registry + target). A stub "warm-up" layer would be masked by the /app/target
 # cache mount, so it's omitted — the mounts make incremental CI builds fast.
+# Workspace layout (issue #133): all crates live under crates/. patom-core's
 # `migrations/` is embedded at COMPILE time by sqlx::migrate!("./migrations"), so
-# the runtime image omits it.
+# the runtime image omits it. tests/ are excluded via .dockerignore, so editing a
+# test does not bust this layer.
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
-COPY migrations ./migrations
-COPY src ./src
+COPY crates ./crates
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     cargo build --release --locked --bin patom \

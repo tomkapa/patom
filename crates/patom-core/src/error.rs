@@ -51,6 +51,9 @@ pub enum AppError {
     #[error("auth: {0}")]
     Auth(#[from] AuthError),
 
+    #[error("mailer init: {0}")]
+    Mailer(#[from] crate::orgs::MailError),
+
     #[error("misconfigured: {0}")]
     Misconfigured(String),
 }

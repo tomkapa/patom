@@ -1,0 +1,48 @@
+# patom-server — the binary / composition root.
+#
+# License: LicenseRef-FSL-1.1-Apache-2.0 (inherited from the workspace).
+#
+# This thin crate is where free and paid editions are assembled. It depends on
+# `patom-core` always and on `patom-cloud` only under the `cloud` feature, so
+# the default `cargo build` (the OSS / self-host binary) links no cloud code.
+# Keeping the binary here — rather than in `patom-core` — is what avoids a
+# `patom-core → patom-cloud → patom-core` dependency cycle.
+#
+# Dependency convention: enable workspace deps with `name.workspace = true`;
+# versions live in the root `[workspace.dependencies]`.
+[package]
+name = "patom-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Patom binary / composition root."
+publish = false
+
+# The shipped artifact stays `patom` (Dockerfile `--bin patom`,
+# `ENTRYPOINT /usr/local/bin/patom`).
+[[bin]]
+name = "patom"
+path = "src/main.rs"
+
+[dependencies]
+patom-core = { workspace = true }
+anyhow.workspace = true
+dotenvy.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+# Paid-tier / billing crate. Optional and gated behind the `cloud` feature so
+# the default OSS build never links it (issue #133). The composition-root wiring
+# that consumes it lands in #134.
+patom-cloud = { workspace = true, optional = true }
+
+[features]
+# Pulls in `patom-cloud` (paid-tier / billing). Off by default → the OSS /
+# self-host binary excludes all cloud code; `cargo build --features cloud`
+# builds the commercial binary.
+cloud = ["dep:patom-cloud"]
+
+[lints]
+workspace = true

@@ -31,7 +31,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::{MakeSpan, TraceLayer};
 
 use super::auth_layer::require_principal;
-use super::csrf::require_csrf;
+use super::csrf::{require_csrf, require_trusted_origin};
 use super::limits::REQUEST_BODY_LIMIT_BYTES;
 use super::state::AppState;
 
@@ -143,6 +143,14 @@ pub fn router(state: AppState) -> Router {
         .merge(uploads::router())
         // Slack install endpoint — signed-in user only.
         .merge(crate::slack::oauth::private_router())
+        // Origin/Referer check — the second CSRF layer (alongside the
+        // double-submit token below). Rejects state-changing requests
+        // naming an untrusted origin. Needs `AppState` for the trusted
+        // origin set, so it's `from_fn_with_state`.
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_trusted_origin,
+        ))
         // CSRF guards every state-changing request inside the
         // authenticated subtree. Order matters: it runs AFTER
         // `require_principal` so the public subtree is never reached
