@@ -4,8 +4,9 @@
 # is public under FSL, but this crate is compiled ONLY under `patom-server`'s
 # `cloud` feature, so the default OSS / self-host binary never links it.
 #
-# Currently an empty scaffold. The entitlement implementation lands in #134 and
-# the Lemon Squeezy billing payload in #131. See README.md for the boundary.
+# Houses the Lemon Squeezy billing payload (#131): the `cloud` schema +
+# migrations, the subscription store, the webhook + checkout routes, and the
+# billing-backed `Entitlements` impl. See README.md for the open-core boundary.
 [package]
 name = "patom-cloud"
 version.workspace = true
@@ -17,6 +18,14 @@ publish = false
 
 [dependencies]
 patom-core = { workspace = true }
+# Runtime sqlx for the `cloud` schema: its own embedded `Migrator`
+# (`cloud._sqlx_migrations`) plus the subscription store. Same pin/features as
+# the rest of the workspace.
+sqlx = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
