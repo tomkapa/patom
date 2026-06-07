@@ -23,9 +23,9 @@ pub const COLLEAGUE_ROSTER_FETCH_MAX: i64 = 1024;
 /// Max colleagues rendered inline in the `<agents>` roster block before it
 /// degrades to a one-line `search_agents` affordance (§5).
 ///
-/// Twice the agent-only `MAX_AGENT_NAMES_INLINE` (128) because the roster now
-/// folds humans in alongside agents, so an org's inline list is naturally
-/// larger. Above this the per-turn prompt cost of naming everyone outweighs the
+/// Twice the former agent-only inline cap (128) because the roster now folds
+/// humans in alongside agents, so an org's inline list is naturally larger.
+/// Above this the per-turn prompt cost of naming everyone outweighs the
 /// value and the model should look peers up on demand instead. The renderer
 /// emits the `patom.colleagues.roster.size` field so saturation is observable.
 pub const MAX_ROSTER_INLINE: usize = 256;

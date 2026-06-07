@@ -32,10 +32,9 @@ use super::types::{
 };
 use crate::types::AvatarUrl;
 
-/// Hard cap on `list_names` SQL — fetched batches are bounded per
-/// CLAUDE.md §5. Sized at 4× the inline-render cap; the renderer already
-/// degrades above [`MAX_AGENT_NAMES_INLINE`], so this LIMIT just keeps
-/// the wire transfer bounded if the registry grows past that.
+/// Hard cap on the `list_for_org` roster SQL — fetched batches are bounded
+/// per CLAUDE.md §5. Sized generously; the LIMIT just keeps the wire transfer
+/// bounded if a tenant's registry grows large.
 const LIST_NAMES_MAX_ROWS: i64 = 512;
 
 /// Transaction-scoped advisory-lock key used by [`PgAgentStore::seed_default`] to
@@ -438,30 +437,6 @@ impl AgentStore for PgAgentStore {
         .await?;
         let row = row.ok_or_else(|| AgentStoreError::NameNotFound(name.clone()))?;
         row.try_into()
-    }
-
-    async fn list_names_for_viewer(
-        &self,
-        viewer: AgentId,
-    ) -> Result<Vec<(AgentId, AgentName)>, AgentStoreError> {
-        let rows =
-            run_privileged::<Vec<(AgentId, String)>, AgentStoreError>(&self.pool, async |tx| {
-                Ok(sqlx::query_as(
-                    "SELECT id, name FROM agents \
-                     WHERE org_id = (SELECT org_id FROM agents WHERE id = $1) \
-                     ORDER BY lower(name) ASC LIMIT $2",
-                )
-                .bind(viewer)
-                .bind(LIST_NAMES_MAX_ROWS)
-                .fetch_all(&mut **tx)
-                .await?)
-            })
-            .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (id, name) in rows {
-            out.push((id, AgentName::try_from(name)?));
-        }
-        Ok(out)
     }
 
     async fn list_for_org(
