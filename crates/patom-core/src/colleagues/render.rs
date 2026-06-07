@@ -1,9 +1,8 @@
 //! `<agents>` colleague-roster renderer (Colleagues plan, Stage 6).
 //!
-//! Generalises the agent-only `<agents>` name index
-//! ([`crate::agents::render_agents_block`]) into a roster of *every* colleague —
-//! humans and agents alike — so the agent perceives human coworkers as
-//! addressable peers. Each entry carries its [`ColleagueId`] because the
+//! Generalises the former agent-only `<agents>` name index into a roster of
+//! *every* colleague — humans and agents alike — so the agent perceives human
+//! coworkers as addressable peers. Each entry carries its [`ColleagueId`] because the
 //! colleague-id addressing introduced by `memory_write` (Stage 5) and
 //! `send_message` (Stage 7) needs an id to pass back.
 //!

@@ -4,7 +4,7 @@
 //! expiry falls through to [`ColleagueStore::list_for_org`]. Keyed by [`OrgId`]
 //! because the roster is org-wide — every agent in an org sees the same list.
 //! Backed by the generic [`BoundedTtlCache`] so the eviction / TTL machinery
-//! stays in one place (mirrors [`crate::agents::AgentNamesCache`]).
+//! stays in one place (mirrors [`crate::agents::AgentPromptCache`]).
 
 use std::sync::Arc;
 use std::time::Duration;
