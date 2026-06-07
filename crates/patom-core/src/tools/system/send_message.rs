@@ -43,6 +43,7 @@ use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
 use crate::agents::{AgentId, AgentName, AgentStoreError, SharedAgentStore};
+use crate::colleagues::{ColleagueError, ColleagueId, ColleagueKind};
 use crate::observability::log::preview;
 use crate::runtime::IdempotencyKey;
 use crate::runtime::PromptError;
@@ -55,16 +56,23 @@ use crate::types::{MessageSender, PROMPT_MAX_BYTES, Participant, Prompt, ToolNam
 
 use super::super::traits::{Tool, ToolCallContext, ToolError};
 
-/// Wire-side receiver shape — `{"kind":"human"}` or
-/// `{"kind":"agent","name":"<role>"}`. The model addresses peers by role
-/// name (doc/agent_discovery_plan.md §7); the id-based path is removed
-/// because there is no model-facing surface that produces ids any more
-/// (CLAUDE.md §13 — no compat hacks pre-release).
+/// Wire-side receiver shape. Three forms, in preference order:
+///
+/// - `{"kind":"colleague","id":"<uuid>"}` — **canonical**. Addresses any
+///   colleague (human or agent) by the id surfaced in the `<agents>` roster.
+///   This is how the agent reaches a *specific* human coworker, not just the
+///   anonymous root human.
+/// - `{"kind":"agent","name":"<role>"}` — sugar. Resolves an agent by role name
+///   (case-insensitive, scoped to the caller's org) for the common "reply to a
+///   named peer" path without looking the id up.
+/// - `{"kind":"human"}` — sugar for the DAG-root human (the user under whose
+///   authority the agent runs), so "reply to whoever prompted me" needs no id.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum SendMessageReceiver {
-    Human,
+    Colleague { id: ColleagueId },
     Agent { name: AgentName },
+    Human,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,9 +130,10 @@ const ERR_SYSTEM_RECEIVER: &str = "send_message: cannot deliver to System";
 const TOOL_DESCRIPTION: &str = "Send a message to a participant. \
     Use this for ALL communication including replies to the human — plain \
     assistant text is not delivered. \
-    Arguments: `receiver` is either `{\"kind\":\"human\"}` or \
-    `{\"kind\":\"agent\",\"name\":\"<role>\"}` where `<role>` is one of the \
-    names in your `<agents>` block (or returned by `search_agents`); \
+    Arguments: `receiver` is `{\"kind\":\"colleague\",\"id\":\"<uuid>\"}` to \
+    address any colleague (human or agent) by the id shown in your `<agents>` \
+    block, `{\"kind\":\"agent\",\"name\":\"<role>\"}` to reach an agent by role \
+    name, or `{\"kind\":\"human\"}` to reply to the person who prompted you; \
     `content` is the message body; `context_summary` is REQUIRED only the \
     first time you message this receiver in the current task — a brief \
     framing of why you're contacting them and what you need (IGNORE on \
@@ -158,8 +167,11 @@ impl SendMessageTool {
                     "type": "object",
                     "oneOf": [
                         {
-                            "required": ["kind"],
-                            "properties": { "kind": { "const": "human" } },
+                            "required": ["kind", "id"],
+                            "properties": {
+                                "kind": { "const": "colleague" },
+                                "id": { "type": "string", "format": "uuid" }
+                            },
                             "additionalProperties": false
                         },
                         {
@@ -168,6 +180,11 @@ impl SendMessageTool {
                                 "kind": { "const": "agent" },
                                 "name": { "type": "string", "minLength": 1 }
                             },
+                            "additionalProperties": false
+                        },
+                        {
+                            "required": ["kind"],
+                            "properties": { "kind": { "const": "human" } },
                             "additionalProperties": false
                         }
                     ]
@@ -263,6 +280,9 @@ impl SendMessageTool {
         ctx: &ToolCallContext,
     ) -> Result<Participant, ToolError> {
         let name = match raw {
+            SendMessageReceiver::Colleague { id } => {
+                return self.resolve_colleague(id, ctx).await;
+            }
             SendMessageReceiver::Human => {
                 // The root human's colleague is resolved via `(org_id, acting_user_id)`
                 // — the tool context's acting_user is the DAG-root human under
@@ -307,6 +327,62 @@ impl SendMessageTool {
                 ToolError::Backend(format!("send_message: resolve agent colleague: {e}"))
             })?;
         Ok(Participant::agent(cid, record.id))
+    }
+
+    /// Resolve a canonical `{"kind":"colleague","id":…}` receiver into a
+    /// colleague-backed [`Participant`].
+    ///
+    /// The directory read is privileged (it joins `users`, REVOKEd from the app
+    /// role), so org isolation is enforced *here*: a colleague outside the
+    /// caller's org is reported as unknown rather than leaked. A `System`-style
+    /// id can never arrive — System is the NULL convention, never a row, so an
+    /// unknown id simply fails the read. Authority is unchanged (locked decision
+    /// #4): the session still runs under the agent's `created_by_user_id`; only
+    /// *addressing* moves onto the colleague axis.
+    async fn resolve_colleague(
+        &self,
+        id: ColleagueId,
+        ctx: &ToolCallContext,
+    ) -> Result<Participant, ToolError> {
+        let colleague = self.colleagues.read(id).await.map_err(|e| match e {
+            ColleagueError::NotFound(_) => {
+                set_outcome("unknown_colleague");
+                warn!(patom.colleague.id = %id, "send_message.unknown_colleague");
+                ToolError::InvalidInput(format!("send_message: unknown colleague {id}"))
+            }
+            err => {
+                set_outcome("backend_error");
+                warn!(error = %err, patom.colleague.id = %id, "send_message.colleague_lookup_failed");
+                ToolError::Backend(format!("send_message: colleague lookup: {err}"))
+            }
+        })?;
+
+        // Org isolation — the privileged read crosses tenants, so reject a
+        // foreign-org colleague as unknown (no existence leak).
+        if colleague.org_id() != ctx.org_id {
+            set_outcome("unknown_colleague");
+            warn!(patom.colleague.id = %id, "send_message.colleague_cross_org");
+            return Err(ToolError::InvalidInput(format!(
+                "send_message: unknown colleague {id}"
+            )));
+        }
+
+        match colleague.kind() {
+            ColleagueKind::Agent => {
+                let agent_id = colleague.agent_id().ok_or_else(|| {
+                    set_outcome("backend_error");
+                    ToolError::Backend("send_message: agent colleague missing agent_id".to_string())
+                })?;
+                Ok(Participant::agent(id, agent_id))
+            }
+            ColleagueKind::Human => {
+                let user_id = colleague.user_id().ok_or_else(|| {
+                    set_outcome("backend_error");
+                    ToolError::Backend("send_message: human colleague missing user_id".to_string())
+                })?;
+                Ok(Participant::human(id, user_id))
+            }
+        }
     }
 
     /// Opening framing — only on a freshly-minted receiver session, and only
@@ -454,10 +530,38 @@ impl SendMessageTool {
                 })?;
         }
 
-        // Bump the DAG turn budget. On exceed the offending row stays — we
-        // intentionally don't roll the message append back, so callers see
-        // exactly which message broke the budget. The bump's atomicity means
-        // two concurrent callers cannot both squeeze past the cap.
+        // Branch on receiver kind. Human delivery publishes on the root
+        // request's stream and is non-blocking (no queue row). Agent
+        // delivery enqueues a `prompt_requests` row for the worker.
+        //
+        // The DAG turn budget bounds *agent* turns spawned within a DAG, so
+        // only the agent branch bumps it — a message to a human creates no turn
+        // and must not consume the loop budget. The bump runs before the
+        // enqueue so an over-budget DAG is rejected without minting a row.
+        match receiver {
+            Participant::Human { .. } => {
+                self.publish_to_human(ctx, receiver_session, content.as_str())
+                    .await
+            }
+            Participant::Agent { agent_id, .. } => {
+                self.bump_dag_budget(ctx).await?;
+                self.enqueue_for_agent(ctx, receiver_session, agent_id, content, tenancy)
+                    .await
+            }
+            Participant::System => {
+                set_outcome("invalid_input");
+                Err(ToolError::InvalidInput(ERR_SYSTEM_RECEIVER.into()))
+            }
+        }
+    }
+
+    /// Atomically bump the DAG turn budget for an agent-spawning delivery.
+    ///
+    /// On exceed we intentionally do not roll the appended rows back, so the
+    /// caller sees exactly which message broke the budget; the atomic bump means
+    /// two concurrent callers cannot both squeeze past the cap. Only the agent
+    /// branch calls this — humans don't consume an agent turn.
+    async fn bump_dag_budget(&self, ctx: &ToolCallContext) -> Result<(), ToolError> {
         match self
             .dag
             .bump_or_fail_for_user(ctx.acting_user_id, ctx.root_request_id)
@@ -469,6 +573,7 @@ impl SendMessageTool {
                     patom.dag.turns_cap = bumped.turns_cap,
                     "send_message.dag.bump",
                 );
+                Ok(())
             }
             Err(e @ PromptError::DagBudgetExceeded { .. }) => {
                 set_outcome("dag_exceeded");
@@ -488,34 +593,16 @@ impl SendMessageTool {
                     .sink
                     .close_for_user(ctx.acting_user_id, ctx.root_request_id)
                     .await;
-                return Err(ToolError::InvalidInput(format!(
+                Err(ToolError::InvalidInput(format!(
                     "send_message: dag budget exceeded: {e}"
-                )));
+                )))
             }
             Err(e) => {
                 set_outcome("dag_failed");
                 warn!(error = %e, patom.dag.root = %ctx.root_request_id, "send_message.dag.failed");
-                return Err(ToolError::Backend(format!(
+                Err(ToolError::Backend(format!(
                     "send_message: dag bump failed: {e}"
-                )));
-            }
-        }
-
-        // Branch on receiver kind. Human delivery publishes on the root
-        // request's stream and is non-blocking (no queue row). Agent
-        // delivery enqueues a `prompt_requests` row for the worker.
-        match receiver {
-            Participant::Human { .. } => {
-                self.publish_to_human(ctx, receiver_session, content.as_str())
-                    .await
-            }
-            Participant::Agent { agent_id, .. } => {
-                self.enqueue_for_agent(ctx, receiver_session, agent_id, content, tenancy)
-                    .await
-            }
-            Participant::System => {
-                set_outcome("invalid_input");
-                Err(ToolError::InvalidInput(ERR_SYSTEM_RECEIVER.into()))
+                )))
             }
         }
     }
