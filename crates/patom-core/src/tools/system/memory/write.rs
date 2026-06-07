@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::debug;
 
+use crate::colleagues::ColleagueId;
 use crate::memory::{
     MemoryContent, MemoryId, MemoryKind, MemoryMutation, MemoryState, MutationSource,
 };
@@ -29,13 +30,20 @@ const TOOL_DESCRIPTION: &str = "Persist a new memory the agent should carry acro
      (beliefs about specific peers or humans), \"collaborator\" (beliefs about \
      other agents in your network, written after a successful delegation), \
      \"procedure\" (learned how-tos), \"open\" (known unknowns); `content` is one \
-     or two sentences (max 4096 bytes). New memories land at `tentative` state \
+     or two sentences (max 4096 bytes). `subject` is the colleague id this memory \
+     is about — REQUIRED for \"collaborator\" (the coworker the belief concerns), \
+     omit for every other kind. New memories land at `tentative` state \
      and need independent confirmation to promote.";
 
 #[derive(Debug, Deserialize)]
 struct Input {
     kind: MemoryKind,
     content: String,
+    /// The colleague a `collaborator` memory is about. Required for
+    /// `collaborator`, omitted otherwise (the store rejects the inconsistent
+    /// combinations).
+    #[serde(default)]
+    subject: Option<ColleagueId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,7 +76,8 @@ impl MemoryWriteTool {
             "required": ["kind", "content"],
             "properties": {
                 "kind": { "type": "string", "enum": ["self", "other", "collaborator", "procedure", "open"] },
-                "content": { "type": "string", "minLength": 1, "maxLength": 4096 }
+                "content": { "type": "string", "minLength": 1, "maxLength": 4096 },
+                "subject": { "type": "string", "format": "uuid", "description": "Colleague id this memory is about; required for kind=collaborator" }
             },
             "additionalProperties": false,
         }));
@@ -109,6 +118,7 @@ impl Tool for MemoryWriteTool {
                     content,
                     state: MemoryState::Tentative,
                     pinned: false,
+                    subject: parsed.subject,
                     source: MutationSource::Turn(ctx.request_id),
                 },
             )

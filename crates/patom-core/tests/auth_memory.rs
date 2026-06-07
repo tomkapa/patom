@@ -188,6 +188,7 @@ impl AuthMemoryHarness {
                 content: MemoryContent::try_from(body).expect("content"),
                 state: MemoryState::Held,
                 pinned: false,
+                subject: None,
                 source: MutationSource::Operator,
             })
             .await

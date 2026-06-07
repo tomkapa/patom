@@ -218,6 +218,7 @@ impl Collaborators {
         let memory_loader = MemorySectionLoader::new(
             memory_store.clone(),
             sessions.clone(),
+            colleagues.clone(),
             embedding_provider.clone(),
             session_memory_cache.clone(),
         );

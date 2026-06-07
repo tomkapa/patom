@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 use crate::agents::AgentId;
-use crate::colleagues::ColleagueId;
+use crate::colleagues::{ColleagueId, SharedColleagueStore};
 use crate::memory::ContradictionEventId;
 use crate::provider::{
     ChatMessage, EmbeddingProvider, SharedEmbeddingProvider, UserContent, embed_one,
@@ -26,7 +26,7 @@ use crate::provider::{
 use crate::runtime::RequestKindPayload;
 use crate::session::{SessionId, SharedSessionStore};
 
-use super::composer::{MemorySection, compose_memory_section};
+use super::composer::{MemorySection, SubjectNames, compose_memory_section};
 use super::limits::CONTEXTUAL_TOP_K;
 use super::session_cache::SessionMemoryCache;
 use super::store::{MemoryRow, MemoryStore, SearchFilter, SharedMemoryStore};
@@ -40,6 +40,7 @@ use super::types::{MemoryHandle, MemoryId, MemoryKind};
 pub struct MemorySectionLoader {
     store: SharedMemoryStore,
     sessions: SharedSessionStore,
+    colleagues: SharedColleagueStore,
     embeddings: SharedEmbeddingProvider,
     cache: SessionMemoryCache,
 }
@@ -49,12 +50,14 @@ impl MemorySectionLoader {
     pub fn new(
         store: SharedMemoryStore,
         sessions: SharedSessionStore,
+        colleagues: SharedColleagueStore,
         embeddings: SharedEmbeddingProvider,
         cache: SessionMemoryCache,
     ) -> Self {
         Self {
             store,
             sessions,
+            colleagues,
             embeddings,
             cache,
         }
@@ -107,6 +110,7 @@ impl MemorySectionLoader {
     ) -> Result<Arc<MemorySection>, MemoryError> {
         let store = self.store.clone();
         let sessions = self.sessions.clone();
+        let colleagues = self.colleagues.clone();
         let embeddings = self.embeddings.clone();
         // Cheap variant probe — the DB lookup happens inside the closure
         // so cache hits skip it entirely.
@@ -150,7 +154,21 @@ impl MemorySectionLoader {
                 };
                 let contextual_refs: Vec<&MemoryRow> = contextual_rows.iter().collect();
 
-                Ok::<_, MemoryError>(compose_memory_section(&rows, &contextual_refs, &reserved))
+                // Hydrate display names for the colleagues that any
+                // `Collaborator` memory is about, so the synchronous renderer
+                // can label entries without resolving per row (§4). One roster
+                // read covers every subject; skipped entirely when no loaded
+                // row names a subject.
+                let subjects =
+                    hydrate_subjects(&colleagues, rows.iter().chain(contextual_rows.iter()))
+                        .await?;
+
+                Ok::<_, MemoryError>(compose_memory_section(
+                    &rows,
+                    &contextual_refs,
+                    &reserved,
+                    &subjects,
+                ))
             })
             .await
     }
@@ -169,6 +187,38 @@ impl MemorySectionLoader {
         let section = self.load(session, agent, kind_payload).await?;
         Ok(section.resolve_handle(handle))
     }
+}
+
+/// Build the [`SubjectNames`] map for every `Collaborator` memory among
+/// `rows` by reading the org roster once. Returns an empty map (no roster
+/// read) when no loaded row names a subject — the common case for agents that
+/// hold no collaborator memories. A subject that the roster does not contain
+/// (a coworker who has since left the org) is simply absent from the map; the
+/// renderer then degrades that entry to plain prose.
+async fn hydrate_subjects<'a>(
+    colleagues: &SharedColleagueStore,
+    rows: impl Iterator<Item = &'a MemoryRow>,
+) -> Result<SubjectNames, MemoryError> {
+    let mut needed: std::collections::HashSet<ColleagueId> = std::collections::HashSet::new();
+    let mut org = None;
+    for r in rows {
+        if let Some(subject) = r.subject {
+            needed.insert(subject);
+            org = Some(r.org_id);
+        }
+    }
+    let Some(org) = org else {
+        return Ok(SubjectNames::new());
+    };
+
+    let roster = colleagues.list_for_org(org).await?;
+    let mut out = SubjectNames::with_capacity(needed.len());
+    for cref in &roster {
+        if needed.contains(&cref.id) {
+            out.insert(cref.id, cref.display_name.clone());
+        }
+    }
+    Ok(out)
 }
 
 /// Read the contradiction row and return `[memory_a, memory_b]` in

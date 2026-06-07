@@ -59,8 +59,15 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
         embeddings.clone(),
     ));
     let session_cache = SessionMemoryCache::new(8, Duration::from_mins(1), clock.clone());
-    let loader =
-        MemorySectionLoader::new(store.clone(), sessions.clone(), embeddings, session_cache);
+    let colleagues: patom::colleagues::SharedColleagueStore =
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
+    let loader = MemorySectionLoader::new(
+        store.clone(),
+        sessions.clone(),
+        colleagues,
+        embeddings,
+        session_cache,
+    );
     let prompts = Arc::new(Prompts::load());
     let language_resolver: SharedOrgLanguageResolver =
         Arc::new(StaticOrgLanguageResolver::new(Language::En));
@@ -145,6 +152,7 @@ async fn memory_update_resolves_handle_and_resets_state(pool: PgPool) {
             content: MemoryContent::try_from("original").expect("c"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -189,6 +197,7 @@ async fn memory_update_pinned_row_rejects_agent_call(pool: PgPool) {
             content: MemoryContent::try_from("pinned").expect("c"),
             state: MemoryState::Core,
             pinned: true,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -218,6 +227,7 @@ async fn memory_validate_promotes_state_without_content_change(pool: PgPool) {
             content: MemoryContent::try_from("deploy mondays").expect("c"),
             state: MemoryState::Tentative,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -261,6 +271,7 @@ async fn memory_validate_rejects_pinned_row(pool: PgPool) {
             content: MemoryContent::try_from("pinned belief").expect("c"),
             state: MemoryState::Core,
             pinned: true,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -290,6 +301,7 @@ async fn memory_forget_removes_row(pool: PgPool) {
             content: MemoryContent::try_from("disposable").expect("c"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -378,6 +390,7 @@ async fn handle_round_trips_through_session_cache(pool: PgPool) {
             content: MemoryContent::try_from("first").expect("c"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -444,6 +457,7 @@ async fn seed_pair_and_contradiction(
             content: MemoryContent::try_from("ship on Friday").expect("c"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -456,6 +470,7 @@ async fn seed_pair_and_contradiction(
             content: MemoryContent::try_from("don't ship on Friday").expect("c"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await

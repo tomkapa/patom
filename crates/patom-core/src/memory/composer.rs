@@ -15,11 +15,22 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::colleagues::{ColleagueId, ColleagueName};
+
 use super::limits::{
     CONTEXTUAL_LAYER_MAX_BYTES, RENDER_LINE_OVERHEAD_BYTES, STABLE_LAYER_MAX_BYTES,
 };
 use super::store::MemoryRow;
 use super::types::{MemoryHandle, MemoryId, MemoryKind};
+
+/// Resolved subject display names, keyed by colleague id.
+///
+/// Maps the colleague each `Collaborator` memory is about to its display name.
+/// Hydrated by the loader from the org roster before [`compose_memory_section`]
+/// so the renderer stays synchronous (§4 — no async in a leaf). A subject absent
+/// from the map renders without a label (a departed coworker or a roster miss
+/// degrades to plain prose, never an error).
+pub type SubjectNames = HashMap<ColleagueId, ColleagueName>;
 
 /// Stable XML-ish tags wrapping the rendered memory section. Matches the
 /// existing `<core>...</core>` / `<role>...</role>` framing so the model
@@ -101,11 +112,15 @@ impl MemorySection {
 /// Remaining layered rows mint `M-(N+1)..`. Pass `&[]` for the common
 /// kind-agnostic path; the resolution turn passes `[memory_a, memory_b]`
 /// so the librarian-flagged pair binds `M-1` / `M-2`.
+///
+/// `subjects` resolves the display name of the colleague each `Collaborator`
+/// memory is about; see [`SubjectNames`].
 #[must_use]
 pub fn compose_memory_section<'a>(
     rows: &'a [MemoryRow],
     contextual: &'a [&'a MemoryRow],
     reserved: &[MemoryId],
+    subjects: &SubjectNames,
 ) -> MemorySection {
     let stable = select_stable_layer(rows);
     let stable_ids: std::collections::HashSet<MemoryId> = stable.iter().map(|r| r.id).collect();
@@ -117,7 +132,7 @@ pub fn compose_memory_section<'a>(
             .collect(),
         super::limits::CONTEXTUAL_LAYER_MAX_BYTES,
     );
-    render(&stable, &trimmed_contextual, reserved)
+    render(&stable, &trimmed_contextual, reserved, subjects)
 }
 
 /// Stable layer per doc/memory.md §1.3: pinned + Self-kind, sorted by
@@ -155,6 +170,7 @@ fn render(
     stable: &[&MemoryRow],
     contextual: &[&MemoryRow],
     reserved: &[MemoryId],
+    subjects: &SubjectNames,
 ) -> MemorySection {
     // Reserved handles bind even when no layered row is rendered, so
     // tool-call resolution still succeeds for callers that pre-allocated
@@ -187,7 +203,7 @@ fn render(
     }
 
     MemorySection {
-        text: Arc::from(render_text(&by_kind)),
+        text: Arc::from(render_text(&by_kind, subjects)),
         handles,
     }
 }
@@ -208,7 +224,10 @@ fn bind_reserved_handles(reserved: &[MemoryId]) -> (HashMap<MemoryHandle, Memory
     (handles, next_handle)
 }
 
-fn render_text(by_kind: &HashMap<MemoryKind, Vec<(MemoryHandle, &MemoryRow)>>) -> String {
+fn render_text(
+    by_kind: &HashMap<MemoryKind, Vec<(MemoryHandle, &MemoryRow)>>,
+    subjects: &SubjectNames,
+) -> String {
     let estimated = STABLE_LAYER_MAX_BYTES + CONTEXTUAL_LAYER_MAX_BYTES + 256;
     let mut buf = String::with_capacity(estimated);
     buf.push_str(MEMORY_TAG_OPEN);
@@ -233,11 +252,21 @@ fn render_text(by_kind: &HashMap<MemoryKind, Vec<(MemoryHandle, &MemoryRow)>>) -
         buf.push('\n');
         for (handle, row) in entries {
             // `- [<handle>, <state>] <content>` per doc/memory.md §1.3.
+            // A `Collaborator` entry whose subject resolves prefixes
+            // `(about <name>) ` so the agent reads who the belief concerns.
             buf.push_str("- [");
             buf.push_str(&handle.to_string());
             buf.push_str(", ");
             buf.push_str(row.state.as_str());
             buf.push_str("] ");
+            if *kind == MemoryKind::Collaborator
+                && let Some(subject) = row.subject
+                && let Some(name) = subjects.get(&subject)
+            {
+                buf.push_str("(about ");
+                buf.push_str(name.as_str());
+                buf.push_str(") ");
+            }
             buf.push_str(row.content.as_str());
             buf.push('\n');
         }
@@ -252,10 +281,17 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use crate::agents::AgentId;
+    use crate::colleagues::ColleagueId;
     use crate::memory::store::MemoryRow;
     use crate::memory::types::{MemoryContent, MemoryKind, MemoryState};
 
     use super::*;
+
+    /// No collaborator subjects to resolve — the common case for every
+    /// non-collaborator test.
+    fn no_subjects() -> SubjectNames {
+        SubjectNames::new()
+    }
 
     fn row(
         ix: u8,
@@ -265,6 +301,19 @@ mod tests {
         pinned: bool,
         ts_secs: i64,
     ) -> MemoryRow {
+        row_about(ix, kind, content, state, pinned, ts_secs, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn row_about(
+        ix: u8,
+        kind: MemoryKind,
+        content: &str,
+        state: MemoryState,
+        pinned: bool,
+        ts_secs: i64,
+        subject: Option<ColleagueId>,
+    ) -> MemoryRow {
         MemoryRow {
             id: MemoryId::new(),
             agent_id: AgentId::new(),
@@ -273,6 +322,7 @@ mod tests {
             content: MemoryContent::try_from(content).expect("valid"),
             state,
             pinned,
+            subject,
             source_turn_id: None,
             created_at: Utc.timestamp_opt(ts_secs, 0).unwrap(),
             last_validated_at: Utc.timestamp_opt(ts_secs, 0).unwrap(),
@@ -283,7 +333,7 @@ mod tests {
 
     #[test]
     fn empty_input_renders_empty_section() {
-        let section = compose_memory_section(&[], &[], &[]);
+        let section = compose_memory_section(&[], &[], &[], &no_subjects());
         assert!(section.is_empty());
         assert!(section.is_empty());
     }
@@ -316,7 +366,7 @@ mod tests {
                 300,
             ),
         ];
-        let section = compose_memory_section(&rows, &[], &[]);
+        let section = compose_memory_section(&rows, &[], &[], &no_subjects());
         let txt = section.text();
         assert!(txt.contains("self memory"), "Self kind included: {txt}");
         assert!(
@@ -365,7 +415,7 @@ mod tests {
                 500,
             ),
         ];
-        let section = compose_memory_section(&rows, &[], &[]);
+        let section = compose_memory_section(&rows, &[], &[], &no_subjects());
         let txt = section.text();
         let pos = |s: &str| txt.find(s).expect("present");
         // Validated > Held > Tentative; within Validated the newer one first.
@@ -384,7 +434,7 @@ mod tests {
             false,
             100,
         )];
-        let section = compose_memory_section(&rows, &[], &[]);
+        let section = compose_memory_section(&rows, &[], &[], &no_subjects());
         let id = rows[0].id;
         let handle = MemoryHandle::try_from(1u32).expect("valid");
         assert_eq!(section.resolve_handle(handle), Some(id));
@@ -401,7 +451,7 @@ mod tests {
             false,
             100,
         )];
-        let section = compose_memory_section(&rows, &[], &[]);
+        let section = compose_memory_section(&rows, &[], &[], &no_subjects());
         assert!(
             section.text().contains("- [M-1, validated] terse replies"),
             "render shape: {}",
@@ -434,7 +484,7 @@ mod tests {
                 )
             })
             .collect();
-        let section = compose_memory_section(&rows, &[], &[]);
+        let section = compose_memory_section(&rows, &[], &[], &no_subjects());
         // Must include at least one row, but fewer than all 10.
         let count = section.text().matches("- [M-").count();
         assert!(count >= 1, "at least one row kept");
@@ -464,7 +514,7 @@ mod tests {
                 200,
             ),
         ];
-        let section = compose_memory_section(&rows, &[], &[]);
+        let section = compose_memory_section(&rows, &[], &[], &no_subjects());
         let txt = section.text();
         let other = txt.find("### Other").expect("### Other present");
         let proc = txt.find("### Procedure").expect("### Procedure present");
@@ -478,7 +528,7 @@ mod tests {
         // `M-1` / `M-2` to the right ids but must not render them.
         let pair_a = MemoryId::new();
         let pair_b = MemoryId::new();
-        let section = compose_memory_section(&[], &[], &[pair_a, pair_b]);
+        let section = compose_memory_section(&[], &[], &[pair_a, pair_b], &no_subjects());
         assert_eq!(section.text(), "", "no text when only reserved handles");
         assert!(section.is_empty());
         let h1 = MemoryHandle::try_from(1u32).expect("M-1");
@@ -513,7 +563,7 @@ mod tests {
         let other_id = other.id;
         let rows = vec![pair_a, other];
 
-        let section = compose_memory_section(&rows, &[], &[pair_a_id, pair_b]);
+        let section = compose_memory_section(&rows, &[], &[pair_a_id, pair_b], &no_subjects());
         let txt = section.text();
         assert!(!txt.contains("pair-a"), "pair-side row not rendered: {txt}");
         assert!(txt.contains("other-self"), "non-pair row rendered: {txt}");
@@ -527,5 +577,53 @@ mod tests {
         assert_eq!(section.resolve_handle(h1), Some(pair_a_id));
         assert_eq!(section.resolve_handle(h2), Some(pair_b));
         assert_eq!(section.resolve_handle(h3), Some(other_id));
+    }
+
+    #[test]
+    fn collaborator_entry_labelled_by_subject_name() {
+        // A pinned collaborator memory (so it lands in the stable layer)
+        // about a resolved subject renders the coworker's display name.
+        let subject = ColleagueId::new();
+        let r = row_about(
+            1,
+            MemoryKind::Collaborator,
+            "ships fast, skips tests",
+            MemoryState::Held,
+            true,
+            100,
+            Some(subject),
+        );
+        let mut subjects = SubjectNames::new();
+        subjects.insert(subject, ColleagueName::try_from("Designer").expect("name"));
+
+        let section = compose_memory_section(&[r], &[], &[], &subjects);
+        let txt = section.text();
+        assert!(
+            txt.contains("- [M-1, held] (about Designer) ships fast, skips tests"),
+            "collaborator entry labelled by subject: {txt}"
+        );
+    }
+
+    #[test]
+    fn collaborator_entry_without_resolved_subject_renders_plain() {
+        // Subject id present but absent from the roster map (departed coworker
+        // / roster miss) degrades to plain prose — never a panic or an error.
+        let subject = ColleagueId::new();
+        let r = row_about(
+            1,
+            MemoryKind::Collaborator,
+            "ships fast, skips tests",
+            MemoryState::Held,
+            true,
+            100,
+            Some(subject),
+        );
+        let section = compose_memory_section(&[r], &[], &[], &no_subjects());
+        let txt = section.text();
+        assert!(
+            txt.contains("- [M-1, held] ships fast, skips tests"),
+            "unresolved subject renders plain: {txt}"
+        );
+        assert!(!txt.contains("(about"), "no label when unresolved: {txt}");
     }
 }

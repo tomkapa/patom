@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::agents::AgentStoreError;
 use crate::auth::{LanguageResolverError, RuleResolverError};
+use crate::colleagues::ColleagueError;
 use crate::runtime::RequestKindPayload;
 use crate::session::{SessionError, SessionId};
 use crate::types::Participant;
@@ -20,6 +21,11 @@ pub enum MemoryError {
 
     #[error("agent lookup: {0}")]
     Agent(#[from] AgentStoreError),
+
+    /// Resolving a `Collaborator` memory's subject colleague (or the roster
+    /// used to hydrate subject names) failed.
+    #[error("colleague lookup: {0}")]
+    Colleague(#[from] ColleagueError),
 
     #[error("language resolver: {0}")]
     Language(#[from] LanguageResolverError),

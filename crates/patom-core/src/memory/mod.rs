@@ -37,7 +37,9 @@ pub use r#static::StaticMemory;
 pub use traits::{Memory, MemoryError, SharedMemory};
 
 // --- composition + caching ------------------------------------------------
-pub use composer::{MEMORY_TAG_CLOSE, MEMORY_TAG_OPEN, MemorySection, compose_memory_section};
+pub use composer::{
+    MEMORY_TAG_CLOSE, MEMORY_TAG_OPEN, MemorySection, SubjectNames, compose_memory_section,
+};
 pub use loader::MemorySectionLoader;
 pub use session_cache::SessionMemoryCache;
 

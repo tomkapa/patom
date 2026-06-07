@@ -508,6 +508,7 @@ mod tests {
             content: MemoryContent::try_from(content).expect("valid"),
             state,
             pinned: false,
+            subject: None,
             source_turn_id: None,
             created_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
             last_validated_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),

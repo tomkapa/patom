@@ -66,8 +66,15 @@ fn build_memory_with_rule(
         embeddings.clone(),
     ));
     let session_cache = SessionMemoryCache::new(16, Duration::from_mins(1), clock.clone());
-    let loader =
-        MemorySectionLoader::new(store.clone(), sessions.clone(), embeddings, session_cache);
+    let colleagues: patom::colleagues::SharedColleagueStore =
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
+    let loader = MemorySectionLoader::new(
+        store.clone(),
+        sessions.clone(),
+        colleagues,
+        embeddings,
+        session_cache,
+    );
     let prompts = Arc::new(Prompts::load());
     let language_resolver: SharedOrgLanguageResolver =
         Arc::new(StaticOrgLanguageResolver::new(Language::En));
@@ -145,6 +152,7 @@ async fn date_section_sits_between_role_and_memory(pool: PgPool) {
             content: MemoryContent::try_from("I default to terse replies.").expect("valid"),
             state: MemoryState::Validated,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -231,6 +239,7 @@ async fn renders_memory_section_after_role(pool: PgPool) {
             content: MemoryContent::try_from("I default to terse replies.").expect("valid"),
             state: MemoryState::Validated,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -293,6 +302,7 @@ async fn frozen_during_session_returns_identical_prompt(pool: PgPool) {
             content: MemoryContent::try_from("post-cache memory").expect("valid"),
             state: MemoryState::Tentative,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -334,6 +344,7 @@ async fn resolve_handle_round_trips_to_memory_id(pool: PgPool) {
             content: MemoryContent::try_from("identity").expect("valid"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
