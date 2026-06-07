@@ -1,13 +1,13 @@
 //! Integration tests for the colleagues directory (Stage 2). Each test gets a
 //! freshly-migrated database via `#[sqlx::test]`; minting is driven by the
-//! triggers in migration 57, so seeding a tenant alone populates the directory.
+//! triggers in migration 58, so seeding a tenant alone populates the directory.
 
 #![allow(clippy::expect_used)]
 
 use std::sync::Arc;
 
 use patom::auth::{UserId, begin_as_user};
-use patom::clock::SystemClock;
+use patom::clock::TestClock;
 use patom::colleagues::{
     COLLEAGUE_ROSTER_CACHE_CAP, COLLEAGUE_ROSTER_CACHE_TTL, ColleagueError, ColleagueKind,
     ColleagueRosterCache, ColleagueStore, PgColleagueStore, SharedColleagueStore,
@@ -125,7 +125,7 @@ async fn roster_cache_serves_org_roster(pool: PgPool) {
     let cache = ColleagueRosterCache::new(
         COLLEAGUE_ROSTER_CACHE_CAP,
         COLLEAGUE_ROSTER_CACHE_TTL,
-        SystemClock::shared(),
+        Arc::new(TestClock::new()),
     );
     let roster = cache
         .get_or_load(seed.org_id, &store)

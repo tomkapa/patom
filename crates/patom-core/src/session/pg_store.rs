@@ -619,6 +619,16 @@ impl SessionStore for PgSessionStore {
         })
         .await?;
 
+        // The optimized join returns zero rows for three cases that the trait
+        // default distinguishes: a nonexistent `id` (→ `NotFound`), a session
+        // with no parent, and a viewer who is not a parent participant (both
+        // → empty). Preserve the `NotFound` contract by probing existence only
+        // on the empty path, so the common non-empty hot path stays one
+        // round-trip (the whole point of this override).
+        if rows.is_empty() {
+            self.parent(id).await?;
+        }
+
         tracing::Span::current().record("patom.history.count", rows.len());
         let mut out = Vec::with_capacity(rows.len());
         for raw in rows {
@@ -1031,9 +1041,13 @@ fn assistant_to_user_blocks(blocks: Vec<AssistantContent>) -> Vec<UserContent> {
 fn map_colleague_fk(e: sqlx::Error) -> SessionError {
     if let sqlx::Error::Database(ref db) = e
         && db.code().as_deref() == Some("23503")
+        && db.constraint().is_some_and(|c| c.contains("colleague"))
     {
-        // We don't know which side mismatched; surface with a sentinel
-        // colleague id (Nil UUID) so callers see the typed error.
+        // A colleague-FK violation specifically — the constraint name carries
+        // the `*_colleague_id_fkey` column. We don't know which side mismatched;
+        // surface with a sentinel colleague id (Nil UUID) so callers see the
+        // typed error. Any *other* `23503` falls through to the generic `Db`
+        // error rather than being mislabelled as an unknown colleague.
         return SessionError::ColleagueNotFound(ColleagueId::from(uuid::Uuid::nil()));
     }
     e.into()

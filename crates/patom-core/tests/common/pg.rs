@@ -256,11 +256,11 @@ pub async fn seed_prompt_request(
 ) -> PromptRequestId {
     let id = PromptRequestId::new();
     let now = chrono::Utc::now();
-    // After migration 59 the participant columns are colleague-backed. The
+    // After migration 60 the participant columns are colleague-backed. The
     // shared seed uses the freshly-seeded human's colleague as sender and
     // the agent's colleague as receiver (both resolved by mint trigger from
-    // migration 57).
-    sqlx::query(
+    // migration 58).
+    let result = sqlx::query(
         "INSERT INTO prompt_requests
              (id, session_id, org_id, content, idempotency_key, status,
               sender_colleague_id, receiver_colleague_id, root_request_id,
@@ -282,5 +282,13 @@ pub async fn seed_prompt_request(
     .execute(pool)
     .await
     .expect("seed prompt_request");
+    // The `INSERT ... SELECT ... LIMIT 1` inserts zero rows if the seed
+    // colleagues are missing, yet would still return `id` — a silent
+    // dangling reference. Assert the row actually landed.
+    assert_eq!(
+        result.rows_affected(),
+        1,
+        "seed_prompt_request inserted no row — seed colleagues (human + agent) must exist for org"
+    );
     id
 }

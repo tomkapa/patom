@@ -117,9 +117,11 @@ impl IntoResponse for HttpError {
             Self::Session(SessionError::NotFound(_)) => {
                 (StatusCode::NOT_FOUND, "session not found".into())
             }
-            Self::Session(SessionError::ColleagueNotFound(_))
-            | Self::Agent(AgentStoreError::NotFound(_)) => {
+            Self::Session(SessionError::ColleagueNotFound(_)) => {
                 (StatusCode::BAD_REQUEST, "unknown colleague_id".into())
+            }
+            Self::Agent(AgentStoreError::NotFound(_)) => {
+                (StatusCode::BAD_REQUEST, "unknown agent_id".into())
             }
             Self::Agent(AgentStoreError::NameNotFound(_)) => {
                 (StatusCode::NOT_FOUND, self.to_string())

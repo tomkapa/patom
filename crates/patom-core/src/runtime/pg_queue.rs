@@ -626,16 +626,21 @@ fn build_claimed_session(
     );
     let kind = drained[0].4.0.kind();
     for (_, _, rcv, _, p) in &drained[1..] {
-        assert_eq!(
-            *rcv,
-            Some(receiver_agent_id),
-            "invariant: drained prompts for one session must share receiver_agent_id"
-        );
-        assert_eq!(
-            p.0.kind(),
-            kind,
-            "invariant: drained prompts for one session must share kind"
-        );
+        // A drained batch is one session's queued rows; the drain query
+        // guarantees they share receiver + kind. Treat a violation as a
+        // backend error (not a panic) for parity with the head-row guard —
+        // the claim fails, the lease expires, another worker retries, rather
+        // than unwinding the worker on a malformed batch.
+        if *rcv != Some(receiver_agent_id) {
+            return Err(PromptError::Backend(
+                "drained prompts for one session must share receiver_agent_id".into(),
+            ));
+        }
+        if p.0.kind() != kind {
+            return Err(PromptError::Backend(
+                "drained prompts for one session must share kind".into(),
+            ));
+        }
     }
 
     // Pick the first non-empty traceparent. A claim batch is the

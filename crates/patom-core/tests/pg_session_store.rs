@@ -176,7 +176,7 @@ async fn delete_cascades_messages(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn create_with_unknown_agent_returns_agent_not_found(pool: PgPool) {
+async fn create_with_unknown_agent_returns_colleague_not_found(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 

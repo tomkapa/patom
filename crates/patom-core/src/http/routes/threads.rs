@@ -318,10 +318,14 @@ async fn thread_messages(
     tx.commit().await.map_err(AuthError::from)?;
 
     tracing::Span::current().record("patom.thread.history.size", rows.len());
-    Ok(Json(rows.into_iter().map(history_row_to_message).collect()))
+    let messages = rows
+        .into_iter()
+        .map(history_row_to_message)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Json(messages))
 }
 
-fn history_row_to_message(row: HistoryRow) -> ThreadMessage {
+fn history_row_to_message(row: HistoryRow) -> Result<ThreadMessage, HttpError> {
     let (
         session_id,
         seq,
@@ -337,21 +341,30 @@ fn history_row_to_message(row: HistoryRow) -> ThreadMessage {
         created_at,
         request_id,
     ) = row;
+    // The schema enforces these shapes, so a violation is a malformed-DB
+    // anomaly, not bad input — log it and degrade to a typed 500 rather than
+    // panicking the handler (§6/§12: no `expect` across the HTTP boundary).
     let sender = decode_sender(
         sender_colleague_id,
         sender_kind,
         sender_user_id,
         sender_agent_id,
     )
-    .expect("invariant: session_messages sender shape enforced by schema");
+    .map_err(|e| {
+        tracing::error!(error = e, "thread.history.decode_sender");
+        HttpError::Internal
+    })?;
     let receiver = decode_receiver(
         Some(receiver_colleague_id),
         Some(receiver_kind),
         receiver_user_id,
         receiver_agent_id,
     )
-    .expect("invariant: session_messages receiver shape enforced by schema");
-    ThreadMessage {
+    .map_err(|e| {
+        tracing::error!(error = e, "thread.history.decode_receiver");
+        HttpError::Internal
+    })?;
+    Ok(ThreadMessage {
         session_id,
         seq,
         sender,
@@ -359,7 +372,7 @@ fn history_row_to_message(row: HistoryRow) -> ThreadMessage {
         body,
         created_at,
         request_id,
-    }
+    })
 }
 
 /// Mirror of `crate::session::pg_store::decode_participant` for the threads
