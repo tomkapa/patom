@@ -24,6 +24,8 @@ import type {
   OrgDetails,
   PromptVersionList,
   RestorePromptVersionResponse,
+  ScheduledTask,
+  ScheduledTaskList,
   OAuthStartRequest,
   OAuthStartResponse,
   Role,
@@ -252,6 +254,32 @@ export const api = {
       `/agents/${id}/tool-calls${q ? `?${q}` : ""}`,
     );
   },
+
+  // ─── Scheduled tasks ──────────────────────────────────────────────────
+  /** Page through the agent's scheduled tasks. `summary` is a tenant-gated
+   *  server rollup, so the stats strip stays correct regardless of which
+   *  page is in view. Tenant-gated server-side; a 404 means "not visible
+   *  to your principal". */
+  scheduledTasks: (
+    id: string,
+    params?: { page?: number; per_page?: number },
+  ) => {
+    const search = new URLSearchParams();
+    if (params?.page !== undefined) search.set("page", String(params.page));
+    if (params?.per_page !== undefined)
+      search.set("per_page", String(params.per_page));
+    const q = search.toString();
+    return request<ScheduledTaskList>(
+      `/agents/${id}/scheduled-tasks${q ? `?${q}` : ""}`,
+    );
+  },
+  /** Cancel one scheduled task. Idempotent: cancelling an already-cancelled
+   *  task is a no-op 200. Returns the updated row. */
+  cancelScheduledTask: (id: string, taskId: string) =>
+    request<ScheduledTask>(
+      `/agents/${id}/scheduled-tasks/${taskId}/cancel`,
+      { method: "POST" },
+    ),
 
   // ─── Agent logs & metrics ────────────────────────────────────────────
   // Declared in `src/http/routes/agents.rs`. All paths are tenant-gated

@@ -749,6 +749,133 @@ function pushEvent(agentId: string, evt: MemEvt) {
   MEMORY_EVENTS.set(agentId, [evt, ...memoryEventsFor(agentId)]);
 }
 
+// ─── Scheduled tasks fixtures ───────────────────────────────────────────
+type SchedTask = {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  name: string;
+  status: "active" | "completed" | "cancelled";
+  kind: "recurring" | "one_time";
+  schedule_label: string;
+  schedule_full: string;
+  next_run_label: string | null;
+  last_run_label: string | null;
+};
+
+const SCHEDULED: Map<string, SchedTask[]> = new Map();
+
+// The first five mirror the design.pen "Scheduled Tasks - List" page-1
+// rows verbatim; the rest pad the list out to 18 so the footer reads
+// "Showing 1–5 of 18 tasks" and pagination shows pages 1–4.
+function scheduledFor(agentId: string, agentName: string): SchedTask[] {
+  const existing = SCHEDULED.get(agentId);
+  if (existing) return existing;
+  const mk = (
+    n: number,
+    name: string,
+    status: SchedTask["status"],
+    kind: SchedTask["kind"],
+    schedule_label: string,
+    schedule_full: string,
+    next_run_label: string | null,
+    last_run_label: string | null,
+  ): SchedTask => ({
+    id: `sched-${agentId}-${n}`,
+    agent_id: agentId,
+    agent_name: agentName,
+    name,
+    status,
+    kind,
+    schedule_label,
+    schedule_full,
+    next_run_label,
+    last_run_label,
+  });
+  const page1: SchedTask[] = [
+    mk(
+      1,
+      "Weekly metrics digest",
+      "active",
+      "recurring",
+      "Every Mon, 09:00 UTC",
+      "Every Monday at 09:00 UTC",
+      "Mon Jun 09, 09:00",
+      "Mon Jun 02, 09:00",
+    ),
+    mk(
+      2,
+      "Daily ticket triage",
+      "active",
+      "recurring",
+      "Every day, 08:00 (America/NY)",
+      "Every day at 08:00 (America/New_York)",
+      "Sun Jun 08, 08:00",
+      "Sat Jun 07, 08:00",
+    ),
+    mk(
+      3,
+      "Quarterly compliance scan",
+      "active",
+      "recurring",
+      "Every 3 months, 1st (Europe/London)",
+      "Every 3 months on the 1st (Europe/London)",
+      "Jul 01, 00:00",
+      "Tue Apr 01, 00:00",
+    ),
+    mk(
+      4,
+      "PR review reminder",
+      "cancelled",
+      "recurring",
+      "Every weekday, 14:00 UTC",
+      "Every weekday at 14:00 UTC",
+      null,
+      "Wed May 28, 14:00",
+    ),
+    mk(
+      5,
+      "One-time data migration check",
+      "active",
+      "one_time",
+      "Once: Jun 10, 06:00 UTC",
+      "Once at Jun 10, 06:00 UTC",
+      "Tue Jun 10, 06:00",
+      null,
+    ),
+  ];
+  const fillerNames = [
+    "Nightly backup verification",
+    "Stale branch sweep",
+    "Cost anomaly check",
+    "Weekly changelog draft",
+    "Monthly access review",
+    "Dependency audit",
+    "Inbox zero summary",
+    "On-call handoff note",
+    "Cache warmup",
+    "Latency report",
+    "Doc freshness scan",
+    "Release notes draft",
+    "Quota usage rollup",
+  ];
+  const rest: SchedTask[] = fillerNames.map((name, i) =>
+    mk(
+      i + 6,
+      name,
+      "completed",
+      i % 3 === 0 ? "one_time" : "recurring",
+      "Every Fri, 17:00 UTC",
+      "Every Friday at 17:00 UTC",
+      i % 3 === 0 ? null : "Fri Jun 13, 17:00",
+      "Fri Jun 06, 17:00",
+    ),
+  );
+  const all = [...page1, ...rest];
+  SCHEDULED.set(agentId, all);
+  return all;
+}
+
 const TOOL_FIXTURES: Record<string, ToolCall[]> = {};
 
 function buildFixture(serverId: string): ToolCall[] {
@@ -1363,6 +1490,45 @@ const server = Bun.serve({
             ? pageItems[pageItems.length - 1]!.started_at
             : null;
         return json({ items: pageItems, next_cursor });
+      }
+
+      // ─── scheduled tasks ────────────────────────────────────────
+      if (sub === "/scheduled-tasks" && method === "GET") {
+        if (!a) return empty(404);
+        const tasks = scheduledFor(id, a.name);
+        const qs = url.searchParams;
+        const perPage = Math.min(
+          Math.max(Number(qs.get("per_page") ?? 5) || 5, 1),
+          50,
+        );
+        const page = Math.max(Number(qs.get("page") ?? 1) || 1, 1);
+        const start = (page - 1) * perPage;
+        const items = tasks.slice(start, start + perPage);
+        // Fixed rollup matching the design's stats strip (3 / 12 / 3).
+        return json({
+          items,
+          total: tasks.length,
+          summary: { active: 3, completed: 12, cancelled: 3 },
+        });
+      }
+      const cancelMatch = sub.match(
+        /^\/scheduled-tasks\/([^/]+)\/cancel$/,
+      );
+      if (cancelMatch && method === "POST") {
+        if (!a) return empty(404);
+        const taskId = cancelMatch[1]!;
+        const tasks = scheduledFor(id, a.name);
+        const idx = tasks.findIndex((t) => t.id === taskId);
+        if (idx === -1) return empty(404);
+        const updated: SchedTask = {
+          ...tasks[idx]!,
+          status: "cancelled",
+          next_run_label: null,
+        };
+        const next = [...tasks];
+        next[idx] = updated;
+        SCHEDULED.set(id, next);
+        return json(updated);
       }
     }
 

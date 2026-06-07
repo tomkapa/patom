@@ -4,6 +4,7 @@ import { AgentGeneral } from "./pages/AgentGeneral";
 import { AgentLogs } from "./pages/AgentLogs";
 import { AgentMemory } from "./pages/AgentMemory";
 import { AgentTools } from "./pages/AgentTools";
+import { ScheduledTasks } from "./pages/ScheduledTasks";
 import { AgentsIndex } from "./pages/AgentsIndex";
 import { ChatView } from "./pages/ChatView";
 import { ConnectionDetail } from "./pages/ConnectionDetail";
@@ -112,6 +113,14 @@ export function App() {
         element={
           <Protected>
             <AgentMemory />
+          </Protected>
+        }
+      />
+      <Route
+        path="/agents/:id/scheduled"
+        element={
+          <Protected>
+            <ScheduledTasks />
           </Protected>
         }
       />
