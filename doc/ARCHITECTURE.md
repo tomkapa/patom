@@ -94,8 +94,8 @@ Axum router with `tower-http::TraceLayer` for span-per-request. Public and priva
 ```text
 public (unauthenticated):
   GET  /healthz
-  GET  /auth/google/login
-  GET  /auth/google/callback
+  GET  /auth/oidc/login
+  GET  /auth/oidc/callback
   POST /slack/events            ← Slack signing-secret verified at the route
 
 private (cookie-authenticated, principal extractor):

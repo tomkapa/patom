@@ -4,6 +4,13 @@
 - **Date:** 2026-06-01
 - **Deciders:** core
 
+> **Update (2026-06-08):** the one-release migration window below has closed.
+> The Google preset and the `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` /
+> `GOOGLE_REDIRECT_URL` env vars are removed, as are the `/auth/google/*` route
+> aliases. The generic OIDC path (`PATOM_OIDC_ISSUER` + `PATOM_OIDC_CLIENT_ID` +
+> `PATOM_OIDC_CLIENT_SECRET` + `PATOM_OIDC_REDIRECT_URL`, all required) is now
+> the only login path; for Google, set the issuer to `https://accounts.google.com`.
+
 ## Context
 
 Authentication today is Google-only and required at startup. The only login

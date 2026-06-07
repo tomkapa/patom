@@ -3,7 +3,7 @@
 //! attaches global middleware once.
 //!
 //! Three tiers: ops probes (`/healthz`, `/readyz`) and OAuth landing
-//! pads (`/auth/google/*`, `/mcp-oauth/*`) at root because external
+//! pads (`/auth/oidc/*`, `/mcp-oauth/*`) at root because external
 //! systems hold those paths; JSON nested under `/api/*`; SPA shell
 //! served as a `ServeDir` fallback with `index.html` for unknown
 //! paths.
@@ -158,7 +158,7 @@ pub fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn(require_csrf))
         // route_layer is the only correct place for auth middleware —
         // applying it via `.layer` would also wrap the public subtree
-        // below and reject `/auth/google/*` with 401.
+        // below and reject `/auth/oidc/*` with 401.
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_principal,
