@@ -1,4 +1,4 @@
--- Reverse of migration 60 (§14: down recreates the prior shape).
+-- Reverse of migration 61 (§14: down recreates the prior shape).
 
 -- Restore the prior (narrower) `memory_events.kind` CHECK that excluded
 -- `collaborator`. This faithfully recreates the pre-60 shape even though that

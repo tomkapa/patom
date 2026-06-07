@@ -379,7 +379,7 @@ async fn fetch_item(
     let mut tx = crate::auth::begin_privileged(pool).await?;
     // `receiver_agent_id` is joined out of the receiver colleague — the
     // prompt_requests table only stores `receiver_colleague_id` after
-    // migration 59.
+    // migration 60.
     let row: Option<(serde_json::Value, AgentId)> = sqlx::query_as(
         "SELECT prc.payload, rc.agent_id
          FROM prompt_response_chunks prc

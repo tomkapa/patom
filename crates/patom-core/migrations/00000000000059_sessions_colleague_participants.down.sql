@@ -1,4 +1,4 @@
--- Reverse of migration 58. Reset-allowed: no data preservation, just shape.
+-- Reverse of migration 59. Reset-allowed: no data preservation, just shape.
 ALTER TABLE session_messages
     DROP COLUMN sender_colleague_id,
     DROP COLUMN receiver_colleague_id;

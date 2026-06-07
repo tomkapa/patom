@@ -1,5 +1,5 @@
 -- prompt_requests: sender/receiver flip from `(kind, agent_id)` pairs to a
--- single `colleague_id` FK per side. Same model as migration 58 for sessions
+-- single `colleague_id` FK per side. Same model as migration 59 for sessions
 -- — the queue row addresses peers as colleagues, not bare satellites.
 --
 -- The receiver of a prompt_requests row is ALWAYS an agent (humans don't run

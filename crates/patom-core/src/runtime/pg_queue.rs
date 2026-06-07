@@ -680,7 +680,7 @@ async fn enqueue_in_tx(
     // Reflection / Resolution sit in `(Agent, System)` sessions so their
     // trace doesn't pollute the parent conversation; `receiver_agent_id`
     // still drives worker dispatch. For Normal we look up the receiver
-    // agent's colleague_id inline — the trigger from migration 57 means
+    // agent's colleague_id inline — the trigger from migration 58 means
     // every agent has exactly one colleague row in its org.
     let kind = req.kind_payload.kind();
     let receiver = match kind {

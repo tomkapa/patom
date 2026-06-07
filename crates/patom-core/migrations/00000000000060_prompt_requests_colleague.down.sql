@@ -1,4 +1,4 @@
--- Reverse of migration 59. Reset-allowed: no data preservation.
+-- Reverse of migration 60. Reset-allowed: no data preservation.
 DROP TRIGGER IF EXISTS prompt_requests_receiver_agent ON prompt_requests;
 DROP FUNCTION IF EXISTS enforce_prompt_receiver_is_agent();
 DROP INDEX IF EXISTS prompt_requests_receiver_colleague_idx;

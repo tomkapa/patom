@@ -7,7 +7,7 @@
 //! (a nullable `agent_id`, a `role` string, and ad-hoc `is_human` checks)
 //! with one closed sum.
 //!
-//! Storage shape (after migration 58): each end is `participant_*_colleague_id
+//! Storage shape (after migration 59): each end is `participant_*_colleague_id
 //! UUID NULL REFERENCES colleagues(id)`. A NULL colleague reference encodes
 //! [`Participant::System`] (the synthetic end of a reflection/resolution
 //! session); the canonical-pair invariant keeps the real colleague in slot
@@ -166,7 +166,7 @@ impl Participant {
     /// Total ordering used to canonicalise pairs.
     ///
     /// Mirrors the Postgres CHECK constraint `sessions_participants_distinct`
-    /// in migration 58: real colleagues compare by `colleague_id` UUID
+    /// in migration 59: real colleagues compare by `colleague_id` UUID
     /// (`participant_a_colleague_id < participant_b_colleague_id`); `System`
     /// always sorts last because it has no id and slot `b` is the only
     /// nullable end. Two `System`s compare equal — a self-pair the caller
