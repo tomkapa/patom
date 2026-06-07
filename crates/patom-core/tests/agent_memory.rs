@@ -541,7 +541,7 @@ async fn org_rule_block_omitted_when_unset(pool: PgPool) {
 
 #[sqlx::test]
 async fn roster_block_names_a_human_colleague(pool: PgPool) {
-    // Stage 6: the `<agents>` block is now a colleague roster — a human
+    // Stage 6: the `<colleagues>` block is now a colleague roster — a human
     // coworker appears in it alongside agents, so the agent perceives humans as
     // addressable peers. The seed mints a human colleague ("Seeded Test User")
     // and an agent colleague; the agent viewer should see the human.
@@ -584,7 +584,7 @@ async fn roster_block_names_a_human_colleague(pool: PgPool) {
         s.contains(&human_cid.as_uuid().to_string()),
         "human colleague id surfaced: {s}"
     );
-    // Roster sits before the role block, mirroring the old `<agents>` position.
+    // Roster sits before the role block, mirroring the old `<colleagues>` position.
     let role_open = s.find(ROLE_TAG_OPEN).expect("has <role>");
     assert!(roster_open < role_open, "roster precedes role: {s}");
 }

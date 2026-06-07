@@ -59,7 +59,7 @@ use super::super::traits::{Tool, ToolCallContext, ToolError};
 /// Wire-side receiver shape. Three forms, in preference order:
 ///
 /// - `{"kind":"colleague","id":"<uuid>"}` — **canonical**. Addresses any
-///   colleague (human or agent) by the id surfaced in the `<agents>` roster.
+///   colleague (human or agent) by the id surfaced in the `<colleagues>` roster.
 ///   This is how the agent reaches a *specific* human coworker, not just the
 ///   anonymous root human.
 /// - `{"kind":"agent","name":"<role>"}` — sugar. Resolves an agent by role name
@@ -131,7 +131,7 @@ const TOOL_DESCRIPTION: &str = "Send a message to a participant. \
     Use this for ALL communication including replies to the human — plain \
     assistant text is not delivered. \
     Arguments: `receiver` is `{\"kind\":\"colleague\",\"id\":\"<uuid>\"}` to \
-    address any colleague (human or agent) by the id shown in your `<agents>` \
+    address any colleague (human or agent) by the id shown in your `<colleagues>` \
     block, `{\"kind\":\"agent\",\"name\":\"<role>\"}` to reach an agent by role \
     name, or `{\"kind\":\"human\"}` to reply to the person who prompted you; \
     `content` is the message body; `context_summary` is REQUIRED only the \

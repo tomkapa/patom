@@ -4,7 +4,7 @@
 //! Each call resolves the viewer's role prompt (cached, TTL-bounded by
 //! [`crate::agents::AGENT_PROMPT_CACHE_TTL`]) and composes the final
 //! `system` field as
-//! `<core>...</core>\n[<organization-rule>...</organization-rule>\n][<agents>...</agents>\n]<role>{prompt}</role>`
+//! `<core>...</core>\n[<organization-rule>...</organization-rule>\n][<colleagues>...</colleagues>\n]<role>{prompt}</role>`
 //! followed by `<date>`, the per-org `<language>` directive, and the
 //! rendered `<memory>...</memory>` section. The role prompt and memory
 //! section are cached per session; the language and the per-org rule
@@ -159,7 +159,7 @@ impl AgentMemory {
         self.loader.load(session, agent, kind_payload).await
     }
 
-    /// Render the `<agents>` colleague-roster block for the viewer.
+    /// Render the `<colleagues>` colleague-roster block for the viewer.
     ///
     /// Resolves the viewer's org from its colleague row, then renders the
     /// org-wide roster (humans + agents) from the bounded TTL cache, excluding
@@ -206,7 +206,7 @@ impl Memory for AgentMemory {
             .composed_section(session, agent_id, kind_payload)
             .await?;
 
-        // `<agents>` colleague roster (Colleagues plan, Stage 6). Lists every
+        // `<colleagues>` colleague roster (Colleagues plan, Stage 6). Lists every
         // colleague in the viewer's org — humans and agents alike — so the
         // agent perceives human coworkers as addressable peers. Cached per org
         // with the same TTL as `AgentPromptCache` so a membership change or
@@ -219,7 +219,7 @@ impl Memory for AgentMemory {
                 "system_prompt viewer has no colleague_id; agent worker only".into(),
             )
         })?;
-        let agents_block = match self.roster_block(viewer_colleague).await {
+        let roster = match self.roster_block(viewer_colleague).await {
             Ok(block) => block,
             Err(e) => {
                 tracing::warn!(error = %e, "colleagues.roster.error");
@@ -252,7 +252,7 @@ impl Memory for AgentMemory {
         let role_str = role.as_str();
         let memory_str = memory_section.text();
         let memory_sep = if memory_str.is_empty() { "" } else { "\n" };
-        let agents_sep = if agents_block.is_empty() { "" } else { "\n" };
+        let roster_sep = if roster.is_empty() { "" } else { "\n" };
 
         // `<date>` sits between `<role>` and `<memory>` so the daily-churn seam
         // lies between the per-agent stable prefix and the per-turn memory tail.
@@ -272,8 +272,8 @@ impl Memory for AgentMemory {
                 + rule_body.len()
                 + rule_close.len()
                 + rule_sep.len()
-                + agents_block.len()
-                + agents_sep.len()
+                + roster.len()
+                + roster_sep.len()
                 + ROLE_TAG_OPEN.len()
                 + role_str.len()
                 + ROLE_TAG_CLOSE.len()
@@ -291,15 +291,15 @@ impl Memory for AgentMemory {
         out.push_str(CORE_TAG_OPEN);
         out.push_str(core);
         out.push_str(CORE_TAG_CLOSE);
-        // `<organization-rule>` between `</core>` and `<agents>` — see
+        // `<organization-rule>` between `</core>` and `<colleagues>` — see
         // module doc for the cache-prefix rationale. Empty strings when
         // the org has no rule, so no separator slips through.
         out.push_str(rule_open);
         out.push_str(rule_body);
         out.push_str(rule_close);
         out.push_str(rule_sep);
-        out.push_str(&agents_block);
-        out.push_str(agents_sep);
+        out.push_str(&roster);
+        out.push_str(roster_sep);
         out.push_str(ROLE_TAG_OPEN);
         out.push_str(role_str);
         out.push_str(ROLE_TAG_CLOSE);

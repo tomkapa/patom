@@ -91,7 +91,7 @@ impl PgAgentStore {
     }
 
     /// Embed `description` synchronously. Errors propagate so the
-    /// mutation aborts before the row lands; no `<agents>` entry is
+    /// mutation aborts before the row lands; no `<colleagues>` entry is
     /// discoverable via `search_agents` without a vector to match.
     async fn embed(&self, description: &str) -> Result<Vec<f32>, AgentStoreError> {
         embed_one(self.embeddings.as_ref(), description)
@@ -477,7 +477,7 @@ impl AgentStore for PgAgentStore {
 
         // Caller-excluded at the SQL boundary so the self row never lands
         // in the projection — keeps the three caller-excluded surfaces
-        // (`<agents>`, `search_agents`, `send_message`) consistent. The
+        // (`<colleagues>`, `search_agents`, `send_message`) consistent. The
         // org-scope subquery restricts results to the viewer's tenant.
         let rows = run_privileged::<Vec<(AgentId, String, String)>, AgentStoreError>(
             &self.pool,

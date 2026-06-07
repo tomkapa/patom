@@ -1,13 +1,14 @@
-//! `<agents>` colleague-roster renderer (Colleagues plan, Stage 6).
+//! `<colleagues>` roster renderer (Colleagues plan, Stage 6).
 //!
-//! Generalises the former agent-only `<agents>` name index into a roster of
+//! Supersedes the former agent-only `<agents>` name index with a roster of
 //! *every* colleague — humans and agents alike — so the agent perceives human
 //! coworkers as addressable peers. Each entry carries its [`ColleagueId`] because the
 //! colleague-id addressing introduced by `memory_write` (Stage 5) and
 //! `send_message` (Stage 7) needs an id to pass back.
 //!
-//! The XML tag stays `<agents>` for now to avoid churning the model contract;
-//! a separate §13 PR renames it to `<colleagues>`.
+//! The XML tag is `<colleagues>` (renamed from the legacy `<agents>` now that
+//! the block names humans too); the prompts and tool descriptions that point
+//! the model at it were updated in lock-step.
 //!
 //! The renderer is a pure, synchronous leaf (§4): names are already resolved on
 //! the [`ColleagueRef`]s and the viewer is excluded before formatting. The
@@ -18,12 +19,11 @@ use std::fmt::Write;
 use super::limits::MAX_ROSTER_INLINE;
 use super::types::{ColleagueId, ColleagueRef};
 
-/// XML-ish envelope tags. Public so tests can assert on wire shape. The tag
-/// name is deliberately `<agents>` (not `<colleagues>`) — see module doc.
-pub const ROSTER_TAG_OPEN: &str = "<agents>\n";
-pub const ROSTER_TAG_CLOSE: &str = "\n</agents>";
+/// XML-ish envelope tags. Public so tests can assert on wire shape.
+pub const ROSTER_TAG_OPEN: &str = "<colleagues>\n";
+pub const ROSTER_TAG_CLOSE: &str = "\n</colleagues>";
 
-/// Render the `<agents>` colleague-roster block for `viewer`.
+/// Render the `<colleagues>` roster block for `viewer`.
 ///
 /// `roster` is the org's colleagues (humans + agents), already alpha-sorted by
 /// display name from [`crate::colleagues::ColleagueStore::list_for_org`]. The

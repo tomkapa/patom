@@ -30,7 +30,7 @@ crate::uuid_newtype! {
 ///
 /// Globally unique on `lower(name)`; the model addresses peers by this name
 /// in `send_message` and `search_agents`, and the renderer surfaces it in
-/// the `<agents>` block and in `<memory>` Collaborator entries. The wire
+/// the `<colleagues>` block and in `<memory>` Collaborator entries. The wire
 /// label is preserved as-is; case-insensitivity is enforced by the
 /// `agents_name_lower_unique` index.
 #[derive(Clone, PartialEq, Eq, Hash)]
