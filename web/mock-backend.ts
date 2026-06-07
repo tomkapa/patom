@@ -181,6 +181,12 @@ const orgState = {
   slug: "acme-robotics",
   default_language: "en" as "en" | "vi",
   created_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(),
+  // `false` simulates a freshly seeded org that still needs the
+  // /onboarding wizard; the FE gate routes there. The `?fresh=1` URL
+  // flag (or localStorage.mock_fresh="1") flips this for previewing
+  // without a process restart. Real BE backfills existing rows so
+  // pre-existing users skip the wizard — we mirror that default here.
+  onboarded: true,
 };
 
 // Mutable spend-budget state so GET/PUT /me/org/budget round-trips. Seeded
@@ -232,6 +238,10 @@ const me = {
       role: "owner" as const,
       get default_language() {
         return orgState.default_language;
+      },
+      avatar_url: null as string | null,
+      get onboarded() {
+        return orgState.onboarded;
       },
     },
   ],
@@ -393,6 +403,28 @@ const MODEL_CATALOG: { id: string; provider: string }[] = [
   { id: "deepseek-chat", provider: "deepseek" },
   { id: "deepseek-reasoner", provider: "deepseek" },
 ];
+
+/** The always-on default agent the real backend seeds on first sign-in.
+ *  In this mock only used by the `?fresh=1` path on `/me`, which clears
+ *  `agentsById` and re-inserts just this single row so the wizard's
+ *  hire-team step starts from a clean canvas. The normal `AGENTS` seed
+ *  below intentionally simulates an already-onboarded workspace
+ *  (Atlas + Beacon) and does NOT include this Recruiter. Keep
+ *  `is_default: true` so the FE's default-agent lookups still work. */
+const RECRUITER_SEED: AgentRow = {
+  id: "aaaaaaaa-0000-0000-0000-00000000000a",
+  name: "Recruiter",
+  description: "Hires & configures agents",
+  system_prompt:
+    "You are the Recruiter — the default agent. You hire and configure " +
+    "other agents for the workspace.",
+  is_default: true,
+  allowed_mcp_tools: {},
+  model: null,
+  avatar_url: null,
+  created_at: NOW,
+  updated_at: NOW,
+};
 
 const AGENTS: AgentRow[] = [
   {
@@ -994,12 +1026,68 @@ const server = Bun.serve({
       : url.pathname;
     const method = req.method.toUpperCase();
 
-    if (path === "/me" && method === "GET") return json(me);
+    if (path === "/me" && method === "GET") {
+      // Preview hook: `?fresh=1` simulates a brand-new user whose org
+      // still needs onboarding. Flips `orgState.onboarded` to false and
+      // resets the in-memory agent roster to just the Recruiter so the
+      // wizard's hire-team step has a clean canvas. Lets the wizard be
+      // tested end-to-end without restarting the mock. `?fresh=0` (or
+      // omitted) leaves state alone — the default seed simulates an
+      // already-onboarded user.
+      const fresh = url.searchParams.get("fresh");
+      if (fresh === "1") {
+        orgState.onboarded = false;
+        agentsById.clear();
+        agentsById.set(RECRUITER_SEED.id, RECRUITER_SEED);
+      } else if (fresh === "0") {
+        orgState.onboarded = true;
+      }
+      return json(me);
+    }
 
     if (path === "/models" && method === "GET") return json(MODEL_CATALOG);
 
     if (path === "/agents" && method === "GET") {
       return json([...agentsById.values()]);
+    }
+
+    if (path === "/agents" && method === "POST") {
+      // Mirrors `src/http/routes/agents.rs::CreateAgentRequest`. The
+      // onboarding wizard's hire-team loop posts here once per preset
+      // agent; we return a deterministic row so subsequent /agents
+      // reads show the hire took. No entitlements gate here (OSS
+      // default is Unlimited; the mock doesn't simulate paid tiers).
+      const body = (await req.json()) as {
+        name?: string;
+        system_prompt?: string;
+        description?: string;
+        is_default?: boolean;
+        allowed_mcp_tools?: Record<string, string[] | null>;
+        model?: string | null;
+        avatar_url?: string | null;
+      };
+      if (!body.name || !body.system_prompt || !body.description) {
+        return json(
+          { error: "name, system_prompt, description are required" },
+          400,
+        );
+      }
+      const id = `mock-agent-${crypto.randomUUID().slice(0, 8)}`;
+      const now = new Date().toISOString();
+      const row: AgentRow = {
+        id,
+        name: body.name,
+        description: body.description,
+        system_prompt: body.system_prompt,
+        is_default: body.is_default ?? false,
+        allowed_mcp_tools: body.allowed_mcp_tools ?? {},
+        model: body.model ?? null,
+        avatar_url: body.avatar_url ?? null,
+        created_at: now,
+        updated_at: now,
+      };
+      agentsById.set(id, row);
+      return json(row, 201);
     }
 
     // Agent avatar upload (issue #43). The real backend stores the image
@@ -1411,10 +1499,16 @@ const server = Bun.serve({
         member_count: MEMBERS.length,
         created_at: orgState.created_at,
         role: me.role,
+        avatar_url: null,
+        onboarded: orgState.onboarded,
       });
     }
     if (path === "/me/org" && method === "PATCH") {
-      const body = (await req.json()) as { name?: string; slug?: string };
+      const body = (await req.json()) as {
+        name?: string;
+        slug?: string;
+        onboarded?: boolean;
+      };
       if (typeof body.name === "string") {
         const trimmed = body.name.trim();
         if (!trimmed) return json({ error: "org_name is empty" }, 400);
@@ -1430,6 +1524,11 @@ const server = Bun.serve({
           return json({ error: "org_slug.taken" }, 409);
         orgState.slug = body.slug;
       }
+      // Mirror the BE's idempotent never-un-mark contract: only `true`
+      // flips the flag; `false` is a no-op.
+      if (body.onboarded === true) {
+        orgState.onboarded = true;
+      }
       return json({
         id: orgState.id,
         name: orgState.name,
@@ -1438,6 +1537,8 @@ const server = Bun.serve({
         member_count: MEMBERS.length,
         created_at: orgState.created_at,
         role: me.role,
+        avatar_url: null,
+        onboarded: orgState.onboarded,
       });
     }
     if (path === "/me/org/language" && method === "PATCH") {
