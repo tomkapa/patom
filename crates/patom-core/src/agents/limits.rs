@@ -16,14 +16,6 @@ pub const AGENT_NAME_MAX_LEN: usize = 64;
 /// table.
 pub const AGENT_DESCRIPTION_MAX_LEN: usize = 512;
 
-/// Hard cap on the number of agent names rendered inline in the `<agents>` block.
-///
-/// (doc/agent_discovery_plan.md §8) Below the cap the full alphabetised list
-/// renders; above it the block degrades to a one-line "use `search_agents`"
-/// notice. Sized to comfortably cover realistic mid-market deployments
-/// without forcing every routine hop through semantic search.
-pub const MAX_AGENT_NAMES_INLINE: usize = 128;
-
 /// Top-K cap on a single `search_agents` result page.
 ///
 /// (doc/agent_discovery_plan.md §7) Same order of magnitude as
