@@ -9,8 +9,8 @@ use std::sync::Arc;
 use patom::auth::{UserId, begin_as_user};
 use patom::clock::SystemClock;
 use patom::colleagues::{
-    ColleagueError, ColleagueKind, ColleagueRosterCache, ColleagueStore, PgColleagueStore,
-    SharedColleagueStore, COLLEAGUE_ROSTER_CACHE_CAP, COLLEAGUE_ROSTER_CACHE_TTL,
+    COLLEAGUE_ROSTER_CACHE_CAP, COLLEAGUE_ROSTER_CACHE_TTL, ColleagueError, ColleagueKind,
+    ColleagueRosterCache, ColleagueStore, PgColleagueStore, SharedColleagueStore,
 };
 use sqlx::PgPool;
 

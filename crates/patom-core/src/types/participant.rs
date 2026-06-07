@@ -356,8 +356,14 @@ mod tests {
         // versus an agent with the higher uuid.
         let lower = human(1);
         let higher = agent(2);
-        assert_eq!(Participant::canonical_pair(lower, higher), Some((lower, higher)));
-        assert_eq!(Participant::canonical_pair(higher, lower), Some((lower, higher)));
+        assert_eq!(
+            Participant::canonical_pair(lower, higher),
+            Some((lower, higher))
+        );
+        assert_eq!(
+            Participant::canonical_pair(higher, lower),
+            Some((lower, higher))
+        );
     }
 
     #[test]
@@ -373,10 +379,7 @@ mod tests {
         let a = agent(7);
         assert_eq!(Participant::canonical_pair(a, a), None);
         let h = human(7);
-        let a_same_cid = Participant::agent(
-            cid(7),
-            AgentId::from(Uuid::from_u128(0xdead)),
-        );
+        let a_same_cid = Participant::agent(cid(7), AgentId::from(Uuid::from_u128(0xdead)));
         assert_eq!(Participant::canonical_pair(h, a_same_cid), None);
     }
 

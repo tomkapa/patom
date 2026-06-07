@@ -164,15 +164,15 @@ pub async fn human_to_agent_pair(
     user_id: UserId,
     agent_id: AgentId,
 ) -> (Participant, Participant) {
-    let human_cid = patom::colleagues::resolve_user_colleague(pool, org_id, user_id)
+    let human_colleague = patom::colleagues::resolve_user_colleague(pool, org_id, user_id)
         .await
         .expect("seed mints human colleague");
-    let agent_cid = patom::colleagues::resolve_agent_colleague(pool, org_id, agent_id)
+    let agent_colleague = patom::colleagues::resolve_agent_colleague(pool, org_id, agent_id)
         .await
         .expect("seed mints agent colleague");
     (
-        Participant::human(human_cid, user_id),
-        Participant::agent(agent_cid, agent_id),
+        Participant::human(human_colleague, user_id),
+        Participant::agent(agent_colleague, agent_id),
     )
 }
 

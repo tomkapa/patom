@@ -170,7 +170,12 @@ async fn enqueue_human_root(harness: &ThreadsHarness, content: &str, key: &str) 
         .queue
         .enqueue(NewPromptRequest {
             session: None,
-            sender: common::pg::human_participant(&harness.state.pool, harness.seed.org_id, harness.seed.user_id).await,
+            sender: common::pg::human_participant(
+                &harness.state.pool,
+                harness.seed.org_id,
+                harness.seed.user_id,
+            )
+            .await,
             receiver_agent_id: harness.seed.agent_id,
             parent_session: None,
             content: Prompt::try_from(content).expect("prompt"),

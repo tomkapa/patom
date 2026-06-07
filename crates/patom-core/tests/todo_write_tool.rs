@@ -45,8 +45,14 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let store: SharedSessionTodoStore =
         Arc::new(PgSessionTodoStore::new(pool.clone(), clock.clone()));
-    let session =
-        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        pool,
+        sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let tool = TodoWriteTool::new(TodoToolDeps::new(store.clone()));
     Fixture {
         tool,
@@ -231,7 +237,8 @@ async fn per_turn_rate_cap_blocks_runaway_writes(pool: PgPool) {
 async fn list_is_isolated_to_its_session(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
-    let other_session = human_to_agent_session(&pool, 
+    let other_session = human_to_agent_session(
+        &pool,
         &PgSessionStore::new(pool.clone(), SystemClock::shared()),
         f.agent_id,
         f.org_id,

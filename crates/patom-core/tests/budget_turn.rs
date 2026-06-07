@@ -116,8 +116,14 @@ async fn completed_turn_settles_its_cost(pool: PgPool) {
     )]));
     let (agent, sessions) = budgeted_agent(&pool, provider);
 
-    let session =
-        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
 
     agent
@@ -157,8 +163,14 @@ async fn over_cap_org_blocks_the_turn_before_the_provider(pool: PgPool) {
     let provider_probe = provider.clone();
     let (agent, sessions) = budgeted_agent(&pool, provider);
 
-    let session =
-        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let request_id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
 
     let err = agent

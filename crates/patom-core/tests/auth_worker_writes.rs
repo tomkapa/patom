@@ -102,17 +102,22 @@ async fn seed_session_in_org_a(
     pool: &PgPool,
     seed: &Seed,
 ) -> (SessionId, PromptRequestId) {
-    let session =
-        common::pg::human_to_agent_session(&pool, sessions, seed.agent_id, seed.org_id, seed.user_id)
-            .await;
+    let session = common::pg::human_to_agent_session(
+        pool,
+        sessions,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let request_id =
         common::pg::seed_prompt_request(pool, session, seed.agent_id, seed.org_id).await;
     sessions
         .append_for_user(
             seed.user_id,
             session,
-            common::pg::human_sender(&pool, seed.org_id, seed.user_id).await,
-            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
+            common::pg::human_sender(pool, seed.org_id, seed.user_id).await,
+            common::pg::agent_participant(pool, seed.org_id, seed.agent_id).await,
             ChatMessage::User(vec![patom::provider::UserContent::Text("seed".to_string())]),
             request_id,
         )

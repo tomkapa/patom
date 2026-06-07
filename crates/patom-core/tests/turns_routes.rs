@@ -340,7 +340,8 @@ async fn fetches_turn_detail_with_reasoning_and_tool_calls(pool: PgPool) {
     let h = Harness::new(pool.clone()).await;
     let server = h.seed_mcp(h.seed.org_id, h.seed.user_id, "notion").await;
 
-    let session = human_to_agent_session(&pool, 
+    let session = human_to_agent_session(
+        &pool,
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -442,7 +443,8 @@ async fn fetches_turn_detail_with_reasoning_and_tool_calls(pool: PgPool) {
 async fn fetches_turn_detail_with_empty_collections(pool: PgPool) {
     let h = Harness::new(pool.clone()).await;
 
-    let session = human_to_agent_session(&pool, 
+    let session = human_to_agent_session(
+        &pool,
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -477,7 +479,8 @@ async fn fetches_turn_detail_with_empty_collections(pool: PgPool) {
 #[sqlx::test]
 async fn keeps_tool_calls_without_mcp_server(pool: PgPool) {
     let h = Harness::new(pool.clone()).await;
-    let session = human_to_agent_session(&pool, 
+    let session = human_to_agent_session(
+        &pool,
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -562,7 +565,8 @@ async fn returns_404_for_cross_org_request(pool: PgPool) {
         .await
         .expect("create foreign agent")
         .id;
-    let foreign_session = human_to_agent_session(&pool, 
+    let foreign_session = human_to_agent_session(
+        &pool,
         h.state.sessions.as_ref(),
         foreign_agent,
         foreign.org_id,
@@ -601,7 +605,8 @@ async fn returns_404_for_cross_org_request(pool: PgPool) {
 #[sqlx::test]
 async fn fetches_distinct_detail_per_turn_in_multi_turn_request(pool: PgPool) {
     let h = Harness::new(pool.clone()).await;
-    let session = human_to_agent_session(&pool, 
+    let session = human_to_agent_session(
+        &pool,
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -662,7 +667,8 @@ async fn fetches_distinct_detail_per_turn_in_multi_turn_request(pool: PgPool) {
 #[sqlx::test]
 async fn list_returns_one_row_per_turn_with_distinct_ids(pool: PgPool) {
     let h = Harness::new(pool.clone()).await;
-    let session = human_to_agent_session(&pool, 
+    let session = human_to_agent_session(
+        &pool,
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -729,7 +735,8 @@ async fn list_returns_one_row_per_turn_with_distinct_ids(pool: PgPool) {
 #[sqlx::test]
 async fn turns_cursor_breaks_timestamp_ties_by_id(pool: PgPool) {
     let h = Harness::new(pool.clone()).await;
-    let session = human_to_agent_session(&pool, 
+    let session = human_to_agent_session(
+        &pool,
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,

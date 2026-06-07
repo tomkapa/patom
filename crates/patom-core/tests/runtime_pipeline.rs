@@ -354,7 +354,8 @@ async fn cancellation_finishes_inflight_and_skips_next_turn(pool: PgPool) {
         delay: Duration::from_millis(150),
     });
     let h = build_harness(pool.clone(), provider).await;
-    let s = human_to_agent_session(&pool, 
+    let s = human_to_agent_session(
+        &pool,
         h.sessions.as_ref(),
         h.default_agent_id,
         h.default_org_id,
@@ -468,7 +469,8 @@ async fn mid_turn_cancellation_aborts_in_flight_turn(pool: PgPool) {
         delay: Duration::from_secs(2),
     });
     let h = build_harness(pool.clone(), provider).await;
-    let s = human_to_agent_session(&pool, 
+    let s = human_to_agent_session(
+        &pool,
         h.sessions.as_ref(),
         h.default_agent_id,
         h.default_org_id,
@@ -523,7 +525,8 @@ async fn idempotent_repeat_returns_same_request_id(pool: PgPool) {
         delay: Duration::ZERO,
     });
     let h = build_harness(pool.clone(), provider).await;
-    let s = human_to_agent_session(&pool, 
+    let s = human_to_agent_session(
+        &pool,
         h.sessions.as_ref(),
         h.default_agent_id,
         h.default_org_id,

@@ -44,10 +44,12 @@ impl TryFrom<&str> for ColleagueId {
     /// a string (§1). DB-sourced ids decode straight through the macro's sqlx
     /// `Decode`, so this path is only for untrusted text.
     fn try_from(raw: &str) -> Result<Self, Self::Error> {
-        Uuid::parse_str(raw).map(Self::from).map_err(|_| ParseError::Malformed {
-            field: "colleague_id",
-            detail: "expected uuid",
-        })
+        Uuid::parse_str(raw)
+            .map(Self::from)
+            .map_err(|_| ParseError::Malformed {
+                field: "colleague_id",
+                detail: "expected uuid",
+            })
     }
 }
 

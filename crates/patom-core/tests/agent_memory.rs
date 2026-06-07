@@ -102,7 +102,8 @@ async fn assembles_core_then_role_in_order(pool: PgPool) {
     let clock: SharedClock = Arc::new(TestClock::new());
     let f = build_memory(&pool, &seed, clock);
 
-    let session = human_to_agent_session(&pool, 
+    let session = human_to_agent_session(
+        &pool,
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
@@ -158,8 +159,14 @@ async fn date_section_sits_between_role_and_memory(pool: PgPool) {
         .await
         .expect("write");
 
-    let session =
-        human_to_agent_session(&pool, f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let prompt = f
         .memory
         .system_prompt(
@@ -202,7 +209,8 @@ async fn empty_memory_skips_memory_section(pool: PgPool) {
     let clock: SharedClock = Arc::new(TestClock::new());
     let f = build_memory(&pool, &seed, clock);
 
-    let session = human_to_agent_session(&pool, 
+    let session = human_to_agent_session(
+        &pool,
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
@@ -245,8 +253,14 @@ async fn renders_memory_section_after_role(pool: PgPool) {
         .await
         .expect("write");
 
-    let session =
-        human_to_agent_session(&pool, f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let prompt = f
         .memory
         .system_prompt(
@@ -281,8 +295,14 @@ async fn frozen_during_session_returns_identical_prompt(pool: PgPool) {
     let clock: SharedClock = Arc::new(TestClock::new());
     let f = build_memory(&pool, &seed, clock);
     let agent_id = seed.agent_id;
-    let session =
-        human_to_agent_session(&pool, f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let viewer = common::pg::agent_participant(&pool, seed.org_id, agent_id).await;
 
     let first = f
@@ -350,8 +370,14 @@ async fn resolve_handle_round_trips_to_memory_id(pool: PgPool) {
         .await
         .expect("write");
 
-    let session =
-        human_to_agent_session(&pool, f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     // Compose the section so the handle map is populated.
     let _ = f
         .memory
@@ -445,7 +471,8 @@ async fn org_rule_block_sits_between_core_and_role(pool: PgPool) {
     let rule = OrganizationRule::try_from("Cite file:line on every claim.").expect("valid");
     let f = build_memory_with_rule(&pool, &seed, clock, Some(rule.clone()));
 
-    let session = human_to_agent_session(&pool, 
+    let session = human_to_agent_session(
+        &pool,
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
@@ -485,7 +512,8 @@ async fn org_rule_block_omitted_when_unset(pool: PgPool) {
     let clock: SharedClock = Arc::new(TestClock::new());
     let f = build_memory_with_rule(&pool, &seed, clock, None);
 
-    let session = human_to_agent_session(&pool, 
+    let session = human_to_agent_session(
+        &pool,
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,

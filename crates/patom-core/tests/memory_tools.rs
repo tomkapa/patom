@@ -84,8 +84,14 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
         rule_resolver,
         clock,
     );
-    let session =
-        human_to_agent_session(pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        pool,
+        sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let agent_colleague_id =
         patom::colleagues::resolve_agent_colleague(pool, seed.org_id, seed.agent_id)
             .await

@@ -164,9 +164,9 @@ pub(super) fn store_to_tool_err(e: MemoryStoreError) -> ToolError {
         | MemoryStoreError::PinnedImmutable { .. }
         | MemoryStoreError::SubjectRequiredForCollaborator
         | MemoryStoreError::Parse(_) => ToolError::InvalidInput(e.to_string()),
-        MemoryStoreError::Db(_)
-        | MemoryStoreError::Provider(_)
-        | MemoryStoreError::Backend(_) => ToolError::Backend(e.to_string()),
+        MemoryStoreError::Db(_) | MemoryStoreError::Provider(_) | MemoryStoreError::Backend(_) => {
+            ToolError::Backend(e.to_string())
+        }
     }
 }
 

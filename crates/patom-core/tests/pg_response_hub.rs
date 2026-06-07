@@ -32,7 +32,8 @@ async fn stage_request(
     agent_id: AgentId,
 ) -> (SessionId, PromptRequestId) {
     let session_store = PgSessionStore::new(pool.clone(), clock.clone());
-    let session = human_to_agent_session(&pool, &session_store, agent_id, seed.org_id, seed.user_id).await;
+    let session =
+        human_to_agent_session(pool, &session_store, agent_id, seed.org_id, seed.user_id).await;
 
     let queue = Arc::new(PgPromptQueue::with_caps(
         pool.clone(),

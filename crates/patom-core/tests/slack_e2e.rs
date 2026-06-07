@@ -268,7 +268,7 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         responses,
         sessions: sessions.clone(),
         agents: agents.clone(),
-            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
+        colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
 
         dag,
         budget: Arc::new(patom::budget::PgBudgetService::new(

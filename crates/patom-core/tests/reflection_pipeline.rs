@@ -26,6 +26,10 @@ use sqlx::PgPool;
 mod common;
 use common::pg::{human_to_agent_session, seed_tenant};
 
+// Test helper mirroring `NewPromptRequest`'s field set; the colleague-backed
+// `sender` pushed it to 8 params. Bundling them into a struct would just
+// duplicate `NewPromptRequest` at the call site for no clarity gain.
+#[allow(clippy::too_many_arguments)]
 async fn enqueue_reflection_row(
     queue: &SharedPromptQueue,
     sender: patom::types::Participant,
@@ -60,8 +64,14 @@ async fn claim_returns_reflection_kind_and_payload(pool: PgPool) {
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock));
 
-    let session =
-        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     // The reflection's `since_turn_id` references a real prompt row to
     // satisfy the JSON payload's UUID — any id works since the worker
     // does not dereference it during a claim.
@@ -108,7 +118,14 @@ async fn per_agent_serialization_skips_session_with_in_flight_reflection(pool: P
     let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock));
 
     let agent_id = seed.agent_id;
-    let s1 = human_to_agent_session(&pool, sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+    let s1 = human_to_agent_session(
+        &pool,
+        sessions.as_ref(),
+        agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
 
     // Enqueue + claim the first reflection — it goes to `processing`
     // and holds a lease.
@@ -196,8 +213,14 @@ async fn scheduler_tick_enqueues_for_idle_session_with_unprocessed_turns(pool: P
 
     // Mint a session, append one message back-dated past the idle
     // threshold so the scheduler's "idle" predicate fires immediately.
-    let session =
-        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let request_id =
         common::pg::seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
     let stale_ts = Utc::now() - chrono::Duration::seconds(60 * 60);
@@ -269,8 +292,14 @@ async fn scheduler_does_not_duplicate_pending_reflection(pool: PgPool) {
     let clock: SharedClock = SystemClock::shared();
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock));
-    let session =
-        human_to_agent_session(&pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let since = PromptRequestId::new();
 
     // Pre-seed a reflection row in `pending`. The scheduler's predicate
@@ -361,8 +390,14 @@ async fn scheduler_skips_session_whose_seed_turn_is_reflection(pool: PgPool) {
     let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
 
     let agent_id = seed.agent_id;
-    let session =
-        human_to_agent_session(&pool, sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        sessions.as_ref(),
+        agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
 
     // Insert a seed prompt_request whose id matches the session's
     // root_request_id and whose kind is 'reflection' — i.e. the shape of

@@ -53,10 +53,14 @@ use super::traits::{SessionId, SessionStore, SessionTenancy};
 macro_rules! participant_cols {
     ($alias:literal) => {
         concat!(
-            $alias, ".id, ",
-            $alias, ".kind, ",
-            $alias, ".user_id, ",
-            $alias, ".agent_id"
+            $alias,
+            ".id, ",
+            $alias,
+            ".kind, ",
+            $alias,
+            ".user_id, ",
+            $alias,
+            ".agent_id"
         )
     };
 }
@@ -149,7 +153,8 @@ impl fmt::Debug for PgSessionStore {
 /// worker-injected System sender; receiver join is inner because the
 /// receiver is NOT NULL on `session_messages`.
 const SNAPSHOT_SQL: &str = concat!(
-    "SELECT ", concat!(
+    "SELECT ",
+    concat!(
         participant_cols!("sc"),
         ", ",
         participant_cols!("rc"),
@@ -486,9 +491,8 @@ impl SessionStore for PgSessionStore {
     ) -> Result<Vec<(i64, ChatMessage)>, SessionError> {
         let limit_i64 = i64::from(limit);
         let cursor = before_seq.unwrap_or(i64::MAX);
-        let mut rows = run_privileged::<Option<Vec<WindowMessageRow>>, SessionError>(
-            &self.pool,
-            async |tx| {
+        let mut rows =
+            run_privileged::<Option<Vec<WindowMessageRow>>, SessionError>(&self.pool, async |tx| {
                 let exists: Option<(SessionId,)> =
                     sqlx::query_as("SELECT id FROM sessions WHERE id = $1")
                         .bind(id)
@@ -504,10 +508,9 @@ impl SessionStore for PgSessionStore {
                     .fetch_all(&mut **tx)
                     .await?;
                 Ok(Some(rows))
-            },
-        )
-        .await?
-        .ok_or(SessionError::NotFound(id))?;
+            })
+            .await?
+            .ok_or(SessionError::NotFound(id))?;
         rows.reverse();
 
         tracing::Span::current().record("patom.history.count", rows.len());
@@ -738,8 +741,18 @@ fn split_message_row(row: MessageRow) -> (ParticipantTuple, ParticipantTuple, se
         body,
     ) = row;
     (
-        (sender_colleague_id, sender_kind, sender_user_id, sender_agent_id),
-        (receiver_colleague_id, receiver_kind, receiver_user_id, receiver_agent_id),
+        (
+            sender_colleague_id,
+            sender_kind,
+            sender_user_id,
+            sender_agent_id,
+        ),
+        (
+            receiver_colleague_id,
+            receiver_kind,
+            receiver_user_id,
+            receiver_agent_id,
+        ),
         body,
     )
 }
@@ -762,8 +775,18 @@ fn split_window_row(
     (
         seq,
         (
-            (sender_colleague_id, sender_kind, sender_user_id, sender_agent_id),
-            (receiver_colleague_id, receiver_kind, receiver_user_id, receiver_agent_id),
+            (
+                sender_colleague_id,
+                sender_kind,
+                sender_user_id,
+                sender_agent_id,
+            ),
+            (
+                receiver_colleague_id,
+                receiver_kind,
+                receiver_user_id,
+                receiver_agent_id,
+            ),
             body,
         ),
     )
@@ -848,9 +871,8 @@ async fn append_row(
     request_id: PromptRequestId,
 ) -> Result<(), SessionError> {
     let now = store.now();
-    let body = serde_json::to_value(&message).map_err(|e| {
-        SessionError::Backend(format!("serialize message: {e}"))
-    })?;
+    let body = serde_json::to_value(&message)
+        .map_err(|e| SessionError::Backend(format!("serialize message: {e}")))?;
     let cap = store.message_cap;
     let cap_i64 = i64::from(cap);
 

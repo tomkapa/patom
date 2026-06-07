@@ -37,7 +37,8 @@ async fn fresh_session(
     seed: &common::pg::Seed,
 ) -> (patom::session::SessionId, PromptRequestId) {
     let store = PgSessionStore::new(pool.clone(), SystemClock::shared());
-    let session = human_to_agent_session(&pool, &store, seed.agent_id, seed.org_id, seed.user_id).await;
+    let session =
+        human_to_agent_session(pool, &store, seed.agent_id, seed.org_id, seed.user_id).await;
     let request = seed_prompt_request(pool, session, seed.agent_id, seed.org_id).await;
     (session, request)
 }

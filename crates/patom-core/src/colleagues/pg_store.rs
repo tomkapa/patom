@@ -156,18 +156,19 @@ pub async fn resolve_agent_colleague(
     agent_id: AgentId,
 ) -> Result<ColleagueId, ColleagueError> {
     let row = run_privileged::<Option<(ColleagueId,)>, ColleagueError>(pool, async |tx| {
-        Ok(sqlx::query_as(
-            "SELECT id FROM colleagues WHERE org_id = $1 AND agent_id = $2",
+        Ok(
+            sqlx::query_as("SELECT id FROM colleagues WHERE org_id = $1 AND agent_id = $2")
+                .bind(org_id)
+                .bind(agent_id)
+                .fetch_optional(&mut **tx)
+                .await?,
         )
-        .bind(org_id)
-        .bind(agent_id)
-        .fetch_optional(&mut **tx)
-        .await?)
     })
     .await?;
-    row.map(|(id,)| id).ok_or(ColleagueError::SatelliteUnmapped {
-        kind: ColleagueKind::Agent,
-    })
+    row.map(|(id,)| id)
+        .ok_or(ColleagueError::SatelliteUnmapped {
+            kind: ColleagueKind::Agent,
+        })
 }
 
 /// Free-function variant of [`ColleagueStore::resolve_user`].
@@ -177,16 +178,17 @@ pub async fn resolve_user_colleague(
     user_id: UserId,
 ) -> Result<ColleagueId, ColleagueError> {
     let row = run_privileged::<Option<(ColleagueId,)>, ColleagueError>(pool, async |tx| {
-        Ok(sqlx::query_as(
-            "SELECT id FROM colleagues WHERE org_id = $1 AND user_id = $2",
+        Ok(
+            sqlx::query_as("SELECT id FROM colleagues WHERE org_id = $1 AND user_id = $2")
+                .bind(org_id)
+                .bind(user_id)
+                .fetch_optional(&mut **tx)
+                .await?,
         )
-        .bind(org_id)
-        .bind(user_id)
-        .fetch_optional(&mut **tx)
-        .await?)
     })
     .await?;
-    row.map(|(id,)| id).ok_or(ColleagueError::SatelliteUnmapped {
-        kind: ColleagueKind::Human,
-    })
+    row.map(|(id,)| id)
+        .ok_or(ColleagueError::SatelliteUnmapped {
+            kind: ColleagueKind::Human,
+        })
 }

@@ -54,7 +54,14 @@ async fn pending_row_keeps_dag_live(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let q = queue(&pool);
     let dag = PgDagBudget::new(pool.clone());
-    let root = enqueue_root(&q, common::pg::human_participant(&pool, seed.org_id, seed.user_id).await, seed.agent_id, seed.org_id, seed.user_id).await;
+    let root = enqueue_root(
+        &q,
+        common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
 
     assert!(
         !dag.quiescent(root).await.expect("query"),
@@ -67,7 +74,14 @@ async fn processing_row_keeps_dag_live(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let q = queue(&pool);
     let dag = PgDagBudget::new(pool.clone());
-    let root = enqueue_root(&q, common::pg::human_participant(&pool, seed.org_id, seed.user_id).await, seed.agent_id, seed.org_id, seed.user_id).await;
+    let root = enqueue_root(
+        &q,
+        common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     // Claim moves the row from pending → processing without finishing it.
     let _ = q
         .claim_next_session(WorkerId::new())
@@ -85,7 +99,14 @@ async fn done_row_drains_dag(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let q = queue(&pool);
     let dag = PgDagBudget::new(pool.clone());
-    let root = enqueue_root(&q, common::pg::human_participant(&pool, seed.org_id, seed.user_id).await, seed.agent_id, seed.org_id, seed.user_id).await;
+    let root = enqueue_root(
+        &q,
+        common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let claim = q
         .claim_next_session(WorkerId::new())
         .await
@@ -117,7 +138,14 @@ async fn second_pending_row_still_blocks_quiescence(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let q = queue(&pool);
     let dag = PgDagBudget::new(pool.clone());
-    let root = enqueue_root(&q, common::pg::human_participant(&pool, seed.org_id, seed.user_id).await, seed.agent_id, seed.org_id, seed.user_id).await;
+    let root = enqueue_root(
+        &q,
+        common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
 
     // Claim & mark done the first row.
     let claim = q

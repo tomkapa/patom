@@ -262,8 +262,14 @@ async fn lists_tool_calls_for_server_with_agent_name_and_error_message(pool: PgP
     let h = Harness::new(pool.clone()).await;
     let server = h.seed_mcp(h.org_id, h.user_id, "primary").await;
 
-    let session =
-        human_to_agent_session(&pool, h.state.sessions.as_ref(), h.agent_id, h.org_id, h.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        h.state.sessions.as_ref(),
+        h.agent_id,
+        h.org_id,
+        h.user_id,
+    )
+    .await;
     let request = seed_prompt_request(&h.state.pool, session, h.agent_id, h.org_id).await;
 
     let now = Utc::now();
@@ -336,8 +342,14 @@ async fn lists_tool_calls_for_server_with_agent_name_and_error_message(pool: PgP
 async fn cursor_pagination_walks_backward_in_time(pool: PgPool) {
     let h = Harness::new(pool.clone()).await;
     let server = h.seed_mcp(h.org_id, h.user_id, "paged").await;
-    let session =
-        human_to_agent_session(&pool, h.state.sessions.as_ref(), h.agent_id, h.org_id, h.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        h.state.sessions.as_ref(),
+        h.agent_id,
+        h.org_id,
+        h.user_id,
+    )
+    .await;
     let request = seed_prompt_request(&h.state.pool, session, h.agent_id, h.org_id).await;
 
     let base = Utc::now();

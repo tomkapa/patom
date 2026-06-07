@@ -92,7 +92,10 @@ async fn reversed_pair_canonicalises_to_same_session(pool: PgPool) {
 async fn different_dags_get_distinct_sessions(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
-    let pair = (common::pg::human_participant(&pool, seed.org_id, seed.user_id).await, common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await);
+    let pair = (
+        common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+        common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
+    );
 
     let dag_a = PromptRequestId::new();
     let dag_b = PromptRequestId::new();
@@ -149,28 +152,34 @@ async fn parent_session_is_recorded(pool: PgPool) {
 
 #[sqlx::test]
 async fn participants_are_returned_in_canonical_order(pool: PgPool) {
-    // Agent < Human by canonical_cmp (matches SQL string-compare on the
-    // *_kind columns), so participants() returns (Agent(_), Human)
-    // regardless of which side the caller passed first.
+    // Canonical order is pure-UUID on `colleague_id` (migration 58 / Stage 3),
+    // not the old kind-lex `agent < human`: `participants()` returns the pair
+    // sorted by colleague id regardless of which side the caller passed first.
+    // The colleague ids are random, so the expectation is derived from them
+    // rather than hard-coded to a kind — otherwise the assert is ~50% flaky.
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
     let root = PromptRequestId::new();
     let agent_p = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
+    let human_p = common::pg::human_participant(&pool, seed.org_id, seed.user_id).await;
 
     let id = store
-        .resolve_or_create_for_pair(
-            root,
-            common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
-            agent_p,
-            None,
-            seed.org_id,
-            seed.user_id,
-        )
+        .resolve_or_create_for_pair(root, human_p, agent_p, None, seed.org_id, seed.user_id)
         .await
         .expect("session");
     let (a, b) = store.participants(id).await.expect("participants");
-    assert_eq!(a, agent_p);
-    assert_eq!(b, common::pg::human_participant(&pool, seed.org_id, seed.user_id).await);
+
+    let (expect_a, expect_b) = if agent_p.colleague_id() < human_p.colleague_id() {
+        (agent_p, human_p)
+    } else {
+        (human_p, agent_p)
+    };
+    assert_eq!(a, expect_a, "slot a holds the smaller colleague id");
+    assert_eq!(b, expect_b, "slot b holds the larger colleague id");
+    assert!(
+        a.colleague_id() < b.colleague_id(),
+        "canonical order is pure-UUID ascending",
+    );
 }
 
 #[sqlx::test]

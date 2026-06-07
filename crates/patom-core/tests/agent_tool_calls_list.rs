@@ -253,7 +253,8 @@ async fn lists_tool_calls_for_agent_across_connections_with_server_alias(pool: P
     let notion = h.seed_mcp(h.seed.org_id, h.seed.user_id, "notion").await;
     let linear = h.seed_mcp(h.seed.org_id, h.seed.user_id, "linear").await;
 
-    let session = human_to_agent_session(&h.pool, 
+    let session = human_to_agent_session(
+        &h.pool,
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -340,7 +341,8 @@ async fn excludes_non_mcp_tool_calls(pool: PgPool) {
     let h = Harness::new(pool).await;
     let notion = h.seed_mcp(h.seed.org_id, h.seed.user_id, "notion").await;
 
-    let session = human_to_agent_session(&h.pool, 
+    let session = human_to_agent_session(
+        &h.pool,
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -417,7 +419,8 @@ async fn excludes_calls_from_other_agents(pool: PgPool) {
         .expect("create other agent")
         .id;
 
-    let session = human_to_agent_session(&h.pool, 
+    let session = human_to_agent_session(
+        &h.pool,
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,
@@ -467,7 +470,8 @@ async fn excludes_calls_from_other_agents(pool: PgPool) {
 async fn cursor_pagination_walks_backward_in_time(pool: PgPool) {
     let h = Harness::new(pool).await;
     let server = h.seed_mcp(h.seed.org_id, h.seed.user_id, "paged").await;
-    let session = human_to_agent_session(&h.pool, 
+    let session = human_to_agent_session(
+        &h.pool,
         h.state.sessions.as_ref(),
         h.seed.agent_id,
         h.seed.org_id,

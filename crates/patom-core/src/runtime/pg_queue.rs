@@ -1044,7 +1044,6 @@ async fn finalise(
     Ok(())
 }
 
-
 /// Resolve the colleague_id for `agent` within `org`. Every agent's colleague
 /// is minted by the trigger in migration 57, so the lookup either hits the
 /// per-(org,agent) partial unique index or surfaces as a backend error

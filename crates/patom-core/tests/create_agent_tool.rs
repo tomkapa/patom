@@ -37,8 +37,14 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let agents = shared_agent_store(pool.clone(), SystemClock::shared());
     let sessions: SharedSessionStore =
         Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
-    let session =
-        human_to_agent_session(pool, sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        pool,
+        sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let request_id = PromptRequestId::new();
     let ctx = ToolCallContext {
         session_id: session,
