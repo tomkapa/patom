@@ -413,6 +413,50 @@ export type AgentToolCallList = {
   next_cursor: string | null;
 };
 
+// ─── Scheduled tasks (per-agent recurring / one-time runs) ──────────────
+/** Lifecycle of a scheduled task. `active` runs on its schedule;
+ *  `completed` is a one-time task that has fired; `cancelled` was stopped
+ *  by an operator and never runs again. Mirrors the backend enum. */
+export type ScheduledTaskStatus = "active" | "completed" | "cancelled";
+
+/** `recurring` fires on a cron-like cadence; `one_time` fires once at a
+ *  fixed instant and then becomes `completed`. */
+export type ScheduledTaskKind = "recurring" | "one_time";
+
+export type ScheduledTask = {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  name: string;
+  status: ScheduledTaskStatus;
+  kind: ScheduledTaskKind;
+  /** Compact, table-friendly cadence label, e.g. `"Every Mon, 09:00 UTC"`. */
+  schedule_label: string;
+  /** Verbose cadence for the cancel dialog, e.g.
+   *  `"Every Monday at 09:00 UTC"`. */
+  schedule_full: string;
+  /** Human next-fire label (`"Mon Jun 09, 09:00"`), or `null` once the
+   *  task is cancelled / completed and will not run again. */
+  next_run_label: string | null;
+  /** Human last-fire label (`"Mon Jun 02, 09:00"`), or `null` when the
+   *  task has never run yet. */
+  last_run_label: string | null;
+};
+
+/** Aggregate counts shown in the stats strip — a server-side rollup
+ *  independent of the current page of `items`. */
+export type ScheduledTaskSummary = {
+  active: number;
+  completed: number;
+  cancelled: number;
+};
+
+export type ScheduledTaskList = {
+  items: ScheduledTask[];
+  total: number;
+  summary: ScheduledTaskSummary;
+};
+
 /** Only `static_headers` is accepted on the create/replace path today;
  *  OAuth tokens are written by the callback handler. */
 export type CredentialInput = {

@@ -4,6 +4,7 @@ import { motion } from "motion/react";
 import {
   BarChart3,
   Brain,
+  CalendarClock,
   Check,
   ChevronsUpDown,
   Settings2,
@@ -21,7 +22,7 @@ import type { Agent } from "../../types/api";
 /** Per-agent settings sub-navigation. `general`, `tools`, and `memory`
  *  are real routes; `logs` is in the design but not yet built and stays
  *  `aria-disabled` so the sidebar still mirrors the design. */
-type AgentNavId = "general" | "tools" | "memory" | "logs";
+type AgentNavId = "general" | "tools" | "memory" | "scheduled" | "logs";
 
 type NavItem = {
   id: AgentNavId;
@@ -61,6 +62,12 @@ export function AgentLayout({
       label: t("agent.detail.nav.memory"),
       icon: Brain,
       to: "memory",
+    },
+    {
+      id: "scheduled",
+      label: t("agent.detail.nav.scheduled"),
+      icon: CalendarClock,
+      to: "scheduled",
     },
     {
       id: "logs",
