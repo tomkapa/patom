@@ -12,9 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use patom::agents::{
-    AgentNamesCache, AgentPromptCache, AgentSystemPrompt, AgentUpdate, SharedAgentStore,
-};
+use patom::agents::{AgentPromptCache, AgentSystemPrompt, AgentUpdate, SharedAgentStore};
 use patom::auth::OrganizationRule;
 use patom::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use patom::clock::{SharedClock, SystemClock, TestClock};
@@ -59,7 +57,6 @@ fn build_memory_with_rule(
     let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let prompt_cache = AgentPromptCache::new(8, Duration::from_mins(1), clock.clone());
-    let names_cache = AgentNamesCache::new(16, Duration::from_mins(1), clock.clone());
     let store: SharedMemoryStore = Arc::new(PgMemoryStore::new(
         pool.clone(),
         clock.clone(),
@@ -68,10 +65,12 @@ fn build_memory_with_rule(
     let session_cache = SessionMemoryCache::new(16, Duration::from_mins(1), clock.clone());
     let colleagues: patom::colleagues::SharedColleagueStore =
         Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
+    let roster_cache =
+        patom::colleagues::ColleagueRosterCache::new(16, Duration::from_mins(1), clock.clone());
     let loader = MemorySectionLoader::new(
         store.clone(),
         sessions.clone(),
-        colleagues,
+        colleagues.clone(),
         embeddings,
         session_cache,
     );
@@ -82,7 +81,8 @@ fn build_memory_with_rule(
     let memory = AgentMemory::new(
         agents.clone(),
         prompt_cache,
-        names_cache,
+        colleagues,
+        roster_cache,
         loader,
         prompts,
         language_resolver,
@@ -509,6 +509,56 @@ async fn org_rule_block_omitted_when_unset(pool: PgPool) {
         "organization-rule tag must be absent when unset"
     );
     assert!(!s.contains(ORG_RULE_TAG_CLOSE), "no dangling close tag");
+}
+
+#[sqlx::test]
+async fn roster_block_names_a_human_colleague(pool: PgPool) {
+    // Stage 6: the `<agents>` block is now a colleague roster — a human
+    // coworker appears in it alongside agents, so the agent perceives humans as
+    // addressable peers. The seed mints a human colleague ("Seeded Test User")
+    // and an agent colleague; the agent viewer should see the human.
+    let seed = seed_tenant(&pool).await;
+    let clock: SharedClock = Arc::new(TestClock::new());
+    let f = build_memory(&pool, &seed, clock);
+
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
+    let prompt = f
+        .memory
+        .system_prompt(
+            session,
+            viewer,
+            &patom::runtime::RequestKindPayload::Normal {},
+        )
+        .await
+        .expect("system prompt");
+
+    let s = prompt.as_ref();
+    let roster_open = s
+        .find(patom::colleagues::ROSTER_TAG_OPEN)
+        .expect("roster block present");
+    assert!(
+        s.contains("Seeded Test User"),
+        "human colleague named in roster: {s}"
+    );
+    // The human's colleague id is surfaced so the model can address it by id.
+    let human_cid = patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+    assert!(
+        s.contains(&human_cid.as_uuid().to_string()),
+        "human colleague id surfaced: {s}"
+    );
+    // Roster sits before the role block, mirroring the old `<agents>` position.
+    let role_open = s.find(ROLE_TAG_OPEN).expect("has <role>");
+    assert!(roster_open < role_open, "roster precedes role: {s}");
 }
 
 #[sqlx::test]

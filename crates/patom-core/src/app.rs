@@ -19,8 +19,8 @@ use tracing::{info, warn};
 use crate::agent_core::{Agent, AgentBuilder};
 use crate::agents::{
     AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL, AgentDescription, AgentFactory, AgentName,
-    AgentNamesCache, AgentPromptCache, AgentStoreError, AgentSystemPrompt, CachedAgents,
-    DefaultAgentSeed, PgAgentStore, SharedAgentStore, SharedAgents,
+    AgentPromptCache, AgentStoreError, AgentSystemPrompt, CachedAgents, DefaultAgentSeed,
+    PgAgentStore, SharedAgentStore, SharedAgents,
 };
 use crate::assets::{S3AssetStore, SharedAssetStore};
 use crate::auth::{
@@ -195,9 +195,9 @@ impl Collaborators {
             AGENT_PROMPT_CACHE_TTL,
             clock.clone(),
         );
-        let names_cache = AgentNamesCache::new(
-            AGENT_PROMPT_CACHE_CAP,
-            AGENT_PROMPT_CACHE_TTL,
+        let roster_cache = crate::colleagues::ColleagueRosterCache::new(
+            crate::colleagues::COLLEAGUE_ROSTER_CACHE_CAP,
+            crate::colleagues::COLLEAGUE_ROSTER_CACHE_TTL,
             clock.clone(),
         );
         let memory_store: SharedMemoryStore = Arc::new(PgMemoryStore::new(
@@ -246,7 +246,8 @@ impl Collaborators {
         let memory: SharedMemory = Arc::new(AgentMemory::new(
             agents.clone(),
             cache,
-            names_cache,
+            colleagues.clone(),
+            roster_cache,
             memory_loader.clone(),
             prompts.clone(),
             language_resolver.clone(),

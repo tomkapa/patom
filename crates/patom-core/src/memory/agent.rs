@@ -25,11 +25,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::agents::{
-    AgentId, AgentNamesCache, AgentPromptCache, SharedAgentStore, render_agents_block,
-};
+use crate::agents::{AgentId, AgentPromptCache, SharedAgentStore};
 use crate::auth::{SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use crate::clock::SharedClock;
+use crate::colleagues::{
+    ColleagueError, ColleagueId, ColleagueRosterCache, SharedColleagueStore, render_roster_block,
+};
 use crate::prompts::Prompts;
 use crate::runtime::RequestKindPayload;
 use crate::session::SessionId;
@@ -87,7 +88,8 @@ pub const DATE_FORMAT: &str = "%Y-%m-%d (%A, UTC)";
 pub struct AgentMemory {
     agents: SharedAgentStore,
     prompt_cache: AgentPromptCache,
-    names_cache: AgentNamesCache,
+    colleagues: SharedColleagueStore,
+    roster_cache: ColleagueRosterCache,
     loader: MemorySectionLoader,
     prompts: Arc<Prompts>,
     language_resolver: SharedOrgLanguageResolver,
@@ -105,7 +107,8 @@ impl AgentMemory {
     pub fn new(
         agents: SharedAgentStore,
         prompt_cache: AgentPromptCache,
-        names_cache: AgentNamesCache,
+        colleagues: SharedColleagueStore,
+        roster_cache: ColleagueRosterCache,
         loader: MemorySectionLoader,
         prompts: Arc<Prompts>,
         language_resolver: SharedOrgLanguageResolver,
@@ -115,7 +118,8 @@ impl AgentMemory {
         Self {
             agents,
             prompt_cache,
-            names_cache,
+            colleagues,
+            roster_cache,
             loader,
             prompts,
             language_resolver,
@@ -154,6 +158,26 @@ impl AgentMemory {
     ) -> Result<Arc<MemorySection>, MemoryError> {
         self.loader.load(session, agent, kind_payload).await
     }
+
+    /// Render the `<agents>` colleague-roster block for the viewer.
+    ///
+    /// Resolves the viewer's org from its colleague row, then renders the
+    /// org-wide roster (humans + agents) from the bounded TTL cache, excluding
+    /// the viewer itself. Returns a fallible result so the caller can degrade
+    /// to an empty block on a directory outage — the roster is an enrichment,
+    /// not load-bearing for the turn.
+    async fn roster_block(&self, viewer: ColleagueId) -> Result<String, ColleagueError> {
+        let org = self.colleagues.read(viewer).await?.org_id();
+        let roster = self.roster_cache.get_or_load(org, &self.colleagues).await?;
+        // §5 saturation signal — no OTel Meter infra yet, so the bound is
+        // watched via a structured event the OTel bridge exports.
+        tracing::debug!(
+            patom.colleagues.roster.size = roster.len(),
+            patom.org.id = %org,
+            "colleagues.roster.size"
+        );
+        Ok(render_roster_block(&roster, viewer))
+    }
 }
 
 impl std::fmt::Debug for AgentMemory {
@@ -182,16 +206,23 @@ impl Memory for AgentMemory {
             .composed_section(session, agent_id, kind_payload)
             .await?;
 
-        // `<agents>` name index (doc/agent_discovery_plan.md §8). Cached
-        // globally with the same TTL as `AgentPromptCache` so admin
-        // edits propagate within one liveness window; on cache miss
-        // we hit `AgentStore::list_names`. Empty deployments and
-        // self-only deployments yield an empty string; the renderer
-        // omits the envelope entirely (§8).
-        let agents_block = match self.names_cache.get_or_load(agent_id, &self.agents).await {
-            Ok(names) => render_agents_block(names.as_ref(), agent_id),
+        // `<agents>` colleague roster (Colleagues plan, Stage 6). Lists every
+        // colleague in the viewer's org — humans and agents alike — so the
+        // agent perceives human coworkers as addressable peers. Cached per org
+        // with the same TTL as `AgentPromptCache` so a membership change or
+        // rename propagates within one liveness window. Self-only and empty
+        // orgs yield an empty string; the renderer omits the envelope. A
+        // directory outage degrades to an empty block — the roster enriches the
+        // turn but is not load-bearing.
+        let viewer_colleague = viewer.colleague_id().ok_or_else(|| {
+            MemoryError::Backend(
+                "system_prompt viewer has no colleague_id; agent worker only".into(),
+            )
+        })?;
+        let agents_block = match self.roster_block(viewer_colleague).await {
+            Ok(block) => block,
             Err(e) => {
-                tracing::warn!(error = %e, "agents.list_names.error");
+                tracing::warn!(error = %e, "colleagues.roster.error");
                 String::new()
             }
         };

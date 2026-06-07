@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use patom::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
+use patom::agents::{AgentPromptCache, SharedAgentStore};
 use patom::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use patom::clock::{SharedClock, SystemClock};
 use patom::memory::{
@@ -52,7 +52,6 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let prompt_cache = AgentPromptCache::new(8, Duration::from_mins(1), clock.clone());
-    let names_cache = AgentNamesCache::new(16, Duration::from_mins(1), clock.clone());
     let store: SharedMemoryStore = Arc::new(PgMemoryStore::new(
         pool.clone(),
         clock.clone(),
@@ -61,10 +60,12 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let session_cache = SessionMemoryCache::new(8, Duration::from_mins(1), clock.clone());
     let colleagues: patom::colleagues::SharedColleagueStore =
         Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
+    let roster_cache =
+        patom::colleagues::ColleagueRosterCache::new(16, Duration::from_mins(1), clock.clone());
     let loader = MemorySectionLoader::new(
         store.clone(),
         sessions.clone(),
-        colleagues,
+        colleagues.clone(),
         embeddings,
         session_cache,
     );
@@ -75,7 +76,8 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let _memory = AgentMemory::new(
         agents,
         prompt_cache,
-        names_cache,
+        colleagues,
+        roster_cache,
         loader.clone(),
         prompts,
         language_resolver,
@@ -403,7 +405,12 @@ async fn handle_round_trips_through_session_cache(pool: PgPool) {
     let memory = AgentMemory::new(
         agents,
         AgentPromptCache::new(2, Duration::from_mins(1), SystemClock::shared()),
-        AgentNamesCache::new(16, Duration::from_mins(1), SystemClock::shared()),
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
+        patom::colleagues::ColleagueRosterCache::new(
+            16,
+            Duration::from_mins(1),
+            SystemClock::shared(),
+        ),
         f.loader.clone(),
         Arc::new(Prompts::load()),
         Arc::new(StaticOrgLanguageResolver::new(Language::En)),
