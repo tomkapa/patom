@@ -57,7 +57,7 @@ export function SignIn() {
   }, [location.search, location.state]);
 
   const onSignIn = () => {
-    window.location.href = `/auth/google/login?return_to=${encodeURIComponent(returnTo)}`;
+    window.location.href = `/auth/oidc/login?return_to=${encodeURIComponent(returnTo)}`;
   };
 
   return (

@@ -19,10 +19,6 @@ use crate::types::SecretString;
 /// the repo root must override.
 const DEFAULT_WEB_DIST: &str = "./web/dist";
 
-/// Issuer for the Google login preset (ADR-0011). Used when
-/// `PATOM_OIDC_ISSUER` is unset so cloud keeps its `GOOGLE_*` config.
-const GOOGLE_OIDC_ISSUER: &str = "https://accounts.google.com";
-
 #[derive(Debug, Error)]
 pub enum SettingsError {
     #[error("config source: {0}")]
@@ -59,9 +55,8 @@ pub enum SettingsError {
     InvalidRedirectUrl { raw: String, reason: &'static str },
 
     #[error(
-        "auth: no login provider configured; set PATOM_OIDC_ISSUER + \
-         PATOM_OIDC_CLIENT_ID + PATOM_OIDC_CLIENT_SECRET + PATOM_OIDC_REDIRECT_URL, \
-         or GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET + GOOGLE_REDIRECT_URL"
+        "auth: login provider not configured; set all of PATOM_OIDC_ISSUER + \
+         PATOM_OIDC_CLIENT_ID + PATOM_OIDC_CLIENT_SECRET + PATOM_OIDC_REDIRECT_URL"
     )]
     MissingLoginProvider,
 
@@ -331,16 +326,15 @@ where
 pub struct AuthSettings {
     /// HS256 signing secret for session JWTs. Must be ≥32 bytes.
     pub jwt_secret: SecretString,
-    /// Resolved login-OIDC issuer (ADR-0011). `PATOM_OIDC_ISSUER` when
-    /// set; otherwise the Google preset `https://accounts.google.com`.
-    /// Endpoints + JWKS are discovered from this at startup.
+    /// Login-OIDC issuer (ADR-0011), from `PATOM_OIDC_ISSUER`. Endpoints +
+    /// JWKS are discovered from this at startup. Point it at any OIDC IdP
+    /// (Google, Keycloak, Okta, Entra, …).
     pub oidc_issuer: IssuerUrl,
-    /// Login-OIDC client id. `PATOM_OIDC_CLIENT_ID` for a generic issuer;
-    /// `GOOGLE_CLIENT_ID` for the Google preset. The MCP `google` catalog
-    /// entry has its own credentials in [`platform_oauth_clients`] — this
-    /// is **login only**.
+    /// Login-OIDC client id, from `PATOM_OIDC_CLIENT_ID`. The MCP `google`
+    /// catalog entry has its own credentials in [`platform_oauth_clients`]
+    /// — this is **login only**.
     pub oidc_client_id: SecretString,
-    /// Login-OIDC client secret. `PATOM_OIDC_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRET`.
+    /// Login-OIDC client secret, from `PATOM_OIDC_CLIENT_SECRET`.
     pub oidc_client_secret: SecretString,
     /// Redirect URL registered with the IdP, e.g.
     /// `http://localhost:8080/auth/oidc/callback`.
@@ -355,7 +349,7 @@ pub struct AuthSettings {
     /// GitHub does not support RFC 7591 DCR, so without this the `github`
     /// catalog row cannot complete an OAuth flow and the connector ships
     /// dead. A missing env var surfaces as the `config` crate's own
-    /// "missing field" error, same shape as `google_client_id`.
+    /// "missing field" error, same shape as `patom_github_client_secret`.
     pub github_client_id: SecretString,
     /// GitHub OAuth App client secret. Required at startup; same
     /// rationale as `github_client_id`.
@@ -496,17 +490,11 @@ struct RawSettings {
     // `config` crate's own "missing field" error via `SettingsError::Source`,
     // same as `database_url` / `brave_search_api_key` above.
     patom_jwt_secret: SecretString,
-    // Login provider (ADR-0011). When `patom_oidc_issuer` is set the
-    // generic OIDC path is used (requires the three `patom_oidc_*`
-    // creds); otherwise the Google preset is used (requires the three
-    // `google_*` creds). Resolved + validated in `TryFrom<RawSettings>`,
-    // so all six are optional at the serde layer.
-    #[serde(default)]
-    google_client_id: Option<SecretString>,
-    #[serde(default)]
-    google_client_secret: Option<SecretString>,
-    #[serde(default)]
-    google_redirect_url: Option<String>,
+    // Login provider (ADR-0011). The generic OIDC path: all four
+    // `patom_oidc_*` values are required, resolved + validated in
+    // `TryFrom<RawSettings>`. Optional at the serde layer so a missing
+    // one surfaces as the unified `MissingLoginProvider` error rather
+    // than the `config` crate's per-field "missing field".
     #[serde(default)]
     patom_oidc_issuer: Option<String>,
     #[serde(default)]
@@ -521,9 +509,9 @@ struct RawSettings {
     patom_bootstrap_admin: bool,
     // GitHub MCP shared OAuth App — required at startup. GitHub does not
     // expose RFC 7591 DCR, so the platform-owned OAuth App is the only
-    // way the `github` catalog row can complete a flow. Same shape as
-    // `google_client_id` above; a missing env var surfaces as the
-    // `config` crate's own "missing field" error.
+    // way the `github` catalog row can complete a flow. Required (unlike
+    // the optional `patom_oidc_*` above); a missing env var surfaces as
+    // the `config` crate's own "missing field" error.
     patom_github_client_id: SecretString,
     patom_github_client_secret: SecretString,
     // Secure by default — forgetting to set this in any https-fronted
@@ -668,9 +656,8 @@ fn parse_error_reason(e: &crate::types::ParseError) -> &'static str {
 }
 
 /// Pair a resolved login `issuer` with its client credentials, requiring
-/// all three to be present. Shared by the generic-OIDC and Google-preset
-/// arms of `TryFrom<RawSettings>` so the "all-or-nothing" rule lives in
-/// one place.
+/// all three to be present. Keeps the "all-or-nothing" rule for the
+/// `PATOM_OIDC_*` creds in one place.
 fn require_login_creds(
     issuer: IssuerUrl,
     client_id: Option<SecretString>,
@@ -830,42 +817,25 @@ impl TryFrom<RawSettings> for Settings {
             Some(raw_list) => parse_cors_allowed_origins(&raw_list)?,
             None => Vec::new(),
         };
-        // Resolve the login OIDC provider (ADR-0011). `PATOM_OIDC_ISSUER`
-        // selects a generic issuer (with the `PATOM_OIDC_*` creds); its
-        // absence falls back to the Google preset (with the `GOOGLE_*`
-        // creds). Cloud config stays a one-liner; self-host points at its
-        // own IdP without touching Google env vars.
+        // Resolve the login OIDC provider (ADR-0011). One path: operators
+        // point `PATOM_OIDC_ISSUER` at their IdP and supply the three
+        // `PATOM_OIDC_*` creds. All four are required and validated here.
+        let Some(raw_issuer) = raw.patom_oidc_issuer else {
+            return Err(SettingsError::MissingLoginProvider);
+        };
+        let issuer = IssuerUrl::try_from(raw_issuer.as_str()).map_err(|e| {
+            SettingsError::InvalidOidcIssuer {
+                raw: raw_issuer.clone(),
+                reason: parse_error_reason(&e),
+            }
+        })?;
         let (oidc_issuer, oidc_client_id, oidc_client_secret, oidc_redirect_url) =
-            if let Some(raw_issuer) = raw.patom_oidc_issuer {
-                let issuer = IssuerUrl::try_from(raw_issuer.as_str()).map_err(|e| {
-                    SettingsError::InvalidOidcIssuer {
-                        raw: raw_issuer.clone(),
-                        reason: parse_error_reason(&e),
-                    }
-                })?;
-                require_login_creds(
-                    issuer,
-                    raw.patom_oidc_client_id,
-                    raw.patom_oidc_client_secret,
-                    raw.patom_oidc_redirect_url,
-                )?
-            } else {
-                // The Google preset's issuer is a compile-time constant;
-                // a parse failure here is a programmer error, surfaced via
-                // the same variant for symmetry.
-                let issuer = IssuerUrl::try_from(GOOGLE_OIDC_ISSUER).map_err(|e| {
-                    SettingsError::InvalidOidcIssuer {
-                        raw: GOOGLE_OIDC_ISSUER.to_owned(),
-                        reason: parse_error_reason(&e),
-                    }
-                })?;
-                require_login_creds(
-                    issuer,
-                    raw.google_client_id,
-                    raw.google_client_secret,
-                    raw.google_redirect_url,
-                )?
-            };
+            require_login_creds(
+                issuer,
+                raw.patom_oidc_client_id,
+                raw.patom_oidc_client_secret,
+                raw.patom_oidc_redirect_url,
+            )?;
         let auth = AuthSettings {
             jwt_secret: raw.patom_jwt_secret,
             oidc_issuer,
@@ -1152,13 +1122,10 @@ mod tests {
             embedding_dimensions: None,
             default_timezone: default_timezone_raw(),
             patom_jwt_secret: secret(&"a".repeat(64)),
-            google_client_id: Some(secret("test-client-id")),
-            google_client_secret: Some(secret("test-client-secret")),
-            google_redirect_url: Some("http://localhost:8080/auth/google/callback".to_string()),
-            patom_oidc_issuer: None,
-            patom_oidc_client_id: None,
-            patom_oidc_client_secret: None,
-            patom_oidc_redirect_url: None,
+            patom_oidc_issuer: Some("https://accounts.google.com".to_string()),
+            patom_oidc_client_id: Some(secret("test-client-id")),
+            patom_oidc_client_secret: Some(secret("test-client-secret")),
+            patom_oidc_redirect_url: Some("http://localhost:8080/auth/oidc/callback".to_string()),
             patom_bootstrap_admin: false,
             patom_github_client_id: secret("test-github-client-id"),
             patom_github_client_secret: secret("test-github-client-secret"),
@@ -1364,12 +1331,23 @@ mod tests {
     }
 
     #[test]
-    fn google_preset_is_default_login_provider() {
+    fn oidc_issuer_and_creds_configure_login_provider() {
         let mut raw = empty_raw();
         raw.anthropic_api_key = Some(secret("sk-ant"));
         let s = Settings::try_from(raw).expect("valid");
+        // `empty_raw` supplies the four `PATOM_OIDC_*` values; the issuer is
+        // honored verbatim — there is no Google preset fallback anymore.
         assert_eq!(s.auth.oidc_issuer.as_str(), "https://accounts.google.com");
         assert!(!s.auth.bootstrap_admin);
+    }
+
+    #[test]
+    fn missing_oidc_issuer_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_oidc_issuer = None;
+        let err = Settings::try_from(raw).expect_err("expected error");
+        assert!(matches!(err, SettingsError::MissingLoginProvider));
     }
 
     #[test]
@@ -1390,6 +1368,9 @@ mod tests {
         let mut raw = empty_raw();
         raw.anthropic_api_key = Some(secret("sk-ant"));
         raw.patom_oidc_issuer = Some("https://idp.example.test".to_string());
+        raw.patom_oidc_client_id = None;
+        raw.patom_oidc_client_secret = None;
+        raw.patom_oidc_redirect_url = None;
         let err = Settings::try_from(raw).expect_err("expected error");
         assert!(matches!(err, SettingsError::MissingLoginProvider));
     }
@@ -1410,9 +1391,9 @@ mod tests {
     fn missing_all_login_creds_is_rejected() {
         let mut raw = empty_raw();
         raw.anthropic_api_key = Some(secret("sk-ant"));
-        raw.google_client_id = None;
-        raw.google_client_secret = None;
-        raw.google_redirect_url = None;
+        raw.patom_oidc_client_id = None;
+        raw.patom_oidc_client_secret = None;
+        raw.patom_oidc_redirect_url = None;
         let err = Settings::try_from(raw).expect_err("expected error");
         assert!(matches!(err, SettingsError::MissingLoginProvider));
     }
@@ -1421,7 +1402,7 @@ mod tests {
     fn malformed_login_redirect_url_is_rejected() {
         let mut raw = empty_raw();
         raw.anthropic_api_key = Some(secret("sk-ant"));
-        raw.google_redirect_url = Some("not a url".to_string());
+        raw.patom_oidc_redirect_url = Some("not a url".to_string());
         let err = Settings::try_from(raw).expect_err("expected error");
         assert!(matches!(err, SettingsError::InvalidRedirectUrl { .. }));
     }

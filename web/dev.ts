@@ -32,7 +32,7 @@ const server = Bun.serve({
   development: true,
   routes: {
     "/api/*": forwardAsIs,
-    "/auth/google/*": forwardAsIs,
+    "/auth/oidc/*": forwardAsIs,
     "/mcp-oauth/*": forwardAsIs,
     "/*": index,
   },

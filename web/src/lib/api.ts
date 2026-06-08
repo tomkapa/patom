@@ -49,7 +49,7 @@ const CSRF_COOKIE = "patom_csrf";
 const CSRF_HEADER = "X-CSRF-Token";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-// JSON endpoints live under this prefix; `/auth/google/*` bypasses it.
+// JSON endpoints live under this prefix; `/auth/oidc/*` bypasses it.
 export const API_PREFIX = "/api";
 
 export async function request<T>(
