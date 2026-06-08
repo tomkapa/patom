@@ -94,6 +94,7 @@ impl Harness {
             responses,
             sessions,
             agents: agents.clone(),
+            colleagues: Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),

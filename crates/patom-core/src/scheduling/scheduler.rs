@@ -22,7 +22,9 @@ use crate::runtime::{IdempotencyKey, NewPromptRequest, SharedPromptQueue};
 use crate::types::{Participant, Prompt};
 
 use super::error::ScheduledTaskError;
-use super::limits::{SCHEDULED_TASK_BATCH_LIMIT, scheduled_task_poll_interval};
+use super::limits::{
+    COLLEAGUE_RESOLVE_TIMEOUT, SCHEDULED_TASK_BATCH_LIMIT, scheduled_task_poll_interval,
+};
 use super::scheduled_task::ScheduledTask;
 use super::store::SharedScheduledTaskStore;
 use super::types::ScheduledTaskRecord;
@@ -138,11 +140,17 @@ impl SchedulerInner {
         // `org_id` + `created_by_user_id` to `scheduled_tasks`, so the
         // scheduler no longer needs to JOIN through `agents` /
         // `org_members` at fire-time.
-        let human_colleague = self
-            .colleagues
-            .resolve_user(task.org_id, task.created_by_user_id)
-            .await
-            .map_err(|e| ScheduledTaskError::Backend(format!("resolve human colleague: {e}")))?;
+        // §5 — bound the directory read so a stuck lookup can't wedge the
+        // firing loop. Timeout and inner error both surface as Backend; the
+        // row keeps its cursor and the next poll retries.
+        let human_colleague = tokio::time::timeout(
+            COLLEAGUE_RESOLVE_TIMEOUT,
+            self.colleagues
+                .resolve_user(task.org_id, task.created_by_user_id),
+        )
+        .await
+        .map_err(|_| ScheduledTaskError::Backend("resolve human colleague: timeout".to_string()))?
+        .map_err(|e| ScheduledTaskError::Backend(format!("resolve human colleague: {e}")))?;
         let req = NewPromptRequest::normal(
             None,
             Participant::human(human_colleague, task.created_by_user_id),
