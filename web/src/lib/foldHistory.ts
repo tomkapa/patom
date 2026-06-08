@@ -238,13 +238,23 @@ export function foldHistory(
       const idx = indexBySession.get(m.session_id);
       if (idx) attachResults(idx, decoded.toolResults, sendMessageCallIds);
     } else if (m.sender.kind === "human") {
+      // Resolve the *real* author from the wire — the backend stamps each
+      // human row with its sender's name/avatar/id. Falling back to the
+      // current-user `poster` only covers legacy rows missing the fields;
+      // without this every human bubble showed the viewer (the multi-user
+      // identity bug). Avatar is taken verbatim (`null` ⇒ initials) so we
+      // never paint one person's photo onto another's message.
+      const authorName = m.sender_display_name ?? poster.name;
+      const authorId = m.sender.user_id ?? poster.id;
+      const authorAvatar = m.sender_avatar_url;
+
       // First human row is the thread root — rendered separately in the
       // panel header. Subsequent human rows are follow-ups in the thread.
       if (!rootMessage) {
         rootMessage = {
-          name: poster.name,
-          id: poster.id,
-          avatar_url: poster.avatar_url,
+          name: authorName,
+          id: authorId,
+          avatar_url: authorAvatar,
           ts: m.created_at,
           text: prefixWithReceiver(decoded.text, receiverFrom(m.receiver), agentsById),
         };
@@ -256,9 +266,9 @@ export function foldHistory(
           request_id: m.request_id,
           agent_id: null,
           agent_name: null,
-          human_name: poster.name,
-          human_id: poster.id,
-          human_avatar_url: poster.avatar_url,
+          human_name: authorName,
+          human_id: authorId,
+          human_avatar_url: authorAvatar,
           ts: m.created_at,
           text: prefixWithReceiver(decoded.text, recv, agentsById),
           reasoning: "",

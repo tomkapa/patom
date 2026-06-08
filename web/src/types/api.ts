@@ -204,10 +204,20 @@ export type ModelEntry = {
 
 export type RequestStatus = "pending" | "processing" | "done" | "failed";
 
+/// The human who started a thread. Surfaced so the feed shows the real
+/// author, not the current viewer (multi-user workspaces).
+export type StarterRef = {
+  user_id: string;
+  colleague_id: string;
+  name: string;
+  avatar_url: string | null;
+};
+
 export type ThreadSummary = {
   root_request_id: string;
   root_session_id: string;
   first_agent: AgentRef;
+  starter: StarterRef;
   preview: string;
   reply_count: number;
   last_activity_at: string;
@@ -232,9 +242,11 @@ export type ChannelMember = {
   added_at: string;
 };
 
+// Mirrors the backend `Participant` / `MessageSender` wire shape: the
+// human and agent ends carry their colleague id plus the satellite key.
 export type Participant =
-  | { kind: "human" }
-  | { kind: "agent"; agent_id: string }
+  | { kind: "human"; colleague_id: string; user_id: string }
+  | { kind: "agent"; colleague_id: string; agent_id: string }
   | { kind: "system" };
 
 // Mirrors src/provider/chat.rs `ChatMessage` + UserContent / AssistantContent.
@@ -271,6 +283,12 @@ export type ThreadMessage = {
    *  reconcile optimistic / live / persisted bubbles by identity instead of
    *  by text matching. */
   request_id: string;
+  /** Resolved display name of a human sender — the real author, so the FE
+   *  renders them instead of the current viewer. `null` for agent/system
+   *  rows (agents resolve via the roster; system rows are unlabelled). */
+  sender_display_name: string | null;
+  /** Avatar URL of a human sender; `null` when unset or non-human. */
+  sender_avatar_url: string | null;
 };
 
 // ─── ResponseChunk wire shapes ──────────────────────────────────────────
