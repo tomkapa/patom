@@ -577,6 +577,39 @@ type MemEvt = {
 const MEMORIES = new Map<string, MemRow[]>();
 const MEMORY_EVENTS = new Map<string, MemEvt[]>();
 
+// ─── Channels ──────────────────────────────────────────────────────────
+type ChannelMock = {
+  id: string;
+  name: string;
+  created_by_user_id: string | null;
+  created_at: string;
+  archived_at: string | null;
+};
+const channelsById = new Map<string, ChannelMock>([
+  [
+    "general",
+    {
+      id: "general",
+      name: "general",
+      created_by_user_id: null, // system-owned → immutable
+      created_at: new Date(Date.now() - 90 * 864e5).toISOString(),
+      archived_at: null,
+    },
+  ],
+]);
+// channel_id → set of member user ids (the preview user is in every channel).
+const channelMembers = new Map<string, Set<string>>([
+  ["general", new Set([USER_ID])],
+]);
+const channelWire = (c: ChannelMock) => ({
+  id: c.id,
+  name: c.name,
+  system: c.created_by_user_id === null,
+  can_manage: c.created_by_user_id === USER_ID,
+  created_at: c.created_at,
+  archived_at: c.archived_at,
+});
+
 const ATLAS_ID = "aaaaaaaa-0000-0000-0000-000000000001";
 const DAY_14_AGO = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
 const DAY_8_AGO = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
@@ -1173,6 +1206,88 @@ const server = Bun.serve({
     }
 
     if (path === "/models" && method === "GET") return json(MODEL_CATALOG);
+
+    // ─── Channels ────────────────────────────────────────────────────
+    if (path === "/channels" && method === "GET") {
+      const mine = [...channelsById.values()].filter(
+        (c) => !c.archived_at && channelMembers.get(c.id)?.has(USER_ID),
+      );
+      // System #general first, then by creation (mirrors the BE ORDER BY).
+      mine.sort((a, b) =>
+        a.created_by_user_id === null
+          ? -1
+          : b.created_by_user_id === null
+            ? 1
+            : a.created_at.localeCompare(b.created_at),
+      );
+      return json(mine.map(channelWire));
+    }
+    if (path === "/channels" && method === "POST") {
+      const body = (await req.json()) as { name?: string };
+      const name = (body.name ?? "").trim().toLowerCase();
+      if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) {
+        return json({ error: "channel.invalid_name" }, 400);
+      }
+      const dup = [...channelsById.values()].some(
+        (c) => !c.archived_at && c.name === name,
+      );
+      if (dup) return json({ error: "channel.name_taken" }, 409);
+      const id = crypto.randomUUID();
+      const row: ChannelMock = {
+        id,
+        name,
+        created_by_user_id: USER_ID,
+        created_at: new Date().toISOString(),
+        archived_at: null,
+      };
+      channelsById.set(id, row);
+      channelMembers.set(id, new Set([USER_ID]));
+      return json(channelWire(row), 201);
+    }
+    const chMatch = path.match(/^\/channels\/([^/]+)(\/.*)?$/);
+    if (chMatch) {
+      const id = chMatch[1]!;
+      const sub = chMatch[2] ?? "";
+      const c = channelsById.get(id);
+      if (!c) return empty(404);
+      const owns = c.created_by_user_id === USER_ID;
+
+      if (sub === "" && method === "PATCH") {
+        if (!owns) return json({ error: "channel.not_owner" }, 403);
+        const body = (await req.json()) as {
+          name?: string;
+          archived?: boolean;
+        };
+        if (typeof body.name === "string") c.name = body.name.trim().toLowerCase();
+        if (typeof body.archived === "boolean") {
+          c.archived_at = body.archived ? new Date().toISOString() : null;
+        }
+        channelsById.set(id, c);
+        return json(channelWire(c));
+      }
+      if (sub === "/members" && method === "GET") {
+        const ids = [...(channelMembers.get(id) ?? new Set<string>())];
+        return json(
+          ids.map((u) => ({ user_id: u, added_at: c.created_at })),
+        );
+      }
+      if (sub === "/members" && method === "POST") {
+        if (!owns) return json({ error: "channel.not_owner" }, 403);
+        const body = (await req.json()) as { user_id?: string };
+        if (body.user_id) {
+          const set = channelMembers.get(id) ?? new Set<string>();
+          set.add(body.user_id);
+          channelMembers.set(id, set);
+        }
+        return empty(204);
+      }
+      const memberMatch = sub.match(/^\/members\/([^/]+)$/);
+      if (memberMatch && method === "DELETE") {
+        if (!owns) return json({ error: "channel.not_owner" }, 403);
+        channelMembers.get(id)?.delete(memberMatch[1]!);
+        return empty(204);
+      }
+    }
 
     if (path === "/agents" && method === "GET") {
       return json([...agentsById.values()]);

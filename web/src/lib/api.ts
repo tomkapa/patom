@@ -2,6 +2,8 @@ import type {
   Agent,
   AgentToolCallList,
   AgentTurnsList,
+  Channel,
+  ChannelMember,
   TurnDetail,
   CreateMcpServerRequest,
   CreateMemoryNoteRequest,
@@ -381,7 +383,12 @@ export const api = {
       { method: "POST" },
     ),
 
-  threads: () => request<ThreadSummary[]>("/threads"),
+  // `channelId` selects the feed: a channel's threads when set, or the
+  // caller's direct messages when null/omitted (BE: `channel_id IS NULL`).
+  threads: (channelId?: string | null) =>
+    request<ThreadSummary[]>(
+      channelId ? `/threads?channel_id=${encodeURIComponent(channelId)}` : "/threads",
+    ),
 
   threadMessages: (rootId: string) =>
     request<ThreadMessage[]>(`/threads/${rootId}/messages`),
@@ -389,6 +396,10 @@ export const api = {
   submitPrompt: (input: {
     session_id?: string;
     agent_id?: string;
+    /** Post the new thread into this channel. Omit for a direct message.
+     *  Ignored by the BE when `session_id` is set (a reply inherits its
+     *  root's location). */
+    channel_id?: string;
     content: string;
     idempotency_key: string;
   }) =>
@@ -396,6 +407,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  // ─── Channels ────────────────────────────────────────────────────────
+  channels: () => request<Channel[]>("/channels"),
+  createChannel: (name: string) =>
+    request<Channel>("/channels", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  updateChannel: (id: string, patch: { name?: string; archived?: boolean }) =>
+    request<Channel>(`/channels/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  channelMembers: (id: string) =>
+    request<ChannelMember[]>(`/channels/${id}/members`),
+  addChannelMember: (id: string, userId: string) =>
+    request<void>(`/channels/${id}/members`, {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId }),
+    }),
+  removeChannelMember: (id: string, userId: string) =>
+    request<void>(`/channels/${id}/members/${userId}`, { method: "DELETE" }),
 
   cancelRequest: async (requestId: string) => {
     try {

@@ -1489,6 +1489,9 @@ async fn do_auto_continue(
             agent_id: Some(resume.agent_id),
             content,
             idempotency_key,
+            // OAuth-resume continues an existing session, so it's never a new
+            // channel root.
+            channel_id: None,
         },
     )
     .await

@@ -51,6 +51,11 @@ struct ListThreadsQuery {
     before: Option<DateTime<Utc>>,
     #[serde(default)]
     limit: Option<u32>,
+    /// Feed selector. `Some(id)` returns that channel's threads (member-gated);
+    /// omitted returns the caller's direct messages (`channel_id IS NULL` roots
+    /// the caller started). See [`THREAD_LIST_SQL`].
+    #[serde(default)]
+    channel_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,10 +102,15 @@ type ThreadRow = (
 /// `foldHistoryIntoBubbles`): one bubble per delivered `send_message` call.
 /// Plain assistant rows, system rows carrying tool_results, and the
 /// human's own prompt are conversation plumbing, not user-visible replies.
-// `begin_as` RLS isolates by *membership* (any org the caller belongs
-// to), not the *active* org, so the `pr.org_id = $4` predicate pins the
-// feed to the active workspace — without it a multi-org user would see
-// roots from every org they're a member of.
+//
+// Visibility (the load-bearing member-scoping; RLS is only defense-in-depth):
+// a root is visible when, in
+//   * channel mode (`$6` set): the root is stamped with that channel, the
+//     caller is a member, and the channel is not archived; or
+//   * DM mode (`$6` NULL): the root has no channel and the caller started it
+//     (`sessions.created_by_user_id = $5`), i.e. a private DM with an agent.
+// `begin_as` RLS isolates by *membership* (any org the caller belongs to), not
+// the *active* org, so `pr.org_id = $4` pins the feed to the active workspace.
 const THREAD_LIST_SQL: &str = "WITH visible_human_roots AS (
     SELECT pr.id AS root_request_id, pr.session_id
     FROM prompt_requests pr
@@ -109,6 +119,17 @@ const THREAD_LIST_SQL: &str = "WITH visible_human_roots AS (
     WHERE pr.id = pr.root_request_id
       AND prc.kind = 'human'
       AND pr.org_id = $4
+      AND (
+        CASE WHEN $6::uuid IS NULL THEN
+            pr.channel_id IS NULL AND s.created_by_user_id = $5
+        ELSE
+            pr.channel_id = $6
+            AND EXISTS (SELECT 1 FROM channel_members cm
+                         WHERE cm.channel_id = pr.channel_id AND cm.user_id = $5)
+            AND EXISTS (SELECT 1 FROM channels c
+                         WHERE c.id = pr.channel_id AND c.archived_at IS NULL)
+        END
+      )
 ),
 thread_stats AS (
     SELECT s.root_request_id,
@@ -158,20 +179,20 @@ async fn list_threads(
     let preview_chars = i32::try_from(THREAD_PREVIEW_MAX_CHARS)
         .expect("invariant: THREAD_PREVIEW_MAX_CHARS fits in i32");
 
-    // Tenant-scoped read: the `thread_stats` CTE joins through
-    // `sessions`, which now has an `org_id` column and an isolation
-    // policy. `begin_as` sets `app.user_id` so the policy filters to
-    // the caller's org. The `prompt_requests` retrofit lands later;
-    // until then the outer SELECT against `prompt_requests` is
-    // unfiltered, but the inner JOIN to RLS-bound `sessions` keeps the
-    // wire response tenant-scoped to roots whose conversation session
-    // the caller can see.
+    // Tenant-scoped read: `begin_as` sets `app.user_id` so the RLS policies
+    // on `sessions` / `channel_members` / `channels` apply. The
+    // `visible_human_roots` CTE then does the load-bearing member-scoping
+    // explicitly (channel membership in channel mode, DM ownership in DM
+    // mode) and pins the active org — RLS alone gates membership in *any*
+    // org, so it can't be the only line of defense (see THREAD_LIST_SQL).
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let rows: Vec<ThreadRow> = sqlx::query_as(THREAD_LIST_SQL)
         .bind(preview_chars)
         .bind(q.before)
         .bind(i64::from(limit))
         .bind(principal.active_org_id)
+        .bind(principal.user_id)
+        .bind(q.channel_id)
         .fetch_all(&mut *tx)
         .await
         .map_err(AuthError::from)?;

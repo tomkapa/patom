@@ -5,6 +5,9 @@ import { uuidv7 } from "../lib/utils";
 type Vars = {
   session_id?: string;
   agent_id?: string;
+  /** Post a new thread into this channel. Omit for a direct message or a
+   *  reply (replies carry `session_id` and inherit their root's location). */
+  channel_id?: string;
   content: string;
   /** Caller-supplied so the optimistic bubble can be tagged with the same
    *  key the server sees. Auto-generated when omitted (channel-level

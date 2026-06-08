@@ -215,6 +215,23 @@ export type ThreadSummary = {
   created_at: string;
 };
 
+/** A channel — an org-scoped, member-gated space grouping thread roots.
+ *  `system` is the immutable per-org `#general`; `can_manage` is true only
+ *  for the caller-created channels the FE may rename / archive / manage. */
+export type Channel = {
+  id: string;
+  name: string;
+  system: boolean;
+  can_manage: boolean;
+  created_at: string;
+  archived_at: string | null;
+};
+
+export type ChannelMember = {
+  user_id: string;
+  added_at: string;
+};
+
 export type Participant =
   | { kind: "human" }
   | { kind: "agent"; agent_id: string }

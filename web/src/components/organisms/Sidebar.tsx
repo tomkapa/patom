@@ -1,31 +1,36 @@
 import { useMemo } from "react";
-import { Bot, ChevronDown, Hash, Plus, Search } from "lucide-react";
+import { Bot, ChevronDown, Hash, Plus, Search, Settings2 } from "lucide-react";
 import { Button } from "../atoms/Button";
 import { Kbd } from "../atoms/Kbd";
 import { Monogram } from "../atoms/Monogram";
 import { cn } from "../../lib/utils";
 import { useT } from "../../i18n";
-import type { Agent, ThreadSummary } from "../../types/api";
+import type { Agent, Channel, ThreadSummary } from "../../types/api";
 
 export function Sidebar({
   workspace = "Acme Robotics",
   threads,
+  channels,
   agents,
-  selectedChannel,
+  selectedChannelId,
   selectedAgentId,
   onSelectChannel,
   onSelectAgent,
+  onAddChannel,
+  onManageChannel,
 }: {
   workspace?: string;
   threads: ThreadSummary[];
+  channels: Channel[];
   agents: Agent[];
-  selectedChannel: string;
+  selectedChannelId: string | null;
   selectedAgentId: string | null;
-  onSelectChannel: (channel: string) => void;
+  onSelectChannel: (id: string) => void;
   onSelectAgent: (agentId: string) => void;
+  onAddChannel: () => void;
+  onManageChannel: (channel: Channel) => void;
 }) {
   const { t } = useT();
-  const channels = [{ name: "general", icon: Hash, count: threads.length }];
   const threadCountByAgent = useMemo(() => {
     const m = new Map<string, number>();
     for (const t of threads) {
@@ -69,27 +74,40 @@ export function Sidebar({
         <Section
           title={t("sidebar.channels")}
           expandable
-          action={<AddBtn label="Add channel" />}
+          action={<AddBtn label="Add channel" onClick={onAddChannel} />}
         />
         <div className="mb-2 flex flex-col gap-0.5">
           {channels.map((c) => (
             <SidebarRow
-              key={c.name}
-              icon={<c.icon className="h-3 w-3 text-[var(--color-muted-foreground)]" />}
+              key={c.id}
+              icon={<Hash className="h-3 w-3 text-[var(--color-muted-foreground)]" />}
               label={c.name}
               prefix="#"
               trailing={
-                c.count != null ? (
-                  <span className="bg-[var(--color-paper-3)] px-1 font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
-                    {c.count}
-                  </span>
+                c.can_manage ? (
+                  <button
+                    type="button"
+                    aria-label={`Manage #${c.name}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onManageChannel(c);
+                    }}
+                    className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-[var(--color-ink)]"
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                  </button>
                 ) : null
               }
-              active={c.name === selectedChannel}
-              onClick={() => onSelectChannel(c.name)}
+              active={c.id === selectedChannelId}
+              onClick={() => onSelectChannel(c.id)}
               mono
             />
           ))}
+          {channels.length === 0 && (
+            <p className="px-2 py-1 font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
+              {t("sidebar.empty_channels")}
+            </p>
+          )}
         </div>
 
         {/* DIRECT MESSAGES — agents list, opens agent-scoped feed on click. */}
@@ -163,9 +181,15 @@ function Section({
   );
 }
 
-function AddBtn({ label }: { label: string }) {
+function AddBtn({ label, onClick }: { label: string; onClick?: () => void }) {
   return (
-    <Button variant="ghost" size="xxs" iconOnly aria-label={label}>
+    <Button
+      variant="ghost"
+      size="xxs"
+      iconOnly
+      aria-label={label}
+      onClick={onClick}
+    >
       <Plus className="h-3.5 w-3.5" />
     </Button>
   );

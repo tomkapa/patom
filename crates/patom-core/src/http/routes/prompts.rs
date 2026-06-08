@@ -21,7 +21,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agents::AgentId;
-use crate::auth::{OrgId, Principal, UserId};
+use crate::auth::{AuthError, OrgId, Principal, UserId, begin_as_user};
+use crate::channels::ChannelId;
 use crate::runtime::{
     EnqueueOutcome, IdempotencyKey, NewPromptRequest, PromptRequestId, RequestStatus,
 };
@@ -56,6 +57,11 @@ pub(super) struct SubmitPromptParams {
     pub agent_id: Option<AgentId>,
     pub content: Prompt,
     pub idempotency_key: IdempotencyKey,
+    /// Post the new thread into this channel. Honored only when
+    /// `session_id` is `None` (a new root); a channel on a reply is
+    /// meaningless because location is inherited from the root. `None` ⇒ a
+    /// direct message with the agent, private to the caller.
+    pub channel_id: Option<ChannelId>,
 }
 
 /// Principal-free prompt submission. The public `POST /prompts` handler
@@ -89,6 +95,18 @@ pub(super) async fn submit_internal(
         },
     };
 
+    // A channel is honored only on a new root; a channel on a reply is
+    // meaningless (location is inherited from the root). Validate up front
+    // that the caller may post here, so a non-member 403s before any work is
+    // enqueued.
+    let root_channel = match (params.session_id, params.channel_id) {
+        (None, Some(channel)) => {
+            ensure_channel_member(state, params.user_id, params.org_id, channel).await?;
+            Some(channel)
+        }
+        _ => None,
+    };
+
     // Resolve the human's colleague_id so the queue receives a
     // colleague-backed sender; pg_queue resolves the receiver agent's
     // colleague inline.
@@ -113,7 +131,68 @@ pub(super) async fn submit_internal(
             ),
         )
         .await?;
+
+    // Stamp the freshly-minted root with its channel. Only on a genuinely new
+    // row (`Inserted`) — an idempotent retry (`Existing`) already carries the
+    // channel from the original insert. For a `session_id = None` enqueue the
+    // returned `request_id` is the DAG root (`pr.id = pr.root_request_id`).
+    if let (Some(channel), EnqueueOutcome::Inserted { request_id, .. }) = (root_channel, &outcome) {
+        stamp_root_channel(state, params.user_id, params.org_id, *request_id, channel).await?;
+    }
     Ok(outcome)
+}
+
+/// Reject a channel post by a non-member, or to an archived / cross-org
+/// channel. Pinned to `org` because RLS gates membership in any org.
+async fn ensure_channel_member(
+    state: &AppState,
+    user: UserId,
+    org: OrgId,
+    channel: ChannelId,
+) -> Result<(), HttpError> {
+    let mut tx = begin_as_user(&state.pool, user)
+        .await
+        .map_err(AuthError::from)?;
+    let allowed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(\
+            SELECT 1 FROM channels c \
+            JOIN channel_members cm ON cm.channel_id = c.id \
+            WHERE c.id = $1 AND c.org_id = $2 AND c.archived_at IS NULL AND cm.user_id = $3)",
+    )
+    .bind(channel)
+    .bind(org)
+    .bind(user)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(AuthError::from)?;
+    tx.commit().await.map_err(AuthError::from)?;
+    if allowed {
+        return Ok(());
+    }
+    Err(HttpError::Forbidden("channel.not_member"))
+}
+
+/// Stamp a root `prompt_requests` row with its channel. Org-pinned `WHERE`
+/// (defense-in-depth alongside the `prompt_requests` org-isolation policy).
+async fn stamp_root_channel(
+    state: &AppState,
+    user: UserId,
+    org: OrgId,
+    root: PromptRequestId,
+    channel: ChannelId,
+) -> Result<(), HttpError> {
+    let mut tx = begin_as_user(&state.pool, user)
+        .await
+        .map_err(AuthError::from)?;
+    sqlx::query("UPDATE prompt_requests SET channel_id = $1 WHERE id = $2 AND org_id = $3")
+        .bind(channel)
+        .bind(root)
+        .bind(org)
+        .execute(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
+    tx.commit().await.map_err(AuthError::from)?;
+    Ok(())
 }
 
 pub(super) fn router() -> Router<AppState> {
@@ -132,6 +211,11 @@ struct SubmitPromptRequest {
     /// the existing session's receiver agent is preserved.
     #[serde(default)]
     agent_id: Option<AgentId>,
+    /// Post into this channel (a new thread). Omit for a direct message with
+    /// the agent. Ignored when `session_id` is `Some` (a reply inherits its
+    /// root's location).
+    #[serde(default)]
+    channel_id: Option<Uuid>,
     content: String,
     idempotency_key: String,
 }
@@ -166,6 +250,7 @@ async fn submit_prompt(
             agent_id: payload.agent_id,
             content,
             idempotency_key,
+            channel_id: payload.channel_id.map(ChannelId::from),
         },
     )
     .await?;
