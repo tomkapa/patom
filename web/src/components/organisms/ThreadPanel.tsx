@@ -210,7 +210,7 @@ export function ThreadPanel({
                 </span>
               </div>
               <p className="mt-0.5 text-[13.5px] leading-[1.5] text-[var(--color-ink)]">
-                {renderMentions(rootMessage.text)}
+                {renderMentions(rootMessage.text, agents.map((a) => a.name))}
               </p>
             </div>
           </article>
@@ -235,7 +235,7 @@ export function ThreadPanel({
           {bubbles.map((b) => {
             const focused = highlightId === b.request_id;
             return b.kind === "human" ? (
-              <HumanReplyCard key={b.key} bubble={b} focused={focused} />
+              <HumanReplyCard key={b.key} bubble={b} agents={agents} focused={focused} />
             ) : (
               <AgentReplyCard
                 key={b.key}
@@ -309,12 +309,15 @@ export function ThreadPanel({
 
 function HumanReplyCard({
   bubble,
+  agents,
   focused,
 }: {
   bubble: Bubble;
+  agents: Agent[];
   focused?: boolean;
 }) {
   const name = bubble.human_name ?? "you";
+  const agentNames = agents.map((a) => a.name);
   return (
     <article
       data-request-id={bubble.request_id}
@@ -340,7 +343,7 @@ function HumanReplyCard({
           </span>
         </header>
         <p className="mt-0.5 text-[13.5px] leading-[1.5] text-[var(--color-ink)]">
-          {renderMentions(bubble.text)}
+          {renderMentions(bubble.text, agentNames)}
         </p>
       </div>
     </article>

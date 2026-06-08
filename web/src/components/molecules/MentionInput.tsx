@@ -10,13 +10,48 @@ import {
 import type { Agent } from "../../types/api";
 import { Monogram } from "../atoms/Monogram";
 import { cn } from "../../lib/utils";
-import { forEachMention } from "../../lib/mentions";
 
 export type MentionMode = "channel" | "dm" | "thread";
 
 type Token =
   | { kind: "text"; text: string }
   | { kind: "mention"; text: string; active: boolean };
+
+/** Find all @-mentions in `text` that match a known agent name.
+ *  Sorts names longest-first so "Sales Lead" beats "Sales" when both exist.
+ *  A mention is valid when the character immediately after the name is
+ *  whitespace, punctuation, or end-of-string. */
+function findAgentMentions(
+  text: string,
+  agentsByName: ReadonlyMap<string, Agent>,
+): Array<{ name: string; start: number; end: number }> {
+  if (!text || agentsByName.size === 0) return [];
+  const names = [...agentsByName.keys()].sort((a, b) => b.length - a.length);
+  const out: Array<{ name: string; start: number; end: number }> = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "@" && (i === 0 || /\s/.test(text[i - 1] ?? ""))) {
+      let matched: string | null = null;
+      for (const name of names) {
+        if (text.slice(i + 1, i + 1 + name.length) === name) {
+          const charAfter = text[i + 1 + name.length] ?? "";
+          if (charAfter === "" || /[\s.,!?;:]/.test(charAfter)) {
+            matched = name;
+            break;
+          }
+        }
+      }
+      if (matched !== null) {
+        out.push({ name: matched, start: i, end: i + 1 + matched.length });
+        i += 1 + matched.length;
+        continue;
+      }
+    }
+    i++;
+  }
+  return out;
+}
 
 export function tokenizeMentions(
   text: string,
@@ -25,19 +60,19 @@ export function tokenizeMentions(
 ): Token[] {
   const out: Token[] = [];
   if (!text) return out;
+  const mentions = findAgentMentions(text, agentsByName);
   let last = 0;
   let canBeActive = mode === "channel";
-  forEachMention(text, (tag, start) => {
+  for (const { name, start, end } of mentions) {
     if (start > last) out.push({ kind: "text", text: text.slice(last, start) });
-    const isKnown = agentsByName.has(tag.slice(1));
     let active = false;
-    if (isKnown && canBeActive) {
+    if (canBeActive) {
       active = true;
       canBeActive = false;
     }
-    out.push({ kind: "mention", text: tag, active });
-    last = start + tag.length;
-  });
+    out.push({ kind: "mention", text: `@${name}`, active });
+    last = end;
+  }
   if (last < text.length) out.push({ kind: "text", text: text.slice(last) });
   return out;
 }
@@ -48,13 +83,8 @@ export function firstActiveMentionAgent(
 ): Agent | undefined {
   if (!text) return undefined;
   const byName = new Map(agents.map((a) => [a.name, a]));
-  let found: Agent | undefined;
-  forEachMention(text, (tag) => {
-    if (found) return;
-    const a = byName.get(tag.slice(1));
-    if (a) found = a;
-  });
-  return found;
+  const mentions = findAgentMentions(text, byName);
+  return mentions.length > 0 ? byName.get(mentions[0]!.name) : undefined;
 }
 
 /** If the caret sits inside an active "@..." token (start-of-input or
