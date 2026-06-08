@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 mod common;
-use common::auth::{SeededPrincipal, seed_principal};
+use common::auth::{SeededPrincipal, join_second_org, seed_principal};
 use common::pg::seed_tenant;
 
 struct AuthThreadsHarness {
@@ -309,5 +309,63 @@ async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
         rows[0]["first_agent"]["name"].as_str(),
         Some("beta"),
         "other's thread is the one rooted on `beta`",
+    );
+}
+
+#[sqlx::test]
+async fn list_scoped_to_active_org_not_all_memberships(pool: PgPool) {
+    // A user who belongs to two orgs must see only the *active* org's
+    // threads in the channel feed. RLS gates on membership in any org, so
+    // the feed query has to pin the active org explicitly.
+    let h = AuthThreadsHarness::new(&pool).await;
+
+    // Make the primary user a member of a second org as well.
+    let other_org = join_second_org(&h.state.pool, h.primary.user_id).await;
+
+    // One thread in the active org, one in the other org the user belongs to.
+    h.seed_thread(
+        h.primary.org_id,
+        h.primary.user_id,
+        "active-agent",
+        "active prompt",
+        "k-active",
+    )
+    .await;
+    h.seed_thread(
+        other_org,
+        h.primary.user_id,
+        "other-agent",
+        "other prompt",
+        "k-other",
+    )
+    .await;
+
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/threads")
+                .header("cookie", h.primary.cookie_header())
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let names: Vec<&str> = json
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|r| r["first_agent"]["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["active-agent"],
+        "only the active org's thread is listed",
     );
 }
