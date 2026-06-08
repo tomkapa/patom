@@ -66,17 +66,9 @@ SELECT c.id, m.user_id, m.org_id, m.created_at
     ON c.org_id = m.org_id AND c.name = 'general' AND c.archived_at IS NULL
 ON CONFLICT (channel_id, user_id) DO NOTHING;
 
--- ── Full reset of thread data (user-approved). DELETE rather than TRUNCATE so
--- the ON DELETE SET NULL on `agent_memories.source_turn_id` is honored —
--- long-term agent memories survive, only their source-turn link is cleared
--- (TRUNCATE CASCADE would ignore the rule and wipe them). Deleting sessions
--- cascades to prompt_requests, session_messages, tool_calls, turn_metrics,
--- leases, request dags, and session-scoped working memory. `row_security` is
--- disabled so the table owner bypasses sessions' FORCE RLS (otherwise the
--- unset app.user_id would silently match zero rows). No-op on a fresh DB.
--- Irreversible — the down migration cannot restore deleted rows.
-SET LOCAL row_security = off;
-DELETE FROM sessions;
+-- Existing thread roots keep `channel_id = NULL`, so pre-channels threads
+-- surface as direct messages to their original human creator until cleaned up
+-- out-of-band. The migration does not delete any thread data.
 
 -- ── RLS: org isolation (defense-in-depth). Member-scoping itself is enforced
 -- in the thread-list query and the ChannelStore, not here. ──
