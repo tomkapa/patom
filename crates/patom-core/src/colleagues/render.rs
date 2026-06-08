@@ -40,14 +40,16 @@ pub fn render_speaking_with(counterpart: &ColleagueRef) -> String {
     let mut out = String::with_capacity(
         SPEAKING_WITH_TAG_OPEN.len()
             + counterpart.display_name.as_str().len()
-            + 112
+            + 224
             + SPEAKING_WITH_TAG_CLOSE.len(),
     );
     out.push_str(SPEAKING_WITH_TAG_OPEN);
     let _ = write!(
         &mut out,
-        "You are talking with {name} — {kind}, id {id}. Use this id as `subject` \
-         when you record what you learn about them with `memory_write`.",
+        "You are talking with {name} — {kind}, id {id}. When you record something \
+         you learn about them, pass this id as `memory_write`'s `subject`; for a \
+         fact about a different colleague, use that colleague's id from the \
+         <colleagues> roster instead.",
         name = counterpart.display_name.as_str(),
         kind = counterpart.kind.as_str(),
         id = counterpart.id.as_uuid(),
