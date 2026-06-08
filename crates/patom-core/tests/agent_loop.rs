@@ -223,6 +223,49 @@ async fn returns_text_when_no_tool_call(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn system_counterpart_turn_appends_self_audit_output(pool: PgPool) {
+    // Reflection / resolution run in an off-DAG `(agent, System)` session.
+    // System can never be a message receiver, so the agent's own output must be
+    // addressed to itself — a regression guard for "append_row called with
+    // System receiver" (the reflection/resolution path was never driven by the
+    // scheduler/queue tests, which stop before the turn runs).
+    let seed = seed_tenant(&pool).await;
+    let provider = Arc::new(ScriptedProvider::new(vec![text_response(
+        "reflection complete",
+        StopReason::EndTurn,
+    )]));
+    let agent = build(&pool, &seed, provider.clone(), vec![]);
+
+    let store = PgSessionStore::new(pool.clone(), SystemClock::shared());
+    let session = common::pg::agent_to_system_session(
+        &pool,
+        &store,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
+    let request_id =
+        common::pg::seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
+
+    let reply = agent
+        .reply(
+            session,
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
+            vec![Prompt::try_from("(reflect)").expect("prompt")],
+            request_id,
+            patom::auth::Caller::new(seed.user_id, seed.org_id),
+            patom::runtime::RequestKindPayload::Normal {},
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("self-audit turn must not fail on append");
+
+    assert_eq!(reply.final_text(), "reflection complete");
+}
+
+#[sqlx::test]
 async fn runs_tool_then_returns_text(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let provider = Arc::new(ScriptedProvider::new(vec![

@@ -155,6 +155,33 @@ pub async fn human_to_agent_session(
         .expect("create human-to-agent session")
 }
 
+/// Mint an off-DAG `(agent, System)` session — the shape the reflection /
+/// resolution schedulers create. The counterpart is `System`, so driving a
+/// turn here exercises the self-audit append path.
+pub async fn agent_to_system_session(
+    pool: &PgPool,
+    sessions: &dyn SessionStore,
+    agent_id: AgentId,
+    org_id: OrgId,
+    user_id: UserId,
+) -> SessionId {
+    let root = PromptRequestId::new();
+    let agent_colleague = patom::colleagues::resolve_agent_colleague(pool, org_id, agent_id)
+        .await
+        .expect("seed mints agent colleague");
+    sessions
+        .resolve_or_create_for_pair(
+            root,
+            Participant::agent(agent_colleague, agent_id),
+            Participant::system(),
+            None,
+            org_id,
+            user_id,
+        )
+        .await
+        .expect("create agent-to-system session")
+}
+
 /// Resolve a colleague-backed `(Human, Agent)` participant pair from a seeded
 /// tenant. Mirrors the boundary callers (HTTP / Slack / scheduler) — every
 /// participant a session stores must reference a colleague row.

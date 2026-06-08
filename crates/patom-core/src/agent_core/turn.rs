@@ -96,12 +96,23 @@ impl Agent {
             }
         }
 
+        // Reflection / resolution sessions pair the agent with `System`, which
+        // can never be a message receiver (receivers are NOT NULL). The agent
+        // is the audience of its own audit output, so address it to itself; a
+        // normal session keeps the real counterpart. Self-detection on read
+        // keys off the sender, so an agent→agent row still renders as the
+        // viewer's Assistant turn.
+        let output_receiver = if counterpart.is_system() {
+            viewer
+        } else {
+            counterpart
+        };
         self.sessions()
             .append_for_user(
                 caller.user_id,
                 ctx.session_id,
                 viewer_as_sender,
-                counterpart,
+                output_receiver,
                 ChatMessage::Assistant(response.content.clone()),
                 request_id,
             )
