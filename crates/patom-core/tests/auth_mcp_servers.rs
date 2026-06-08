@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 mod common;
-use common::auth::{SeededPrincipal, seed_principal};
+use common::auth::{SeededPrincipal, join_second_org, seed_principal};
 use common::pg::seed_tenant;
 
 struct AuthMcpHarness {
@@ -325,33 +325,6 @@ async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
         .map(|r| r["catalog_id"].as_str().expect("catalog_id"))
         .collect();
     assert_eq!(aliases, vec!["theirs"]);
-}
-
-/// Add `user_id` to a freshly-minted second org as a plain member and
-/// return that org's id. Mirrors the inline seeding `seed_principal`
-/// does, but for an *additional* membership on an existing user.
-async fn join_second_org(pool: &PgPool, user_id: patom::auth::UserId) -> OrgId {
-    let org_id = OrgId::new();
-    let now = chrono::Utc::now();
-    let slug = format!("second-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
-    sqlx::query("INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at) VALUES ($1, $2, $3, 'en', $4, $4)")
-        .bind(org_id)
-        .bind("Second Org")
-        .bind(&slug)
-        .bind(now)
-        .execute(pool)
-        .await
-        .expect("seed second org");
-    sqlx::query(
-        "INSERT INTO org_members (org_id, user_id, role, created_at) VALUES ($1, $2, 'member', $3)",
-    )
-    .bind(org_id)
-    .bind(user_id)
-    .bind(now)
-    .execute(pool)
-    .await
-    .expect("join second org");
-    org_id
 }
 
 #[sqlx::test]

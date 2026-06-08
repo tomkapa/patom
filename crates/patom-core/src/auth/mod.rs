@@ -329,7 +329,6 @@ pub async fn visible_to(
     table: VisibilityTable,
     id: uuid::Uuid,
 ) -> Result<bool, AuthError> {
-    let active_org = principal.active_org_id;
     run_as_user(pool, principal.user_id, async |tx| {
         let sql = format!(
             "SELECT EXISTS(SELECT 1 FROM {} WHERE id = $1 AND org_id = $2)",
@@ -337,7 +336,7 @@ pub async fn visible_to(
         );
         let exists: bool = sqlx::query_scalar(&sql)
             .bind(id)
-            .bind(active_org)
+            .bind(principal.active_org_id)
             .fetch_one(&mut **tx)
             .await?;
         Ok::<bool, AuthError>(exists)

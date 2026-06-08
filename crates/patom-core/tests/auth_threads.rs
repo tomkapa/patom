@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 mod common;
-use common::auth::{SeededPrincipal, seed_principal};
+use common::auth::{SeededPrincipal, join_second_org, seed_principal};
 use common::pg::seed_tenant;
 
 struct AuthThreadsHarness {
@@ -319,26 +319,7 @@ async fn list_scoped_to_active_org_not_all_memberships(pool: PgPool) {
     let h = AuthThreadsHarness::new(&pool).await;
 
     // Make the primary user a member of a second org as well.
-    let other_org = OrgId::new();
-    let now = chrono::Utc::now();
-    let slug = format!("second-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
-    sqlx::query("INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at) VALUES ($1, $2, $3, 'en', $4, $4)")
-        .bind(other_org)
-        .bind("Second Org")
-        .bind(&slug)
-        .bind(now)
-        .execute(&h.state.pool)
-        .await
-        .expect("seed second org");
-    sqlx::query(
-        "INSERT INTO org_members (org_id, user_id, role, created_at) VALUES ($1, $2, 'member', $3)",
-    )
-    .bind(other_org)
-    .bind(h.primary.user_id)
-    .bind(now)
-    .execute(&h.state.pool)
-    .await
-    .expect("join second org");
+    let other_org = join_second_org(&h.state.pool, h.primary.user_id).await;
 
     // One thread in the active org, one in the other org the user belongs to.
     h.seed_thread(
