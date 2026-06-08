@@ -25,7 +25,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::agents::AgentId;
-use crate::colleagues::SharedColleagueStore;
 use crate::memory::{
     MAX_MEMORY_MUTATIONS_PER_TURN, MemoryEventId, MemoryHandle, MemoryId, MemorySectionLoader,
     MemoryStoreError, ResolutionOutcome, SharedMemoryStore,
@@ -132,13 +131,6 @@ impl MemoryToolDeps {
     pub(super) fn store(&self) -> &SharedMemoryStore {
         self.loader.store()
     }
-
-    /// The colleague directory, sourced from the section loader. `memory_write`
-    /// uses it to verify a `Collaborator` subject is a real colleague in the
-    /// caller's org before minting the row.
-    pub(super) fn colleagues(&self) -> &SharedColleagueStore {
-        self.loader.colleagues()
-    }
 }
 
 pub(super) fn expect_agent(ctx: &ToolCallContext) -> Result<AgentId, ToolError> {
@@ -171,6 +163,7 @@ pub(super) fn store_to_tool_err(e: MemoryStoreError) -> ToolError {
         | MemoryStoreError::WrongAgent { .. }
         | MemoryStoreError::PinnedImmutable { .. }
         | MemoryStoreError::SubjectRequiredForCollaborator
+        | MemoryStoreError::SubjectNotInOrg { .. }
         | MemoryStoreError::Parse(_) => ToolError::InvalidInput(e.to_string()),
         MemoryStoreError::Db(_) | MemoryStoreError::Provider(_) | MemoryStoreError::Backend(_) => {
             ToolError::Backend(e.to_string())

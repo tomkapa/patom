@@ -1208,6 +1208,30 @@ async fn apply_write(
     embedding: Vec<f32>,
     now: DateTime<Utc>,
 ) -> Result<MutationOutcome, MemoryStoreError> {
+    // Subject must be a colleague in the agent's own org. The
+    // `subject_colleague_id` FK only proves the colleague exists *somewhere*
+    // (`colleagues` spans tenants), so without this an agent could key a memory
+    // to a foreign-org or hallucinated colleague. Both the agent tool and the
+    // operator route funnel through here, so this is the one place the rule
+    // can't be sidestepped. The org is the agent's, mirroring the row's
+    // denormalised `org_id`.
+    if let Some(subject) = subject {
+        let same_org: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM colleagues c
+                 WHERE c.id = $1
+                   AND c.org_id = (SELECT org_id FROM agents WHERE id = $2)
+             )",
+        )
+        .bind(subject)
+        .bind(agent)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !same_org {
+            return Err(MemoryStoreError::SubjectNotInOrg { subject });
+        }
+    }
+
     let memory_id = MemoryId::new();
     let event_id = MemoryEventId::new();
     let payload = MemoryEventPayload::Write {

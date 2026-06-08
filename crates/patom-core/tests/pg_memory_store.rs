@@ -1106,3 +1106,65 @@ async fn collaborator_write_without_subject_rejected(pool: PgPool) {
         "got {err:?}"
     );
 }
+
+#[sqlx::test]
+async fn collaborator_write_unknown_subject_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+
+    // A colleague id that was never minted.
+    let ghost = patom::colleagues::ColleagueId::new();
+    let err = s
+        .apply(MemoryMutation::Write {
+            agent: seed.agent_id,
+            kind: MemoryKind::Collaborator,
+            content: content("about a colleague that does not exist"),
+            state: MemoryState::Tentative,
+            pinned: false,
+            subject: Some(ghost),
+            source: MutationSource::Operator,
+        })
+        .await
+        .expect_err("unknown subject must be rejected");
+    assert!(
+        matches!(err, MemoryStoreError::SubjectNotInOrg { .. }),
+        "got {err:?}"
+    );
+    assert!(
+        s.list(seed.agent_id).await.expect("list").is_empty(),
+        "no row minted for an unknown subject"
+    );
+}
+
+#[sqlx::test]
+async fn collaborator_write_foreign_org_subject_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+
+    // A real colleague, but in a different org — the FK would accept it
+    // (`colleagues` spans tenants); the store's org guard must not.
+    let other = seed_tenant(&pool).await;
+    let foreign = patom::colleagues::resolve_user_colleague(&pool, other.org_id, other.user_id)
+        .await
+        .expect("foreign colleague");
+    let err = s
+        .apply(MemoryMutation::Write {
+            agent: seed.agent_id,
+            kind: MemoryKind::Collaborator,
+            content: content("about someone at another company"),
+            state: MemoryState::Tentative,
+            pinned: false,
+            subject: Some(foreign),
+            source: MutationSource::Operator,
+        })
+        .await
+        .expect_err("cross-org subject must be rejected");
+    assert!(
+        matches!(err, MemoryStoreError::SubjectNotInOrg { .. }),
+        "got {err:?}"
+    );
+    assert!(
+        s.list(seed.agent_id).await.expect("list").is_empty(),
+        "no row minted for a foreign-org subject"
+    );
+}

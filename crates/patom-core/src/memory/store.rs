@@ -70,6 +70,16 @@ pub enum MemoryStoreError {
     #[error("collaborator memory requires a subject colleague")]
     SubjectRequiredForCollaborator,
 
+    /// A `Collaborator` memory's `subject` must be a colleague in the *agent's
+    /// own org*. The `subject_colleague_id` FK only proves the colleague exists
+    /// somewhere — `colleagues` spans tenants — so this catches a hallucinated
+    /// or cross-org subject before the row lands. The agent tool and the
+    /// operator route both funnel through `apply`, so this is the one place the
+    /// rule cannot be sidestepped. Unknown and foreign-org ids fail the same
+    /// way, leaking no cross-org existence.
+    #[error("subject colleague {subject:?} is not a colleague in the agent's org")]
+    SubjectNotInOrg { subject: ColleagueId },
+
     /// Boundary parsing failure for a derived input (content cap exceeded
     /// during a rebuild, malformed handle).
     #[error("parse: {0}")]
