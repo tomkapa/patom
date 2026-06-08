@@ -283,3 +283,60 @@ async fn concurrent_first_logins_yield_exactly_one_initial_org(pool: PgPool) {
             .expect("count owners");
     assert_eq!(owner_count, 1, "exactly one owner membership");
 }
+
+/// `read_profiles` resolves each user's display identity for chat surfaces
+/// that can't JOIN `users` under RLS (migration 14). Name uses the roster
+/// formula: explicit `display_name` wins, else the email local-part.
+#[sqlx::test]
+async fn read_profiles_resolves_name_with_email_fallback(pool: PgPool) {
+    let store = PgUserStore::new(pool.clone());
+    let now = chrono::Utc::now();
+
+    // Named user with an avatar.
+    let named = patom::auth::UserId::new();
+    sqlx::query(
+        "INSERT INTO users (id, email, display_name, avatar_url, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $5)",
+    )
+    .bind(named)
+    .bind("named@example.test")
+    .bind("Ada Lovelace")
+    .bind("https://h.test/ada.png")
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("insert named user");
+
+    // Nameless user — name must fall back to the email local-part.
+    let nameless = patom::auth::UserId::new();
+    sqlx::query(
+        "INSERT INTO users (id, email, display_name, created_at, updated_at) \
+         VALUES ($1, $2, NULL, $3, $3)",
+    )
+    .bind(nameless)
+    .bind("grace@example.test")
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("insert nameless user");
+
+    let map = store
+        .read_profiles(&[named, nameless])
+        .await
+        .expect("read profiles");
+
+    let a = map.get(&named).expect("named present");
+    assert_eq!(a.name, "Ada Lovelace");
+    assert_eq!(a.avatar_url.as_deref(), Some("https://h.test/ada.png"));
+
+    let g = map.get(&nameless).expect("nameless present");
+    assert_eq!(g.name, "grace", "name falls back to email local-part");
+    assert_eq!(g.avatar_url, None);
+}
+
+#[sqlx::test]
+async fn read_profiles_empty_input_returns_empty_map(pool: PgPool) {
+    let store = PgUserStore::new(pool);
+    let map = store.read_profiles(&[]).await.expect("read profiles");
+    assert!(map.is_empty());
+}

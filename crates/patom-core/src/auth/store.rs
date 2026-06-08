@@ -61,6 +61,23 @@ pub struct UpsertedUser {
     pub is_new_user: bool,
 }
 
+/// Minimal display identity for a user — the name and avatar a viewer
+/// needs to render someone *else's* message bubble.
+///
+/// Exists because tenant-scoped routes run as `patom_app` and cannot
+/// JOIN `users` (migration 14), yet the chat surfaces must show the real
+/// author of every human row, not the current viewer. `name` is already
+/// resolved server-side with the roster formula
+/// `COALESCE(display_name, split_part(email, '@', 1))` (see
+/// `colleagues/pg_store.rs`), so the caller renders it verbatim. The
+/// avatar is the raw DB string (already length-checked by the column
+/// CHECK) — a display read never fails on a malformed value.
+#[derive(Debug, Clone)]
+pub struct UserProfileLite {
+    pub name: String,
+    pub avatar_url: Option<String>,
+}
+
 /// A freshly-created organisation row.
 #[derive(Debug, Clone)]
 pub struct NewOrg {
@@ -132,6 +149,20 @@ pub trait UserStore: std::fmt::Debug + Send + Sync + 'static {
     /// caller decides how to render an absent value. Duplicates in
     /// `ids` are deduped on the SQL side via `WHERE id = ANY($1)`.
     async fn read_emails(&self, ids: &[UserId]) -> Result<HashMap<UserId, Email>, AuthError>;
+
+    /// Batched display-identity lookup keyed by user id.
+    ///
+    /// Same rationale as [`Self::read_emails`]: tenant-scoped chat routes
+    /// run as `patom_app` and cannot JOIN `users` (migration 14), but the
+    /// feed and thread views must render the *real* author's name and
+    /// avatar. The name is resolved with the roster
+    /// `COALESCE(display_name, split_part(email, '@', 1))` formula so it
+    /// matches the `<colleagues>` roster exactly. Missing ids are omitted;
+    /// duplicates in `ids` are deduped via `WHERE id = ANY($1)`.
+    async fn read_profiles(
+        &self,
+        ids: &[UserId],
+    ) -> Result<HashMap<UserId, UserProfileLite>, AuthError>;
 
     /// Read the org's `default_language`. Called by the language
     /// resolver on cache miss; the column is NOT NULL, so a missing row

@@ -17,7 +17,9 @@ use super::language::Language;
 use super::limits::MAX_SLUG_RETRIES;
 use super::locale_hint::LocaleHint;
 use super::org_rule::OrganizationRule;
-use super::store::{ConsumedOAuthState, NewOrg, OAuthStateRow, UpsertedUser, UserStore};
+use super::store::{
+    ConsumedOAuthState, NewOrg, OAuthStateRow, UpsertedUser, UserProfileLite, UserStore,
+};
 use super::types::{
     Email, OAuthState, OidcNonce, OidcProfile, OrgId, OrgMembership, OrgSlug, PkceVerifier, Role,
     User, UserId,
@@ -337,6 +339,38 @@ impl UserStore for PgUserStore {
             let id = UserId::from(r.get::<uuid::Uuid, _>("id"));
             let email = Email::try_from(r.get::<String, _>("email"))?;
             out.insert(id, email);
+        }
+        Ok(out)
+    }
+
+    async fn read_profiles(
+        &self,
+        ids: &[UserId],
+    ) -> Result<std::collections::HashMap<UserId, UserProfileLite>, AuthError> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        // Name resolved in SQL with the same roster formula as
+        // `colleagues/pg_store.rs` so a thread author's name matches the
+        // `<colleagues>` roster. Avatar comes back as the raw (DB-checked)
+        // string — a display read must not fail on a malformed value.
+        let mut tx = super::begin_privileged(&self.pool).await?;
+        let rows = sqlx::query(
+            "SELECT id, COALESCE(display_name, split_part(email, '@', 1)) AS name, avatar_url \
+             FROM users WHERE id = ANY($1)",
+        )
+        .bind(ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let mut out = std::collections::HashMap::with_capacity(rows.len());
+        for r in rows {
+            let id = UserId::from(r.get::<uuid::Uuid, _>("id"));
+            let profile = UserProfileLite {
+                name: r.get::<String, _>("name"),
+                avatar_url: r.get::<Option<String>, _>("avatar_url"),
+            };
+            out.insert(id, profile);
         }
         Ok(out)
     }

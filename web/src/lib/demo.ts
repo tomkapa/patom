@@ -19,11 +19,27 @@ const NOW = new Date();
 const ago = (mins: number) =>
   new Date(NOW.getTime() - mins * 60_000).toISOString();
 
+// Two demo humans so the fixtures exercise the multi-author feed: a thread
+// started by Maya must show Maya, not the logged-in viewer.
+const TOM = {
+  user_id: "user",
+  colleague_id: "col-tom",
+  name: "Tom Tran",
+  avatar_url: null,
+};
+const MAYA = {
+  user_id: "u-maya",
+  colleague_id: "col-maya",
+  name: "Maya Patel",
+  avatar_url: null,
+};
+
 export const DEMO_THREADS: ThreadSummary[] = [
   {
     root_request_id: "00000000-0000-0000-0000-000000000001",
     root_session_id: "00000000-0000-0000-0000-000000000010",
     first_agent: { id: "a-orion", name: "orion-research-v3" },
+    starter: TOM,
     preview: "@orion how's the weather today in Tokyo? I'm flying in tomorrow.",
     reply_count: 3,
     last_activity_at: ago(0.2),
@@ -34,6 +50,7 @@ export const DEMO_THREADS: ThreadSummary[] = [
     root_request_id: "00000000-0000-0000-0000-000000000002",
     root_session_id: "00000000-0000-0000-0000-000000000020",
     first_agent: { id: "a-helios", name: "helios-deploy" },
+    starter: MAYA,
     preview: "ship v2.5.1 to canary; flag billing-rewrite to 5%",
     reply_count: 6,
     last_activity_at: ago(8),
@@ -44,6 +61,7 @@ export const DEMO_THREADS: ThreadSummary[] = [
     root_request_id: "00000000-0000-0000-0000-000000000003",
     root_session_id: "00000000-0000-0000-0000-000000000030",
     first_agent: { id: "a-atlas", name: "atlas-weather" },
+    starter: TOM,
     preview: "regression suite — last green at sha 7c5af11",
     reply_count: 2,
     last_activity_at: ago(38),
@@ -60,26 +78,30 @@ export const DEMO_HISTORY: ThreadMessage[] = [
   {
     session_id: SESSION_PRIMARY,
     seq: 1,
-    sender: { kind: "human" },
-    receiver: { kind: "agent", agent_id: "a-orion" },
+    sender: { kind: "human", colleague_id: TOM.colleague_id, user_id: TOM.user_id },
+    receiver: { kind: "agent", colleague_id: "col-orion", agent_id: "a-orion" },
     body: {
       role: "user",
       content: "@orion how's the weather today in Tokyo? I'm flying in tomorrow.",
     },
     created_at: ago(15),
     request_id: DEMO_REQ(1),
+    sender_display_name: TOM.name,
+    sender_avatar_url: TOM.avatar_url,
   },
   {
     session_id: SESSION_PRIMARY,
     seq: 2,
-    sender: { kind: "human" },
-    receiver: { kind: "agent", agent_id: "a-orion" },
+    sender: { kind: "human", colleague_id: TOM.colleague_id, user_id: TOM.user_id },
+    receiver: { kind: "agent", colleague_id: "col-orion", agent_id: "a-orion" },
     body: {
       role: "user",
       content: "perfect, thanks. anyone want to grab izakaya friday night?",
     },
     created_at: ago(13),
     request_id: DEMO_REQ(2),
+    sender_display_name: TOM.name,
+    sender_avatar_url: TOM.avatar_url,
   },
 ];
 
@@ -89,20 +111,22 @@ export const DEMO_REPLIES: ThreadMessage[] = [
   {
     session_id: REPLY_SESSION,
     seq: 1,
-    sender: { kind: "agent", agent_id: "a-orion" },
-    receiver: { kind: "human" },
+    sender: { kind: "agent", colleague_id: "col-orion", agent_id: "a-orion" },
+    receiver: { kind: "human", colleague_id: TOM.colleague_id, user_id: TOM.user_id },
     body: {
       role: "assistant",
       content: "@atlas-weather weather in Tokyo right now",
     },
     created_at: ago(14.5),
     request_id: DEMO_REQ(11),
+    sender_display_name: null,
+    sender_avatar_url: null,
   },
   {
     session_id: REPLY_SESSION,
     seq: 2,
-    sender: { kind: "agent", agent_id: "a-atlas" },
-    receiver: { kind: "human" },
+    sender: { kind: "agent", colleague_id: "col-atlas", agent_id: "a-atlas" },
+    receiver: { kind: "human", colleague_id: TOM.colleague_id, user_id: TOM.user_id },
     body: {
       role: "assistant",
       content:
@@ -110,12 +134,14 @@ export const DEMO_REPLIES: ThreadMessage[] = [
     },
     created_at: ago(14.4),
     request_id: DEMO_REQ(12),
+    sender_display_name: null,
+    sender_avatar_url: null,
   },
   {
     session_id: REPLY_SESSION,
     seq: 3,
-    sender: { kind: "agent", agent_id: "a-orion" },
-    receiver: { kind: "human" },
+    sender: { kind: "agent", colleague_id: "col-orion", agent_id: "a-orion" },
+    receiver: { kind: "human", colleague_id: TOM.colleague_id, user_id: TOM.user_id },
     body: {
       role: "assistant",
       content:
@@ -123,6 +149,8 @@ export const DEMO_REPLIES: ThreadMessage[] = [
     },
     created_at: ago(14.3),
     request_id: DEMO_REQ(13),
+    sender_display_name: null,
+    sender_avatar_url: null,
   },
 ];
 

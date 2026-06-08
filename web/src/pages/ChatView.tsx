@@ -232,8 +232,6 @@ export function ChatView() {
           <MessageList
             threads={visibleThreads}
             channel={channelLabel}
-            userName={poster.name}
-            humanPoster={poster}
             onOpenThread={(rootId) => {
               setSelectedRoot(rootId);
               setShowPanel(true);
