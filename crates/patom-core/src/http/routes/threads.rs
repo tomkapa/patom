@@ -97,17 +97,17 @@ type ThreadRow = (
 /// `foldHistoryIntoBubbles`): one bubble per delivered `send_message` call.
 /// Plain assistant rows, system rows carrying tool_results, and the
 /// human's own prompt are conversation plumbing, not user-visible replies.
-// Filtering joins `prompt_requests` through `sessions`. Under
-// `begin_as`, `sessions` is RLS-bound to the caller's org so only
-// human roots whose conversation session belongs to the caller's org
-// pass the inner JOIN — RLS provides isolation without the SQL
-// having to name `org_id` itself.
+// `begin_as` RLS isolates by *membership* (any org the caller belongs
+// to), not the *active* org, so the `pr.org_id = $4` predicate pins the
+// feed to the active workspace — without it a multi-org user would see
+// roots from every org they're a member of.
 const THREAD_LIST_SQL: &str = "WITH visible_human_roots AS (
     SELECT pr.id AS root_request_id, pr.session_id
     FROM prompt_requests pr
     JOIN sessions s ON s.id = pr.session_id
     WHERE pr.id = pr.root_request_id
       AND pr.sender_kind = 'human'
+      AND pr.org_id = $4
 ),
 thread_stats AS (
     SELECT s.root_request_id,
@@ -168,6 +168,7 @@ async fn list_threads(
         .bind(preview_chars)
         .bind(q.before)
         .bind(i64::from(limit))
+        .bind(principal.active_org_id)
         .fetch_all(&mut *tx)
         .await
         .map_err(AuthError::from)?;
@@ -250,6 +251,7 @@ const THREAD_HISTORY_SQL: &str = "SELECT sm.session_id, sm.seq,
  FROM session_messages sm
  JOIN sessions s ON s.id = sm.session_id
  WHERE s.root_request_id = $1
+   AND s.org_id = $5
    AND ($2::timestamptz IS NULL
         OR (sm.created_at, sm.seq) < ($2, $3))
  ORDER BY sm.created_at, sm.seq
@@ -298,6 +300,7 @@ async fn thread_messages(
         .bind(before_ts)
         .bind(before_seq)
         .bind(i64::from(limit))
+        .bind(principal.active_org_id)
         .fetch_all(&mut *tx)
         .await
         .map_err(AuthError::from)?;
@@ -332,18 +335,21 @@ async fn stream_thread(
     Path(root): Path<Uuid>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, HttpError> {
     let root = PromptRequestId::from(root);
-    // Authorisation gate: only subscribe if the caller can see *any*
-    // session in this DAG. RLS on `sessions` filters cross-org rows
-    // automatically — if the caller can't see them, the lookup returns
-    // None and we 404 cleanly without subscribing to the broadcast.
+    // Authorisation gate: only subscribe if the caller can see a session
+    // in this DAG *in their active org*. RLS isolates by membership (any
+    // org), so `org_id = $2` pins the gate to the active workspace — a
+    // multi-org caller must not stream a DAG from a non-active org. A miss
+    // returns None and we 404 cleanly without subscribing to the broadcast.
     {
         let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
-        let visible: Option<(SessionId,)> =
-            sqlx::query_as("SELECT id FROM sessions WHERE root_request_id = $1 LIMIT 1")
-                .bind(root)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(AuthError::from)?;
+        let visible: Option<(SessionId,)> = sqlx::query_as(
+            "SELECT id FROM sessions WHERE root_request_id = $1 AND org_id = $2 LIMIT 1",
+        )
+        .bind(root)
+        .bind(principal.active_org_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
         tx.commit().await.map_err(AuthError::from)?;
         if visible.is_none() {
             return Err(HttpError::NotFound);

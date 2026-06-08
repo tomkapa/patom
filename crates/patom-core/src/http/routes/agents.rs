@@ -265,9 +265,16 @@ async fn list_agents(
     // let the `agents_org_isolation` RLS policy do the filtering. Mirrors
     // the mcp_servers route — bypasses the store's privileged read path
     // so the user can see only their own org's rows.
-    let sql = format!("SELECT {AGENT_LIST_SELECT} ORDER BY a.created_at ASC");
+    //
+    // RLS gates on membership in *any* org (`app_user_is_member`), not the
+    // *active* one, so a user who belongs to more than one org would
+    // otherwise see every membership's agents at once (the
+    // duplicate-recruiter-in-the-sidebar bug). Pin the active org
+    // explicitly.
+    let sql = format!("SELECT {AGENT_LIST_SELECT} WHERE a.org_id = $1 ORDER BY a.created_at ASC");
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let rows = sqlx::query_as::<_, AgentRowForList>(&sql)
+        .bind(principal.active_org_id)
         .fetch_all(&mut *tx)
         .await
         .map_err(AuthError::from)?;
@@ -285,10 +292,14 @@ async fn read_agent(
     Path(id): Path<Uuid>,
 ) -> Result<Json<AgentResponse>, HttpError> {
     let id = AgentId::from(id);
-    let sql = format!("SELECT {AGENT_LIST_SELECT} WHERE a.id = $1");
+    // Pin the active org for the same reason as `list_agents`: RLS gates
+    // on membership in any org, so a multi-org user could otherwise read
+    // an agent that lives in a non-active workspace by id.
+    let sql = format!("SELECT {AGENT_LIST_SELECT} WHERE a.id = $1 AND a.org_id = $2");
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let row = sqlx::query_as::<_, AgentRowForList>(&sql)
         .bind(id)
+        .bind(principal.active_org_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(AuthError::from)?;
