@@ -84,6 +84,14 @@ impl MemorySectionLoader {
         &self.cache
     }
 
+    /// The colleague directory. `memory_write` uses it to verify a
+    /// `Collaborator` memory's `subject` is a real colleague in the caller's
+    /// org before minting the row, rather than holding a second handle.
+    #[must_use]
+    pub fn colleagues(&self) -> &SharedColleagueStore {
+        &self.colleagues
+    }
+
     /// Load — or compose, on cache miss — the agent's composed memory
     /// section for `(session, agent)`. The loader assembles both layers:
     ///

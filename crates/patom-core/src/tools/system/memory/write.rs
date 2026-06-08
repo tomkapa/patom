@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::debug;
 
-use crate::colleagues::ColleagueId;
+use crate::colleagues::{ColleagueError, ColleagueId};
 use crate::memory::{
     MemoryContent, MemoryId, MemoryKind, MemoryMutation, MemoryState, MutationSource,
 };
@@ -115,6 +115,31 @@ impl Tool for MemoryWriteTool {
         check_cap(&self.deps.counter, ctx.request_id)?;
 
         let content = MemoryContent::try_from(parsed.content).map_err(parse_to_tool_err)?;
+
+        // Subject guard: a `subject` must name a real colleague in the caller's
+        // org. Without this an agent could mint a `Collaborator` row keyed to a
+        // hallucinated or cross-org id — a silently-wrong "about <unknown>"
+        // memory the DB FK alone wouldn't catch (it spans orgs). A foreign-org
+        // colleague is rejected as unknown so the check leaks no existence.
+        if let Some(subject) = parsed.subject {
+            let colleague = self
+                .deps
+                .colleagues()
+                .read(subject)
+                .await
+                .map_err(|e| match e {
+                    ColleagueError::NotFound(_) => ToolError::InvalidInput(format!(
+                        "memory_write: unknown subject colleague {subject}"
+                    )),
+                    err => ToolError::Backend(format!("memory_write: subject lookup: {err}")),
+                })?;
+            if colleague.org_id() != ctx.org_id {
+                return Err(ToolError::InvalidInput(format!(
+                    "memory_write: unknown subject colleague {subject}"
+                )));
+            }
+        }
+
         let outcome = self
             .deps
             .store()

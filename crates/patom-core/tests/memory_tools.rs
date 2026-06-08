@@ -147,6 +147,88 @@ async fn memory_write_creates_tentative_row(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn memory_write_collaborator_accepts_same_org_subject(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let tool = MemoryWriteTool::new(f.deps.clone());
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+
+    // The human colleague in the agent's own org — a valid subject.
+    let human = patom::colleagues::resolve_user_colleague(&pool, f.org_id, f.user_id)
+        .await
+        .expect("human colleague");
+    let out = tool
+        .execute(
+            json!({"kind": "collaborator", "content": "Prefers to be called Pa.", "subject": human}),
+            &ctx(&f, request),
+        )
+        .await
+        .expect("write with a real same-org subject");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&out).expect("json")["kind"],
+        "collaborator"
+    );
+
+    let listed = f.store.list(f.agent_id).await.expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0].subject,
+        Some(human),
+        "subject keyed to the colleague"
+    );
+}
+
+#[sqlx::test]
+async fn memory_write_collaborator_rejects_unknown_subject(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let tool = MemoryWriteTool::new(f.deps.clone());
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+
+    // A colleague id that was never minted.
+    let ghost = patom::colleagues::ColleagueId::new();
+    let err = tool
+        .execute(
+            json!({"kind": "collaborator", "content": "knows billing", "subject": ghost}),
+            &ctx(&f, request),
+        )
+        .await
+        .expect_err("unknown subject must be rejected");
+    assert!(matches!(err, ToolError::InvalidInput(_)), "got: {err:?}");
+    assert!(
+        f.store.list(f.agent_id).await.expect("list").is_empty(),
+        "no row minted for an unknown subject"
+    );
+}
+
+#[sqlx::test]
+async fn memory_write_collaborator_rejects_foreign_org_subject(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let tool = MemoryWriteTool::new(f.deps.clone());
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+
+    // A real colleague — but in a different org. The privileged read finds it;
+    // the org check rejects it as unknown (no cross-org existence leak).
+    let other = seed_tenant(&pool).await;
+    let foreign = patom::colleagues::resolve_user_colleague(&pool, other.org_id, other.user_id)
+        .await
+        .expect("foreign colleague");
+    let err = tool
+        .execute(
+            json!({"kind": "collaborator", "content": "at another company", "subject": foreign}),
+            &ctx(&f, request),
+        )
+        .await
+        .expect_err("cross-org subject must be rejected");
+    assert!(matches!(err, ToolError::InvalidInput(_)), "got: {err:?}");
+    assert!(
+        f.store.list(f.agent_id).await.expect("list").is_empty(),
+        "no row minted for a foreign-org subject"
+    );
+}
+
+#[sqlx::test]
 async fn memory_update_resolves_handle_and_resets_state(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
