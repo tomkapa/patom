@@ -29,7 +29,7 @@ use crate::runtime::{
     ThreadStreamEvent, ThreadStreamItem,
 };
 use crate::session::SessionId;
-use crate::types::{MessageSender, MessageSenderKind, Participant, ParticipantKind};
+use crate::types::{MessageSender, Participant};
 
 use super::super::error::HttpError;
 use super::super::state::AppState;
@@ -105,20 +105,22 @@ const THREAD_LIST_SQL: &str = "WITH visible_human_roots AS (
     SELECT pr.id AS root_request_id, pr.session_id
     FROM prompt_requests pr
     JOIN sessions s ON s.id = pr.session_id
+    JOIN colleagues prc ON prc.id = pr.sender_colleague_id
     WHERE pr.id = pr.root_request_id
-      AND pr.sender_kind = 'human'
+      AND prc.kind = 'human'
       AND pr.org_id = $4
 ),
 thread_stats AS (
     SELECT s.root_request_id,
            COUNT(*) FILTER (
-               WHERE sm.sender_kind = 'agent'
+               WHERE sc.kind = 'agent'
                  AND sm.body @? '$.contents[*] ? (@.kind == \"tool_call\" && @.value.name == \"send_message\")'
            ) AS reply_count,
            MAX(sm.created_at) AS last_msg_at
     FROM sessions s
     JOIN visible_human_roots hr ON hr.root_request_id = s.root_request_id
     LEFT JOIN session_messages sm ON sm.session_id = s.id
+    LEFT JOIN colleagues sc ON sc.id = sm.sender_colleague_id
     GROUP BY s.root_request_id
 )
 SELECT
@@ -134,7 +136,8 @@ SELECT
     pr.created_at
 FROM prompt_requests pr
 JOIN visible_human_roots vhr ON vhr.root_request_id = pr.id
-JOIN agents a ON a.id = pr.receiver_agent_id
+JOIN colleagues rc ON rc.id = pr.receiver_colleague_id
+JOIN agents a ON a.id = rc.agent_id
 LEFT JOIN thread_stats ts ON ts.root_request_id = pr.id
 WHERE ($2::timestamptz IS NULL
        OR GREATEST(pr.created_at,
@@ -230,12 +233,21 @@ struct ThreadMessage {
     request_id: PromptRequestId,
 }
 
+/// `session_messages` row with both sides joined to `colleagues` so the
+/// satellite columns (`kind`, `user_id`, `agent_id`) come back in the same
+/// query — matches the decode path in [`crate::session::PgSessionStore`].
 type HistoryRow = (
     SessionId,
     i64,
-    MessageSenderKind,
+    // sender side (nullable colleague_id ⇒ System)
+    Option<crate::colleagues::ColleagueId>,
+    Option<crate::colleagues::ColleagueKind>,
+    Option<crate::auth::UserId>,
     Option<AgentId>,
-    ParticipantKind,
+    // receiver side (NOT NULL on session_messages)
+    crate::colleagues::ColleagueId,
+    crate::colleagues::ColleagueKind,
+    Option<crate::auth::UserId>,
     Option<AgentId>,
     serde_json::Value,
     DateTime<Utc>,
@@ -245,11 +257,13 @@ type HistoryRow = (
 /// Thread-history query. As with G1, the `(before_ts, before_seq)` cursor
 /// is optional; passing both as `NULL` skips the lexicographic predicate.
 const THREAD_HISTORY_SQL: &str = "SELECT sm.session_id, sm.seq,
-        sm.sender_kind, sm.sender_agent_id,
-        sm.receiver_kind, sm.receiver_agent_id,
+        sm.sender_colleague_id, sc.kind, sc.user_id, sc.agent_id,
+        sm.receiver_colleague_id, rc.kind, rc.user_id, rc.agent_id,
         sm.body, sm.created_at, sm.request_id
  FROM session_messages sm
  JOIN sessions s ON s.id = sm.session_id
+ LEFT JOIN colleagues sc ON sc.id = sm.sender_colleague_id
+ JOIN colleagues rc ON rc.id = sm.receiver_colleague_id
  WHERE s.root_request_id = $1
    AND s.org_id = $5
    AND ($2::timestamptz IS NULL
@@ -307,16 +321,54 @@ async fn thread_messages(
     tx.commit().await.map_err(AuthError::from)?;
 
     tracing::Span::current().record("patom.thread.history.size", rows.len());
-    Ok(Json(rows.into_iter().map(history_row_to_message).collect()))
+    let messages = rows
+        .into_iter()
+        .map(history_row_to_message)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Json(messages))
 }
 
-fn history_row_to_message(row: HistoryRow) -> ThreadMessage {
-    let (session_id, seq, sk, said, rk, raid, body, created_at, request_id) = row;
-    let sender = MessageSender::from_kind_id(sk, said)
-        .expect("invariant: session_messages.sender_* shape enforced by CHECK");
-    let receiver = Participant::from_kind_id(rk, raid)
-        .expect("invariant: session_messages.receiver_* shape enforced by CHECK");
-    ThreadMessage {
+fn history_row_to_message(row: HistoryRow) -> Result<ThreadMessage, HttpError> {
+    let (
+        session_id,
+        seq,
+        sender_colleague_id,
+        sender_kind,
+        sender_user_id,
+        sender_agent_id,
+        receiver_colleague_id,
+        receiver_kind,
+        receiver_user_id,
+        receiver_agent_id,
+        body,
+        created_at,
+        request_id,
+    ) = row;
+    // The schema enforces these shapes, so a violation is a malformed-DB
+    // anomaly, not bad input — log it and degrade to a typed 500 rather than
+    // panicking the handler (§6/§12: no `expect` across the HTTP boundary).
+    let sender = Participant::try_from((
+        sender_colleague_id,
+        sender_kind,
+        sender_user_id,
+        sender_agent_id,
+    ))
+    .map(MessageSender::from)
+    .map_err(|e| {
+        tracing::error!(error = %e, "thread.history.decode_sender");
+        HttpError::Internal
+    })?;
+    let receiver = Participant::try_from((
+        Some(receiver_colleague_id),
+        Some(receiver_kind),
+        receiver_user_id,
+        receiver_agent_id,
+    ))
+    .map_err(|e| {
+        tracing::error!(error = %e, "thread.history.decode_receiver");
+        HttpError::Internal
+    })?;
+    Ok(ThreadMessage {
         session_id,
         seq,
         sender,
@@ -324,7 +376,7 @@ fn history_row_to_message(row: HistoryRow) -> ThreadMessage {
         body,
         created_at,
         request_id,
-    }
+    })
 }
 
 // ─── G3 ─────────────────────────────────────────────────────────────────

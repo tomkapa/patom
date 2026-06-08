@@ -162,8 +162,10 @@ pub(super) fn store_to_tool_err(e: MemoryStoreError) -> ToolError {
         | MemoryStoreError::ContradictionNotFound(_)
         | MemoryStoreError::WrongAgent { .. }
         | MemoryStoreError::PinnedImmutable { .. }
+        | MemoryStoreError::SubjectRequiredForCollaborator
+        | MemoryStoreError::SubjectNotInOrg { .. }
         | MemoryStoreError::Parse(_) => ToolError::InvalidInput(e.to_string()),
-        MemoryStoreError::Db(_) | MemoryStoreError::Provider(_) => {
+        MemoryStoreError::Db(_) | MemoryStoreError::Provider(_) | MemoryStoreError::Backend(_) => {
             ToolError::Backend(e.to_string())
         }
     }

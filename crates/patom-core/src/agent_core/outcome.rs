@@ -49,7 +49,7 @@ fn error_label(err: &AgentError) -> &'static str {
 
 pub(super) fn viewer_kind(viewer: Participant) -> &'static str {
     match viewer {
-        Participant::Human => "human",
+        Participant::Human { .. } => "human",
         Participant::Agent { .. } => "agent",
         Participant::System => "system",
     }

@@ -12,9 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use patom::agents::{
-    AgentNamesCache, AgentPromptCache, AgentSystemPrompt, AgentUpdate, SharedAgentStore,
-};
+use patom::agents::{AgentPromptCache, AgentSystemPrompt, AgentUpdate, SharedAgentStore};
 use patom::auth::OrganizationRule;
 use patom::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use patom::clock::{SharedClock, SystemClock, TestClock};
@@ -26,7 +24,6 @@ use patom::memory::{
 };
 use patom::prompts::Prompts;
 use patom::session::{PgSessionStore, SharedSessionStore};
-use patom::types::Participant;
 use sqlx::PgPool;
 
 mod common;
@@ -60,15 +57,24 @@ fn build_memory_with_rule(
     let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let prompt_cache = AgentPromptCache::new(8, Duration::from_mins(1), clock.clone());
-    let names_cache = AgentNamesCache::new(16, Duration::from_mins(1), clock.clone());
     let store: SharedMemoryStore = Arc::new(PgMemoryStore::new(
         pool.clone(),
         clock.clone(),
         embeddings.clone(),
     ));
     let session_cache = SessionMemoryCache::new(16, Duration::from_mins(1), clock.clone());
-    let loader =
-        MemorySectionLoader::new(store.clone(), sessions.clone(), embeddings, session_cache);
+    let colleagues: patom::colleagues::SharedColleagueStore =
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
+    let roster_cache =
+        patom::colleagues::ColleagueRosterCache::new(16, Duration::from_mins(1), clock.clone());
+    let loader = MemorySectionLoader::new(
+        store.clone(),
+        sessions.clone(),
+        colleagues.clone(),
+        roster_cache.clone(),
+        embeddings,
+        session_cache,
+    );
     let prompts = Arc::new(Prompts::load());
     let language_resolver: SharedOrgLanguageResolver =
         Arc::new(StaticOrgLanguageResolver::new(Language::En));
@@ -76,7 +82,8 @@ fn build_memory_with_rule(
     let memory = AgentMemory::new(
         agents.clone(),
         prompt_cache,
-        names_cache,
+        colleagues,
+        roster_cache,
         loader,
         prompts,
         language_resolver,
@@ -97,18 +104,20 @@ async fn assembles_core_then_role_in_order(pool: PgPool) {
     let f = build_memory(&pool, &seed, clock);
 
     let session = human_to_agent_session(
+        &pool,
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
         seed.user_id,
     )
     .await;
-    let viewer = Participant::agent(seed.agent_id);
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
     let prompt = f
         .memory
         .system_prompt(
             session,
             viewer,
+            patom::types::Participant::system(),
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -146,18 +155,26 @@ async fn date_section_sits_between_role_and_memory(pool: PgPool) {
             content: MemoryContent::try_from("I default to terse replies.").expect("valid"),
             state: MemoryState::Validated,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
         .expect("write");
 
-    let session =
-        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let prompt = f
         .memory
         .system_prompt(
             session,
-            Participant::agent(agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, agent_id).await,
+            patom::types::Participant::system(),
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -196,6 +213,7 @@ async fn empty_memory_skips_memory_section(pool: PgPool) {
     let f = build_memory(&pool, &seed, clock);
 
     let session = human_to_agent_session(
+        &pool,
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
@@ -206,7 +224,8 @@ async fn empty_memory_skips_memory_section(pool: PgPool) {
         .memory
         .system_prompt(
             session,
-            Participant::agent(seed.agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
+            patom::types::Participant::system(),
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -232,18 +251,26 @@ async fn renders_memory_section_after_role(pool: PgPool) {
             content: MemoryContent::try_from("I default to terse replies.").expect("valid"),
             state: MemoryState::Validated,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
         .expect("write");
 
-    let session =
-        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let prompt = f
         .memory
         .system_prompt(
             session,
-            Participant::agent(agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, agent_id).await,
+            patom::types::Participant::system(),
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -273,15 +300,22 @@ async fn frozen_during_session_returns_identical_prompt(pool: PgPool) {
     let clock: SharedClock = Arc::new(TestClock::new());
     let f = build_memory(&pool, &seed, clock);
     let agent_id = seed.agent_id;
-    let session =
-        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
-    let viewer = Participant::agent(agent_id);
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, agent_id).await;
 
     let first = f
         .memory
         .system_prompt(
             session,
             viewer,
+            patom::types::Participant::system(),
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -294,6 +328,7 @@ async fn frozen_during_session_returns_identical_prompt(pool: PgPool) {
             content: MemoryContent::try_from("post-cache memory").expect("valid"),
             state: MemoryState::Tentative,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -304,6 +339,7 @@ async fn frozen_during_session_returns_identical_prompt(pool: PgPool) {
         .system_prompt(
             session,
             viewer,
+            patom::types::Participant::system(),
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -335,19 +371,27 @@ async fn resolve_handle_round_trips_to_memory_id(pool: PgPool) {
             content: MemoryContent::try_from("identity").expect("valid"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
         .expect("write");
 
-    let session =
-        human_to_agent_session(f.sessions.as_ref(), agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     // Compose the section so the handle map is populated.
     let _ = f
         .memory
         .system_prompt(
             session,
-            Participant::agent(agent_id),
+            common::pg::agent_participant(&pool, seed.org_id, agent_id).await,
+            patom::types::Participant::system(),
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -436,18 +480,20 @@ async fn org_rule_block_sits_between_core_and_role(pool: PgPool) {
     let f = build_memory_with_rule(&pool, &seed, clock, Some(rule.clone()));
 
     let session = human_to_agent_session(
+        &pool,
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
         seed.user_id,
     )
     .await;
-    let viewer = Participant::agent(seed.agent_id);
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
     let prompt = f
         .memory
         .system_prompt(
             session,
             viewer,
+            patom::types::Participant::system(),
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -476,18 +522,20 @@ async fn org_rule_block_omitted_when_unset(pool: PgPool) {
     let f = build_memory_with_rule(&pool, &seed, clock, None);
 
     let session = human_to_agent_session(
+        &pool,
         f.sessions.as_ref(),
         seed.agent_id,
         seed.org_id,
         seed.user_id,
     )
     .await;
-    let viewer = Participant::agent(seed.agent_id);
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
     let prompt = f
         .memory
         .system_prompt(
             session,
             viewer,
+            patom::types::Participant::system(),
             &patom::runtime::RequestKindPayload::Normal {},
         )
         .await
@@ -499,6 +547,149 @@ async fn org_rule_block_omitted_when_unset(pool: PgPool) {
         "organization-rule tag must be absent when unset"
     );
     assert!(!s.contains(ORG_RULE_TAG_CLOSE), "no dangling close tag");
+}
+
+#[sqlx::test]
+async fn roster_block_names_a_human_colleague(pool: PgPool) {
+    // Stage 6: the `<colleagues>` block is now a colleague roster — a human
+    // coworker appears in it alongside agents, so the agent perceives humans as
+    // addressable peers. The seed mints a human colleague ("Seeded Test User")
+    // and an agent colleague; the agent viewer should see the human.
+    let seed = seed_tenant(&pool).await;
+    let clock: SharedClock = Arc::new(TestClock::new());
+    let f = build_memory(&pool, &seed, clock);
+
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
+    let prompt = f
+        .memory
+        .system_prompt(
+            session,
+            viewer,
+            patom::types::Participant::system(),
+            &patom::runtime::RequestKindPayload::Normal {},
+        )
+        .await
+        .expect("system prompt");
+
+    let s = prompt.as_ref();
+    let roster_open = s
+        .find(patom::colleagues::ROSTER_TAG_OPEN)
+        .expect("roster block present");
+    assert!(
+        s.contains("Seeded Test User"),
+        "human colleague named in roster: {s}"
+    );
+    // The human's colleague id is surfaced so the model can address it by id.
+    let human_cid = patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+    assert!(
+        s.contains(&human_cid.as_uuid().to_string()),
+        "human colleague id surfaced: {s}"
+    );
+    // Roster sits before the role block, mirroring the old `<colleagues>` position.
+    let role_open = s.find(ROLE_TAG_OPEN).expect("has <role>");
+    assert!(roster_open < role_open, "roster precedes role: {s}");
+}
+
+#[sqlx::test]
+async fn speaking_with_names_the_session_counterpart(pool: PgPool) {
+    // A turn driven by a human → the counterpart is that human. The prompt must
+    // name them with their colleague id so the model passes the right `subject`
+    // to `memory_write` instead of guessing from the roster (ambiguous once the
+    // org has more than one human).
+    let seed = seed_tenant(&pool).await;
+    let clock: SharedClock = Arc::new(TestClock::new());
+    let f = build_memory(&pool, &seed, clock);
+
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
+    let counterpart = common::pg::human_participant(&pool, seed.org_id, seed.user_id).await;
+    let prompt = f
+        .memory
+        .system_prompt(
+            session,
+            viewer,
+            counterpart,
+            &patom::runtime::RequestKindPayload::Normal {},
+        )
+        .await
+        .expect("system prompt");
+
+    let s = prompt.as_ref();
+    let open = s
+        .find(patom::colleagues::SPEAKING_WITH_TAG_OPEN)
+        .expect("speaking-with block present");
+    let close = s
+        .find(patom::colleagues::SPEAKING_WITH_TAG_CLOSE)
+        .expect("speaking-with block closed");
+    let block = &s[open..close];
+    assert!(
+        block.contains("Seeded Test User"),
+        "counterpart named in the block: {block}"
+    );
+    let human_cid = patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+    assert!(
+        block.contains(&human_cid.as_uuid().to_string()),
+        "counterpart colleague id surfaced for `subject`: {block}"
+    );
+    // Per-session block lives in the tail, after the per-agent role prefix.
+    let role_open = s.find(ROLE_TAG_OPEN).expect("has <role>");
+    assert!(role_open < open, "speaking-with sits after role: {s}");
+}
+
+#[sqlx::test]
+async fn speaking_with_omitted_for_system_counterpart(pool: PgPool) {
+    // Reflection/resolution pairs the agent with System — no human/agent peer,
+    // so the block is omitted entirely.
+    let seed = seed_tenant(&pool).await;
+    let clock: SharedClock = Arc::new(TestClock::new());
+    let f = build_memory(&pool, &seed, clock);
+
+    let session = human_to_agent_session(
+        &pool,
+        f.sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
+    let viewer = common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await;
+    let prompt = f
+        .memory
+        .system_prompt(
+            session,
+            viewer,
+            patom::types::Participant::system(),
+            &patom::runtime::RequestKindPayload::Normal {},
+        )
+        .await
+        .expect("system prompt");
+
+    assert!(
+        !prompt
+            .as_ref()
+            .contains(patom::colleagues::SPEAKING_WITH_TAG_OPEN),
+        "no speaking-with block for a System counterpart: {}",
+        prompt.as_ref()
+    );
 }
 
 #[sqlx::test]

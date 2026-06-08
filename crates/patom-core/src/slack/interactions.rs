@@ -294,6 +294,7 @@ async fn handle_view_submission(state: State<AppState>, view: ViewSubmission) ->
         queue: state.queue.clone(),
         agents: state.agents.clone(),
         sessions: state.sessions.clone(),
+        colleagues: state.colleagues.clone(),
         workspaces: slack.workspaces.clone(),
         identities: slack.identities.clone(),
         threads: slack.threads.clone(),

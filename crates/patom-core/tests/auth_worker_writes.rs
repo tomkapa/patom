@@ -28,7 +28,6 @@ use patom::clock::SystemClock;
 use patom::provider::ChatMessage;
 use patom::runtime::PromptRequestId;
 use patom::session::{PgSessionStore, SessionId, SessionStore};
-use patom::types::{MessageSender, Participant};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -103,17 +102,22 @@ async fn seed_session_in_org_a(
     pool: &PgPool,
     seed: &Seed,
 ) -> (SessionId, PromptRequestId) {
-    let session =
-        common::pg::human_to_agent_session(sessions, seed.agent_id, seed.org_id, seed.user_id)
-            .await;
+    let session = common::pg::human_to_agent_session(
+        pool,
+        sessions,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let request_id =
         common::pg::seed_prompt_request(pool, session, seed.agent_id, seed.org_id).await;
     sessions
         .append_for_user(
             seed.user_id,
             session,
-            MessageSender::Human,
-            Participant::agent(seed.agent_id),
+            common::pg::human_sender(pool, seed.org_id, seed.user_id).await,
+            common::pg::agent_participant(pool, seed.org_id, seed.agent_id).await,
             ChatMessage::User(vec![patom::provider::UserContent::Text("seed".to_string())]),
             request_id,
         )
@@ -149,8 +153,8 @@ async fn worker_write_to_foreign_org_session_fails_under_rls(pool: PgPool) {
         .append_for_user(
             user_b,
             session,
-            MessageSender::Human,
-            Participant::agent(seed.agent_id),
+            common::pg::human_sender(&pool, seed.org_id, seed.user_id).await,
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
             ChatMessage::User(vec![patom::provider::UserContent::Text(
                 "foreign".to_string(),
             )]),
@@ -182,8 +186,8 @@ async fn worker_write_under_correct_user_succeeds(pool: PgPool) {
         .append_for_user(
             seed.user_id,
             session,
-            MessageSender::Human,
-            Participant::agent(seed.agent_id),
+            common::pg::human_sender(&pool, seed.org_id, seed.user_id).await,
+            common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
             ChatMessage::User(vec![patom::provider::UserContent::Text(
                 "legit".to_string(),
             )]),

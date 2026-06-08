@@ -15,7 +15,6 @@ use patom::runtime::{PromptRequestId, RequestKindPayload};
 use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::tools::system::CreateAgentTool;
 use patom::tools::{Tool, ToolCallContext, ToolError};
-use patom::types::Participant;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -30,37 +29,51 @@ struct Fixture {
     ctx: ToolCallContext,
     viewer_agent_id: patom::agents::AgentId,
     org_id: patom::auth::OrgId,
+    user_id: patom::auth::UserId,
+    user_colleague_id: patom::colleagues::ColleagueId,
 }
 
 async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let agents = shared_agent_store(pool.clone(), SystemClock::shared());
     let sessions: SharedSessionStore =
         Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
-    let session =
-        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        pool,
+        sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let request_id = PromptRequestId::new();
     let ctx = ToolCallContext {
         session_id: session,
-        viewer: Participant::agent(seed.agent_id),
+        viewer: common::pg::agent_participant(pool, seed.org_id, seed.agent_id).await,
         root_request_id: request_id,
         request_id,
         kind_payload: RequestKindPayload::Normal {},
         acting_user_id: seed.user_id,
         org_id: seed.org_id,
     };
+    let user_colleague_id =
+        patom::colleagues::resolve_user_colleague(pool, seed.org_id, seed.user_id)
+            .await
+            .expect("user colleague");
     Fixture {
         tool: CreateAgentTool::new(agents.clone()),
         agents,
         ctx,
         viewer_agent_id: seed.agent_id,
         org_id: seed.org_id,
+        user_id: seed.user_id,
+        user_colleague_id,
     }
 }
 
 fn human_ctx(f: &Fixture) -> ToolCallContext {
     ToolCallContext {
         session_id: f.ctx.session_id,
-        viewer: Participant::Human,
+        viewer: patom::types::Participant::human(f.user_colleague_id, f.user_id),
         root_request_id: f.ctx.root_request_id,
         request_id: f.ctx.request_id,
         kind_payload: RequestKindPayload::Normal {},

@@ -19,6 +19,7 @@ use thiserror::Error;
 
 use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId};
+use crate::colleagues::ColleagueId;
 use crate::provider::ProviderError;
 use crate::runtime::PromptRequestId;
 use crate::types::ParseError;
@@ -61,6 +62,24 @@ pub enum MemoryStoreError {
     #[error("memory {id:?} is pinned and cannot be mutated by an agent")]
     PinnedImmutable { id: MemoryId },
 
+    /// A `Collaborator` memory is a belief about a *specific* coworker, so it
+    /// must name a subject colleague. A write that omits the subject is
+    /// rejected before it reaches the journal (mirrors the
+    /// `agent_memories_subject_only_collaborator` direction the DB cannot
+    /// express — the column CHECK only forbids subjects on *non*-collaborators).
+    #[error("collaborator memory requires a subject colleague")]
+    SubjectRequiredForCollaborator,
+
+    /// A `Collaborator` memory's `subject` must be a colleague in the *agent's
+    /// own org*. The `subject_colleague_id` FK only proves the colleague exists
+    /// somewhere — `colleagues` spans tenants — so this catches a hallucinated
+    /// or cross-org subject before the row lands. The agent tool and the
+    /// operator route both funnel through `apply`, so this is the one place the
+    /// rule cannot be sidestepped. Unknown and foreign-org ids fail the same
+    /// way, leaking no cross-org existence.
+    #[error("subject colleague {subject:?} is not a colleague in the agent's org")]
+    SubjectNotInOrg { subject: ColleagueId },
+
     /// Boundary parsing failure for a derived input (content cap exceeded
     /// during a rebuild, malformed handle).
     #[error("parse: {0}")]
@@ -70,6 +89,12 @@ pub enum MemoryStoreError {
     /// pattern-match on driver internals.
     #[error("memory store db error: {0}")]
     Db(#[from] sqlx::Error),
+
+    /// Cross-subsystem backend failure surfaced by callers that wrap the store
+    /// (e.g. librarian resolving a colleague during enqueue). Distinct from
+    /// `Db` so the source string carries the upstream subsystem's identity.
+    #[error("memory store backend: {0}")]
+    Backend(String),
 
     /// Embedding provider call failed during a mutation. `MemoryStore::apply`
     /// propagates this so a missing embedding never produces a row that
@@ -133,6 +158,10 @@ pub enum MemoryMutation {
         content: MemoryContent,
         state: MemoryState,
         pinned: bool,
+        /// The coworker this memory is *about*. Required for `Collaborator`,
+        /// `None` for every other kind (enforced by
+        /// [`Self::ensure_subject_consistency`] + the DB CHECK).
+        subject: Option<ColleagueId>,
         source: MutationSource,
     },
     /// Replace `content` on an existing memory. `state` is the *new* state
@@ -176,6 +205,25 @@ impl MemoryMutation {
         }
     }
 
+    /// Reject a `Collaborator` write that names no subject, and assert the
+    /// reverse (a non-collaborator never carries one — the only caller that
+    /// sets a subject is the collaborator path, so a violation here is a
+    /// programmer error, §6). Run at the `apply` boundary before embedding so
+    /// a doomed write never spends an embedding call.
+    pub(crate) fn ensure_subject_consistency(&self) -> Result<(), MemoryStoreError> {
+        let Self::Write { kind, subject, .. } = self else {
+            return Ok(());
+        };
+        if *kind == MemoryKind::Collaborator && subject.is_none() {
+            return Err(MemoryStoreError::SubjectRequiredForCollaborator);
+        }
+        assert!(
+            *kind == MemoryKind::Collaborator || subject.is_none(),
+            "invariant: only collaborator memories carry a subject colleague"
+        );
+        Ok(())
+    }
+
     /// Provenance attached to the journal row.
     #[must_use]
     pub const fn source(&self) -> MutationSource {
@@ -212,6 +260,11 @@ pub struct MemoryRow {
     pub content: MemoryContent,
     pub state: MemoryState,
     pub pinned: bool,
+    /// The coworker a `Collaborator` memory is about (`colleagues.id`); `None`
+    /// for every other kind. The display name is hydrated separately at compose
+    /// time (the row carries only the id so it stays decodable from a
+    /// `RETURNING` clause that cannot join — §10).
+    pub subject: Option<ColleagueId>,
     pub source_turn_id: Option<PromptRequestId>,
     pub created_at: DateTime<Utc>,
     pub last_validated_at: DateTime<Utc>,
@@ -227,12 +280,14 @@ pub struct MemoryRow {
 /// and revert match the variant without touching an `Option`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoryEventPayload {
-    /// New row minted. Carries the full attrs needed to recreate it.
+    /// New row minted. Carries the full attrs needed to recreate it,
+    /// including the subject colleague so replay reconstructs the link.
     Write {
         content: MemoryContent,
         kind: MemoryKind,
         state: MemoryState,
         pinned: bool,
+        subject: Option<ColleagueId>,
     },
     /// Content (and possibly state) changed. `kind` and `pinned` are the
     /// post-mutation values; today an Update does not change either, but

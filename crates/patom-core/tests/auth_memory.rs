@@ -100,6 +100,7 @@ impl AuthMemoryHarness {
             responses,
             sessions,
             agents: agents.clone(),
+            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),
@@ -187,6 +188,7 @@ impl AuthMemoryHarness {
                 content: MemoryContent::try_from(body).expect("content"),
                 state: MemoryState::Held,
                 pinned: false,
+                subject: None,
                 source: MutationSource::Operator,
             })
             .await

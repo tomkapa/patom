@@ -24,7 +24,7 @@ use patom::runtime::{
     SharedResponseSource, SharedThreadStream,
 };
 use patom::session::{PgSessionStore, SharedSessionStore};
-use patom::types::{Participant, Prompt};
+use patom::types::Prompt;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -93,6 +93,7 @@ impl AuthThreadsHarness {
             responses,
             sessions,
             agents: agents.clone(),
+            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),
@@ -179,7 +180,7 @@ impl AuthThreadsHarness {
         self.queue
             .enqueue(NewPromptRequest {
                 session: None,
-                sender: Participant::Human,
+                sender: common::pg::human_participant(&self.state.pool, org_id, user_id).await,
                 receiver_agent_id: record.id,
                 parent_session: None,
                 content: Prompt::try_from(content).expect("prompt"),

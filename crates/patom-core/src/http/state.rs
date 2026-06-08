@@ -38,6 +38,10 @@ pub struct AppState {
     pub responses: SharedResponseSource,
     pub sessions: SharedSessionStore,
     pub agents: SharedAgentStore,
+    /// Per-org colleague directory — humans + agents as one addressable
+    /// roster. HTTP handlers resolve `(org_id, user_id)` → colleague to
+    /// construct colleague-backed `Participant::Human` for prompt enqueues.
+    pub colleagues: crate::colleagues::SharedColleagueStore,
     /// DAG turn-budget handle. Threaded through state so `send_message`
     /// can `bump_or_fail` and the worker's quiescence trigger can query
     /// liveness without re-constructing the impl.

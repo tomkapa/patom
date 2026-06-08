@@ -129,6 +129,10 @@ struct CreateNoteRequest {
     state: Option<MemoryState>,
     #[serde(default)]
     pinned: bool,
+    /// The colleague a `collaborator` note is about. Required for
+    /// `collaborator`, omitted otherwise (the store enforces consistency).
+    #[serde(default)]
+    subject: Option<crate::colleagues::ColleagueId>,
 }
 
 async fn create_memory_note(
@@ -140,6 +144,20 @@ async fn create_memory_note(
     let agent = AgentId::from(id);
     gate_agent(&state.pool, &principal, agent).await?;
     let content = MemoryContent::try_from(payload.content).map_err(HttpError::Parse)?;
+    // §1 parse-at-boundary: the kind ⇔ subject invariant is rejected here as a
+    // 400, not deferred to the store, so an inconsistent request shape never
+    // crosses into the mutation layer.
+    let is_collaborator = matches!(payload.kind, MemoryKind::Collaborator);
+    if is_collaborator && payload.subject.is_none() {
+        return Err(HttpError::BadRequest(
+            "subject is required for collaborator notes".into(),
+        ));
+    }
+    if !is_collaborator && payload.subject.is_some() {
+        return Err(HttpError::BadRequest(
+            "subject is only allowed for collaborator notes".into(),
+        ));
+    }
     let chosen_state = payload.state.unwrap_or(MemoryState::Held);
     let outcome = state
         .memory_store
@@ -149,6 +167,7 @@ async fn create_memory_note(
             content,
             state: chosen_state,
             pinned: payload.pinned,
+            subject: payload.subject,
             source: MutationSource::Operator,
         })
         .await

@@ -349,7 +349,17 @@ impl SchedulerInner {
             // from `ev.id`.
             let key = IdempotencyKey::try_from(format!("resolve-{}", ev.id))
                 .expect("invariant: contradiction key fits cap");
-            let viewer = Participant::agent(agent);
+            // Resolve the agent's colleague_id once per contradiction. The
+            // lookup hits the per-(org,agent) partial unique index.
+            let agent_colleague =
+                crate::colleagues::resolve_agent_colleague(&self.pool, org_id, agent)
+                    .await
+                    .map_err(|e| {
+                        super::store::MemoryStoreError::Backend(format!(
+                            "resolve agent colleague: {e}"
+                        ))
+                    })?;
+            let viewer = Participant::agent(agent_colleague, agent);
             let (row_a, row_b) =
                 tokio::try_join!(self.store.get(ev.memory_a), self.store.get(ev.memory_b))?;
             let content = build_resolution_prompt(&ev, row_a.as_ref(), row_b.as_ref());
@@ -498,6 +508,7 @@ mod tests {
             content: MemoryContent::try_from(content).expect("valid"),
             state,
             pinned: false,
+            subject: None,
             source_turn_id: None,
             created_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
             last_validated_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),

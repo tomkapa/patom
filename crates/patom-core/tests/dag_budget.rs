@@ -15,7 +15,7 @@ use patom::runtime::{
     DagBudget, IdempotencyKey, NewPromptRequest, PgDagBudget, PgPromptQueue, PromptError,
     PromptRequestId,
 };
-use patom::types::{Participant, Prompt};
+use patom::types::Prompt;
 use sqlx::PgPool;
 
 mod common;
@@ -31,7 +31,7 @@ async fn seed_dag(pool: &PgPool, seed: &common::pg::Seed) -> PromptRequestId {
     let outcome = queue
         .enqueue(NewPromptRequest {
             session: None,
-            sender: Participant::Human,
+            sender: common::pg::human_participant(pool, seed.org_id, seed.user_id).await,
             receiver_agent_id: seed.agent_id,
             parent_session: None,
             content: Prompt::try_from("hi").expect("prompt"),

@@ -12,6 +12,7 @@ pub mod auth;
 pub mod budget;
 pub mod cache;
 pub mod clock;
+pub mod colleagues;
 pub mod config;
 pub mod crypto;
 pub mod entitlements;

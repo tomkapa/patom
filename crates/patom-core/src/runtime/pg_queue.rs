@@ -16,11 +16,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
+use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId, run_as_user, run_privileged};
 use crate::clock::SharedClock;
+use crate::colleagues::ColleagueId;
 use crate::observability::propagation;
 use crate::session::SessionId;
-use crate::types::{MessageSender, Participant, Prompt};
+use crate::types::{Participant, Prompt};
 
 use super::error::PromptError;
 use super::limits::{MAX_ATTEMPTS, MAX_DAG_TURNS, MAX_PENDING_PER_SESSION};
@@ -236,9 +238,9 @@ impl PromptQueue for PgPromptQueue {
         }
 
         let drained = drain_pending(&mut tx, session, next_seq, now).await?;
-        tx.commit().await?;
 
         if drained.is_empty() {
+            tx.commit().await?;
             // All pending rows vanished between the candidate scan and the drain
             // (e.g. cancellation flipped them) — release the lease and report no work.
             let token = LeaseToken::build(session, worker, next_seq);
@@ -246,10 +248,25 @@ impl PromptQueue for PgPromptQueue {
             return Ok(None);
         }
 
+        // §6: the receiver-is-agent trigger guarantees `agent_id` is `Some`
+        // for any drained prompt; surface a backend error rather than panic
+        // if it ever isn't.
+        let receiver_agent_id = drained[0].2.ok_or_else(|| {
+            PromptError::Backend(
+                "drained prompt receiver colleague missing agent_id — \
+                 receiver-is-agent trigger should make this unreachable"
+                    .to_string(),
+            )
+        })?;
+        let receiver_colleague_id =
+            resolve_agent_colleague(&mut tx, session_org_id, receiver_agent_id).await?;
+        tx.commit().await?;
+
         Ok(Some(build_claimed_session(
             session,
             session_org_id,
             session_user_id,
+            receiver_colleague_id,
             worker,
             next_seq,
             drained,
@@ -464,7 +481,7 @@ async fn next_candidate(
                    JOIN session_leases sl2
                         ON sl2.session_id = pr2.session_id
                        AND sl2.leased_until > $2
-                   WHERE pr2.receiver_agent_id = pr.receiver_agent_id
+                   WHERE pr2.receiver_colleague_id = pr.receiver_colleague_id
                      AND pr2.status = $4
                      AND pr2.kind <> $3
                )
@@ -541,7 +558,11 @@ async fn try_take_lease(
 type DrainedPrompt = (
     PromptRequestId,
     String,
-    crate::agents::AgentId,
+    // `agent_id` is joined from `colleagues.agent_id`, which is `NULL` for
+    // the human kind. The receiver-is-agent trigger guarantees it's `Some`
+    // for any prompt_requests row that ever ships through this path —
+    // build_claimed_session asserts that invariant before driving the turn.
+    Option<crate::agents::AgentId>,
     Option<String>,
     sqlx::types::Json<RequestKindPayload>,
 );
@@ -557,14 +578,19 @@ async fn drain_pending(
     next_seq: TurnSeq,
     now: DateTime<Utc>,
 ) -> Result<Vec<DrainedPrompt>, PromptError> {
+    // `receiver_agent_id` is joined out of the receiver colleague row — the
+    // worker still drives dispatch by AgentId (the registry / WorkerPool key),
+    // but the prompt_requests row itself only stores `receiver_colleague_id`.
     let drained = sqlx::query_as(
-        "UPDATE prompt_requests
+        "UPDATE prompt_requests pr
          SET status = $1,
              turn_seq = $2,
              attempts = attempts + 1,
              updated_at = $3
-         WHERE session_id = $4 AND status = $5
-         RETURNING id, content, receiver_agent_id, traceparent, kind_payload",
+         FROM colleagues rc
+         WHERE pr.session_id = $4 AND pr.status = $5
+           AND rc.id = pr.receiver_colleague_id
+         RETURNING pr.id, pr.content, rc.agent_id, pr.traceparent, pr.kind_payload",
     )
     .bind(RequestStatus::Processing)
     .bind(next_seq)
@@ -583,6 +609,7 @@ fn build_claimed_session(
     session: SessionId,
     org_id: OrgId,
     created_by_user_id: UserId,
+    receiver_colleague_id: ColleagueId,
     worker: WorkerId,
     next_seq: TurnSeq,
     drained: Vec<DrainedPrompt>,
@@ -591,18 +618,29 @@ fn build_claimed_session(
         !drained.is_empty(),
         "invariant: caller checks `drained.is_empty()` before assembly"
     );
-    let receiver_agent_id = drained[0].2;
+    // The receiver-is-agent trigger means `agent_id` is `Some` for any
+    // queued prompt; `claim_next_session` already checked the head and
+    // surfaced an error if it isn't.
+    let receiver_agent_id = drained[0].2.expect(
+        "invariant: receiver-is-agent trigger guarantees Some(agent_id) on the head of a claim",
+    );
     let kind = drained[0].4.0.kind();
     for (_, _, rcv, _, p) in &drained[1..] {
-        assert_eq!(
-            *rcv, receiver_agent_id,
-            "invariant: drained prompts for one session must share receiver_agent_id"
-        );
-        assert_eq!(
-            p.0.kind(),
-            kind,
-            "invariant: drained prompts for one session must share kind"
-        );
+        // A drained batch is one session's queued rows; the drain query
+        // guarantees they share receiver + kind. Treat a violation as a
+        // backend error (not a panic) for parity with the head-row guard —
+        // the claim fails, the lease expires, another worker retries, rather
+        // than unwinding the worker on a malformed batch.
+        if *rcv != Some(receiver_agent_id) {
+            return Err(PromptError::Backend(
+                "drained prompts for one session must share receiver_agent_id".into(),
+            ));
+        }
+        if p.0.kind() != kind {
+            return Err(PromptError::Backend(
+                "drained prompts for one session must share kind".into(),
+            ));
+        }
     }
 
     // Pick the first non-empty traceparent. A claim batch is the
@@ -626,6 +664,7 @@ fn build_claimed_session(
         org_id,
         created_by_user_id,
         receiver_agent_id,
+        receiver_colleague_id,
         prompts,
         lease: LeaseToken::build(session, worker, next_seq),
         traceparent,
@@ -645,10 +684,15 @@ async fn enqueue_in_tx(
     let now = queue.now();
     // Reflection / Resolution sit in `(Agent, System)` sessions so their
     // trace doesn't pollute the parent conversation; `receiver_agent_id`
-    // still drives worker dispatch.
+    // still drives worker dispatch. For Normal we look up the receiver
+    // agent's colleague_id inline — the trigger from migration 58 means
+    // every agent has exactly one colleague row in its org.
     let kind = req.kind_payload.kind();
     let receiver = match kind {
-        RequestKind::Normal => Participant::agent(req.receiver_agent_id),
+        RequestKind::Normal => {
+            let cid = resolve_agent_colleague(tx, req.org_id, req.receiver_agent_id).await?;
+            Participant::agent(cid, req.receiver_agent_id)
+        }
         RequestKind::Reflection | RequestKind::Resolution => Participant::System,
     };
     // §1: parse, don't validate. Normal sessions cannot host equal
@@ -772,20 +816,28 @@ async fn insert_prompt_request(
     let payload_json = serde_json::to_value(&req.kind_payload)
         .expect("invariant: RequestKindPayload serialises infallibly via serde_json");
 
+    // §6: the sender Participant is colleague-backed by construction (HTTP /
+    // Slack / scheduler / librarian / reflection scheduler all resolve their
+    // sender colleague before enqueue). Receiver colleague is resolved by
+    // `enqueue_in_tx` upstream.
+    let sender_colleague = req.sender.colleague_id().ok_or_else(|| {
+        PromptError::Backend("enqueue: sender is System (humans/agents only)".to_string())
+    })?;
+    let receiver_colleague = resolve_agent_colleague(tx, req.org_id, req.receiver_agent_id).await?;
+
     sqlx::query(
         "INSERT INTO prompt_requests
              (id, session_id, org_id, content, idempotency_key, status,
               attempts, turn_seq, cancellation_requested, failure_reason,
-              sender_kind, sender_agent_id,
-              receiver_kind, receiver_agent_id, root_request_id,
+              sender_colleague_id, receiver_colleague_id, root_request_id,
               traceparent,
               kind, kind_payload,
               created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, 0, 0, FALSE, NULL,
-                 $7, $8, 'agent', $9, $10,
-                 $11,
-                 $12, $13,
-                 $14, $14)",
+                 $7, $8, $9,
+                 $10,
+                 $11, $12,
+                 $13, $13)",
     )
     .bind(request_id)
     .bind(session)
@@ -793,9 +845,8 @@ async fn insert_prompt_request(
     .bind(req.content.as_str())
     .bind(req.idempotency_key.as_str())
     .bind(RequestStatus::Pending)
-    .bind(MessageSender::from_participant(req.sender).kind())
-    .bind(req.sender.agent_id())
-    .bind(req.receiver_agent_id)
+    .bind(sender_colleague)
+    .bind(receiver_colleague)
     .bind(root_request_id)
     .bind(traceparent)
     .bind(kind)
@@ -876,14 +927,23 @@ async fn create_session_row(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<SessionId, PromptError> {
     let (a, b) = Participant::canonical_pair(sender, receiver).ok_or(PromptError::SelfSession)?;
+    // Slot `a` is always a real colleague (canonical pair sorts System last)
+    // and the schema's NOT NULL on `participant_a_colleague_id` expresses the
+    // same invariant. Slot `b` is NULL when paired with System (reflection /
+    // resolution sessions).
+    let a_colleague = a.colleague_id().ok_or_else(|| {
+        PromptError::Backend(
+            "canonical pair returned System in slot a — invariant violation".to_string(),
+        )
+    })?;
+    let b_colleague = b.colleague_id();
     let session_id = SessionId::new();
     let res = sqlx::query(
         "INSERT INTO sessions
              (id, created_at, org_id, created_by_user_id,
               parent_session_id, root_request_id,
-              participant_a_kind, participant_a_agent_id,
-              participant_b_kind, participant_b_agent_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+              participant_a_colleague_id, participant_b_colleague_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(session_id)
     .bind(now)
@@ -891,17 +951,15 @@ async fn create_session_row(
     .bind(created_by_user_id)
     .bind(parent_session)
     .bind(root_request_id)
-    .bind(a.kind())
-    .bind(a.agent_id())
-    .bind(b.kind())
-    .bind(b.agent_id())
+    .bind(a_colleague)
+    .bind(b_colleague)
     .execute(&mut **tx)
     .await;
     match res {
         Ok(_) => Ok(session_id),
         Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23503") => {
             Err(PromptError::Backend(format!(
-                "agent_id FK violation creating session: {}",
+                "colleague_id FK violation creating session: {}",
                 db.message(),
             )))
         }
@@ -989,4 +1047,26 @@ async fn finalise(
 
     tx.commit().await?;
     Ok(())
+}
+
+/// Resolve the colleague_id for `agent` within `org`. Every agent's colleague
+/// is minted by the trigger in migration 57, so the lookup either hits the
+/// per-(org,agent) partial unique index or surfaces as a backend error
+/// (a satellite without a colleague is a directory-integrity bug).
+async fn resolve_agent_colleague(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org: OrgId,
+    agent: AgentId,
+) -> Result<ColleagueId, PromptError> {
+    let row: Option<(ColleagueId,)> =
+        sqlx::query_as("SELECT id FROM colleagues WHERE org_id = $1 AND agent_id = $2")
+            .bind(org)
+            .bind(agent)
+            .fetch_optional(&mut **tx)
+            .await?;
+    row.map(|(id,)| id).ok_or_else(|| {
+        PromptError::Backend(format!(
+            "no colleague mapped for agent {agent:?} in org {org:?}"
+        ))
+    })
 }

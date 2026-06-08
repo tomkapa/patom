@@ -1,7 +1,7 @@
 //! `create_agent` — hire a new agent into the registry.
 //!
 //! The recruiter (default agent) reaches for this tool after scoping the
-//! role with the customer, ruling out the existing `<agents>` block + top
+//! role with the customer, ruling out the existing `<colleagues>` block + top
 //! `search_agents` result, and getting an explicit "go" on the draft.
 //!
 //! Per design, the tool:
@@ -36,7 +36,7 @@ use crate::types::ToolName;
 
 const TOOL_NAME: &str = "create_agent";
 const TOOL_DESCRIPTION: &str = "Hire a new agent into the team. Use this only after \
-    you've ruled out the names in your `<agents>` block and the top `search_agents` \
+    you've ruled out the names in your `<colleagues>` block and the top `search_agents` \
     result, and only after the customer has explicitly approved the draft.\n\
     \n\
     Inputs:\n\

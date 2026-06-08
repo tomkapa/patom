@@ -70,6 +70,15 @@ pub const SCHEDULED_TASK_BATCH_LIMIT: usize = 20;
 /// here.
 pub const DEFAULT_RECURRING_TIMEZONE: Tz = Tz::UTC;
 
+/// Timeout for the colleague lookup on the scheduler's hot firing path
+/// (`ScheduledTaskScheduler::fire`).
+///
+/// CLAUDE.md §5 — every I/O await is bounded. A single stuck directory read
+/// must not wedge the firing loop; on timeout the firing surfaces a backend
+/// error, the row keeps its `next_run_at`, and the next poll retries. Sized
+/// generously relative to a point lookup so only a genuinely stuck call trips.
+pub(super) const COLLEAGUE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Convenience used by the scheduler when converting the poll cadence
 /// from a const `u64` into the [`Duration`] the [`super::ScheduledTask`]
 /// scaffold accepts. Lives next to the cadence so a future bump touches

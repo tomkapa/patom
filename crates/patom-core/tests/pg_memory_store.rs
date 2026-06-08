@@ -51,6 +51,7 @@ fn write(
         content: content(body),
         state,
         pinned,
+        subject: None,
         source: MutationSource::Operator,
     }
 }
@@ -388,6 +389,7 @@ async fn concurrent_writes_are_independent(pool: PgPool) {
             content: content("one"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -399,6 +401,7 @@ async fn concurrent_writes_are_independent(pool: PgPool) {
             content: content("two"),
             state: MemoryState::Tentative,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -423,8 +426,14 @@ async fn prompt_requests_kind_defaults_to_normal(pool: PgPool) {
 
     let session_store =
         patom::session::PgSessionStore::new(pool.clone(), patom::clock::SystemClock::shared());
-    let session =
-        human_to_agent_session(&session_store, seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        &session_store,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
 
     let (kind, payload): (RequestKind, serde_json::Value) =
@@ -457,6 +466,7 @@ async fn record_validation_promotes_state(pool: PgPool) {
             content: content("Tabs over spaces"),
             state: MemoryState::Tentative,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -702,6 +712,7 @@ async fn revert_event_undoes_write(pool: PgPool) {
             content: content("Ephemeral"),
             state: MemoryState::Tentative,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -726,6 +737,7 @@ async fn evict_overflow_drops_below_quota(pool: PgPool) {
             content: content(&format!("memory {i}")),
             state: MemoryState::Tentative,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -750,6 +762,7 @@ async fn decay_demotes_old_validated(pool: PgPool) {
             content: content("decaying"),
             state: MemoryState::Validated,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -778,6 +791,7 @@ async fn record_contradiction_is_idempotent(pool: PgPool) {
             content: content("ship on Friday"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -789,6 +803,7 @@ async fn record_contradiction_is_idempotent(pool: PgPool) {
             content: content("don't ship on Friday"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -817,6 +832,7 @@ async fn set_pinned_toggles_protection(pool: PgPool) {
             content: content("invariant"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -853,6 +869,7 @@ async fn seed_contradiction(
             content: content("ship on Friday"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -864,6 +881,7 @@ async fn seed_contradiction(
             content: content("don't ship on Friday"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -888,6 +906,7 @@ async fn resolve_contradiction_mutation_close_links_event(pool: PgPool) {
             content: content("revised procedure"),
             state: MemoryState::Tentative,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -959,4 +978,193 @@ fn resolution_reason_rejects_empty_and_oversize() {
     assert!(ResolutionReason::try_from(ok).is_ok());
     let too_long = "x".repeat(max + 1);
     assert!(ResolutionReason::try_from(too_long).is_err());
+}
+
+// ── Stage 5: collaborator memories key on a colleague subject ──────────────
+
+#[sqlx::test]
+async fn collaborator_write_stores_subject(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+    // The seeded human's colleague is the subject — "what the agent remembers
+    // about Tom" addresses the same identity it talks to.
+    let subject = patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("seed mints human colleague");
+
+    let outcome = s
+        .apply(MemoryMutation::Write {
+            agent: seed.agent_id,
+            kind: MemoryKind::Collaborator,
+            content: content("Tom prefers terse replies."),
+            state: MemoryState::Tentative,
+            pinned: false,
+            subject: Some(subject),
+            source: MutationSource::Operator,
+        })
+        .await
+        .expect("collaborator write");
+
+    let row = outcome.row.expect("write returns row");
+    assert_eq!(row.kind, MemoryKind::Collaborator);
+    assert_eq!(row.subject, Some(subject), "subject persisted on the row");
+
+    // The subject survives the materialized read…
+    let listed = s.list(seed.agent_id).await.expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].subject, Some(subject));
+
+    // …and is journaled on the write event so replay can reconstruct it.
+    let events = s.list_events(seed.agent_id).await.expect("events");
+    let MemoryEventPayload::Write {
+        subject: ev_subject,
+        ..
+    } = &events[0].payload
+    else {
+        panic!("expected Write payload, got {:?}", events[0].payload);
+    };
+    assert_eq!(
+        *ev_subject,
+        Some(subject),
+        "subject journaled on write event"
+    );
+}
+
+#[sqlx::test]
+async fn collaborator_subject_survives_replay(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+    let subject = patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+
+    let outcome = s
+        .apply(MemoryMutation::Write {
+            agent: seed.agent_id,
+            kind: MemoryKind::Collaborator,
+            content: content("Tom ships fast."),
+            state: MemoryState::Tentative,
+            pinned: false,
+            subject: Some(subject),
+            source: MutationSource::Operator,
+        })
+        .await
+        .expect("write");
+
+    // Rebuild the materialized view purely from the journal; the subject must
+    // come back identically.
+    s.rebuild_materialized(seed.agent_id)
+        .await
+        .expect("rebuild");
+    let rebuilt = s.get(outcome.memory_id).await.expect("get").expect("row");
+    assert_eq!(rebuilt.subject, Some(subject));
+}
+
+#[sqlx::test]
+async fn non_collaborator_write_leaves_subject_null(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+
+    let outcome = s
+        .apply(write(
+            &seed,
+            MemoryKind::Identity,
+            "I default to terse replies.",
+            MemoryState::Held,
+            false,
+        ))
+        .await
+        .expect("identity write");
+
+    assert_eq!(
+        outcome.row.expect("row").subject,
+        None,
+        "non-collaborator carries no subject"
+    );
+}
+
+#[sqlx::test]
+async fn collaborator_write_without_subject_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+
+    let err = s
+        .apply(MemoryMutation::Write {
+            agent: seed.agent_id,
+            kind: MemoryKind::Collaborator,
+            content: content("a belief about a coworker with no named subject"),
+            state: MemoryState::Tentative,
+            pinned: false,
+            subject: None,
+            source: MutationSource::Operator,
+        })
+        .await
+        .expect_err("collaborator without subject must be rejected");
+
+    assert!(
+        matches!(err, MemoryStoreError::SubjectRequiredForCollaborator),
+        "got {err:?}"
+    );
+}
+
+#[sqlx::test]
+async fn collaborator_write_unknown_subject_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+
+    // A colleague id that was never minted.
+    let ghost = patom::colleagues::ColleagueId::new();
+    let err = s
+        .apply(MemoryMutation::Write {
+            agent: seed.agent_id,
+            kind: MemoryKind::Collaborator,
+            content: content("about a colleague that does not exist"),
+            state: MemoryState::Tentative,
+            pinned: false,
+            subject: Some(ghost),
+            source: MutationSource::Operator,
+        })
+        .await
+        .expect_err("unknown subject must be rejected");
+    assert!(
+        matches!(err, MemoryStoreError::SubjectNotInOrg { .. }),
+        "got {err:?}"
+    );
+    assert!(
+        s.list(seed.agent_id).await.expect("list").is_empty(),
+        "no row minted for an unknown subject"
+    );
+}
+
+#[sqlx::test]
+async fn collaborator_write_foreign_org_subject_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let s = store(&pool);
+
+    // A real colleague, but in a different org — the FK would accept it
+    // (`colleagues` spans tenants); the store's org guard must not.
+    let other = seed_tenant(&pool).await;
+    let foreign = patom::colleagues::resolve_user_colleague(&pool, other.org_id, other.user_id)
+        .await
+        .expect("foreign colleague");
+    let err = s
+        .apply(MemoryMutation::Write {
+            agent: seed.agent_id,
+            kind: MemoryKind::Collaborator,
+            content: content("about someone at another company"),
+            state: MemoryState::Tentative,
+            pinned: false,
+            subject: Some(foreign),
+            source: MutationSource::Operator,
+        })
+        .await
+        .expect_err("cross-org subject must be rejected");
+    assert!(
+        matches!(err, MemoryStoreError::SubjectNotInOrg { .. }),
+        "got {err:?}"
+    );
+    assert!(
+        s.list(seed.agent_id).await.expect("list").is_empty(),
+        "no row minted for a foreign-org subject"
+    );
 }
