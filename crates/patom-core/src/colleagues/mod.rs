@@ -29,6 +29,9 @@ pub use limits::{
     COLLEAGUE_ROSTER_FETCH_MAX, MAX_ROSTER_INLINE,
 };
 pub use pg_store::{PgColleagueStore, resolve_agent_colleague, resolve_user_colleague};
-pub use render::{ROSTER_TAG_CLOSE, ROSTER_TAG_OPEN, render_roster_block};
+pub use render::{
+    ROSTER_TAG_CLOSE, ROSTER_TAG_OPEN, SPEAKING_WITH_TAG_CLOSE, SPEAKING_WITH_TAG_OPEN,
+    render_roster_block, render_speaking_with,
+};
 pub use store::{ColleagueStore, SharedColleagueStore};
 pub use types::{Colleague, ColleagueId, ColleagueKind, ColleagueName, ColleagueRef};

@@ -23,6 +23,39 @@ use super::types::{ColleagueId, ColleagueRef};
 pub const ROSTER_TAG_OPEN: &str = "<colleagues>\n";
 pub const ROSTER_TAG_CLOSE: &str = "\n</colleagues>";
 
+/// Envelope for the per-session "who you're talking to" line.
+pub const SPEAKING_WITH_TAG_OPEN: &str = "<speaking-with>\n";
+pub const SPEAKING_WITH_TAG_CLOSE: &str = "\n</speaking-with>";
+
+/// Render the `<speaking-with>` block naming this session's counterpart.
+///
+/// Sessions are strictly 2-party, so `counterpart` is the single colleague the
+/// agent is addressing this turn. Surfacing its id lets the model pass the
+/// right `subject` to `memory_write` (and address the right peer) instead of
+/// guessing from the roster — which is ambiguous the moment the org has more
+/// than one human. The System counterpart of reflection/resolution sessions
+/// has no colleague row, so the caller skips this block for it.
+#[must_use]
+pub fn render_speaking_with(counterpart: &ColleagueRef) -> String {
+    let mut out = String::with_capacity(
+        SPEAKING_WITH_TAG_OPEN.len()
+            + counterpart.display_name.as_str().len()
+            + 112
+            + SPEAKING_WITH_TAG_CLOSE.len(),
+    );
+    out.push_str(SPEAKING_WITH_TAG_OPEN);
+    let _ = write!(
+        &mut out,
+        "You are talking with {name} — {kind}, id {id}. Use this id as `subject` \
+         when you record what you learn about them with `memory_write`.",
+        name = counterpart.display_name.as_str(),
+        kind = counterpart.kind.as_str(),
+        id = counterpart.id.as_uuid(),
+    );
+    out.push_str(SPEAKING_WITH_TAG_CLOSE);
+    out
+}
+
 /// Render the `<colleagues>` roster block for `viewer`.
 ///
 /// `roster` is the org's colleagues (humans + agents), already alpha-sorted by
@@ -134,6 +167,20 @@ mod tests {
         );
         assert!(block.starts_with(ROSTER_TAG_OPEN));
         assert!(block.ends_with(ROSTER_TAG_CLOSE));
+    }
+
+    #[test]
+    fn speaking_with_names_counterpart_with_id() {
+        let tom = cref(ColleagueKind::Human, "Tom");
+        let block = render_speaking_with(&tom);
+        assert!(block.starts_with(SPEAKING_WITH_TAG_OPEN));
+        assert!(block.ends_with(SPEAKING_WITH_TAG_CLOSE));
+        assert!(block.contains("Tom"), "names the counterpart: {block}");
+        assert!(block.contains("human"), "states the kind: {block}");
+        assert!(
+            block.contains(&tom.id.as_uuid().to_string()),
+            "surfaces the id for `subject`: {block}"
+        );
     }
 
     #[test]

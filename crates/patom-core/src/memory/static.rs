@@ -29,6 +29,7 @@ impl Memory for StaticMemory {
         &self,
         _session: SessionId,
         _viewer: Participant,
+        _counterpart: Participant,
         _kind_payload: &RequestKindPayload,
     ) -> Result<Arc<str>, MemoryError> {
         Ok(self.prompt.clone())

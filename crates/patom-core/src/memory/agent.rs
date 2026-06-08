@@ -30,6 +30,7 @@ use crate::auth::{SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use crate::clock::SharedClock;
 use crate::colleagues::{
     ColleagueError, ColleagueId, ColleagueRosterCache, SharedColleagueStore, render_roster_block,
+    render_speaking_with,
 };
 use crate::prompts::Prompts;
 use crate::runtime::RequestKindPayload;
@@ -178,6 +179,23 @@ impl AgentMemory {
         );
         Ok(render_roster_block(&roster, viewer))
     }
+
+    /// Render the `<speaking-with>` block naming this session's counterpart.
+    ///
+    /// Reads the counterpart authoritatively by id (not via the roster cache)
+    /// so a colleague who joined this turn — not yet in the cached roster —
+    /// still resolves. A `System` counterpart (reflection/resolution) has no
+    /// colleague row, so the block is empty.
+    async fn speaking_with_block(
+        &self,
+        counterpart: Participant,
+    ) -> Result<String, ColleagueError> {
+        let Some(cid) = counterpart.colleague_id() else {
+            return Ok(String::new());
+        };
+        let colleague = self.colleagues.read(cid).await?;
+        Ok(render_speaking_with(&colleague.to_ref()))
+    }
 }
 
 impl std::fmt::Debug for AgentMemory {
@@ -192,6 +210,7 @@ impl Memory for AgentMemory {
         &self,
         session: SessionId,
         viewer: Participant,
+        counterpart: Participant,
         kind_payload: &RequestKindPayload,
     ) -> Result<Arc<str>, MemoryError> {
         // Workers only run for agent receivers; a Human viewer is a wiring bug.
@@ -227,6 +246,18 @@ impl Memory for AgentMemory {
             }
         };
 
+        // `<speaking-with>` names this session's counterpart so the model knows
+        // exactly who it's addressing (and their colleague id) rather than
+        // guessing from the roster — ambiguous once the org has >1 human. A
+        // directory outage degrades to an empty block, like the roster.
+        let speaking_with = match self.speaking_with_block(counterpart).await {
+            Ok(block) => block,
+            Err(e) => {
+                tracing::warn!(error = %e, "colleagues.speaking_with.error");
+                String::new()
+            }
+        };
+
         // Per-org language. Cached behind the resolver so consecutive
         // turns for the same agent stay one mutex round-trip away from
         // the right directive. A switch propagates via the PATCH
@@ -253,6 +284,10 @@ impl Memory for AgentMemory {
         let memory_str = memory_section.text();
         let memory_sep = if memory_str.is_empty() { "" } else { "\n" };
         let roster_sep = if roster.is_empty() { "" } else { "\n" };
+        // Per-session, so it sits in the tail (after `<language>`) — keeping it
+        // out of the org-stable prefix preserves prompt-cache hits across the
+        // agent's other sessions.
+        let speaking_with_sep = if speaking_with.is_empty() { "" } else { "\n" };
 
         // `<date>` sits between `<role>` and `<memory>` so the daily-churn seam
         // lies between the per-agent stable prefix and the per-turn memory tail.
@@ -285,6 +320,8 @@ impl Memory for AgentMemory {
                 + LANGUAGE_TAG_OPEN.len()
                 + directive_str.len()
                 + LANGUAGE_TAG_CLOSE.len()
+                + speaking_with_sep.len()
+                + speaking_with.len()
                 + memory_sep.len()
                 + memory_str.len(),
         );
@@ -311,6 +348,8 @@ impl Memory for AgentMemory {
         out.push_str(LANGUAGE_TAG_OPEN);
         out.push_str(directive_str);
         out.push_str(LANGUAGE_TAG_CLOSE);
+        out.push_str(speaking_with_sep);
+        out.push_str(&speaking_with);
         out.push_str(memory_sep);
         out.push_str(memory_str);
 

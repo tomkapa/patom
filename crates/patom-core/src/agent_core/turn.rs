@@ -66,7 +66,7 @@ impl Agent {
         let started_at = self.clock().now_utc();
         let started_mono = Instant::now();
         let response = self
-            .send_one_turn(ctx.session_id, viewer, kind_payload, cancel)
+            .send_one_turn(ctx.session_id, viewer, counterpart, kind_payload, cancel)
             .await?;
         let duration = started_mono.elapsed();
         self.record_turn_metrics(
@@ -279,11 +279,12 @@ impl Agent {
         &self,
         session: SessionId,
         viewer: Participant,
+        counterpart: Participant,
         kind_payload: &RequestKindPayload,
         cancel: &CancellationToken,
     ) -> Result<ChatResponse, AgentError> {
         let request = self
-            .build_chat_request(session, viewer, kind_payload)
+            .build_chat_request(session, viewer, counterpart, kind_payload)
             .await?;
         self.call_provider(request, self.provider_timeout(), cancel)
             .await
@@ -330,6 +331,7 @@ impl Agent {
         &self,
         session: SessionId,
         viewer: Participant,
+        counterpart: Participant,
         kind_payload: &RequestKindPayload,
     ) -> Result<ChatRequest, AgentError> {
         let kind = kind_payload.kind();
@@ -368,7 +370,7 @@ impl Agent {
 
         let memory_system = self
             .memory()
-            .system_prompt(session, viewer, kind_payload)
+            .system_prompt(session, viewer, counterpart, kind_payload)
             .await?;
         // Fold the session's current todo list into the system prompt
         // tail. Empty / missing-store cases render to the empty string,
