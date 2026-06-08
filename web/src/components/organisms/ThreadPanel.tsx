@@ -76,7 +76,7 @@ export function ThreadPanel({
   onReply?: (input: { content: string }) => void;
   onClose?: () => void;
 }) {
-  const { width, dragging, handleProps } = useResizableWidth({
+  const { width, dragging, panelRef, handleProps } = useResizableWidth({
     storageKey: THREAD_PANEL_WIDTH_KEY,
     defaultWidth: THREAD_PANEL_DEFAULT_WIDTH,
     minWidth: THREAD_PANEL_MIN_WIDTH,
@@ -151,6 +151,7 @@ export function ThreadPanel({
 
   return (
     <aside
+      ref={panelRef}
       className={cn(
         "relative flex h-full flex-col border-l border-[var(--color-line)] bg-[var(--color-paper)]",
         resizable ? "shrink-0" : "w-full",

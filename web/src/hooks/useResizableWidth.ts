@@ -2,6 +2,9 @@
 // panel). The panel sits on the right, so its grab handle lives on the
 // LEFT edge: dragging left widens, dragging right narrows.
 //
+// During a drag the width is written straight to the panel node's style
+// (via `panelRef`) so the host component doesn't re-render on every
+// pointer move — only pointer-up commits to React state and persists.
 // Width is clamped to [min, maxFraction × viewport] and persisted to
 // localStorage so the choice survives reloads. The max is re-derived on
 // viewport resize, and the stored width re-clamped, so a shrinking window
@@ -17,6 +20,8 @@ function readStored(key: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+// Clamp with the floor winning ties: when the cap drops below the floor
+// (a viewport too narrow for `minWidth`), `min` is returned, not `max`.
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), Math.max(min, max));
 }
@@ -33,47 +38,59 @@ export function useResizableWidth({
   /** Upper bound as a fraction of the viewport width, e.g. 0.5 for ~50%. */
   maxFraction: number;
 }) {
-  const maxWidth = () =>
-    typeof window === "undefined"
-      ? defaultWidth
-      : Math.round(window.innerWidth * maxFraction);
+  const getMaxWidth = useCallback(
+    () =>
+      typeof window === "undefined"
+        ? defaultWidth
+        : Math.round(window.innerWidth * maxFraction),
+    [defaultWidth, maxFraction],
+  );
 
   const [width, setWidth] = useState(() =>
-    clamp(readStored(storageKey, defaultWidth), minWidth, maxWidth()),
+    clamp(readStored(storageKey, defaultWidth), minWidth, getMaxWidth()),
   );
   const [dragging, setDragging] = useState(false);
 
-  // Re-clamp when the viewport shrinks so the panel can't exceed the cap.
+  // The element to resize, and the latest width during an in-flight drag
+  // (kept in a ref so pointer handlers stay stable and re-render-free).
+  const panelRef = useRef<HTMLElement | null>(null);
+  const liveWidth = useRef(width);
   useEffect(() => {
-    const onResize = () =>
-      setWidth((w) => clamp(w, minWidth, maxWidth()));
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [minWidth, maxFraction, defaultWidth]);
+    liveWidth.current = width;
+  }, [width]);
 
   const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
 
-  const onHandlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      e.preventDefault();
-      dragState.current = { startX: e.clientX, startWidth: width };
-      setDragging(true);
-      e.currentTarget.setPointerCapture(e.pointerId);
-    },
-    [width],
-  );
+  // Re-clamp when the viewport shrinks so the panel can't exceed the cap.
+  useEffect(() => {
+    const onResize = () => setWidth((w) => clamp(w, minWidth, getMaxWidth()));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [minWidth, getMaxWidth]);
 
-  const onHandlePointerMove = useCallback(
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    dragState.current = { startX: e.clientX, startWidth: liveWidth.current };
+    setDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, []);
+
+  const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
       const start = dragState.current;
       if (!start) return;
       // Handle is on the left edge: leftward drag (clientX down) widens.
-      const next = start.startWidth + (start.startX - e.clientX);
-      setWidth(clamp(next, minWidth, maxWidth()));
+      const next = clamp(
+        start.startWidth + (start.startX - e.clientX),
+        minWidth,
+        getMaxWidth(),
+      );
+      liveWidth.current = next;
+      // Imperative write — no React render while dragging.
+      const el = panelRef.current;
+      if (el) el.style.width = `${next}px`;
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [minWidth, maxFraction],
+    [minWidth, getMaxWidth],
   );
 
   const endDrag = useCallback(
@@ -82,19 +99,21 @@ export function useResizableWidth({
       dragState.current = null;
       setDragging(false);
       e.currentTarget.releasePointerCapture(e.pointerId);
+      setWidth(liveWidth.current);
       if (typeof window !== "undefined") {
-        window.localStorage.setItem(storageKey, String(width));
+        window.localStorage.setItem(storageKey, String(liveWidth.current));
       }
     },
-    [storageKey, width],
+    [storageKey],
   );
 
   return {
     width,
     dragging,
+    panelRef,
     handleProps: {
-      onPointerDown: onHandlePointerDown,
-      onPointerMove: onHandlePointerMove,
+      onPointerDown,
+      onPointerMove,
       onPointerUp: endDrag,
       onPointerCancel: endDrag,
     },
