@@ -42,4 +42,9 @@ pub enum LemonSqueezyError {
     /// Postgres error from the subscription store / idempotency ledger.
     #[error(transparent)]
     Db(#[from] sqlx::Error),
+
+    /// A bounded DB I/O await exceeded its `tokio::time::timeout` (CLAUDE.md
+    /// §5) — the query/connection stalled. → 500 (transient; retriable).
+    #[error("database operation timed out")]
+    Timeout,
 }

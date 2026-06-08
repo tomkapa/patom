@@ -23,6 +23,16 @@ pub const WEBHOOK_HANDLE_TIMEOUT: std::time::Duration = std::time::Duration::fro
 /// independently of the shared client's default timeout.
 pub const LS_API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// Per-statement timeout for a `cloud` schema query.
+///
+/// CLAUDE.md §5: every sqlx await is bounded. The pool's `acquire_timeout`
+/// bounds connection checkout; this bounds the query itself.
+pub const DB_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Timeout for each startup migration I/O step (schema create, connect, run) so
+/// a stalled DB can't hang boot indefinitely (CLAUDE.md §5).
+pub const MIGRATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Grace window (days) after `current_period_end` for a `past_due` sub.
 ///
 /// During it the subscription keeps its paid agent cap, giving Lemon Squeezy's

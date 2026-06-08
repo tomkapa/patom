@@ -7,6 +7,7 @@
 //! injected [`SharedClock`], never `NOW()` (CLAUDE.md §11).
 
 use std::fmt;
+use std::future::Future;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -15,6 +16,7 @@ use patom::clock::SharedClock;
 use sqlx::PgPool;
 
 use super::error::LemonSqueezyError;
+use super::limits::DB_QUERY_TIMEOUT;
 use super::store::{NewSubscription, SubscriptionRecord, SubscriptionStore};
 use super::types::{
     LsCustomerId, LsEventId, LsSubscriptionId, LsVariantId, Plan, SubscriptionId,
@@ -79,6 +81,18 @@ impl TryFrom<SubscriptionRow> for SubscriptionRecord {
     }
 }
 
+/// Run a `cloud`-schema query under [`DB_QUERY_TIMEOUT`], mapping an elapsed
+/// timeout to [`LemonSqueezyError::Timeout`] (CLAUDE.md §5: the pool's
+/// `acquire_timeout` bounds checkout, this bounds the query itself).
+async fn bounded<T>(
+    fut: impl Future<Output = Result<T, sqlx::Error>>,
+) -> Result<T, LemonSqueezyError> {
+    tokio::time::timeout(DB_QUERY_TIMEOUT, fut)
+        .await
+        .map_err(|_elapsed| LemonSqueezyError::Timeout)?
+        .map_err(LemonSqueezyError::from)
+}
+
 #[async_trait]
 impl SubscriptionStore for PgSubscriptionStore {
     async fn upsert(&self, sub: NewSubscription) -> Result<(), LemonSqueezyError> {
@@ -88,7 +102,7 @@ impl SubscriptionStore for PgSubscriptionStore {
             // Insert keyed by the natural key; on redelivery / status change the
             // existing row is updated in place (its `id` and `created_at` are
             // preserved). Static SQL, bound params only (§10).
-            sqlx::query(
+            let query = sqlx::query(
                 "INSERT INTO cloud.subscriptions \
                      (id, org_id, ls_customer_id, ls_subscription_id, ls_variant_id, \
                       plan, status, current_period_end, created_at, updated_at) \
@@ -111,8 +125,8 @@ impl SubscriptionStore for PgSubscriptionStore {
             .bind(sub.status)
             .bind(sub.current_period_end)
             .bind(now)
-            .execute(&mut **tx)
-            .await?;
+            .execute(&mut **tx);
+            bounded(query).await?;
             Ok(())
         })
         .await
@@ -127,10 +141,12 @@ impl SubscriptionStore for PgSubscriptionStore {
         );
         let row =
             run_privileged::<Option<SubscriptionRow>, LemonSqueezyError>(&self.pool, async |tx| {
-                Ok(sqlx::query_as::<_, SubscriptionRow>(&sql)
-                    .bind(org)
-                    .fetch_optional(&mut **tx)
-                    .await?)
+                bounded(
+                    sqlx::query_as::<_, SubscriptionRow>(&sql)
+                        .bind(org)
+                        .fetch_optional(&mut **tx),
+                )
+                .await
             })
             .await?;
         row.map(SubscriptionRecord::try_from).transpose()
@@ -145,15 +161,15 @@ impl SubscriptionStore for PgSubscriptionStore {
         let inserted = run_privileged::<u64, LemonSqueezyError>(&self.pool, async |tx| {
             // `DO NOTHING` makes the ledger insert idempotent: a redelivery
             // affects zero rows, telling the caller it was already applied.
-            let result = sqlx::query(
+            let query = sqlx::query(
                 "INSERT INTO cloud.webhook_events (ls_event_id, org_id, received_at) \
                  VALUES ($1, $2, $3) ON CONFLICT (ls_event_id) DO NOTHING",
             )
             .bind(event_id.as_str())
             .bind(org)
             .bind(now)
-            .execute(&mut **tx)
-            .await?;
+            .execute(&mut **tx);
+            let result = bounded(query).await?;
             Ok(result.rows_affected())
         })
         .await?;
@@ -173,11 +189,13 @@ impl SubscriptionStore for PgSubscriptionStore {
         );
         let rows =
             run_privileged::<Vec<SubscriptionRow>, LemonSqueezyError>(&self.pool, async |tx| {
-                Ok(sqlx::query_as::<_, SubscriptionRow>(&sql)
-                    .bind(cutoff)
-                    .bind(limit)
-                    .fetch_all(&mut **tx)
-                    .await?)
+                bounded(
+                    sqlx::query_as::<_, SubscriptionRow>(&sql)
+                        .bind(cutoff)
+                        .bind(limit)
+                        .fetch_all(&mut **tx),
+                )
+                .await
             })
             .await?;
         rows.into_iter().map(SubscriptionRecord::try_from).collect()
