@@ -189,6 +189,219 @@ async fn enqueue_human_root(harness: &ThreadsHarness, content: &str, key: &str) 
         .request_id()
 }
 
+/// Seed a second human member of the harness org with a known
+/// `display_name` and avatar, returning their `user_id`. The
+/// `org_members` insert fires the colleague-mint trigger, so the new
+/// member is immediately addressable as a human colleague.
+async fn seed_member(
+    pool: &PgPool,
+    org_id: patom::auth::OrgId,
+    display_name: &str,
+    avatar_url: &str,
+) -> patom::auth::UserId {
+    let user_id = patom::auth::UserId::new();
+    let now = chrono::Utc::now();
+    let email = format!("member-{}@example.test", uuid::Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO users (id, email, display_name, avatar_url, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $5)",
+    )
+    .bind(user_id)
+    .bind(&email)
+    .bind(display_name)
+    .bind(avatar_url)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("seed member user");
+    sqlx::query(
+        "INSERT INTO org_members (org_id, user_id, role, created_at) VALUES ($1, $2, 'member', $3)",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("seed member membership");
+    user_id
+}
+
+/// Enqueue a human-rooted DAG attributed to a specific `user_id` (not the
+/// harness's default seed user), so multi-author scenarios can be built.
+async fn enqueue_human_root_as(
+    harness: &ThreadsHarness,
+    user_id: patom::auth::UserId,
+    content: &str,
+    key: &str,
+) -> PromptRequestId {
+    harness
+        .queue
+        .enqueue(NewPromptRequest {
+            session: None,
+            sender: common::pg::human_participant(
+                &harness.state.pool,
+                harness.seed.org_id,
+                user_id,
+            )
+            .await,
+            receiver_agent_id: harness.seed.agent_id,
+            parent_session: None,
+            content: Prompt::try_from(content).expect("prompt"),
+            idempotency_key: IdempotencyKey::try_from(key).expect("key"),
+            org_id: harness.seed.org_id,
+            created_by_user_id: user_id,
+            kind_payload: patom::runtime::RequestKindPayload::Normal {},
+        })
+        .await
+        .expect("enqueue")
+        .request_id()
+}
+
+/// G1 multi-user: the feed must show the *real* starter of each thread,
+/// not the viewer. A thread started by Alice shows Alice even when fetched
+/// by Bob — the legacy single-human assumption stamped the viewer onto
+/// every row.
+#[sqlx::test]
+async fn list_threads_attributes_starter_to_real_author(pool: PgPool) {
+    let h = ThreadsHarness::new(pool).await;
+    // Bob is the harness seed user (display "Seeded Test User").
+    let bob = h.seed.user_id;
+    let alice = seed_member(
+        &h.state.pool,
+        h.seed.org_id,
+        "Alice Anders",
+        "https://h.test/a.png",
+    )
+    .await;
+
+    let bob_root = enqueue_human_root_as(&h, bob, "from bob", "k-bob").await;
+    let alice_root = enqueue_human_root_as(&h, alice, "from alice", "k-alice").await;
+
+    // Fetched as Bob (the harness principal).
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/threads")
+                .header("cookie", &h.auth_cookie)
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("collect");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    let rows = json.as_array().expect("array");
+
+    let row_for = |root: PromptRequestId| {
+        rows.iter()
+            .find(|r| r["root_request_id"].as_str() == Some(root.to_string().as_str()))
+            .unwrap_or_else(|| panic!("row for {root} present"))
+    };
+
+    let alice_row = row_for(alice_root);
+    assert_eq!(
+        alice_row["starter"]["name"].as_str(),
+        Some("Alice Anders"),
+        "Alice's thread shows Alice as starter, not the viewer Bob",
+    );
+    assert_eq!(
+        alice_row["starter"]["user_id"].as_str(),
+        Some(alice.as_uuid().to_string().as_str()),
+    );
+    assert_eq!(
+        alice_row["starter"]["avatar_url"].as_str(),
+        Some("https://h.test/a.png"),
+    );
+
+    let bob_row = row_for(bob_root);
+    assert_eq!(
+        bob_row["starter"]["name"].as_str(),
+        Some("Seeded Test User"),
+        "Bob's thread shows Bob",
+    );
+    assert_eq!(
+        bob_row["starter"]["user_id"].as_str(),
+        Some(bob.as_uuid().to_string().as_str()),
+    );
+}
+
+/// G2 multi-user: each human history row carries the *sender's* display
+/// name and avatar, so a thread started by Alice shows Alice on her row
+/// even when read by Bob.
+#[sqlx::test]
+async fn thread_messages_carry_sender_identity(pool: PgPool) {
+    let h = ThreadsHarness::new(pool).await;
+    let alice = seed_member(
+        &h.state.pool,
+        h.seed.org_id,
+        "Alice Anders",
+        "https://h.test/a.png",
+    )
+    .await;
+    let root = enqueue_human_root_as(&h, alice, "hello from alice", "k-alice").await;
+
+    // Stand up Alice↔agent session bound to her DAG root and append her turn.
+    let agent = common::pg::agent_participant(&h.state.pool, h.seed.org_id, h.seed.agent_id).await;
+    let session = h
+        .state
+        .sessions
+        .resolve_or_create_for_pair(
+            root,
+            common::pg::human_participant(&h.state.pool, h.seed.org_id, alice).await,
+            agent,
+            None,
+            h.seed.org_id,
+            alice,
+        )
+        .await
+        .expect("create session");
+    h.state
+        .sessions
+        .append(
+            session,
+            common::pg::human_sender(&h.state.pool, h.seed.org_id, alice).await,
+            agent,
+            ChatMessage::User(vec![UserContent::Text("hello from alice".into())]),
+            root,
+        )
+        .await
+        .expect("append");
+
+    // Read as Bob (the harness principal) — the row must still name Alice.
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(format!("/api/threads/{}/messages", root.as_uuid()))
+                .header("cookie", &h.auth_cookie)
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("collect");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    let rows = json.as_array().expect("array");
+    assert_eq!(rows.len(), 1, "one appended human row");
+    assert_eq!(rows[0]["sender"]["kind"].as_str(), Some("human"));
+    assert_eq!(
+        rows[0]["sender_display_name"].as_str(),
+        Some("Alice Anders"),
+        "human row names its real sender, not the viewer",
+    );
+    assert_eq!(
+        rows[0]["sender_avatar_url"].as_str(),
+        Some("https://h.test/a.png"),
+    );
+}
+
 #[sqlx::test]
 async fn list_threads_returns_one_row_per_human_root(pool: PgPool) {
     let h = ThreadsHarness::new(pool).await;

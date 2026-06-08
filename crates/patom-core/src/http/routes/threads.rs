@@ -6,6 +6,7 @@
 //!
 //! See `doc/backend_plan.md` for the full design.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
 
@@ -22,7 +23,8 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::agents::AgentId;
-use crate::auth::{AuthError, Principal};
+use crate::auth::{AuthError, Principal, UserId, UserProfileLite};
+use crate::colleagues::ColleagueId;
 use crate::runtime::{
     DEFAULT_THREAD_HISTORY_LIMIT, DEFAULT_THREAD_LIST_LIMIT, MAX_THREAD_HISTORY_LIMIT,
     MAX_THREAD_LIST_LIMIT, PromptRequestId, RequestStatus, ResponseChunk, THREAD_PREVIEW_MAX_CHARS,
@@ -59,11 +61,25 @@ struct ThreadAgentRef {
     name: String,
 }
 
+/// The human who started a thread (the DAG-root prompt's sender). Carried
+/// on the wire so the feed shows the *real* author, not the viewer — the
+/// legacy single-human assumption stamped the current user onto every row.
+/// `name`/`avatar_url` are enriched after the RLS query from the
+/// privileged user store (the tenant tx can't read `users`; migration 14).
+#[derive(Debug, Serialize)]
+struct StarterRef {
+    user_id: UserId,
+    colleague_id: ColleagueId,
+    name: String,
+    avatar_url: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct ThreadSummary {
     root_request_id: PromptRequestId,
     root_session_id: SessionId,
     first_agent: ThreadAgentRef,
+    starter: StarterRef,
     preview: String,
     reply_count: i64,
     last_activity_at: DateTime<Utc>,
@@ -81,6 +97,9 @@ type ThreadRow = (
     DateTime<Utc>,
     RequestStatus,
     DateTime<Utc>,
+    // root human sender (colleague + user) — enriched to name/avatar below
+    ColleagueId,
+    UserId,
 );
 
 /// Channel-feed query. The cursor (`$2`) is optional — `NULL` skips the
@@ -133,11 +152,14 @@ SELECT
     GREATEST(pr.created_at,
              COALESCE(ts.last_msg_at, pr.created_at)) AS last_activity_at,
     pr.status,
-    pr.created_at
+    pr.created_at,
+    sc.id,
+    sc.user_id
 FROM prompt_requests pr
 JOIN visible_human_roots vhr ON vhr.root_request_id = pr.id
 JOIN colleagues rc ON rc.id = pr.receiver_colleague_id
 JOIN agents a ON a.id = rc.agent_id
+JOIN colleagues sc ON sc.id = pr.sender_colleague_id
 LEFT JOIN thread_stats ts ON ts.root_request_id = pr.id
 WHERE ($2::timestamptz IS NULL
        OR GREATEST(pr.created_at,
@@ -178,10 +200,31 @@ async fn list_threads(
     tx.commit().await.map_err(AuthError::from)?;
 
     tracing::Span::current().record("patom.thread.list.size", rows.len());
-    Ok(Json(rows.into_iter().map(thread_row_to_summary).collect()))
+
+    // Enrich each row's starter with name + avatar. Identity tables are
+    // REVOKEd from `patom_app` (migration 14), so the tenant tx above
+    // can't read `users` — resolve through the privileged store in one
+    // batch after it commits, the same pattern as `list_mcp_servers` /
+    // `list_agent_prompt_versions`. `rows` is `LIMIT`-bounded, so the id
+    // slice is bounded by `MAX_THREAD_LIST_LIMIT` (CLAUDE.md §5).
+    assert!(
+        rows.len() <= usize::try_from(MAX_THREAD_LIST_LIMIT).unwrap_or(usize::MAX),
+        "invariant: LIMIT enforces MAX_THREAD_LIST_LIMIT ceiling"
+    );
+    let starter_ids: Vec<UserId> = rows.iter().map(|r| r.10).collect();
+    let profiles = state.users.read_profiles(&starter_ids).await?;
+
+    let summaries = rows
+        .into_iter()
+        .map(|row| thread_row_to_summary(row, &profiles))
+        .collect();
+    Ok(Json(summaries))
 }
 
-fn thread_row_to_summary(row: ThreadRow) -> ThreadSummary {
+fn thread_row_to_summary(
+    row: ThreadRow,
+    profiles: &HashMap<UserId, UserProfileLite>,
+) -> ThreadSummary {
     let (
         root_request_id,
         root_session_id,
@@ -192,7 +235,11 @@ fn thread_row_to_summary(row: ThreadRow) -> ThreadSummary {
         last_activity_at,
         status,
         created_at,
+        sender_colleague_id,
+        sender_user_id,
     ) = row;
+    let (name, avatar_url) =
+        resolve_profile(profiles, sender_user_id).unwrap_or((String::new(), None));
     ThreadSummary {
         root_request_id,
         root_session_id,
@@ -200,12 +247,31 @@ fn thread_row_to_summary(row: ThreadRow) -> ThreadSummary {
             id: agent_id,
             name: agent_name,
         },
+        starter: StarterRef {
+            user_id: sender_user_id,
+            colleague_id: sender_colleague_id,
+            name,
+            avatar_url,
+        },
         preview,
         reply_count,
         last_activity_at,
         status,
         created_at,
     }
+}
+
+/// Look up a sender's resolved display name + avatar. `None` when the user
+/// isn't in the batch — normally impossible (the `users` FK on the
+/// colleague row guarantees a profile), so a miss means the row was deleted
+/// between the RLS read and the enrichment. Callers degrade gracefully.
+fn resolve_profile(
+    profiles: &HashMap<UserId, UserProfileLite>,
+    user_id: UserId,
+) -> Option<(String, Option<String>)> {
+    profiles
+        .get(&user_id)
+        .map(|p| (p.name.clone(), p.avatar_url.clone()))
 }
 
 // ─── G2 ─────────────────────────────────────────────────────────────────
@@ -231,6 +297,13 @@ struct ThreadMessage {
     /// The prompt request that produced this row. Surfaced on the wire so
     /// the FE can dedupe optimistic / live / persisted bubbles by identity.
     request_id: PromptRequestId,
+    /// Resolved display name of a *human* sender, enriched from the
+    /// privileged user store (the tenant tx can't read `users`). `None`
+    /// for agent / system rows — the FE resolves agent names from its own
+    /// roster and never labels system rows.
+    sender_display_name: Option<String>,
+    /// Avatar URL of a human sender; `None` when unset or non-human.
+    sender_avatar_url: Option<String>,
 }
 
 /// `session_messages` row with both sides joined to `colleagues` so the
@@ -321,14 +394,28 @@ async fn thread_messages(
     tx.commit().await.map_err(AuthError::from)?;
 
     tracing::Span::current().record("patom.thread.history.size", rows.len());
+
+    // Enrich human senders with name + avatar via the privileged store —
+    // same RLS rationale as the feed. Bounded by the `LIMIT` on the query
+    // (CLAUDE.md §5).
+    assert!(
+        rows.len() <= usize::try_from(MAX_THREAD_HISTORY_LIMIT).unwrap_or(usize::MAX),
+        "invariant: LIMIT enforces MAX_THREAD_HISTORY_LIMIT ceiling"
+    );
+    let sender_ids: Vec<UserId> = rows.iter().filter_map(|r| r.4).collect();
+    let profiles = state.users.read_profiles(&sender_ids).await?;
+
     let messages = rows
         .into_iter()
-        .map(history_row_to_message)
+        .map(|row| history_row_to_message(row, &profiles))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(messages))
 }
 
-fn history_row_to_message(row: HistoryRow) -> Result<ThreadMessage, HttpError> {
+fn history_row_to_message(
+    row: HistoryRow,
+    profiles: &HashMap<UserId, UserProfileLite>,
+) -> Result<ThreadMessage, HttpError> {
     let (
         session_id,
         seq,
@@ -368,6 +455,11 @@ fn history_row_to_message(row: HistoryRow) -> Result<ThreadMessage, HttpError> {
         tracing::error!(error = %e, "thread.history.decode_receiver");
         HttpError::Internal
     })?;
+    // Only human senders carry a profile; agent rows resolve their name on
+    // the FE roster and system rows are never labelled.
+    let (sender_display_name, sender_avatar_url) = sender_user_id.map_or((None, None), |uid| {
+        resolve_profile(profiles, uid).map_or((None, None), |(n, a)| (Some(n), a))
+    });
     Ok(ThreadMessage {
         session_id,
         seq,
@@ -376,6 +468,8 @@ fn history_row_to_message(row: HistoryRow) -> Result<ThreadMessage, HttpError> {
         body,
         created_at,
         request_id,
+        sender_display_name,
+        sender_avatar_url,
     })
 }
 

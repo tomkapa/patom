@@ -13,14 +13,10 @@ type DatedGroup = { label: string; items: Item[] };
 export function MessageList({
   threads,
   channel,
-  userName,
-  humanPoster,
   onOpenThread,
 }: {
   threads: ThreadSummary[];
   channel: string;
-  userName: string;
-  humanPoster?: { name: string; id: string; avatar_url?: string | null };
   onOpenThread?: (rootId: string) => void;
 }) {
   const dated = useMemo<DatedGroup[]>(() => {
@@ -47,8 +43,6 @@ export function MessageList({
     );
   }
 
-  const human = humanPoster ?? { name: userName, id: "user", avatar_url: null };
-
   return (
     <div className="flex-1 overflow-y-auto scroll-thin grain-paper">
       <div className="flex flex-col py-2">
@@ -62,9 +56,9 @@ export function MessageList({
                   key={it.key}
                   sender={{
                     kind: "human",
-                    name: human.name,
-                    id: human.id,
-                    avatarUrl: human.avatar_url ?? null,
+                    name: it.t.starter.name,
+                    id: it.t.starter.user_id,
+                    avatarUrl: it.t.starter.avatar_url,
                   }}
                   body={text}
                   ts={it.t.created_at}

@@ -35,7 +35,8 @@ pub use org_rule::{
 };
 pub use pg_store::PgUserStore;
 pub use store::{
-    ConsumedOAuthState, NewOrg, OAuthStateRow, SharedUserStore, UpsertedUser, UserStore,
+    ConsumedOAuthState, NewOrg, OAuthStateRow, SharedUserStore, UpsertedUser, UserProfileLite,
+    UserStore,
 };
 pub use types::{
     Email, InviteId, InviteToken, IssuerUrl, OAuthState, OidcNonce, OidcProfile, OidcSubject,
