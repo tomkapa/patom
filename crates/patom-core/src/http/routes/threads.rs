@@ -344,25 +344,25 @@ fn history_row_to_message(row: HistoryRow) -> Result<ThreadMessage, HttpError> {
     // The schema enforces these shapes, so a violation is a malformed-DB
     // anomaly, not bad input — log it and degrade to a typed 500 rather than
     // panicking the handler (§6/§12: no `expect` across the HTTP boundary).
-    let sender = Participant::from_colleague_columns((
+    let sender = Participant::try_from((
         sender_colleague_id,
         sender_kind,
         sender_user_id,
         sender_agent_id,
     ))
-    .map(MessageSender::from_participant)
+    .map(MessageSender::from)
     .map_err(|e| {
-        tracing::error!(error = e, "thread.history.decode_sender");
+        tracing::error!(error = %e, "thread.history.decode_sender");
         HttpError::Internal
     })?;
-    let receiver = Participant::from_colleague_columns((
+    let receiver = Participant::try_from((
         Some(receiver_colleague_id),
         Some(receiver_kind),
         receiver_user_id,
         receiver_agent_id,
     ))
     .map_err(|e| {
-        tracing::error!(error = e, "thread.history.decode_receiver");
+        tracing::error!(error = %e, "thread.history.decode_receiver");
         HttpError::Internal
     })?;
     Ok(ThreadMessage {

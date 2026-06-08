@@ -369,7 +369,7 @@ impl SendMessageTool {
 
         // The kind ⇔ satellite invariant is already established on `colleague`
         // (Colleague::try_new), so projection is total — no per-kind unwrap here.
-        Ok(colleague.as_participant())
+        Ok(Participant::from(&colleague))
     }
 
     /// Opening framing — only on a freshly-minted receiver session, and only
@@ -505,7 +505,7 @@ impl SendMessageTool {
                 .append_for_user(
                     ctx.acting_user_id,
                     receiver_session,
-                    MessageSender::from_participant(ctx.viewer),
+                    MessageSender::from(ctx.viewer),
                     receiver,
                     outbound_chat_message(content.as_str()),
                     ctx.request_id,

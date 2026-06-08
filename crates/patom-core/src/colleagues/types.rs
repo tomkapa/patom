@@ -231,25 +231,27 @@ impl Colleague {
             display_name: self.display_name.clone(),
         }
     }
+}
 
-    /// Project to the addressing-layer [`Participant`].
-    ///
-    /// The kind ⇔ satellite invariant established by [`Self::try_new`]
-    /// guarantees the matching satellite id is present, so this is total: a
-    /// missing id here means the invariant was bypassed, which is an assertion
-    /// failure (§6), not a recoverable error. Callers that hold a `Colleague`
-    /// no longer re-match `kind` and re-unwrap the satellite themselves.
-    #[must_use]
-    pub fn as_participant(&self) -> Participant {
-        match self.kind {
-            ColleagueKind::Human => Participant::human(
-                self.id,
-                self.user_id
+/// Project a fully-resolved colleague onto the addressing-layer
+/// [`Participant`].
+///
+/// Total by construction: the kind ⇔ satellite invariant established by
+/// [`Colleague::try_new`] guarantees the matching satellite id is present, so a
+/// missing id here means the invariant was bypassed — an assertion failure
+/// (§6), not a recoverable error. Callers that hold a `Colleague` get the
+/// projection via `.into()` rather than re-matching `kind` themselves.
+impl From<&Colleague> for Participant {
+    fn from(c: &Colleague) -> Self {
+        match c.kind {
+            ColleagueKind::Human => Self::human(
+                c.id,
+                c.user_id
                     .expect("invariant: human colleague carries user_id"),
             ),
-            ColleagueKind::Agent => Participant::agent(
-                self.id,
-                self.agent_id
+            ColleagueKind::Agent => Self::agent(
+                c.id,
+                c.agent_id
                     .expect("invariant: agent colleague carries agent_id"),
             ),
         }

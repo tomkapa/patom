@@ -74,15 +74,15 @@ type ParticipantTuple = (
 
 /// Decode a participant tuple (the four joined satellite columns) back to the
 /// typed [`Participant`], mapping a schema-shape violation to [`SessionError`].
-/// `MessageSender` callers convert via [`MessageSender::from_participant`] —
-/// both share the same shape, owned by [`Participant::from_colleague_columns`].
+/// `MessageSender` callers convert via `MessageSender::from` — both share the
+/// same shape, owned by the `TryFrom<_> for Participant` impl.
 fn decode_participant(tuple: ParticipantTuple) -> Result<Participant, SessionError> {
-    Participant::from_colleague_columns(tuple)
-        .map_err(|reason| SessionError::Backend(format!("schema invariant: {reason}")))
+    Participant::try_from(tuple)
+        .map_err(|e| SessionError::Backend(format!("schema invariant: {e}")))
 }
 
 fn decode_sender(tuple: ParticipantTuple) -> Result<MessageSender, SessionError> {
-    decode_participant(tuple).map(MessageSender::from_participant)
+    decode_participant(tuple).map(MessageSender::from)
 }
 
 /// Postgres-backed [`SessionStore`]. Holds a cheap clone of a [`PgPool`] and a

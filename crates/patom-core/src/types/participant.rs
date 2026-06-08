@@ -30,6 +30,8 @@ use crate::agents::AgentId;
 use crate::auth::UserId;
 use crate::colleagues::{ColleagueId, ColleagueKind};
 
+use super::ParseError;
+
 /// One end of a session.
 ///
 /// Constructed only via [`Self::human`] / [`Self::agent`] / [`Self::system`] —
@@ -181,38 +183,51 @@ impl Participant {
             (None, None) => Ordering::Equal,
         }
     }
+}
 
-    /// Decode the four joined satellite columns of a `colleagues` LEFT JOIN —
-    /// `(colleague_id, kind, user_id, agent_id)` — into the typed participant.
-    /// A NULL `colleague_id` encodes the [`Self::System`] end; a present id
-    /// arrives with its joined `kind`.
-    ///
-    /// The one home for this schema-shape decode; the session store, the
-    /// threads route, and any other reader of those columns funnel through it
-    /// rather than re-spelling the same match. A present `colleague_id` always
-    /// arrives with its joined `kind` and matching satellite id; a violation
-    /// means schema and code disagree, surfaced as a static reason the caller
-    /// maps to its module error.
-    pub(crate) fn from_colleague_columns(
-        cols: (
-            Option<ColleagueId>,
-            Option<ColleagueKind>,
-            Option<UserId>,
-            Option<AgentId>,
-        ),
-    ) -> Result<Self, &'static str> {
+/// The four joined satellite columns of a `colleagues` LEFT JOIN, in select
+/// order: `(colleague_id, kind, user_id, agent_id)`. The raw, nullable row
+/// shape that [`Participant`]'s `TryFrom` parses into the typed sum.
+type ColleagueColumns = (
+    Option<ColleagueId>,
+    Option<ColleagueKind>,
+    Option<UserId>,
+    Option<AgentId>,
+);
+
+/// Parse the joined satellite columns of a `colleagues` LEFT JOIN into the
+/// typed participant — the one home for the column→[`Participant`] decode that
+/// the session store and the threads route both go through (§1).
+///
+/// A NULL `colleague_id` encodes [`Participant::System`]; a present id always
+/// arrives with its joined `kind` and the matching satellite (the
+/// `colleagues_kind_satellite` CHECK guarantees it). A violation means schema
+/// and code disagree and surfaces as [`ParseError::Malformed`].
+impl TryFrom<ColleagueColumns> for Participant {
+    type Error = ParseError;
+
+    fn try_from(cols: ColleagueColumns) -> Result<Self, Self::Error> {
         let (colleague_id, kind, user_id, agent_id) = cols;
         match (colleague_id, kind) {
             (None, _) => Ok(Self::System),
             (Some(cid), Some(ColleagueKind::Human)) => {
-                let uid = user_id.ok_or("human colleague read without user_id")?;
+                let uid = user_id.ok_or(ParseError::Malformed {
+                    field: "participant.user_id",
+                    detail: "human colleague without user_id",
+                })?;
                 Ok(Self::human(cid, uid))
             }
             (Some(cid), Some(ColleagueKind::Agent)) => {
-                let aid = agent_id.ok_or("agent colleague read without agent_id")?;
+                let aid = agent_id.ok_or(ParseError::Malformed {
+                    field: "participant.agent_id",
+                    detail: "agent colleague without agent_id",
+                })?;
                 Ok(Self::agent(cid, aid))
             }
-            (Some(_), None) => Err("colleague read without joined kind"),
+            (Some(_), None) => Err(ParseError::Malformed {
+                field: "participant.kind",
+                detail: "colleague read without joined kind",
+            }),
         }
     }
 }
@@ -262,11 +277,10 @@ pub enum MessageSender {
     System,
 }
 
-impl MessageSender {
-    /// Promote a participant into a sender. Lossless — every `Participant`
-    /// variant maps exactly to a `MessageSender` variant.
-    #[must_use]
-    pub const fn from_participant(p: Participant) -> Self {
+/// Promote a participant into a sender. Lossless — every [`Participant`]
+/// variant maps exactly to a [`MessageSender`] variant.
+impl From<Participant> for MessageSender {
+    fn from(p: Participant) -> Self {
         match p {
             Participant::Human {
                 colleague_id,
@@ -285,7 +299,9 @@ impl MessageSender {
             Participant::System => Self::System,
         }
     }
+}
 
+impl MessageSender {
     /// Tag-only kind — drives tracing and serde.
     #[must_use]
     pub const fn kind(self) -> MessageSenderKind {
@@ -474,10 +490,10 @@ mod tests {
     #[test]
     fn message_sender_from_participant_round_trips() {
         let h = human(1);
-        let ms = MessageSender::from_participant(h);
+        let ms = MessageSender::from(h);
         assert_eq!(ms.colleague_id(), h.colleague_id());
         assert_eq!(ms.user_id(), h.user_id());
-        let s = MessageSender::from_participant(Participant::system());
+        let s = MessageSender::from(Participant::system());
         assert!(matches!(s, MessageSender::System));
     }
 }

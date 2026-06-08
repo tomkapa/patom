@@ -261,7 +261,7 @@ async fn snapshot_renders_messages_from_viewer_perspective(pool: PgPool) {
     store
         .append(
             id,
-            MessageSender::from_participant(agent),
+            MessageSender::from(agent),
             common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
             ChatMessage::Assistant(vec![patom::provider::AssistantContent::Text("pong".into())]),
             req,
