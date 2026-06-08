@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::agents::AgentStoreError;
 use crate::auth::{LanguageResolverError, RuleResolverError};
+use crate::colleagues::ColleagueError;
 use crate::runtime::RequestKindPayload;
 use crate::session::{SessionError, SessionId};
 use crate::types::Participant;
@@ -20,6 +21,11 @@ pub enum MemoryError {
 
     #[error("agent lookup: {0}")]
     Agent(#[from] AgentStoreError),
+
+    /// Resolving a `Collaborator` memory's subject colleague (or the roster
+    /// used to hydrate subject names) failed.
+    #[error("colleague lookup: {0}")]
+    Colleague(#[from] ColleagueError),
 
     #[error("language resolver: {0}")]
     Language(#[from] LanguageResolverError),
@@ -38,6 +44,12 @@ pub enum MemoryError {
 /// agent↔agent session it disambiguates which side's role prompt to
 /// load.
 ///
+/// `counterpart` is the *other* end of the 2-party session — the colleague the
+/// agent is addressing this turn. It lets the prompt name who's speaking (with
+/// their colleague id) so the model uses the right `subject`/recipient instead
+/// of guessing from the roster, which is ambiguous once the org has more than
+/// one human. A `System` counterpart (reflection/resolution) yields no line.
+///
 /// `kind_payload` mirrors `prompt_requests.kind_payload` so kind-specific
 /// composition (e.g. Resolution reserving `M-1` / `M-2` for the flagged
 /// pair) reads from the same source the tool-call path does.
@@ -47,6 +59,7 @@ pub trait Memory: Send + Sync + fmt::Debug {
         &self,
         session: SessionId,
         viewer: Participant,
+        counterpart: Participant,
         kind_payload: &RequestKindPayload,
     ) -> Result<Arc<str>, MemoryError>;
 }

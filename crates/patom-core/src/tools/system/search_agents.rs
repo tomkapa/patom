@@ -1,15 +1,15 @@
 //! `search_agents` — semantic search over agents' descriptions
 //! (doc/agent_discovery_plan.md §7).
 //!
-//! Used when the `<agents>` name index and Collaborator memory entries do
+//! Used when the `<colleagues>` name index and Collaborator memory entries do
 //! not settle which peer to delegate to — typically a genuinely new kind
 //! of task. Returns top-K `{name, description}` cards. The caller is
-//! excluded (§9.4 — caller-excluded consistently across `<agents>`,
+//! excluded (§9.4 — caller-excluded consistently across `<colleagues>`,
 //! `search_agents`, and `send_message`).
 //!
 //! Per design §7 we deliberately do NOT add `get_agent_card(name)` or
 //! `list_agents` tools: the model has enough to decide from
-//! `{name, description}`, and the `<agents>` block already exposes the
+//! `{name, description}`, and the `<colleagues>` block already exposes the
 //! full bag of names.
 
 use std::sync::Arc;
@@ -27,12 +27,12 @@ use crate::types::{ParseError, ToolName};
 const TOOL_NAME: &str = "search_agents";
 
 const TOOL_DESCRIPTION: &str = "Find an agent to delegate to when the names in your \
-    `<agents>` block and your Collaborator memories don't obviously match the task. \
+    `<colleagues>` block and your Collaborator memories don't obviously match the task. \
     Returns top-K agents (default 4, max 8) ranked by similarity between `query` and \
     each agent's operator-curated description.\n\
     \n\
     Use sparingly. Most delegations should hit a name your role prompt names, your \
-    `<memory>` records, or your `<agents>` block recognises. Reach for `search_agents` \
+    `<memory>` records, or your `<colleagues>` block recognises. Reach for `search_agents` \
     only when none of those settle the question.\n\
     \n\
     After a successful delegation that started with `search_agents`, write a \

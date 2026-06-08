@@ -22,6 +22,9 @@ pub struct OrgDetails {
     pub member_count: i64,
     /// Public asset URL, or `None` → FE renders the default tile.
     pub avatar_url: Option<AvatarUrl>,
+    /// `onboarded_at IS NOT NULL` — has this org completed the
+    /// onboarding wizard? Drives the FE `OnboardingGate`.
+    pub onboarded: bool,
 }
 
 /// Bag of optional patches for `PATCH /me/org`. `None` means "don't
@@ -31,6 +34,11 @@ pub struct OrgDetails {
 pub struct OrgUpdate {
     pub name: Option<OrgName>,
     pub slug: Option<OrgSlug>,
+    /// `true` → stamp `onboarded_at = NOW()` if it is currently NULL.
+    /// Idempotent — the SQL uses COALESCE so a second mark preserves the
+    /// original timestamp. The PATCH path never un-marks; clearing the
+    /// flag would have to be a separate, deliberate operation.
+    pub mark_onboarded: bool,
 }
 
 /// Status of a row on the Members tab. `Member` rows live in

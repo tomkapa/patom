@@ -27,7 +27,7 @@ use patom::runtime::{
     SharedResponseSink, SharedResponseSource, SharedThreadStream, ThreadStreamEvent,
 };
 use patom::session::{PgSessionStore, SharedSessionStore};
-use patom::types::{MessageSender, Participant, Prompt};
+use patom::types::Prompt;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -102,6 +102,7 @@ impl ThreadsHarness {
             responses,
             sessions,
             agents: agent_store,
+            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),
@@ -143,6 +144,7 @@ impl ThreadsHarness {
             assets: None,
             orgs: std::sync::Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
             mailer: std::sync::Arc::new(patom::orgs::LogMailer),
+            entitlements: std::sync::Arc::new(patom::entitlements::UnlimitedEntitlements),
         };
 
         // The threads we enqueue belong to `seed.org_id`, so the
@@ -168,7 +170,12 @@ async fn enqueue_human_root(harness: &ThreadsHarness, content: &str, key: &str) 
         .queue
         .enqueue(NewPromptRequest {
             session: None,
-            sender: Participant::Human,
+            sender: common::pg::human_participant(
+                &harness.state.pool,
+                harness.seed.org_id,
+                harness.seed.user_id,
+            )
+            .await,
             receiver_agent_id: harness.seed.agent_id,
             parent_session: None,
             content: Prompt::try_from(content).expect("prompt"),
@@ -263,13 +270,13 @@ async fn thread_messages_includes_request_id_per_row(pool: PgPool) {
 
     // Stand up the human↔agent session bound to the enqueued DAG root, then
     // append one human turn carrying the same request_id the queue minted.
-    let agent = Participant::agent(h.seed.agent_id);
+    let agent = common::pg::agent_participant(&h.state.pool, h.seed.org_id, h.seed.agent_id).await;
     let session = h
         .state
         .sessions
         .resolve_or_create_for_pair(
             root,
-            Participant::Human,
+            common::pg::human_participant(&h.state.pool, h.seed.org_id, h.seed.user_id).await,
             agent,
             None,
             h.seed.org_id,
@@ -281,7 +288,7 @@ async fn thread_messages_includes_request_id_per_row(pool: PgPool) {
         .sessions
         .append(
             session,
-            MessageSender::Human,
+            common::pg::human_sender(&h.state.pool, h.seed.org_id, h.seed.user_id).await,
             agent,
             ChatMessage::User(vec![UserContent::Text("hello".into())]),
             root,

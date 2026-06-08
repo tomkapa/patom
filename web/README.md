@@ -19,7 +19,7 @@ bun run dev
 ```
 
 Open <http://localhost:5173>. The dev server proxies `/api/*`,
-`/auth/google/*`, and `/mcp-oauth/*` to the Rust backend on `:8080`
+`/auth/oidc/*`, and `/mcp-oauth/*` to the Rust backend on `:8080`
 (override with `BACKEND_URL=...`); everything else serves the bundled
 SPA shell so deep links work on hard refresh.
 

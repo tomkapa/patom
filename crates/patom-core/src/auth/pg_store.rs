@@ -280,7 +280,7 @@ impl UserStore for PgUserStore {
         let mut tx = super::begin_privileged(&self.pool).await?;
         let rows = sqlx::query(
             "SELECT o.id, o.name, o.slug::text AS slug, o.default_language, o.default_rule,
-                    o.avatar_url, m.role
+                    o.avatar_url, o.onboarded_at, m.role
              FROM org_members m
              JOIN organizations o ON o.id = m.org_id
              WHERE m.user_id = $1
@@ -308,6 +308,9 @@ impl UserStore for PgUserStore {
                         .get::<Option<String>, _>("avatar_url")
                         .map(AvatarUrl::try_from)
                         .transpose()?,
+                    onboarded: r
+                        .get::<Option<chrono::DateTime<chrono::Utc>>, _>("onboarded_at")
+                        .is_some(),
                 })
             })
             .collect()

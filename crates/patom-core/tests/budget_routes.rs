@@ -87,6 +87,7 @@ impl BudgetHarness {
             responses,
             sessions,
             agents,
+            colleagues: Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),
@@ -128,6 +129,7 @@ impl BudgetHarness {
             assets: None,
             orgs: Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
             mailer: Arc::new(patom::orgs::LogMailer),
+            entitlements: Arc::new(patom::entitlements::UnlimitedEntitlements),
         };
 
         Self { state, owner }

@@ -181,6 +181,12 @@ const orgState = {
   slug: "acme-robotics",
   default_language: "en" as "en" | "vi",
   created_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(),
+  // `false` simulates a freshly seeded org that still needs the
+  // /onboarding wizard; the FE gate routes there. The `?fresh=1` URL
+  // flag (or localStorage.mock_fresh="1") flips this for previewing
+  // without a process restart. Real BE backfills existing rows so
+  // pre-existing users skip the wizard — we mirror that default here.
+  onboarded: true,
 };
 
 // Mutable spend-budget state so GET/PUT /me/org/budget round-trips. Seeded
@@ -232,6 +238,10 @@ const me = {
       role: "owner" as const,
       get default_language() {
         return orgState.default_language;
+      },
+      avatar_url: null as string | null,
+      get onboarded() {
+        return orgState.onboarded;
       },
     },
   ],
@@ -393,6 +403,28 @@ const MODEL_CATALOG: { id: string; provider: string }[] = [
   { id: "deepseek-chat", provider: "deepseek" },
   { id: "deepseek-reasoner", provider: "deepseek" },
 ];
+
+/** The always-on default agent the real backend seeds on first sign-in.
+ *  In this mock only used by the `?fresh=1` path on `/me`, which clears
+ *  `agentsById` and re-inserts just this single row so the wizard's
+ *  hire-team step starts from a clean canvas. The normal `AGENTS` seed
+ *  below intentionally simulates an already-onboarded workspace
+ *  (Atlas + Beacon) and does NOT include this Recruiter. Keep
+ *  `is_default: true` so the FE's default-agent lookups still work. */
+const RECRUITER_SEED: AgentRow = {
+  id: "aaaaaaaa-0000-0000-0000-00000000000a",
+  name: "Recruiter",
+  description: "Hires & configures agents",
+  system_prompt:
+    "You are the Recruiter — the default agent. You hire and configure " +
+    "other agents for the workspace.",
+  is_default: true,
+  allowed_mcp_tools: {},
+  model: null,
+  avatar_url: null,
+  created_at: NOW,
+  updated_at: NOW,
+};
 
 const AGENTS: AgentRow[] = [
   {
@@ -717,6 +749,133 @@ function pushEvent(agentId: string, evt: MemEvt) {
   MEMORY_EVENTS.set(agentId, [evt, ...memoryEventsFor(agentId)]);
 }
 
+// ─── Scheduled tasks fixtures ───────────────────────────────────────────
+type SchedTask = {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  name: string;
+  status: "active" | "completed" | "cancelled";
+  kind: "recurring" | "one_time";
+  schedule_label: string;
+  schedule_full: string;
+  next_run_label: string | null;
+  last_run_label: string | null;
+};
+
+const SCHEDULED: Map<string, SchedTask[]> = new Map();
+
+// The first five mirror the design.pen "Scheduled Tasks - List" page-1
+// rows verbatim; the rest pad the list out to 18 so the footer reads
+// "Showing 1–5 of 18 tasks" and pagination shows pages 1–4.
+function scheduledFor(agentId: string, agentName: string): SchedTask[] {
+  const existing = SCHEDULED.get(agentId);
+  if (existing) return existing;
+  const mk = (
+    n: number,
+    name: string,
+    status: SchedTask["status"],
+    kind: SchedTask["kind"],
+    schedule_label: string,
+    schedule_full: string,
+    next_run_label: string | null,
+    last_run_label: string | null,
+  ): SchedTask => ({
+    id: `sched-${agentId}-${n}`,
+    agent_id: agentId,
+    agent_name: agentName,
+    name,
+    status,
+    kind,
+    schedule_label,
+    schedule_full,
+    next_run_label,
+    last_run_label,
+  });
+  const page1: SchedTask[] = [
+    mk(
+      1,
+      "Weekly metrics digest",
+      "active",
+      "recurring",
+      "Every Mon, 09:00 UTC",
+      "Every Monday at 09:00 UTC",
+      "Mon Jun 09, 09:00",
+      "Mon Jun 02, 09:00",
+    ),
+    mk(
+      2,
+      "Daily ticket triage",
+      "active",
+      "recurring",
+      "Every day, 08:00 (America/NY)",
+      "Every day at 08:00 (America/New_York)",
+      "Sun Jun 08, 08:00",
+      "Sat Jun 07, 08:00",
+    ),
+    mk(
+      3,
+      "Quarterly compliance scan",
+      "active",
+      "recurring",
+      "Every 3 months, 1st (Europe/London)",
+      "Every 3 months on the 1st (Europe/London)",
+      "Jul 01, 00:00",
+      "Tue Apr 01, 00:00",
+    ),
+    mk(
+      4,
+      "PR review reminder",
+      "cancelled",
+      "recurring",
+      "Every weekday, 14:00 UTC",
+      "Every weekday at 14:00 UTC",
+      null,
+      "Wed May 28, 14:00",
+    ),
+    mk(
+      5,
+      "One-time data migration check",
+      "active",
+      "one_time",
+      "Once: Jun 10, 06:00 UTC",
+      "Once at Jun 10, 06:00 UTC",
+      "Tue Jun 10, 06:00",
+      null,
+    ),
+  ];
+  const fillerNames = [
+    "Nightly backup verification",
+    "Stale branch sweep",
+    "Cost anomaly check",
+    "Weekly changelog draft",
+    "Monthly access review",
+    "Dependency audit",
+    "Inbox zero summary",
+    "On-call handoff note",
+    "Cache warmup",
+    "Latency report",
+    "Doc freshness scan",
+    "Release notes draft",
+    "Quota usage rollup",
+  ];
+  const rest: SchedTask[] = fillerNames.map((name, i) =>
+    mk(
+      i + 6,
+      name,
+      "completed",
+      i % 3 === 0 ? "one_time" : "recurring",
+      "Every Fri, 17:00 UTC",
+      "Every Friday at 17:00 UTC",
+      i % 3 === 0 ? null : "Fri Jun 13, 17:00",
+      "Fri Jun 06, 17:00",
+    ),
+  );
+  const all = [...page1, ...rest];
+  SCHEDULED.set(agentId, all);
+  return all;
+}
+
 const TOOL_FIXTURES: Record<string, ToolCall[]> = {};
 
 function buildFixture(serverId: string): ToolCall[] {
@@ -994,12 +1153,68 @@ const server = Bun.serve({
       : url.pathname;
     const method = req.method.toUpperCase();
 
-    if (path === "/me" && method === "GET") return json(me);
+    if (path === "/me" && method === "GET") {
+      // Preview hook: `?fresh=1` simulates a brand-new user whose org
+      // still needs onboarding. Flips `orgState.onboarded` to false and
+      // resets the in-memory agent roster to just the Recruiter so the
+      // wizard's hire-team step has a clean canvas. Lets the wizard be
+      // tested end-to-end without restarting the mock. `?fresh=0` (or
+      // omitted) leaves state alone — the default seed simulates an
+      // already-onboarded user.
+      const fresh = url.searchParams.get("fresh");
+      if (fresh === "1") {
+        orgState.onboarded = false;
+        agentsById.clear();
+        agentsById.set(RECRUITER_SEED.id, RECRUITER_SEED);
+      } else if (fresh === "0") {
+        orgState.onboarded = true;
+      }
+      return json(me);
+    }
 
     if (path === "/models" && method === "GET") return json(MODEL_CATALOG);
 
     if (path === "/agents" && method === "GET") {
       return json([...agentsById.values()]);
+    }
+
+    if (path === "/agents" && method === "POST") {
+      // Mirrors `src/http/routes/agents.rs::CreateAgentRequest`. The
+      // onboarding wizard's hire-team loop posts here once per preset
+      // agent; we return a deterministic row so subsequent /agents
+      // reads show the hire took. No entitlements gate here (OSS
+      // default is Unlimited; the mock doesn't simulate paid tiers).
+      const body = (await req.json()) as {
+        name?: string;
+        system_prompt?: string;
+        description?: string;
+        is_default?: boolean;
+        allowed_mcp_tools?: Record<string, string[] | null>;
+        model?: string | null;
+        avatar_url?: string | null;
+      };
+      if (!body.name || !body.system_prompt || !body.description) {
+        return json(
+          { error: "name, system_prompt, description are required" },
+          400,
+        );
+      }
+      const id = `mock-agent-${crypto.randomUUID().slice(0, 8)}`;
+      const now = new Date().toISOString();
+      const row: AgentRow = {
+        id,
+        name: body.name,
+        description: body.description,
+        system_prompt: body.system_prompt,
+        is_default: body.is_default ?? false,
+        allowed_mcp_tools: body.allowed_mcp_tools ?? {},
+        model: body.model ?? null,
+        avatar_url: body.avatar_url ?? null,
+        created_at: now,
+        updated_at: now,
+      };
+      agentsById.set(id, row);
+      return json(row, 201);
     }
 
     // Agent avatar upload (issue #43). The real backend stores the image
@@ -1276,6 +1491,45 @@ const server = Bun.serve({
             : null;
         return json({ items: pageItems, next_cursor });
       }
+
+      // ─── scheduled tasks ────────────────────────────────────────
+      if (sub === "/scheduled-tasks" && method === "GET") {
+        if (!a) return empty(404);
+        const tasks = scheduledFor(id, a.name);
+        const qs = url.searchParams;
+        const perPage = Math.min(
+          Math.max(Number(qs.get("per_page") ?? 5) || 5, 1),
+          50,
+        );
+        const page = Math.max(Number(qs.get("page") ?? 1) || 1, 1);
+        const start = (page - 1) * perPage;
+        const items = tasks.slice(start, start + perPage);
+        // Fixed rollup matching the design's stats strip (3 / 12 / 3).
+        return json({
+          items,
+          total: tasks.length,
+          summary: { active: 3, completed: 12, cancelled: 3 },
+        });
+      }
+      const cancelMatch = sub.match(
+        /^\/scheduled-tasks\/([^/]+)\/cancel$/,
+      );
+      if (cancelMatch && method === "POST") {
+        if (!a) return empty(404);
+        const taskId = cancelMatch[1]!;
+        const tasks = scheduledFor(id, a.name);
+        const idx = tasks.findIndex((t) => t.id === taskId);
+        if (idx === -1) return empty(404);
+        const updated: SchedTask = {
+          ...tasks[idx]!,
+          status: "cancelled",
+          next_run_label: null,
+        };
+        const next = [...tasks];
+        next[idx] = updated;
+        SCHEDULED.set(id, next);
+        return json(updated);
+      }
     }
 
     if (path === "/mcp-catalog" && method === "GET") {
@@ -1411,10 +1665,16 @@ const server = Bun.serve({
         member_count: MEMBERS.length,
         created_at: orgState.created_at,
         role: me.role,
+        avatar_url: null,
+        onboarded: orgState.onboarded,
       });
     }
     if (path === "/me/org" && method === "PATCH") {
-      const body = (await req.json()) as { name?: string; slug?: string };
+      const body = (await req.json()) as {
+        name?: string;
+        slug?: string;
+        onboarded?: boolean;
+      };
       if (typeof body.name === "string") {
         const trimmed = body.name.trim();
         if (!trimmed) return json({ error: "org_name is empty" }, 400);
@@ -1430,6 +1690,11 @@ const server = Bun.serve({
           return json({ error: "org_slug.taken" }, 409);
         orgState.slug = body.slug;
       }
+      // Mirror the BE's idempotent never-un-mark contract: only `true`
+      // flips the flag; `false` is a no-op.
+      if (body.onboarded === true) {
+        orgState.onboarded = true;
+      }
       return json({
         id: orgState.id,
         name: orgState.name,
@@ -1438,6 +1703,8 @@ const server = Bun.serve({
         member_count: MEMBERS.length,
         created_at: orgState.created_at,
         role: me.role,
+        avatar_url: null,
+        onboarded: orgState.onboarded,
       });
     }
     if (path === "/me/org/language" && method === "PATCH") {

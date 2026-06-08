@@ -66,7 +66,7 @@ impl Agent {
         let started_at = self.clock().now_utc();
         let started_mono = Instant::now();
         let response = self
-            .send_one_turn(ctx.session_id, viewer, kind_payload, cancel)
+            .send_one_turn(ctx.session_id, viewer, counterpart, kind_payload, cancel)
             .await?;
         let duration = started_mono.elapsed();
         self.record_turn_metrics(
@@ -96,12 +96,23 @@ impl Agent {
             }
         }
 
+        // Reflection / resolution sessions pair the agent with `System`, which
+        // can never be a message receiver (receivers are NOT NULL). The agent
+        // is the audience of its own audit output, so address it to itself; a
+        // normal session keeps the real counterpart. Self-detection on read
+        // keys off the sender, so an agent→agent row still renders as the
+        // viewer's Assistant turn.
+        let output_receiver = if counterpart.is_system() {
+            viewer
+        } else {
+            counterpart
+        };
         self.sessions()
             .append_for_user(
                 caller.user_id,
                 ctx.session_id,
                 viewer_as_sender,
-                counterpart,
+                output_receiver,
                 ChatMessage::Assistant(response.content.clone()),
                 request_id,
             )
@@ -279,11 +290,12 @@ impl Agent {
         &self,
         session: SessionId,
         viewer: Participant,
+        counterpart: Participant,
         kind_payload: &RequestKindPayload,
         cancel: &CancellationToken,
     ) -> Result<ChatResponse, AgentError> {
         let request = self
-            .build_chat_request(session, viewer, kind_payload)
+            .build_chat_request(session, viewer, counterpart, kind_payload)
             .await?;
         self.call_provider(request, self.provider_timeout(), cancel)
             .await
@@ -330,11 +342,20 @@ impl Agent {
         &self,
         session: SessionId,
         viewer: Participant,
+        counterpart: Participant,
         kind_payload: &RequestKindPayload,
     ) -> Result<ChatRequest, AgentError> {
         let kind = kind_payload.kind();
         let span = tracing::Span::current();
-        let own = self.sessions().snapshot(session, viewer).await?;
+        // §6: worker turns only ever run for an agent viewer (real colleague).
+        // Surface a backend-error rather than panic if a caller breaks the
+        // invariant — the trait signature speaks `ColleagueId` honestly.
+        let viewer_colleague = viewer.colleague_id().ok_or_else(|| {
+            crate::session::SessionError::Backend(
+                "build_chat_request called with System viewer; worker invariant".to_string(),
+            )
+        })?;
+        let own = self.sessions().snapshot(session, viewer_colleague).await?;
         assert!(
             !own.is_empty(),
             "session must contain at least the user prompt"
@@ -349,7 +370,7 @@ impl Agent {
         // `context_summary`, with `get_session` for deeper lookups.
         let parent = self
             .sessions()
-            .parent_history_for_viewer(session, viewer)
+            .parent_history_for_viewer(session, viewer_colleague)
             .await?;
         span.record("patom.parent_session.included", !parent.is_empty());
         span.record("patom.parent_session.history.count", parent.len());
@@ -360,7 +381,7 @@ impl Agent {
 
         let memory_system = self
             .memory()
-            .system_prompt(session, viewer, kind_payload)
+            .system_prompt(session, viewer, counterpart, kind_payload)
             .await?;
         // Fold the session's current todo list into the system prompt
         // tail. Empty / missing-store cases render to the empty string,

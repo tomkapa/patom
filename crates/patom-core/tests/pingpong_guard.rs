@@ -23,7 +23,7 @@ use patom::runtime::{
     FailureReason, IdempotencyKey, MAX_PINGPONG_RETRIES, NewPromptRequest, RequestStatus,
     RequestStatusView,
 };
-use patom::types::{Participant, Prompt};
+use patom::types::Prompt;
 use sqlx::PgPool;
 
 mod common;
@@ -55,7 +55,7 @@ async fn agent_text_without_send_message_parks_as_no_egress(pool: PgPool) {
         .queue
         .enqueue(NewPromptRequest {
             session: None,
-            sender: Participant::Human,
+            sender: h.default_human_participant(),
             receiver_agent_id: h.default_agent_id,
             parent_session: None,
             content: Prompt::try_from("hi").expect("prompt"),

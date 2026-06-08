@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use patom::agents::{AgentNamesCache, AgentPromptCache, SharedAgentStore};
+use patom::agents::{AgentPromptCache, SharedAgentStore};
 use patom::auth::{Language, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use patom::clock::{SharedClock, SystemClock};
 use patom::memory::{
@@ -41,6 +41,7 @@ struct Fixture {
     store: SharedMemoryStore,
     session: patom::session::SessionId,
     agent_id: patom::agents::AgentId,
+    agent_colleague_id: patom::colleagues::ColleagueId,
     user_id: patom::auth::UserId,
     org_id: patom::auth::OrgId,
 }
@@ -51,15 +52,24 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let prompt_cache = AgentPromptCache::new(8, Duration::from_mins(1), clock.clone());
-    let names_cache = AgentNamesCache::new(16, Duration::from_mins(1), clock.clone());
     let store: SharedMemoryStore = Arc::new(PgMemoryStore::new(
         pool.clone(),
         clock.clone(),
         embeddings.clone(),
     ));
     let session_cache = SessionMemoryCache::new(8, Duration::from_mins(1), clock.clone());
-    let loader =
-        MemorySectionLoader::new(store.clone(), sessions.clone(), embeddings, session_cache);
+    let colleagues: patom::colleagues::SharedColleagueStore =
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
+    let roster_cache =
+        patom::colleagues::ColleagueRosterCache::new(16, Duration::from_mins(1), clock.clone());
+    let loader = MemorySectionLoader::new(
+        store.clone(),
+        sessions.clone(),
+        colleagues.clone(),
+        roster_cache.clone(),
+        embeddings,
+        session_cache,
+    );
     let prompts = Arc::new(Prompts::load());
     let language_resolver: SharedOrgLanguageResolver =
         Arc::new(StaticOrgLanguageResolver::new(Language::En));
@@ -67,21 +77,33 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let _memory = AgentMemory::new(
         agents,
         prompt_cache,
-        names_cache,
+        colleagues,
+        roster_cache,
         loader.clone(),
         prompts,
         language_resolver,
         rule_resolver,
         clock,
     );
-    let session =
-        human_to_agent_session(sessions.as_ref(), seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        pool,
+        sessions.as_ref(),
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
+    let agent_colleague_id =
+        patom::colleagues::resolve_agent_colleague(pool, seed.org_id, seed.agent_id)
+            .await
+            .expect("seed agent colleague");
     Fixture {
         deps: MemoryToolDeps::new(loader.clone()),
         loader,
         store,
         session,
         agent_id: seed.agent_id,
+        agent_colleague_id,
         user_id: seed.user_id,
         org_id: seed.org_id,
     }
@@ -90,7 +112,7 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
 fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
     ToolCallContext {
         session_id: f.session,
-        viewer: Participant::agent(f.agent_id),
+        viewer: Participant::agent(f.agent_colleague_id, f.agent_id),
         root_request_id: request_id,
         request_id,
         kind_payload: patom::runtime::RequestKindPayload::Normal {},
@@ -125,6 +147,88 @@ async fn memory_write_creates_tentative_row(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn memory_write_collaborator_accepts_same_org_subject(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let tool = MemoryWriteTool::new(f.deps.clone());
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+
+    // The human colleague in the agent's own org — a valid subject.
+    let human = patom::colleagues::resolve_user_colleague(&pool, f.org_id, f.user_id)
+        .await
+        .expect("human colleague");
+    let out = tool
+        .execute(
+            json!({"kind": "collaborator", "content": "Prefers to be called Pa.", "subject": human}),
+            &ctx(&f, request),
+        )
+        .await
+        .expect("write with a real same-org subject");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&out).expect("json")["kind"],
+        "collaborator"
+    );
+
+    let listed = f.store.list(f.agent_id).await.expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0].subject,
+        Some(human),
+        "subject keyed to the colleague"
+    );
+}
+
+#[sqlx::test]
+async fn memory_write_collaborator_rejects_unknown_subject(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let tool = MemoryWriteTool::new(f.deps.clone());
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+
+    // A colleague id that was never minted.
+    let ghost = patom::colleagues::ColleagueId::new();
+    let err = tool
+        .execute(
+            json!({"kind": "collaborator", "content": "knows billing", "subject": ghost}),
+            &ctx(&f, request),
+        )
+        .await
+        .expect_err("unknown subject must be rejected");
+    assert!(matches!(err, ToolError::InvalidInput(_)), "got: {err:?}");
+    assert!(
+        f.store.list(f.agent_id).await.expect("list").is_empty(),
+        "no row minted for an unknown subject"
+    );
+}
+
+#[sqlx::test]
+async fn memory_write_collaborator_rejects_foreign_org_subject(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let tool = MemoryWriteTool::new(f.deps.clone());
+    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+
+    // A real colleague — but in a different org. The privileged read finds it;
+    // the org check rejects it as unknown (no cross-org existence leak).
+    let other = seed_tenant(&pool).await;
+    let foreign = patom::colleagues::resolve_user_colleague(&pool, other.org_id, other.user_id)
+        .await
+        .expect("foreign colleague");
+    let err = tool
+        .execute(
+            json!({"kind": "collaborator", "content": "at another company", "subject": foreign}),
+            &ctx(&f, request),
+        )
+        .await
+        .expect_err("cross-org subject must be rejected");
+    assert!(matches!(err, ToolError::InvalidInput(_)), "got: {err:?}");
+    assert!(
+        f.store.list(f.agent_id).await.expect("list").is_empty(),
+        "no row minted for a foreign-org subject"
+    );
+}
+
+#[sqlx::test]
 async fn memory_update_resolves_handle_and_resets_state(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
@@ -139,6 +243,7 @@ async fn memory_update_resolves_handle_and_resets_state(pool: PgPool) {
             content: MemoryContent::try_from("original").expect("c"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -183,6 +288,7 @@ async fn memory_update_pinned_row_rejects_agent_call(pool: PgPool) {
             content: MemoryContent::try_from("pinned").expect("c"),
             state: MemoryState::Core,
             pinned: true,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -212,6 +318,7 @@ async fn memory_validate_promotes_state_without_content_change(pool: PgPool) {
             content: MemoryContent::try_from("deploy mondays").expect("c"),
             state: MemoryState::Tentative,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -255,6 +362,7 @@ async fn memory_validate_rejects_pinned_row(pool: PgPool) {
             content: MemoryContent::try_from("pinned belief").expect("c"),
             state: MemoryState::Core,
             pinned: true,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -284,6 +392,7 @@ async fn memory_forget_removes_row(pool: PgPool) {
             content: MemoryContent::try_from("disposable").expect("c"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -372,6 +481,7 @@ async fn handle_round_trips_through_session_cache(pool: PgPool) {
             content: MemoryContent::try_from("first").expect("c"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -384,7 +494,12 @@ async fn handle_round_trips_through_session_cache(pool: PgPool) {
     let memory = AgentMemory::new(
         agents,
         AgentPromptCache::new(2, Duration::from_mins(1), SystemClock::shared()),
-        AgentNamesCache::new(16, Duration::from_mins(1), SystemClock::shared()),
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
+        patom::colleagues::ColleagueRosterCache::new(
+            16,
+            Duration::from_mins(1),
+            SystemClock::shared(),
+        ),
         f.loader.clone(),
         Arc::new(Prompts::load()),
         Arc::new(StaticOrgLanguageResolver::new(Language::En)),
@@ -412,7 +527,7 @@ fn ctx_with_target(
 ) -> ToolCallContext {
     ToolCallContext {
         session_id: f.session,
-        viewer: Participant::agent(f.agent_id),
+        viewer: Participant::agent(f.agent_colleague_id, f.agent_id),
         root_request_id: request_id,
         request_id,
         kind_payload: patom::runtime::RequestKindPayload::Resolution {
@@ -438,6 +553,7 @@ async fn seed_pair_and_contradiction(
             content: MemoryContent::try_from("ship on Friday").expect("c"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await
@@ -450,6 +566,7 @@ async fn seed_pair_and_contradiction(
             content: MemoryContent::try_from("don't ship on Friday").expect("c"),
             state: MemoryState::Held,
             pinned: false,
+            subject: None,
             source: MutationSource::Operator,
         })
         .await

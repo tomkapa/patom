@@ -4,7 +4,7 @@
 //! Each call resolves the viewer's role prompt (cached, TTL-bounded by
 //! [`crate::agents::AGENT_PROMPT_CACHE_TTL`]) and composes the final
 //! `system` field as
-//! `<core>...</core>\n[<organization-rule>...</organization-rule>\n][<agents>...</agents>\n]<role>{prompt}</role>`
+//! `<core>...</core>\n[<organization-rule>...</organization-rule>\n][<colleagues>...</colleagues>\n]<role>{prompt}</role>`
 //! followed by `<date>`, the per-org `<language>` directive, and the
 //! rendered `<memory>...</memory>` section. The role prompt and memory
 //! section are cached per session; the language and the per-org rule
@@ -25,11 +25,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::agents::{
-    AgentId, AgentNamesCache, AgentPromptCache, SharedAgentStore, render_agents_block,
-};
+use crate::agents::{AgentId, AgentPromptCache, SharedAgentStore};
 use crate::auth::{SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use crate::clock::SharedClock;
+use crate::colleagues::{
+    ColleagueError, ColleagueId, ColleagueRosterCache, SharedColleagueStore, render_roster_block,
+    render_speaking_with,
+};
 use crate::prompts::Prompts;
 use crate::runtime::RequestKindPayload;
 use crate::session::SessionId;
@@ -87,7 +89,8 @@ pub const DATE_FORMAT: &str = "%Y-%m-%d (%A, UTC)";
 pub struct AgentMemory {
     agents: SharedAgentStore,
     prompt_cache: AgentPromptCache,
-    names_cache: AgentNamesCache,
+    colleagues: SharedColleagueStore,
+    roster_cache: ColleagueRosterCache,
     loader: MemorySectionLoader,
     prompts: Arc<Prompts>,
     language_resolver: SharedOrgLanguageResolver,
@@ -105,7 +108,8 @@ impl AgentMemory {
     pub fn new(
         agents: SharedAgentStore,
         prompt_cache: AgentPromptCache,
-        names_cache: AgentNamesCache,
+        colleagues: SharedColleagueStore,
+        roster_cache: ColleagueRosterCache,
         loader: MemorySectionLoader,
         prompts: Arc<Prompts>,
         language_resolver: SharedOrgLanguageResolver,
@@ -115,7 +119,8 @@ impl AgentMemory {
         Self {
             agents,
             prompt_cache,
-            names_cache,
+            colleagues,
+            roster_cache,
             loader,
             prompts,
             language_resolver,
@@ -154,6 +159,43 @@ impl AgentMemory {
     ) -> Result<Arc<MemorySection>, MemoryError> {
         self.loader.load(session, agent, kind_payload).await
     }
+
+    /// Render the `<colleagues>` colleague-roster block for the viewer.
+    ///
+    /// Resolves the viewer's org from its colleague row, then renders the
+    /// org-wide roster (humans + agents) from the bounded TTL cache, excluding
+    /// the viewer itself. Returns a fallible result so the caller can degrade
+    /// to an empty block on a directory outage — the roster is an enrichment,
+    /// not load-bearing for the turn.
+    async fn roster_block(&self, viewer: ColleagueId) -> Result<String, ColleagueError> {
+        let org = self.colleagues.read(viewer).await?.org_id();
+        let roster = self.roster_cache.get_or_load(org, &self.colleagues).await?;
+        // §5 saturation signal — no OTel Meter infra yet, so the bound is
+        // watched via a structured event the OTel bridge exports.
+        tracing::debug!(
+            patom.colleagues.roster.size = roster.len(),
+            patom.org.id = %org,
+            "colleagues.roster.size"
+        );
+        Ok(render_roster_block(&roster, viewer))
+    }
+
+    /// Render the `<speaking-with>` block naming this session's counterpart.
+    ///
+    /// Reads the counterpart authoritatively by id (not via the roster cache)
+    /// so a colleague who joined this turn — not yet in the cached roster —
+    /// still resolves. A `System` counterpart (reflection/resolution) has no
+    /// colleague row, so the block is empty.
+    async fn speaking_with_block(
+        &self,
+        counterpart: Participant,
+    ) -> Result<String, ColleagueError> {
+        let Some(cid) = counterpart.colleague_id() else {
+            return Ok(String::new());
+        };
+        let colleague = self.colleagues.read(cid).await?;
+        Ok(render_speaking_with(&colleague.to_ref()))
+    }
 }
 
 impl std::fmt::Debug for AgentMemory {
@@ -168,6 +210,7 @@ impl Memory for AgentMemory {
         &self,
         session: SessionId,
         viewer: Participant,
+        counterpart: Participant,
         kind_payload: &RequestKindPayload,
     ) -> Result<Arc<str>, MemoryError> {
         // Workers only run for agent receivers; a Human viewer is a wiring bug.
@@ -182,16 +225,35 @@ impl Memory for AgentMemory {
             .composed_section(session, agent_id, kind_payload)
             .await?;
 
-        // `<agents>` name index (doc/agent_discovery_plan.md §8). Cached
-        // globally with the same TTL as `AgentPromptCache` so admin
-        // edits propagate within one liveness window; on cache miss
-        // we hit `AgentStore::list_names`. Empty deployments and
-        // self-only deployments yield an empty string; the renderer
-        // omits the envelope entirely (§8).
-        let agents_block = match self.names_cache.get_or_load(agent_id, &self.agents).await {
-            Ok(names) => render_agents_block(names.as_ref(), agent_id),
+        // `<colleagues>` colleague roster (Colleagues plan, Stage 6). Lists every
+        // colleague in the viewer's org — humans and agents alike — so the
+        // agent perceives human coworkers as addressable peers. Cached per org
+        // with the same TTL as `AgentPromptCache` so a membership change or
+        // rename propagates within one liveness window. Self-only and empty
+        // orgs yield an empty string; the renderer omits the envelope. A
+        // directory outage degrades to an empty block — the roster enriches the
+        // turn but is not load-bearing.
+        let viewer_colleague = viewer.colleague_id().ok_or_else(|| {
+            MemoryError::Backend(
+                "system_prompt viewer has no colleague_id; agent worker only".into(),
+            )
+        })?;
+        let roster = match self.roster_block(viewer_colleague).await {
+            Ok(block) => block,
             Err(e) => {
-                tracing::warn!(error = %e, "agents.list_names.error");
+                tracing::warn!(error = %e, "colleagues.roster.error");
+                String::new()
+            }
+        };
+
+        // `<speaking-with>` names this session's counterpart so the model knows
+        // exactly who it's addressing (and their colleague id) rather than
+        // guessing from the roster — ambiguous once the org has >1 human. A
+        // directory outage degrades to an empty block, like the roster.
+        let speaking_with = match self.speaking_with_block(counterpart).await {
+            Ok(block) => block,
+            Err(e) => {
+                tracing::warn!(error = %e, "colleagues.speaking_with.error");
                 String::new()
             }
         };
@@ -221,7 +283,11 @@ impl Memory for AgentMemory {
         let role_str = role.as_str();
         let memory_str = memory_section.text();
         let memory_sep = if memory_str.is_empty() { "" } else { "\n" };
-        let agents_sep = if agents_block.is_empty() { "" } else { "\n" };
+        let roster_sep = if roster.is_empty() { "" } else { "\n" };
+        // Per-session, so it sits in the tail (after `<language>`) — keeping it
+        // out of the org-stable prefix preserves prompt-cache hits across the
+        // agent's other sessions.
+        let speaking_with_sep = if speaking_with.is_empty() { "" } else { "\n" };
 
         // `<date>` sits between `<role>` and `<memory>` so the daily-churn seam
         // lies between the per-agent stable prefix and the per-turn memory tail.
@@ -241,8 +307,8 @@ impl Memory for AgentMemory {
                 + rule_body.len()
                 + rule_close.len()
                 + rule_sep.len()
-                + agents_block.len()
-                + agents_sep.len()
+                + roster.len()
+                + roster_sep.len()
                 + ROLE_TAG_OPEN.len()
                 + role_str.len()
                 + ROLE_TAG_CLOSE.len()
@@ -254,21 +320,23 @@ impl Memory for AgentMemory {
                 + LANGUAGE_TAG_OPEN.len()
                 + directive_str.len()
                 + LANGUAGE_TAG_CLOSE.len()
+                + speaking_with_sep.len()
+                + speaking_with.len()
                 + memory_sep.len()
                 + memory_str.len(),
         );
         out.push_str(CORE_TAG_OPEN);
         out.push_str(core);
         out.push_str(CORE_TAG_CLOSE);
-        // `<organization-rule>` between `</core>` and `<agents>` — see
+        // `<organization-rule>` between `</core>` and `<colleagues>` — see
         // module doc for the cache-prefix rationale. Empty strings when
         // the org has no rule, so no separator slips through.
         out.push_str(rule_open);
         out.push_str(rule_body);
         out.push_str(rule_close);
         out.push_str(rule_sep);
-        out.push_str(&agents_block);
-        out.push_str(agents_sep);
+        out.push_str(&roster);
+        out.push_str(roster_sep);
         out.push_str(ROLE_TAG_OPEN);
         out.push_str(role_str);
         out.push_str(ROLE_TAG_CLOSE);
@@ -280,6 +348,8 @@ impl Memory for AgentMemory {
         out.push_str(LANGUAGE_TAG_OPEN);
         out.push_str(directive_str);
         out.push_str(LANGUAGE_TAG_CLOSE);
+        out.push_str(speaking_with_sep);
+        out.push_str(&speaking_with);
         out.push_str(memory_sep);
         out.push_str(memory_str);
 

@@ -332,7 +332,7 @@ impl Worker {
         cancel: CancellationToken,
         receipt: &Arc<ClaimReceipt>,
     ) {
-        let viewer = Participant::agent(claim.receiver_agent_id);
+        let viewer = Participant::agent(claim.receiver_colleague_id, claim.receiver_agent_id);
         let request_id = claim
             .prompts
             .first()
@@ -531,7 +531,7 @@ impl Worker {
     ) {
         // The session row alone can't disambiguate which side runs in an
         // agent↔agent session — `receiver_agent_id` is the queue's answer.
-        let viewer = Participant::agent(claim.receiver_agent_id);
+        let viewer = Participant::agent(claim.receiver_colleague_id, claim.receiver_agent_id);
         // The drained batch's first request is the SSE sink mid-turn writes
         // (e.g. `send_message` AgentMessage chunks) target — its slot is open
         // for the duration of this claim, unlike the session's stored
@@ -666,7 +666,7 @@ impl Worker {
             .append_system_nudge_for_user(
                 acting_user_id,
                 claim.session,
-                Participant::agent(claim.receiver_agent_id),
+                Participant::agent(claim.receiver_colleague_id, claim.receiver_agent_id),
                 PINGPONG_NUDGE.to_string(),
                 request_id,
             )

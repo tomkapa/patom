@@ -159,23 +159,97 @@ pub fn shared_agent_store(pool: PgPool, clock: SharedClock) -> SharedAgentStore 
 /// integration tests that also exercise `prompt_requests` should mint a real
 /// request id and pass it in instead.
 pub async fn human_to_agent_session(
+    pool: &PgPool,
     sessions: &dyn SessionStore,
     agent_id: AgentId,
     org_id: OrgId,
     user_id: UserId,
 ) -> SessionId {
     let root = PromptRequestId::new();
+    let (human, agent) = human_to_agent_pair(pool, org_id, user_id, agent_id).await;
+    sessions
+        .resolve_or_create_for_pair(root, human, agent, None, org_id, user_id)
+        .await
+        .expect("create human-to-agent session")
+}
+
+/// Mint an off-DAG `(agent, System)` session — the shape the reflection /
+/// resolution schedulers create. The counterpart is `System`, so driving a
+/// turn here exercises the self-audit append path.
+pub async fn agent_to_system_session(
+    pool: &PgPool,
+    sessions: &dyn SessionStore,
+    agent_id: AgentId,
+    org_id: OrgId,
+    user_id: UserId,
+) -> SessionId {
+    let root = PromptRequestId::new();
+    let agent_colleague = patom::colleagues::resolve_agent_colleague(pool, org_id, agent_id)
+        .await
+        .expect("seed mints agent colleague");
     sessions
         .resolve_or_create_for_pair(
             root,
-            Participant::Human,
-            Participant::agent(agent_id),
+            Participant::agent(agent_colleague, agent_id),
+            Participant::system(),
             None,
             org_id,
             user_id,
         )
         .await
-        .expect("create human-to-agent session")
+        .expect("create agent-to-system session")
+}
+
+/// Resolve a colleague-backed `(Human, Agent)` participant pair from a seeded
+/// tenant. Mirrors the boundary callers (HTTP / Slack / scheduler) — every
+/// participant a session stores must reference a colleague row.
+pub async fn human_to_agent_pair(
+    pool: &PgPool,
+    org_id: OrgId,
+    user_id: UserId,
+    agent_id: AgentId,
+) -> (Participant, Participant) {
+    let human_colleague = patom::colleagues::resolve_user_colleague(pool, org_id, user_id)
+        .await
+        .expect("seed mints human colleague");
+    let agent_colleague = patom::colleagues::resolve_agent_colleague(pool, org_id, agent_id)
+        .await
+        .expect("seed mints agent colleague");
+    (
+        Participant::human(human_colleague, user_id),
+        Participant::agent(agent_colleague, agent_id),
+    )
+}
+
+/// Convenience: build just the human-side colleague-backed `Participant`.
+pub async fn human_participant(pool: &PgPool, org_id: OrgId, user_id: UserId) -> Participant {
+    let cid = patom::colleagues::resolve_user_colleague(pool, org_id, user_id)
+        .await
+        .expect("seed mints human colleague");
+    Participant::human(cid, user_id)
+}
+
+/// Convenience: build just the agent-side colleague-backed `Participant`.
+pub async fn agent_participant(pool: &PgPool, org_id: OrgId, agent_id: AgentId) -> Participant {
+    let cid = patom::colleagues::resolve_agent_colleague(pool, org_id, agent_id)
+        .await
+        .expect("seed mints agent colleague");
+    Participant::agent(cid, agent_id)
+}
+
+/// Convenience: build the human-side colleague-backed `MessageSender`.
+pub async fn human_sender(
+    pool: &PgPool,
+    org_id: OrgId,
+    user_id: UserId,
+) -> patom::types::MessageSender {
+    let cid = patom::colleagues::resolve_user_colleague(pool, org_id, user_id)
+        .await
+        .expect("seed mints human colleague");
+    patom::types::MessageSender::Human {
+        colleague_id: cid,
+        user_id,
+    }
 }
 
 /// Configure (or update) an org's spend budget. `cap` of `None` is the
@@ -227,14 +301,22 @@ pub async fn seed_prompt_request(
 ) -> PromptRequestId {
     let id = PromptRequestId::new();
     let now = chrono::Utc::now();
-    sqlx::query(
+    // After migration 60 the participant columns are colleague-backed. The
+    // shared seed uses the freshly-seeded human's colleague as sender and
+    // the agent's colleague as receiver (both resolved by mint trigger from
+    // migration 58).
+    let result = sqlx::query(
         "INSERT INTO prompt_requests
              (id, session_id, org_id, content, idempotency_key, status,
-              sender_kind, receiver_kind, receiver_agent_id, root_request_id,
+              sender_colleague_id, receiver_colleague_id, root_request_id,
               created_at, updated_at)
-         VALUES ($1, $2, $3, 'test', $4, 'pending',
-                 'human', 'agent', $5, $1,
-                 $6, $6)",
+         SELECT $1, $2, $3, 'test', $4, 'pending',
+                hc.id, ac.id, $1,
+                $6, $6
+           FROM colleagues hc, colleagues ac
+          WHERE hc.org_id = $3 AND hc.user_id IS NOT NULL
+            AND ac.org_id = $3 AND ac.agent_id = $5
+          LIMIT 1",
     )
     .bind(id)
     .bind(session)
@@ -245,5 +327,13 @@ pub async fn seed_prompt_request(
     .execute(pool)
     .await
     .expect("seed prompt_request");
+    // The `INSERT ... SELECT ... LIMIT 1` inserts zero rows if the seed
+    // colleagues are missing, yet would still return `id` — a silent
+    // dangling reference. Assert the row actually landed.
+    assert_eq!(
+        result.rows_affected(),
+        1,
+        "seed_prompt_request inserted no row — seed colleagues (human + agent) must exist for org"
+    );
     id
 }

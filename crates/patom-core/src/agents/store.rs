@@ -166,21 +166,13 @@ pub trait AgentStore: fmt::Debug + Send + Sync {
         name: &AgentName,
     ) -> Result<AgentRecord, AgentStoreError>;
 
-    /// Snapshot of every `(id, name)` pair in `viewer`'s org, ordered
-    /// alphabetically by `lower(name)`. Used to render the `<agents>`
-    /// block; the renderer excludes the caller before formatting.
-    /// Distinct from [`Self::list`] so the caller can skip hydrating
-    /// columns it does not need.
-    async fn list_names_for_viewer(
-        &self,
-        viewer: AgentId,
-    ) -> Result<Vec<(AgentId, AgentName)>, AgentStoreError>;
-
-    /// Same shape as [`Self::list_names_for_viewer`] but scoped directly
-    /// to `org_id`. Used by callers that have an [`OrgId`] in hand
-    /// without an in-DAG viewer — notably the Slack bridge's `/patom`
-    /// slash command, which needs the tenant's agent roster to populate
-    /// a Block Kit select menu before any session exists.
+    /// Snapshot of every `(id, name)` pair in `org_id`, ordered
+    /// alphabetically by `lower(name)`. Used by callers that have an
+    /// [`OrgId`] in hand without an in-DAG viewer — notably the Slack
+    /// bridge's `/patom` slash command, which needs the tenant's agent
+    /// roster to populate a Block Kit select menu before any session
+    /// exists. Distinct from [`Self::list`] so the caller can skip
+    /// hydrating columns it does not need.
     async fn list_for_org(
         &self,
         org_id: OrgId,

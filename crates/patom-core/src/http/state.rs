@@ -11,6 +11,7 @@ use crate::auth::{
 };
 use crate::budget::SharedBudgetService;
 use crate::clock::SharedClock;
+use crate::entitlements::SharedEntitlements;
 use crate::http::MembershipCache;
 use crate::mcp::oauth::SharedMcpOAuthPendingStore;
 use crate::mcp::{
@@ -37,6 +38,10 @@ pub struct AppState {
     pub responses: SharedResponseSource,
     pub sessions: SharedSessionStore,
     pub agents: SharedAgentStore,
+    /// Per-org colleague directory — humans + agents as one addressable
+    /// roster. HTTP handlers resolve `(org_id, user_id)` → colleague to
+    /// construct colleague-backed `Participant::Human` for prompt enqueues.
+    pub colleagues: crate::colleagues::SharedColleagueStore,
     /// DAG turn-budget handle. Threaded through state so `send_message`
     /// can `bump_or_fail` and the worker's quiescence trigger can query
     /// liveness without re-constructing the impl.
@@ -160,6 +165,13 @@ pub struct AppState {
     /// to logs (see [`crate::orgs::LogMailer`]); production builds
     /// swap in an SMTP / SES implementation at app construction.
     pub mailer: SharedMailer,
+    /// Entitlement policy seam (issue #134). The OSS / self-host build
+    /// runs [`crate::entitlements::UnlimitedEntitlements`] (unlimited
+    /// agents, every feature on); `patom-cloud` overrides this under
+    /// `--features cloud` with a billing-backed impl that resolves an
+    /// org's paid tier and agent cap. The `POST /agents` handler gates
+    /// creation through it.
+    pub entitlements: SharedEntitlements,
 }
 
 impl AppState {

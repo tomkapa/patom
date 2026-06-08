@@ -19,17 +19,16 @@ mod model_resolver;
 mod pg_store;
 pub mod prompt_versions;
 mod registry;
-mod render;
 mod store;
 mod types;
 
-pub use cache::{AgentNamesCache, AgentPromptCache};
+pub use cache::AgentPromptCache;
 pub use error::AgentStoreError;
 pub use limits::{
     AGENT_DESCRIPTION_MAX_LEN, AGENT_NAME_MAX_LEN, AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL,
-    AGENT_SYSTEM_PROMPT_MAX_LEN, DEFAULT_SEARCH_AGENT_RESULTS, MAX_AGENT_NAMES_INLINE,
-    MAX_AGENTS_PER_ORG, MAX_ALLOWED_MCP_CATALOGS_PER_AGENT,
-    MAX_ALLOWED_MCP_TOOLS_PER_CATALOG_PER_AGENT, MAX_SEARCH_AGENT_RESULTS,
+    AGENT_SYSTEM_PROMPT_MAX_LEN, DEFAULT_SEARCH_AGENT_RESULTS, MAX_AGENTS_PER_ORG,
+    MAX_ALLOWED_MCP_CATALOGS_PER_AGENT, MAX_ALLOWED_MCP_TOOLS_PER_CATALOG_PER_AGENT,
+    MAX_SEARCH_AGENT_RESULTS,
 };
 pub use model_resolver::{ModelResolver, SharedModelResolver, StaticAgentModelResolver};
 pub use pg_store::PgAgentStore;
@@ -37,7 +36,6 @@ pub use prompt_versions::{
     PromptVersionError, PromptVersionId, PromptVersionNumber, PromptVersionRow,
 };
 pub use registry::{AgentFactory, Agents, AgentsError, CachedAgents, SharedAgents};
-pub use render::{AGENTS_TAG_CLOSE, AGENTS_TAG_OPEN, render_agents_block};
 pub use store::{AgentStore, AgentUpdate, NewAgent, SharedAgentStore};
 pub use types::{
     AgentCard, AgentDescription, AgentId, AgentName, AgentRecord, AgentSystemPrompt,

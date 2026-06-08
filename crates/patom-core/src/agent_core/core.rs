@@ -246,7 +246,7 @@ impl Agent {
             .append_for_user(
                 caller.user_id,
                 session,
-                MessageSender::from_participant(counterpart),
+                MessageSender::from(counterpart),
                 viewer,
                 ChatMessage::User(user_blocks),
                 request_id,
@@ -323,7 +323,7 @@ impl Agent {
         cancel: CancellationToken,
         observer: Option<SharedTurnObserver>,
     ) -> Result<AgentReply, AgentError> {
-        let viewer_as_sender = MessageSender::from_participant(viewer);
+        let viewer_as_sender = MessageSender::from(viewer);
         // Resolved once per loop — constant across turns, threaded into every
         // tool call so `send_message` can bump the per-DAG budget without
         // redundant lookups.

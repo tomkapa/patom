@@ -134,9 +134,13 @@ impl GetSessionTool {
         let limit = clamp_limit(input.limit.unwrap_or(DEFAULT_LIMIT))?;
         self.authorize(input.session_id, ctx).await?;
 
+        let viewer_colleague = ctx
+            .viewer
+            .colleague_id()
+            .ok_or_else(|| ToolError::Backend("get_session: System viewer".to_string()))?;
         let rows = self
             .sessions
-            .snapshot_window(input.session_id, ctx.viewer, limit, input.before_seq)
+            .snapshot_window(input.session_id, viewer_colleague, limit, input.before_seq)
             .await
             .map_err(|e| ToolError::Backend(format!("get_session: snapshot failed: {e}")))?;
 

@@ -100,6 +100,7 @@ impl AuthMemoryHarness {
             responses,
             sessions,
             agents: agents.clone(),
+            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),
@@ -141,6 +142,7 @@ impl AuthMemoryHarness {
             assets: None,
             orgs: std::sync::Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
             mailer: std::sync::Arc::new(patom::orgs::LogMailer),
+            entitlements: std::sync::Arc::new(patom::entitlements::UnlimitedEntitlements),
         };
 
         Self {
@@ -186,6 +188,7 @@ impl AuthMemoryHarness {
                 content: MemoryContent::try_from(body).expect("content"),
                 state: MemoryState::Held,
                 pinned: false,
+                subject: None,
                 source: MutationSource::Operator,
             })
             .await

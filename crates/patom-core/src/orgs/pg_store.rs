@@ -64,7 +64,7 @@ async fn fetch_org_details_priv(
 ) -> Result<OrgDetails, OrgError> {
     let row = sqlx::query(
         "SELECT o.id, o.name, o.slug::text AS slug, o.default_language, o.created_at,
-                o.avatar_url,
+                o.avatar_url, o.onboarded_at,
                 (SELECT COUNT(*)::bigint FROM org_members m WHERE m.org_id = o.id) AS member_count
          FROM organizations o
          WHERE o.id = $1",
@@ -85,6 +85,9 @@ async fn fetch_org_details_priv(
             .get::<Option<String>, _>("avatar_url")
             .map(AvatarUrl::try_from)
             .transpose()?,
+        onboarded: row
+            .get::<Option<DateTime<Utc>>, _>("onboarded_at")
+            .is_some(),
     })
 }
 
@@ -106,24 +109,34 @@ impl OrgStore for PgOrgStore {
         now: DateTime<Utc>,
     ) -> Result<OrgDetails, OrgError> {
         // Nothing to do — keep the round trip cheap.
-        if patch.name.is_none() && patch.slug.is_none() {
+        if patch.name.is_none() && patch.slug.is_none() && !patch.mark_onboarded {
             return self.read_org(org_id).await;
         }
         let mut tx = auth::begin_privileged(&self.pool).await?;
         // COALESCE-style update so unset patches don't clobber the
         // existing value. Bind the typed newtype string (already
         // boundary-validated) — never interpolate.
+        //
+        // `onboarded_at` is stamped iff `mark_onboarded=true` AND the
+        // column is currently NULL — COALESCE(onboarded_at, NOW())
+        // preserves the original timestamp on a second mark. Never
+        // un-marked through this seam (clearing the flag would have to
+        // be a separate, deliberate operation).
         let result = sqlx::query(
             "UPDATE organizations
-             SET name       = COALESCE($2, name),
-                 slug       = COALESCE($3, slug)::citext,
-                 updated_at = $4
+             SET name         = COALESCE($2, name),
+                 slug         = COALESCE($3, slug)::citext,
+                 onboarded_at = CASE WHEN $5::bool
+                                     THEN COALESCE(onboarded_at, $4)
+                                     ELSE onboarded_at END,
+                 updated_at   = $4
              WHERE id = $1",
         )
         .bind(org_id)
         .bind(patch.name.as_ref().map(OrgName::as_str))
         .bind(patch.slug.as_ref().map(OrgSlug::as_str))
         .bind(now)
+        .bind(patch.mark_onboarded)
         .execute(&mut *tx)
         .await;
         match result {

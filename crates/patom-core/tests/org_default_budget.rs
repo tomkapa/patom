@@ -44,12 +44,12 @@ async fn seed_user(pool: &PgPool) -> UserId {
     id
 }
 
-/// The exact migration-57 backfill statements, so the test exercises the SQL
+/// The exact migration-62 backfill statements, so the test exercises the SQL
 /// that actually ships rather than a paraphrase.
 const BACKFILL_UP: &str =
-    include_str!("../migrations/00000000000057_org_default_budget_backfill.up.sql");
+    include_str!("../migrations/00000000000062_org_default_budget_backfill.up.sql");
 const BACKFILL_DOWN: &str =
-    include_str!("../migrations/00000000000057_org_default_budget_backfill.down.sql");
+    include_str!("../migrations/00000000000062_org_default_budget_backfill.down.sql");
 
 /// Insert a bare org (no owner) and return its id. `budget` of `Some((cap, bps))`
 /// also seeds an `org_budgets` row — `cap = None` is the admin-chosen-unlimited

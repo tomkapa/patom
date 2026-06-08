@@ -11,6 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::auth::{Caller, OrgId, UserId};
+use crate::colleagues::ColleagueId;
 use crate::provider::ChatMessage;
 use crate::runtime::PromptRequestId;
 use crate::types::{MessageSender, Participant};
@@ -146,14 +147,18 @@ pub trait SessionStore: fmt::Debug + Send + Sync {
         request_id: PromptRequestId,
     ) -> Result<(), SessionError>;
 
-    /// Render every message in `id` from `viewer`'s perspective:
-    /// `sender == viewer` becomes `ChatMessage::Assistant`; everything else
-    /// (including `system` rows) becomes `ChatMessage::User`. Used by
-    /// `Agent::send_one_turn` to build the prompt without rebuilding history.
+    /// Render every message in `id` from `viewer`'s perspective.
+    ///
+    /// `viewer` is a colleague — pass the agent's (or human's)
+    /// `colleague_id`. `sender == viewer` becomes `ChatMessage::Assistant`;
+    /// everything else (including `system` rows) becomes `ChatMessage::User`.
+    /// The viewer is always a real colleague (System sessions are never
+    /// snapshotted as viewer), so `ColleagueId` rather than `Participant`
+    /// honestly expresses what the operation needs.
     async fn snapshot(
         &self,
         id: SessionId,
-        viewer: Participant,
+        viewer: ColleagueId,
     ) -> Result<Vec<ChatMessage>, SessionError>;
 
     /// Paginated viewer-mapped snapshot. Returns up to `limit` messages
@@ -168,7 +173,7 @@ pub trait SessionStore: fmt::Debug + Send + Sync {
     async fn snapshot_window(
         &self,
         id: SessionId,
-        viewer: Participant,
+        viewer: ColleagueId,
         limit: u32,
         before_seq: Option<i64>,
     ) -> Result<Vec<(i64, ChatMessage)>, SessionError>;
@@ -193,13 +198,14 @@ pub trait SessionStore: fmt::Debug + Send + Sync {
     async fn parent_history_for_viewer(
         &self,
         id: SessionId,
-        viewer: Participant,
+        viewer: ColleagueId,
     ) -> Result<Vec<ChatMessage>, SessionError> {
         let Some(parent) = self.parent(id).await? else {
             return Ok(Vec::new());
         };
         let (a, b) = self.participants(parent).await?;
-        if viewer != a && viewer != b {
+        let viewer_in_parent = a.colleague_id() == Some(viewer) || b.colleague_id() == Some(viewer);
+        if !viewer_in_parent {
             return Ok(Vec::new());
         }
         self.snapshot(parent, viewer).await

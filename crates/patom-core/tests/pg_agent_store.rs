@@ -622,7 +622,7 @@ async fn delete_refuses_when_referenced_by_a_session(pool: PgPool) {
         .await
         .expect("create");
     let sessions = PgSessionStore::new(pool.clone(), SystemClock::shared());
-    let _ = human_to_agent_session(&sessions, agent.id, seed.org_id, seed.user_id).await;
+    let _ = human_to_agent_session(&pool, &sessions, agent.id, seed.org_id, seed.user_id).await;
 
     let err = store.delete(agent.id).await.expect_err("in use");
     assert!(matches!(err, AgentStoreError::InUse(_)));

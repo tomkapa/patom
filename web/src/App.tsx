@@ -4,12 +4,14 @@ import { AgentGeneral } from "./pages/AgentGeneral";
 import { AgentLogs } from "./pages/AgentLogs";
 import { AgentMemory } from "./pages/AgentMemory";
 import { AgentTools } from "./pages/AgentTools";
+import { ScheduledTasks } from "./pages/ScheduledTasks";
 import { AgentsIndex } from "./pages/AgentsIndex";
 import { ChatView } from "./pages/ChatView";
 import { ConnectionDetail } from "./pages/ConnectionDetail";
 import { ConnectionsCatalog } from "./pages/ConnectionsCatalog";
 import { ConnectionsList } from "./pages/ConnectionsList";
 import { OAuthCallback } from "./pages/OAuthCallback";
+import { Onboarding } from "./pages/Onboarding";
 import { SettingsBilling } from "./pages/SettingsBilling";
 import { SettingsComingSoon } from "./pages/SettingsComingSoon";
 import { SettingsGeneral } from "./pages/SettingsGeneral";
@@ -32,6 +34,19 @@ export function App() {
           its own auth (a 401 bounces through /sign-in), so it is not
           wrapped in <Protected>. Must precede the /* catch-all. */}
       <Route path="/i/:slug/:token" element={<AcceptInvite />} />
+
+      {/* First-time-user wizard. Wrapped in <Protected> so the JWT is
+          resolved before any wizard step runs; the OnboardingGate
+          (inside Protected) then keeps the user here until they finish
+          and redirects past it once `org.onboarded === true`. */}
+      <Route
+        path="/onboarding"
+        element={
+          <Protected>
+            <Onboarding />
+          </Protected>
+        }
+      />
 
       <Route
         path="/connections"
@@ -98,6 +113,14 @@ export function App() {
         element={
           <Protected>
             <AgentMemory />
+          </Protected>
+        }
+      />
+      <Route
+        path="/agents/:id/scheduled"
+        element={
+          <Protected>
+            <ScheduledTasks />
           </Protected>
         }
       />

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::agents::AgentId;
+use crate::colleagues::ColleagueId;
 
 use super::traits::SessionId;
 
@@ -9,11 +9,12 @@ pub enum SessionError {
     #[error("session {0:?} not found")]
     NotFound(SessionId),
 
-    /// Caller passed an `AgentId` that does not exist in the `agents` table.
+    /// Caller passed a `ColleagueId` that does not exist in the `colleagues`
+    /// table (FK violation on the session/message participant columns).
     /// Distinct from [`SessionError::NotFound`] (about the session itself) so
     /// handlers can map it to a different status code.
-    #[error("agent {0:?} not found")]
-    AgentNotFound(AgentId),
+    #[error("colleague {0:?} not found")]
+    ColleagueNotFound(ColleagueId),
 
     /// `resolve_or_create_for_pair` was called with `a == b`. A session whose
     /// participants are equal is representationally invalid (you can't talk to

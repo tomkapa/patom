@@ -9,6 +9,7 @@ use crate::agents::{AgentStoreError, PromptVersionError};
 use crate::assets::AssetError;
 use crate::auth::AuthError;
 use crate::budget::BudgetError;
+use crate::entitlements::LicenseError;
 use crate::mcp::McpError;
 use crate::orgs::OrgError;
 use crate::runtime::{PromptError, ResponseError};
@@ -77,6 +78,14 @@ pub enum HttpError {
     #[error("org: {0}")]
     Org(#[from] OrgError),
 
+    #[error("colleague: {0}")]
+    Colleague(#[from] crate::colleagues::ColleagueError),
+
+    /// Entitlement gate refused the action (agent cap hit, or an unlicensed
+    /// feature). Maps to 402 Payment Required so the FE can prompt an upgrade.
+    #[error("license: {0}")]
+    License(#[from] LicenseError),
+
     #[error("asset: {0}")]
     Asset(#[from] AssetError),
 
@@ -108,8 +117,10 @@ impl IntoResponse for HttpError {
             Self::Session(SessionError::NotFound(_)) => {
                 (StatusCode::NOT_FOUND, "session not found".into())
             }
-            Self::Session(SessionError::AgentNotFound(_))
-            | Self::Agent(AgentStoreError::NotFound(_)) => {
+            Self::Session(SessionError::ColleagueNotFound(_)) => {
+                (StatusCode::BAD_REQUEST, "unknown colleague_id".into())
+            }
+            Self::Agent(AgentStoreError::NotFound(_)) => {
                 (StatusCode::BAD_REQUEST, "unknown agent_id".into())
             }
             Self::Agent(AgentStoreError::NameNotFound(_)) => {
@@ -128,6 +139,13 @@ impl IntoResponse for HttpError {
                 "budget store error".into(),
             ),
             Self::Session(e) => (StatusCode::BAD_REQUEST, e.to_string()),
+            Self::Colleague(crate::colleagues::ColleagueError::NotFound(_)) => {
+                (StatusCode::NOT_FOUND, "colleague not found".into())
+            }
+            Self::Colleague(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "colleague directory error".into(),
+            ),
             Self::Agent(
                 AgentStoreError::DefaultDeletionForbidden
                 | AgentStoreError::InUse(_)
@@ -241,6 +259,12 @@ impl IntoResponse for HttpError {
             Self::Org(OrgError::Db(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "org store error".into())
             }
+            // Both license failures are "your plan doesn't cover this" → 402.
+            // Matched explicitly (not `License(_)`) so a future LicenseError
+            // variant with a different status forces an edit here (§1).
+            Self::License(
+                LicenseError::FeatureNotLicensed { .. } | LicenseError::AgentLimitReached { .. },
+            ) => (StatusCode::PAYMENT_REQUIRED, self.to_string()),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
         };
         // CLAUDE.md §2: every error response that maps to a 5xx is a

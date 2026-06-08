@@ -213,6 +213,18 @@ async fn create_agent(
         .map(AvatarUrl::try_from)
         .transpose()
         .map_err(HttpError::Parse)?;
+    // Entitlement gate (#134): refuse creation past the org's agent cap.
+    // Count tenant-scoped (RLS limits it to the caller's org, mirroring
+    // `list_agents`) then ask the policy. Inert under the OSS default
+    // (`Unlimited` always admits); a capped cloud impl returns 402. The
+    // count-then-insert window is a benign TOCTOU — acceptable while the
+    // shipped default is unlimited; a real cap should enforce in-tx (#131).
+    let current = count_agents_for_org(&state, &principal).await?;
+    crate::entitlements::require_agent_capacity(
+        &*state.entitlements,
+        principal.active_org_id,
+        current,
+    )?;
     let record = state
         .agents
         .create(NewAgent {
@@ -230,6 +242,21 @@ async fn create_agent(
     Ok((StatusCode::CREATED, Json(record.into())))
 }
 
+/// Tenant-scoped count of the caller's agents, for the entitlement gate.
+/// Opens an RLS tx so `count(*)` sees only the principal's org (mirrors
+/// [`list_agents`]). Static SQL — no interpolation (§10).
+async fn count_agents_for_org(state: &AppState, principal: &Principal) -> Result<u32, HttpError> {
+    let mut tx = crate::auth::begin_as(&state.pool, principal).await?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM agents")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
+    tx.commit().await.map_err(AuthError::from)?;
+    // `count(*)` is non-negative; saturate the (impossible) overflow rather
+    // than panic — a larger value only makes the cap stricter.
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
 async fn list_agents(
     State(state): State<AppState>,
     principal: Principal,
@@ -238,9 +265,16 @@ async fn list_agents(
     // let the `agents_org_isolation` RLS policy do the filtering. Mirrors
     // the mcp_servers route — bypasses the store's privileged read path
     // so the user can see only their own org's rows.
-    let sql = format!("SELECT {AGENT_LIST_SELECT} ORDER BY a.created_at ASC");
+    //
+    // RLS gates on membership in *any* org (`app_user_is_member`), not the
+    // *active* one, so a user who belongs to more than one org would
+    // otherwise see every membership's agents at once (the
+    // duplicate-recruiter-in-the-sidebar bug). Pin the active org
+    // explicitly.
+    let sql = format!("SELECT {AGENT_LIST_SELECT} WHERE a.org_id = $1 ORDER BY a.created_at ASC");
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let rows = sqlx::query_as::<_, AgentRowForList>(&sql)
+        .bind(principal.active_org_id)
         .fetch_all(&mut *tx)
         .await
         .map_err(AuthError::from)?;
@@ -258,10 +292,14 @@ async fn read_agent(
     Path(id): Path<Uuid>,
 ) -> Result<Json<AgentResponse>, HttpError> {
     let id = AgentId::from(id);
-    let sql = format!("SELECT {AGENT_LIST_SELECT} WHERE a.id = $1");
+    // Pin the active org for the same reason as `list_agents`: RLS gates
+    // on membership in any org, so a multi-org user could otherwise read
+    // an agent that lives in a non-active workspace by id.
+    let sql = format!("SELECT {AGENT_LIST_SELECT} WHERE a.id = $1 AND a.org_id = $2");
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let row = sqlx::query_as::<_, AgentRowForList>(&sql)
         .bind(id)
+        .bind(principal.active_org_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(AuthError::from)?;

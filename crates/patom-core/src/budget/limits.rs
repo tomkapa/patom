@@ -19,7 +19,7 @@ pub const DEFAULT_WARN_BPS: u16 = 8000;
 /// *try* the product, bounded enough that N scripted signups cost $N rather
 /// than N×∞. Owners/admins raise it from Settings → Billing. The self-host
 /// bootstrap org is exempt (the operator pays their own bill) — only the cloud
-/// self-service path stamps this. Mirrored by the migration-57 backfill SQL;
+/// self-service path stamps this. Mirrored by the migration-62 backfill SQL;
 /// keep the two in sync. Tunable here.
 pub const DEFAULT_ORG_MONTHLY_CAP_MICROS: i64 = 1_000_000; // $1.00
 

@@ -3,7 +3,7 @@
 --
 -- Before this change a new org was created uncapped (no row), which the budget
 -- gate (src/budget/service.rs) treats as *unlimited* — so every pre-existing
--- beta org could run uncapped spend on our provider bill. Migration 57 closes
+-- beta org could run uncapped spend on our provider bill. Migration 62 closes
 -- that hole for the existing fleet; new orgs are stamped at creation time
 -- (src/auth/pg_store.rs).
 --

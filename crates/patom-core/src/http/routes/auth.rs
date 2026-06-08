@@ -14,9 +14,8 @@
 //!      join-by-invite / deny on self-host), mint a JWT, set the session
 //!      cookie, redirect to the validated `return_to` (or `/`).
 //!
-//! `/auth/google/{login,callback}` are kept one release as thin aliases
-//! to the same handlers so existing cloud deployments and bookmarks
-//! don't break.
+//! The routes are provider-neutral (`/auth/oidc/*`). Operators register
+//! `{PATOM_OIDC_REDIRECT_URL}` = `…/auth/oidc/callback` with their IdP.
 
 use axum::Router;
 use axum::extract::{Query, State};
@@ -40,9 +39,6 @@ pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/auth/oidc/login", get(login))
         .route("/auth/oidc/callback", get(callback))
-        // Aliases kept one release (ADR-0011) — same handlers.
-        .route("/auth/google/login", get(login))
-        .route("/auth/google/callback", get(callback))
 }
 
 #[derive(Debug, Deserialize)]

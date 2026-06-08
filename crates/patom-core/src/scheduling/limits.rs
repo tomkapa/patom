@@ -14,6 +14,22 @@ use chrono_tz::Tz;
 /// descriptive, short enough not to bloat the listing tool result.
 pub const SCHEDULED_TASK_NAME_MAX_LEN: usize = 200;
 
+/// Default page size for the scheduled-tasks HTTP listing
+/// (`GET /agents/{id}/scheduled-tasks`).
+///
+/// Sized so the Scheduled Tasks view's first paint issues a single,
+/// fully-satisfied page for the common case (an agent with a handful of
+/// tasks).
+pub const DEFAULT_SCHEDULED_TASKS_PAGE: u32 = 20;
+
+/// Hard upper bound on the scheduled-tasks HTTP listing page size.
+///
+/// Caps the row count one HTTP read can ship to the FE (CLAUDE.md §5),
+/// independent of [`MAX_SCHEDULED_TASKS_PER_AGENT`] — done / cancelled
+/// rows accumulate past the active cap, so the listing needs its own
+/// ceiling.
+pub const MAX_SCHEDULED_TASKS_PAGE: u32 = 50;
+
 /// Hard cap on simultaneously-active scheduled tasks per agent.
 ///
 /// Bounds the working set the scheduler scans on every poll and stops
@@ -53,6 +69,15 @@ pub const SCHEDULED_TASK_BATCH_LIMIT: usize = 20;
 /// `chrono_tz::Tz` so the rest of the subsystem never sees a string
 /// here.
 pub const DEFAULT_RECURRING_TIMEZONE: Tz = Tz::UTC;
+
+/// Timeout for the colleague lookup on the scheduler's hot firing path
+/// (`ScheduledTaskScheduler::fire`).
+///
+/// CLAUDE.md §5 — every I/O await is bounded. A single stuck directory read
+/// must not wedge the firing loop; on timeout the firing surfaces a backend
+/// error, the row keeps its `next_run_at`, and the next poll retries. Sized
+/// generously relative to a point lookup so only a genuinely stuck call trips.
+pub(super) const COLLEAGUE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Convenience used by the scheduler when converting the poll cadence
 /// from a const `u64` into the [`Duration`] the [`super::ScheduledTask`]

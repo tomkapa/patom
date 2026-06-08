@@ -33,10 +33,9 @@ use super::types::{
 };
 use crate::types::AvatarUrl;
 
-/// Hard cap on `list_names` SQL — fetched batches are bounded per
-/// CLAUDE.md §5. Sized at 4× the inline-render cap; the renderer already
-/// degrades above [`MAX_AGENT_NAMES_INLINE`], so this LIMIT just keeps
-/// the wire transfer bounded if the registry grows past that.
+/// Hard cap on the `list_for_org` roster SQL — fetched batches are bounded
+/// per CLAUDE.md §5. Sized generously; the LIMIT just keeps the wire transfer
+/// bounded if a tenant's registry grows large.
 const LIST_NAMES_MAX_ROWS: i64 = 512;
 
 /// Transaction-scoped advisory-lock key used by [`PgAgentStore::seed_default`] to
@@ -108,7 +107,7 @@ impl PgAgentStore {
     }
 
     /// Embed `description` synchronously. Errors propagate so the
-    /// mutation aborts before the row lands; no `<agents>` entry is
+    /// mutation aborts before the row lands; no `<colleagues>` entry is
     /// discoverable via `search_agents` without a vector to match.
     async fn embed(&self, description: &str) -> Result<Vec<f32>, AgentStoreError> {
         embed_one(self.embeddings.as_ref(), description)
@@ -456,30 +455,6 @@ impl AgentStore for PgAgentStore {
         row.try_into()
     }
 
-    async fn list_names_for_viewer(
-        &self,
-        viewer: AgentId,
-    ) -> Result<Vec<(AgentId, AgentName)>, AgentStoreError> {
-        let rows =
-            run_privileged::<Vec<(AgentId, String)>, AgentStoreError>(&self.pool, async |tx| {
-                Ok(sqlx::query_as(
-                    "SELECT id, name FROM agents \
-                     WHERE org_id = (SELECT org_id FROM agents WHERE id = $1) \
-                     ORDER BY lower(name) ASC LIMIT $2",
-                )
-                .bind(viewer)
-                .bind(LIST_NAMES_MAX_ROWS)
-                .fetch_all(&mut **tx)
-                .await?)
-            })
-            .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (id, name) in rows {
-            out.push((id, AgentName::try_from(name)?));
-        }
-        Ok(out)
-    }
-
     async fn list_for_org(
         &self,
         org_id: OrgId,
@@ -518,7 +493,7 @@ impl AgentStore for PgAgentStore {
 
         // Caller-excluded at the SQL boundary so the self row never lands
         // in the projection — keeps the three caller-excluded surfaces
-        // (`<agents>`, `search_agents`, `send_message`) consistent. The
+        // (`<colleagues>`, `search_agents`, `send_message`) consistent. The
         // org-scope subquery restricts results to the viewer's tenant.
         let rows = run_privileged::<Vec<(AgentId, String, String)>, AgentStoreError>(
             &self.pool,

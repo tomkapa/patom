@@ -89,13 +89,21 @@ pub(super) async fn submit_internal(
         },
     };
 
+    // Resolve the human's colleague_id so the queue receives a
+    // colleague-backed sender; pg_queue resolves the receiver agent's
+    // colleague inline.
+    let human_colleague = state
+        .colleagues
+        .resolve_user(params.org_id, params.user_id)
+        .await
+        .map_err(crate::http::HttpError::from)?;
     let outcome = state
         .queue
         .enqueue_for_user(
             params.user_id,
             NewPromptRequest::normal(
                 params.session_id,
-                Participant::Human,
+                Participant::human(human_colleague, params.user_id),
                 receiver_agent_id,
                 None,
                 params.content,

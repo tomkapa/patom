@@ -19,8 +19,8 @@ use tracing::{info, warn};
 use crate::agent_core::{Agent, AgentBuilder};
 use crate::agents::{
     AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL, AgentDescription, AgentFactory, AgentName,
-    AgentNamesCache, AgentPromptCache, AgentStoreError, AgentSystemPrompt, CachedAgents,
-    DefaultAgentSeed, PgAgentStore, SharedAgentStore, SharedAgents,
+    AgentPromptCache, AgentStoreError, AgentSystemPrompt, CachedAgents, DefaultAgentSeed,
+    PgAgentStore, SharedAgentStore, SharedAgents,
 };
 use crate::assets::{S3AssetStore, SharedAssetStore};
 use crate::auth::{
@@ -115,6 +115,7 @@ struct Collaborators {
     pool: PgPool,
     sessions: SharedSessionStore,
     agents: SharedAgentStore,
+    colleagues: crate::colleagues::SharedColleagueStore,
     memory: SharedMemory,
     memory_store: SharedMemoryStore,
     clock: SharedClock,
@@ -191,14 +192,17 @@ impl Collaborators {
         let sessions: SharedSessionStore =
             Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
 
+        let colleagues: crate::colleagues::SharedColleagueStore =
+            Arc::new(crate::colleagues::PgColleagueStore::new(pool.clone()));
+
         let cache = AgentPromptCache::new(
             AGENT_PROMPT_CACHE_CAP,
             AGENT_PROMPT_CACHE_TTL,
             clock.clone(),
         );
-        let names_cache = AgentNamesCache::new(
-            AGENT_PROMPT_CACHE_CAP,
-            AGENT_PROMPT_CACHE_TTL,
+        let roster_cache = crate::colleagues::ColleagueRosterCache::new(
+            crate::colleagues::COLLEAGUE_ROSTER_CACHE_CAP,
+            crate::colleagues::COLLEAGUE_ROSTER_CACHE_TTL,
             clock.clone(),
         );
         let memory_store: SharedMemoryStore = Arc::new(PgMemoryStore::new(
@@ -219,6 +223,8 @@ impl Collaborators {
         let memory_loader = MemorySectionLoader::new(
             memory_store.clone(),
             sessions.clone(),
+            colleagues.clone(),
+            roster_cache.clone(),
             embedding_provider.clone(),
             session_memory_cache.clone(),
         );
@@ -247,7 +253,8 @@ impl Collaborators {
         let memory: SharedMemory = Arc::new(AgentMemory::new(
             agents.clone(),
             cache,
-            names_cache,
+            colleagues.clone(),
+            roster_cache,
             memory_loader.clone(),
             prompts.clone(),
             language_resolver.clone(),
@@ -328,6 +335,7 @@ impl Collaborators {
             queue: queue.clone(),
             dag: dag.clone(),
             agents: agents.clone(),
+            colleagues: colleagues.clone(),
             sink: sink.clone(),
             memory_tools,
             todo_tools,
@@ -350,6 +358,7 @@ impl Collaborators {
             pool,
             sessions,
             agents,
+            colleagues,
             memory,
             memory_store,
             clock,
@@ -458,6 +467,7 @@ struct BuiltinToolDeps<'a> {
     queue: SharedPromptQueue,
     dag: SharedDagBudget,
     agents: SharedAgentStore,
+    colleagues: crate::colleagues::SharedColleagueStore,
     sink: SharedResponseSink,
     memory_tools: MemoryToolDeps,
     todo_tools: TodoToolDeps,
@@ -490,6 +500,7 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.queue.clone(),
             deps.dag.clone(),
             deps.agents.clone(),
+            deps.colleagues.clone(),
             deps.sink.clone(),
         )))
         .with(Arc::new(GetSessionTool::new(deps.sessions.clone())))
@@ -701,6 +712,7 @@ pub async fn build_server(
     let scheduling_scheduler = ScheduledTaskScheduler::spawn(
         pieces.scheduled_tasks.clone(),
         pieces.queue.clone(),
+        pieces.colleagues.clone(),
         pieces.clock.clone(),
         cancel.clone(),
     );
@@ -796,6 +808,7 @@ pub async fn build_server(
                     queue: pieces.queue.clone(),
                     agents: pieces.agents.clone(),
                     sessions: pieces.sessions.clone(),
+                    colleagues: pieces.colleagues.clone(),
                     workspaces: workspaces.clone(),
                     identities: identities.clone(),
                     threads: threads_store.clone(),
@@ -850,6 +863,7 @@ pub async fn build_server(
         responses: pieces.responses,
         sessions: pieces.sessions,
         agents: pieces.agents,
+        colleagues: pieces.colleagues,
         dag: pieces.dag,
         budget,
         memory_store: pieces.memory_store.clone(),
@@ -881,6 +895,11 @@ pub async fn build_server(
         assets,
         orgs: orgs_store,
         mailer,
+        // Entitlement policy (#134). This one line is the policy seam: the OSS
+        // build runs the permissive default; `patom-cloud` swaps it for a
+        // billing-backed impl behind `--features cloud` (#131), and a future
+        // self-host limit would swap it here too.
+        entitlements: Arc::new(crate::entitlements::UnlimitedEntitlements),
     };
 
     Ok(Server {

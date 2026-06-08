@@ -17,6 +17,7 @@ use sqlx::{PgPool, Row};
 use crate::agents::AgentId;
 use crate::auth::{UserId, run_as_user, run_privileged};
 use crate::clock::SharedClock;
+use crate::colleagues::ColleagueId;
 use crate::pg_vector;
 use crate::provider::SharedEmbeddingProvider;
 use crate::runtime::PromptRequestId;
@@ -36,12 +37,13 @@ use super::types::{
 /// place removes drift between `list` / `get` / `lock_existing` and the
 /// `RETURNING` clauses on the mutation paths.
 const MEMORY_ROW_COLUMNS: &str = "id, agent_id, org_id, kind, content, state, pinned, \
+                                  subject_colleague_id, \
                                   source_turn_id, created_at, last_validated_at, \
                                   last_accessed_at, access_count";
 
 const MEMORY_EVENT_COLUMNS: &str = "id, agent_id, org_id, mutation, target_memory_id, \
                                     content_before, content_after, source_kind, source_turn_id, \
-                                    created_at, kind, state, pinned";
+                                    created_at, kind, state, pinned, subject_colleague_id";
 
 pub struct PgMemoryStore {
     pool: PgPool,
@@ -82,6 +84,7 @@ impl fmt::Debug for PgMemoryStore {
 #[allow(clippy::too_many_lines)] // exhaustive dispatch on a 3-arm enum
 impl MemoryStore for PgMemoryStore {
     async fn apply(&self, mutation: MemoryMutation) -> Result<MutationOutcome, MemoryStoreError> {
+        mutation.ensure_subject_consistency()?;
         let embedding = embed_for_mutation(self, &mutation).await?;
         run_privileged(&self.pool, async |tx| {
             apply_in_tx(self, tx.tx_mut(), mutation, embedding).await
@@ -94,6 +97,7 @@ impl MemoryStore for PgMemoryStore {
         acting_user_id: UserId,
         mutation: MemoryMutation,
     ) -> Result<MutationOutcome, MemoryStoreError> {
+        mutation.ensure_subject_consistency()?;
         let embedding = embed_for_mutation(self, &mutation).await?;
         run_as_user(&self.pool, acting_user_id, async |tx| {
             apply_in_tx(self, tx.tx_mut(), mutation, embedding).await
@@ -897,6 +901,7 @@ async fn revert_forget(
         kind: attrs.kind,
         state: attrs.state,
         pinned: attrs.pinned,
+        subject: attrs.subject,
     };
     insert_event(
         tx,
@@ -914,10 +919,10 @@ async fn revert_forget(
     sqlx::query(
         "INSERT INTO agent_memories
              (id, agent_id, org_id, kind, content, state, pinned,
-              source_turn_id,
+              subject_colleague_id, source_turn_id,
               created_at, last_validated_at, last_accessed_at, access_count)
          VALUES ($1, $2, (SELECT org_id FROM agents WHERE id = $2),
-                 $3, $4, $5, $6, NULL, $7, $7, $7, 0)
+                 $3, $4, $5, $6, $7, NULL, $8, $8, $8, 0)
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(target)
@@ -926,6 +931,7 @@ async fn revert_forget(
     .bind(before.as_str())
     .bind(attrs.state)
     .bind(attrs.pinned)
+    .bind(attrs.subject)
     .bind(now)
     .execute(&mut **tx)
     .await?;
@@ -964,11 +970,12 @@ async fn apply_in_tx(
             content,
             state,
             pinned,
+            subject,
             source,
         } => {
             let embedding = embedding.expect("invariant: Write produced an embedding above");
             apply_write(
-                tx, agent, kind, content, state, pinned, source, embedding, now,
+                tx, agent, kind, content, state, pinned, subject, source, embedding, now,
             )
             .await?
         }
@@ -1138,6 +1145,7 @@ struct RestoredAttrs {
     kind: MemoryKind,
     state: MemoryState,
     pinned: bool,
+    subject: Option<ColleagueId>,
 }
 
 async fn restore_attrs_for(
@@ -1164,10 +1172,26 @@ async fn restore_attrs_for(
         .and_then(MemoryState::parse)
         .ok_or(MemoryStoreError::NotFound { id: target })?;
     let pinned = pinned.ok_or(MemoryStoreError::NotFound { id: target })?;
+
+    // The subject is immutable after the write and an `update` event carries
+    // none, so salvage it from the original `write` event rather than the most
+    // recent write/update (which may be an update with a NULL subject).
+    let subject: Option<(Option<ColleagueId>,)> = sqlx::query_as(
+        "SELECT subject_colleague_id FROM memory_events
+         WHERE agent_id = $1 AND target_memory_id = $2 AND mutation = 'write'
+         ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .bind(agent)
+    .bind(target)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let subject = subject.and_then(|(s,)| s);
+
     Ok(RestoredAttrs {
         kind,
         state,
         pinned,
+        subject,
     })
 }
 
@@ -1179,10 +1203,35 @@ async fn apply_write(
     content: MemoryContent,
     state: MemoryState,
     pinned: bool,
+    subject: Option<ColleagueId>,
     source: MutationSource,
     embedding: Vec<f32>,
     now: DateTime<Utc>,
 ) -> Result<MutationOutcome, MemoryStoreError> {
+    // Subject must be a colleague in the agent's own org. The
+    // `subject_colleague_id` FK only proves the colleague exists *somewhere*
+    // (`colleagues` spans tenants), so without this an agent could key a memory
+    // to a foreign-org or hallucinated colleague. Both the agent tool and the
+    // operator route funnel through here, so this is the one place the rule
+    // can't be sidestepped. The org is the agent's, mirroring the row's
+    // denormalised `org_id`.
+    if let Some(subject) = subject {
+        let same_org: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM colleagues c
+                 WHERE c.id = $1
+                   AND c.org_id = (SELECT org_id FROM agents WHERE id = $2)
+             )",
+        )
+        .bind(subject)
+        .bind(agent)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !same_org {
+            return Err(MemoryStoreError::SubjectNotInOrg { subject });
+        }
+    }
+
     let memory_id = MemoryId::new();
     let event_id = MemoryEventId::new();
     let payload = MemoryEventPayload::Write {
@@ -1190,6 +1239,7 @@ async fn apply_write(
         kind,
         state,
         pinned,
+        subject,
     };
 
     insert_event(tx, event_id, agent, memory_id, source, now, &payload).await?;
@@ -1200,10 +1250,10 @@ async fn apply_write(
     let sql = format!(
         "INSERT INTO agent_memories
              (id, agent_id, org_id, kind, content, state, pinned,
-              source_turn_id,
+              subject_colleague_id, source_turn_id,
               created_at, last_validated_at, last_accessed_at, access_count, embedding)
          VALUES ($1, $2, (SELECT org_id FROM agents WHERE id = $2),
-                 $3, $4, $5, $6, $7, $8, $8, $8, 0, $9::vector)
+                 $3, $4, $5, $6, $7, $8, $9, $9, $9, 0, $10::vector)
          RETURNING {MEMORY_ROW_COLUMNS}",
     );
     let row = sqlx::query(&sql)
@@ -1213,6 +1263,7 @@ async fn apply_write(
         .bind(content.as_str())
         .bind(state)
         .bind(pinned)
+        .bind(subject)
         .bind(source.turn_id())
         .bind(now)
         .bind(embedding_lit)
@@ -1307,12 +1358,13 @@ async fn insert_event(
     now: DateTime<Utc>,
     payload: &MemoryEventPayload,
 ) -> Result<(), MemoryStoreError> {
-    let (mutation, content_before, content_after, kind, state, pinned) = match payload {
+    let (mutation, content_before, content_after, kind, state, pinned, subject) = match payload {
         MemoryEventPayload::Write {
             content,
             kind,
             state,
             pinned,
+            subject,
         } => (
             MutationKind::Write,
             None,
@@ -1320,6 +1372,7 @@ async fn insert_event(
             Some(*kind),
             Some(*state),
             Some(*pinned),
+            *subject,
         ),
         MemoryEventPayload::Update {
             before,
@@ -1334,10 +1387,14 @@ async fn insert_event(
             Some(*kind),
             Some(*state),
             Some(*pinned),
+            // Subject is set once at write and immutable thereafter; an update
+            // event carries none (NULL satisfies the event subject CHECK).
+            None,
         ),
         MemoryEventPayload::Forget { before } => (
             MutationKind::Forget,
             Some(before.as_str()),
+            None,
             None,
             None,
             None,
@@ -1354,9 +1411,9 @@ async fn insert_event(
              (id, agent_id, org_id, mutation, target_memory_id,
               content_before, content_after,
               source_kind, source_turn_id, created_at,
-              kind, state, pinned)
+              kind, state, pinned, subject_colleague_id)
          VALUES ($1, $2, (SELECT org_id FROM agents WHERE id = $2),
-                 $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                 $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(event_id)
     .bind(agent)
@@ -1370,6 +1427,7 @@ async fn insert_event(
     .bind(kind)
     .bind(state)
     .bind(pinned)
+    .bind(subject)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -1420,6 +1478,7 @@ async fn apply_replay(
             kind,
             state,
             pinned,
+            subject,
         } => {
             // Replay mirrors the live mutation; `org_id` is derived from
             // the parent agent inside the rebuild tx for the same reason
@@ -1427,10 +1486,10 @@ async fn apply_replay(
             sqlx::query(
                 "INSERT INTO agent_memories
                      (id, agent_id, org_id, kind, content, state, pinned,
-                      source_turn_id,
+                      subject_colleague_id, source_turn_id,
                       created_at, last_validated_at, last_accessed_at, access_count)
                  VALUES ($1, $2, (SELECT org_id FROM agents WHERE id = $2),
-                         $3, $4, $5, $6, $7, $8, $8, $8, 0)",
+                         $3, $4, $5, $6, $7, $8, $9, $9, $9, 0)",
             )
             .bind(event.target_memory_id)
             .bind(agent)
@@ -1438,6 +1497,7 @@ async fn apply_replay(
             .bind(content.as_str())
             .bind(state)
             .bind(pinned)
+            .bind(subject)
             .bind(event.source.turn_id())
             .bind(event.created_at)
             .execute(&mut **tx)
@@ -1498,6 +1558,7 @@ fn decode_memory_row_with_suffix(
         content: MemoryContent::try_from(content_raw)?,
         state: row.try_get(col("state").as_str())?,
         pinned: row.try_get(col("pinned").as_str())?,
+        subject: row.try_get::<Option<ColleagueId>, _>(col("subject_colleague_id").as_str())?,
         source_turn_id: row
             .try_get::<Option<PromptRequestId>, _>(col("source_turn_id").as_str())?,
         created_at: row.try_get(col("created_at").as_str())?,
@@ -1535,6 +1596,7 @@ fn decode_memory_event(row: &sqlx::postgres::PgRow) -> Result<MemoryEvent, Memor
     let pinned: Option<bool> = row.try_get("pinned")?;
     let source_kind: MutationSourceKind = row.try_get("source_kind")?;
     let source_turn_id: Option<PromptRequestId> = row.try_get("source_turn_id")?;
+    let subject: Option<ColleagueId> = row.try_get("subject_colleague_id")?;
 
     let source = match source_kind {
         MutationSourceKind::Turn => {
@@ -1557,6 +1619,7 @@ fn decode_memory_event(row: &sqlx::postgres::PgRow) -> Result<MemoryEvent, Memor
             state: state.expect("invariant: memory_events_payload_shape — write must carry state"),
             pinned: pinned
                 .expect("invariant: memory_events_payload_shape — write must carry pinned"),
+            subject,
         },
         MutationKind::Update => MemoryEventPayload::Update {
             before: MemoryContent::try_from(content_before_raw.expect(
