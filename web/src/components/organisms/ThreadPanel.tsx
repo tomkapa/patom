@@ -20,6 +20,7 @@ import { WireMcpRequestCard } from "./WireMcpRequestCard";
 import { MentionInput } from "../molecules/MentionInput";
 import { clockTime, formatMs } from "../../lib/time";
 import { cn, insertAtCaret } from "../../lib/utils";
+import { useResizableWidth } from "../../hooks/useResizableWidth";
 import type {
   Agent,
   ThreadSummary,
@@ -28,6 +29,12 @@ import type {
 import type { Bubble, RootMessage } from "../../lib/foldHistory";
 import { DEMO_REPLY_META } from "../../lib/demo";
 import { renderMentions } from "../../lib/mentions";
+
+const THREAD_PANEL_WIDTH_KEY = "patom.threadPanel.width";
+const THREAD_PANEL_DEFAULT_WIDTH = 360;
+const THREAD_PANEL_MIN_WIDTH = 320;
+/** Upper bound: never let the panel eat more than ~half the viewport. */
+const THREAD_PANEL_MAX_FRACTION = 0.5;
 
 /**
  * Pure renderer. Takes the merged `Bubble[]` from `useThreadView` and the
@@ -46,12 +53,16 @@ export function ThreadPanel({
   onFocusConsumed,
   onReply,
   onClose,
+  resizable = false,
 }: {
   channel: string;
   thread: ThreadSummary | null;
   agents: Agent[];
   bubbles: Bubble[];
   rootMessage?: RootMessage;
+  /** When inline (≥ lg), allow drag-to-resize from the left edge. In the
+   *  compact overlay drawer the width is owned by the drawer, so leave off. */
+  resizable?: boolean;
   /** Whether to render the "thinking…" placeholder. The selector decides;
    *  this component just paints. */
   showThinking?: boolean;
@@ -65,6 +76,13 @@ export function ThreadPanel({
   onReply?: (input: { content: string }) => void;
   onClose?: () => void;
 }) {
+  const { width, dragging, handleProps } = useResizableWidth({
+    storageKey: THREAD_PANEL_WIDTH_KEY,
+    defaultWidth: THREAD_PANEL_DEFAULT_WIDTH,
+    minWidth: THREAD_PANEL_MIN_WIDTH,
+    maxFraction: THREAD_PANEL_MAX_FRACTION,
+  });
+
   const [reply, setReply] = useState("");
   const replyRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -133,9 +151,30 @@ export function ThreadPanel({
 
   return (
     <aside
-      className="flex h-full w-[360px] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-paper)]"
+      className={cn(
+        "relative flex h-full flex-col border-l border-[var(--color-line)] bg-[var(--color-paper)]",
+        resizable ? "shrink-0" : "w-full",
+        dragging && "select-none",
+      )}
+      style={resizable ? { width } : undefined}
       aria-label="Thread side panel"
     >
+      {resizable && (
+        <div
+          {...handleProps}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize thread panel"
+          className="group absolute left-0 top-0 z-10 h-full w-1.5 -translate-x-1/2 cursor-col-resize touch-none"
+        >
+          <span
+            className={cn(
+              "absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--color-moss)] transition-opacity",
+              dragging ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+            )}
+          />
+        </div>
+      )}
       <header className="flex items-center justify-between gap-2 border-b border-[var(--color-line)] px-5 py-3">
         <div>
           <div className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
