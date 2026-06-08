@@ -19,29 +19,37 @@ use super::{MemoryToolDeps, check_cap, expect_agent, parse_to_tool_err, store_to
 const TOOL_NAME: &str = "memory_write";
 
 const TOOL_DESCRIPTION: &str = "Persist a new memory the agent should carry across sessions. \
-     Memory is the agent's distilled understanding of itself, its peers, and learned \
+     Memory is the agent's distilled understanding of itself, its colleagues, and learned \
      procedures — not raw conversation transcript.\n\
      \n\
      USE WHEN the user (or a peer agent) explicitly asks you to remember something — \
-     \"remember I prefer tabs over spaces\", \"keep in mind we deploy on Mondays\". \
+     \"remember to call me Pa\", \"keep in mind we deploy on Mondays\". \
      DO NOT use on weak or implicit signals; reflection turns capture those.\n\
      \n\
-     Arguments: `kind` is one of \"self\" (identity, style, preferences), \"other\" \
-     (beliefs about specific peers or humans), \"collaborator\" (beliefs about \
-     other agents in your network, written after a successful delegation), \
-     \"procedure\" (learned how-tos), \"open\" (known unknowns); `content` is one \
-     or two sentences (max 4096 bytes). `subject` is the colleague id this memory \
-     is about — REQUIRED for \"collaborator\" (the coworker the belief concerns), \
-     omit for every other kind. New memories land at `tentative` state \
-     and need independent confirmation to promote.";
+     Pick `kind`:\n\
+     - \"collaborator\": a durable fact about a SPECIFIC colleague in your org — a human \
+     teammate or another agent — including the person you are talking to right now \
+     (\"call me Pa\", \"owns billing\", \"reliable for Rust reviews\"). This is the kind \
+     for anything someone tells you about THEMSELVES. Set `subject` to that colleague's \
+     id from the <colleagues> roster.\n\
+     - \"self\": YOUR OWN identity, style, or working preferences — the agent's, never the \
+     user's.\n\
+     - \"other\": a belief about a person or entity OUTSIDE your org directory (no \
+     colleague id).\n\
+     - \"procedure\": a learned how-to.\n\
+     - \"open\": a known unknown to revisit.\n\
+     \n\
+     `content` is one or two sentences (max 4096 bytes). `subject` is REQUIRED for \
+     \"collaborator\" and must be omitted for every other kind. New memories land at \
+     `tentative` state and need independent confirmation to promote.";
 
 #[derive(Debug, Deserialize)]
 struct Input {
     kind: MemoryKind,
     content: String,
-    /// The colleague a `collaborator` memory is about. Required for
-    /// `collaborator`, omitted otherwise (the store rejects the inconsistent
-    /// combinations).
+    /// The colleague (human teammate or agent) a `collaborator` memory is
+    /// about. Required for `collaborator`, omitted otherwise (the store rejects
+    /// the inconsistent combinations).
     #[serde(default)]
     subject: Option<ColleagueId>,
 }
@@ -77,7 +85,7 @@ impl MemoryWriteTool {
             "properties": {
                 "kind": { "type": "string", "enum": ["self", "other", "collaborator", "procedure", "open"] },
                 "content": { "type": "string", "minLength": 1, "maxLength": 4096 },
-                "subject": { "type": "string", "format": "uuid", "description": "Colleague id this memory is about; required for kind=collaborator" }
+                "subject": { "type": "string", "format": "uuid", "description": "Colleague id (from the <colleagues> roster) this memory is about — a human teammate or agent; required for kind=collaborator, omit otherwise" }
             },
             "additionalProperties": false,
         }));
