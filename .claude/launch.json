@@ -5,7 +5,8 @@
       "name": "web-mock",
       "runtimeExecutable": "bash",
       "runtimeArgs": ["-c", "cd web && bun install && (BACKEND_PORT=8081 bun mock-backend.ts &) && BACKEND_URL=http://localhost:8081 bun dev.ts"],
-      "port": 5173
+      "port": 5173,
+      "autoPort": true
     }
   ]
 }
