@@ -315,21 +315,29 @@ impl VisibilityTable {
 /// Routes that delegate to a privileged-tx store must first 404
 /// cross-org / unknown ids without leaking existence. Opens a tenant
 /// tx so RLS filters to rows the principal can see, runs
-/// `SELECT EXISTS(SELECT 1 FROM <table> WHERE id = $1)`, commits, and
-/// returns the boolean.
+/// `SELECT EXISTS(SELECT 1 FROM <table> WHERE id = $1 AND org_id = $2)`,
+/// commits, and returns the boolean.
+///
+/// RLS gates on membership in *any* org the principal belongs to, not the
+/// *active* one, so the `org_id = $2` predicate is what pins the probe to
+/// the active workspace — without it a multi-org user could see (and then
+/// operate on) a resource that lives in a non-active org. Every
+/// `VisibilityTable` carries an `org_id` column (the tenancy retrofit).
 pub async fn visible_to(
     pool: &PgPool,
     principal: &Principal,
     table: VisibilityTable,
     id: uuid::Uuid,
 ) -> Result<bool, AuthError> {
+    let active_org = principal.active_org_id;
     run_as_user(pool, principal.user_id, async |tx| {
         let sql = format!(
-            "SELECT EXISTS(SELECT 1 FROM {} WHERE id = $1)",
+            "SELECT EXISTS(SELECT 1 FROM {} WHERE id = $1 AND org_id = $2)",
             table.table()
         );
         let exists: bool = sqlx::query_scalar(&sql)
             .bind(id)
+            .bind(active_org)
             .fetch_one(&mut **tx)
             .await?;
         Ok::<bool, AuthError>(exists)

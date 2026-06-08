@@ -310,3 +310,80 @@ async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
         "other's thread is the one rooted on `beta`",
     );
 }
+
+#[sqlx::test]
+async fn list_scoped_to_active_org_not_all_memberships(pool: PgPool) {
+    // A user who belongs to two orgs must see only the *active* org's
+    // threads in the channel feed. RLS gates on membership in any org, so
+    // the feed query has to pin the active org explicitly.
+    let h = AuthThreadsHarness::new(&pool).await;
+
+    // Make the primary user a member of a second org as well.
+    let other_org = OrgId::new();
+    let now = chrono::Utc::now();
+    let slug = format!("second-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    sqlx::query("INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at) VALUES ($1, $2, $3, 'en', $4, $4)")
+        .bind(other_org)
+        .bind("Second Org")
+        .bind(&slug)
+        .bind(now)
+        .execute(&h.state.pool)
+        .await
+        .expect("seed second org");
+    sqlx::query(
+        "INSERT INTO org_members (org_id, user_id, role, created_at) VALUES ($1, $2, 'member', $3)",
+    )
+    .bind(other_org)
+    .bind(h.primary.user_id)
+    .bind(now)
+    .execute(&h.state.pool)
+    .await
+    .expect("join second org");
+
+    // One thread in the active org, one in the other org the user belongs to.
+    h.seed_thread(
+        h.primary.org_id,
+        h.primary.user_id,
+        "active-agent",
+        "active prompt",
+        "k-active",
+    )
+    .await;
+    h.seed_thread(
+        other_org,
+        h.primary.user_id,
+        "other-agent",
+        "other prompt",
+        "k-other",
+    )
+    .await;
+
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/threads")
+                .header("cookie", h.primary.cookie_header())
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let names: Vec<&str> = json
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|r| r["first_agent"]["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["active-agent"],
+        "only the active org's thread is listed",
+    );
+}

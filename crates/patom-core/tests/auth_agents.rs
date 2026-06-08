@@ -270,6 +270,72 @@ async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
     assert_eq!(names, vec!["beta"]);
 }
 
+#[sqlx::test]
+async fn list_scoped_to_active_org_not_all_memberships(pool: PgPool) {
+    // A single user who belongs to *two* orgs must see only the agents
+    // of the org their session is active in — RLS alone (membership in
+    // *any* org) is not enough; the route must pin the active org. This
+    // is the duplicate-recruiter-in-the-sidebar bug: an invited user who
+    // also owns a personal workspace saw both orgs' default agents.
+    let h = AuthAgentsHarness::new(&pool).await;
+
+    // The primary principal's session is active in `primary.org_id`.
+    // Make them a member of a *second* org as well.
+    let other_org = OrgId::new();
+    let now = chrono::Utc::now();
+    let slug = format!("second-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    sqlx::query("INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at) VALUES ($1, $2, $3, 'en', $4, $4)")
+        .bind(other_org)
+        .bind("Second Org")
+        .bind(&slug)
+        .bind(now)
+        .execute(&h.state.pool)
+        .await
+        .expect("seed second org");
+    sqlx::query(
+        "INSERT INTO org_members (org_id, user_id, role, created_at) VALUES ($1, $2, 'member', $3)",
+    )
+    .bind(other_org)
+    .bind(h.primary.user_id)
+    .bind(now)
+    .execute(&h.state.pool)
+    .await
+    .expect("join second org");
+
+    // One agent in the active org, one in the other org the user belongs to.
+    h.seed_agent(h.primary.org_id, "active-agent").await;
+    h.seed_agent(other_org, "other-agent").await;
+
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/agents")
+                .header("cookie", h.primary.cookie_header())
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let names: Vec<&str> = json
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|r| r["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["active-agent"],
+        "only the active org's agent is listed, not the other membership's",
+    );
+}
+
 /// Issue #43: `POST /agents` accepts `avatar_url` and echoes it in the
 /// response. Returns the created agent's JSON for callers that need the id.
 async fn create_agent_with_avatar(
