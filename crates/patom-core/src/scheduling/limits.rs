@@ -14,6 +14,22 @@ use chrono_tz::Tz;
 /// descriptive, short enough not to bloat the listing tool result.
 pub const SCHEDULED_TASK_NAME_MAX_LEN: usize = 200;
 
+/// Default page size for the scheduled-tasks HTTP listing
+/// (`GET /agents/{id}/scheduled-tasks`).
+///
+/// Sized so the Scheduled Tasks view's first paint issues a single,
+/// fully-satisfied page for the common case (an agent with a handful of
+/// tasks).
+pub const DEFAULT_SCHEDULED_TASKS_PAGE: u32 = 20;
+
+/// Hard upper bound on the scheduled-tasks HTTP listing page size.
+///
+/// Caps the row count one HTTP read can ship to the FE (CLAUDE.md §5),
+/// independent of [`MAX_SCHEDULED_TASKS_PER_AGENT`] — done / cancelled
+/// rows accumulate past the active cap, so the listing needs its own
+/// ceiling.
+pub const MAX_SCHEDULED_TASKS_PAGE: u32 = 50;
+
 /// Hard cap on simultaneously-active scheduled tasks per agent.
 ///
 /// Bounds the working set the scheduler scans on every poll and stops

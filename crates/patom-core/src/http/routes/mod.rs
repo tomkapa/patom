@@ -17,6 +17,7 @@ mod memory;
 mod models;
 mod org;
 pub(super) mod prompts;
+mod scheduling;
 mod threads;
 pub(super) mod turns;
 mod uploads;
@@ -133,6 +134,7 @@ pub fn router(state: AppState) -> Router {
     let private = Router::new()
         .merge(prompts::router())
         .merge(agents::router())
+        .merge(scheduling::router())
         .merge(mcp::router())
         .merge(memory::router())
         .merge(models::router())
