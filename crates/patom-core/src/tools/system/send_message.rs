@@ -43,7 +43,7 @@ use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
 use crate::agents::{AgentId, AgentName, AgentStoreError, SharedAgentStore};
-use crate::colleagues::{ColleagueError, ColleagueId, ColleagueKind};
+use crate::colleagues::{ColleagueError, ColleagueId};
 use crate::observability::log::preview;
 use crate::runtime::IdempotencyKey;
 use crate::runtime::PromptError;
@@ -367,22 +367,9 @@ impl SendMessageTool {
             )));
         }
 
-        match colleague.kind() {
-            ColleagueKind::Agent => {
-                let agent_id = colleague.agent_id().ok_or_else(|| {
-                    set_outcome("backend_error");
-                    ToolError::Backend("send_message: agent colleague missing agent_id".to_string())
-                })?;
-                Ok(Participant::agent(id, agent_id))
-            }
-            ColleagueKind::Human => {
-                let user_id = colleague.user_id().ok_or_else(|| {
-                    set_outcome("backend_error");
-                    ToolError::Backend("send_message: human colleague missing user_id".to_string())
-                })?;
-                Ok(Participant::human(id, user_id))
-            }
-        }
+        // The kind ⇔ satellite invariant is already established on `colleague`
+        // (Colleague::try_new), so projection is total — no per-kind unwrap here.
+        Ok(colleague.as_participant())
     }
 
     /// Opening framing — only on a freshly-minted receiver session, and only

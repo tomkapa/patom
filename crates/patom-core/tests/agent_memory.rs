@@ -71,6 +71,7 @@ fn build_memory_with_rule(
         store.clone(),
         sessions.clone(),
         colleagues.clone(),
+        roster_cache.clone(),
         embeddings,
         session_cache,
     );

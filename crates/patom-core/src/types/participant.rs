@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agents::AgentId;
 use crate::auth::UserId;
-use crate::colleagues::ColleagueId;
+use crate::colleagues::{ColleagueId, ColleagueKind};
 
 /// One end of a session.
 ///
@@ -179,6 +179,40 @@ impl Participant {
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
             (None, None) => Ordering::Equal,
+        }
+    }
+
+    /// Decode the four joined satellite columns of a `colleagues` LEFT JOIN —
+    /// `(colleague_id, kind, user_id, agent_id)` — into the typed participant.
+    /// A NULL `colleague_id` encodes the [`Self::System`] end; a present id
+    /// arrives with its joined `kind`.
+    ///
+    /// The one home for this schema-shape decode; the session store, the
+    /// threads route, and any other reader of those columns funnel through it
+    /// rather than re-spelling the same match. A present `colleague_id` always
+    /// arrives with its joined `kind` and matching satellite id; a violation
+    /// means schema and code disagree, surfaced as a static reason the caller
+    /// maps to its module error.
+    pub(crate) fn from_colleague_columns(
+        cols: (
+            Option<ColleagueId>,
+            Option<ColleagueKind>,
+            Option<UserId>,
+            Option<AgentId>,
+        ),
+    ) -> Result<Self, &'static str> {
+        let (colleague_id, kind, user_id, agent_id) = cols;
+        match (colleague_id, kind) {
+            (None, _) => Ok(Self::System),
+            (Some(cid), Some(ColleagueKind::Human)) => {
+                let uid = user_id.ok_or("human colleague read without user_id")?;
+                Ok(Self::human(cid, uid))
+            }
+            (Some(cid), Some(ColleagueKind::Agent)) => {
+                let aid = agent_id.ok_or("agent colleague read without agent_id")?;
+                Ok(Self::agent(cid, aid))
+            }
+            (Some(_), None) => Err("colleague read without joined kind"),
         }
     }
 }

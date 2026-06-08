@@ -73,40 +73,16 @@ type ParticipantTuple = (
 );
 
 /// Decode a participant tuple (the four joined satellite columns) back to the
-/// typed [`Participant`]. `MessageSender` callers convert via
-/// [`MessageSender::from_participant`] — both share the same shape.
+/// typed [`Participant`], mapping a schema-shape violation to [`SessionError`].
+/// `MessageSender` callers convert via [`MessageSender::from_participant`] —
+/// both share the same shape, owned by [`Participant::from_colleague_columns`].
 fn decode_participant(tuple: ParticipantTuple) -> Result<Participant, SessionError> {
-    let (colleague_id, kind, user_id, agent_id) = tuple;
-    match (colleague_id, kind) {
-        (None, _) => Ok(Participant::System),
-        (Some(cid), Some(ColleagueKind::Human)) => {
-            let uid = user_id.ok_or_else(|| {
-                SessionError::Backend(format!(
-                    "schema invariant: human colleague {cid:?} missing user_id"
-                ))
-            })?;
-            Ok(Participant::human(cid, uid))
-        }
-        (Some(cid), Some(ColleagueKind::Agent)) => {
-            let aid = agent_id.ok_or_else(|| {
-                SessionError::Backend(format!(
-                    "schema invariant: agent colleague {cid:?} missing agent_id"
-                ))
-            })?;
-            Ok(Participant::agent(cid, aid))
-        }
-        (Some(cid), None) => Err(SessionError::Backend(format!(
-            "schema invariant: colleague {cid:?} read without joined kind"
-        ))),
-    }
+    Participant::from_colleague_columns(tuple)
+        .map_err(|reason| SessionError::Backend(format!("schema invariant: {reason}")))
 }
 
 fn decode_sender(tuple: ParticipantTuple) -> Result<MessageSender, SessionError> {
     decode_participant(tuple).map(MessageSender::from_participant)
-}
-
-fn decode_receiver(tuple: ParticipantTuple) -> Result<Participant, SessionError> {
-    decode_participant(tuple)
 }
 
 /// Postgres-backed [`SessionStore`]. Holds a cheap clone of a [`PgPool`] and a
@@ -462,7 +438,7 @@ impl SessionStore for PgSessionStore {
         for raw in rows {
             let (sender_tuple, receiver_tuple, body) = split_message_row(raw);
             let sender = decode_sender(sender_tuple)?;
-            let receiver = decode_receiver(receiver_tuple)?;
+            let receiver = decode_participant(receiver_tuple)?;
             let stored: ChatMessage = serde_json::from_value(body).map_err(|e| {
                 SessionError::Backend(format!("deserialize message for session {id:?}: {e}"))
             })?;
@@ -518,7 +494,7 @@ impl SessionStore for PgSessionStore {
         for (seq, raw) in rows.into_iter().map(split_window_row) {
             let (sender_tuple, receiver_tuple, body) = raw;
             let sender = decode_sender(sender_tuple)?;
-            let receiver = decode_receiver(receiver_tuple)?;
+            let receiver = decode_participant(receiver_tuple)?;
             let stored: ChatMessage = serde_json::from_value(body).map_err(|e| {
                 SessionError::Backend(format!("deserialize message for session {id:?}: {e}"))
             })?;
@@ -561,8 +537,8 @@ impl SessionStore for PgSessionStore {
 
         let (acid, akind, auid, aaid, bcid, bkind, buid, baid) =
             row.ok_or(SessionError::NotFound(id))?;
-        let a = decode_receiver((acid, akind, auid, aaid))?;
-        let b = decode_receiver((bcid, bkind, buid, baid))?;
+        let a = decode_participant((acid, akind, auid, aaid))?;
+        let b = decode_participant((bcid, bkind, buid, baid))?;
         Ok((a, b))
     }
 
@@ -634,7 +610,7 @@ impl SessionStore for PgSessionStore {
         for raw in rows {
             let (sender_tuple, receiver_tuple, body) = split_message_row(raw);
             let sender = decode_sender(sender_tuple)?;
-            let receiver = decode_receiver(receiver_tuple)?;
+            let receiver = decode_participant(receiver_tuple)?;
             let stored: ChatMessage = serde_json::from_value(body).map_err(|e| {
                 SessionError::Backend(format!("deserialize parent message for {id:?}: {e}"))
             })?;

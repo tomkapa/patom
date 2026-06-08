@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 use crate::agents::AgentId;
-use crate::colleagues::{ColleagueId, SharedColleagueStore};
+use crate::colleagues::{ColleagueId, ColleagueRosterCache, SharedColleagueStore};
 use crate::memory::ContradictionEventId;
 use crate::provider::{
     ChatMessage, EmbeddingProvider, SharedEmbeddingProvider, UserContent, embed_one,
@@ -41,6 +41,7 @@ pub struct MemorySectionLoader {
     store: SharedMemoryStore,
     sessions: SharedSessionStore,
     colleagues: SharedColleagueStore,
+    roster_cache: ColleagueRosterCache,
     embeddings: SharedEmbeddingProvider,
     cache: SessionMemoryCache,
 }
@@ -51,6 +52,7 @@ impl MemorySectionLoader {
         store: SharedMemoryStore,
         sessions: SharedSessionStore,
         colleagues: SharedColleagueStore,
+        roster_cache: ColleagueRosterCache,
         embeddings: SharedEmbeddingProvider,
         cache: SessionMemoryCache,
     ) -> Self {
@@ -58,6 +60,7 @@ impl MemorySectionLoader {
             store,
             sessions,
             colleagues,
+            roster_cache,
             embeddings,
             cache,
         }
@@ -111,6 +114,7 @@ impl MemorySectionLoader {
         let store = self.store.clone();
         let sessions = self.sessions.clone();
         let colleagues = self.colleagues.clone();
+        let roster_cache = self.roster_cache.clone();
         let embeddings = self.embeddings.clone();
         // Cheap variant probe — the DB lookup happens inside the closure
         // so cache hits skip it entirely.
@@ -159,9 +163,12 @@ impl MemorySectionLoader {
                 // can label entries without resolving per row (§4). One roster
                 // read covers every subject; skipped entirely when no loaded
                 // row names a subject.
-                let subjects =
-                    hydrate_subjects(&colleagues, rows.iter().chain(contextual_rows.iter()))
-                        .await?;
+                let subjects = hydrate_subjects(
+                    &roster_cache,
+                    &colleagues,
+                    rows.iter().chain(contextual_rows.iter()),
+                )
+                .await?;
 
                 Ok::<_, MemoryError>(compose_memory_section(
                     &rows,
@@ -195,7 +202,12 @@ impl MemorySectionLoader {
 /// hold no collaborator memories. A subject that the roster does not contain
 /// (a coworker who has since left the org) is simply absent from the map; the
 /// renderer then degrades that entry to plain prose.
+///
+/// The roster comes through the shared [`ColleagueRosterCache`] — the same
+/// cache the system-prompt `<colleagues>` block reads — so a hydration on an
+/// org already rendered this turn is a cache hit, not a second DB scan.
 async fn hydrate_subjects<'a>(
+    roster_cache: &ColleagueRosterCache,
     colleagues: &SharedColleagueStore,
     rows: impl Iterator<Item = &'a MemoryRow>,
 ) -> Result<SubjectNames, MemoryError> {
@@ -211,9 +223,9 @@ async fn hydrate_subjects<'a>(
         return Ok(SubjectNames::new());
     };
 
-    let roster = colleagues.list_for_org(org).await?;
+    let roster = roster_cache.get_or_load(org, colleagues).await?;
     let mut out = SubjectNames::with_capacity(needed.len());
-    for cref in &roster {
+    for cref in roster.iter() {
         if needed.contains(&cref.id) {
             out.insert(cref.id, cref.display_name.clone());
         }

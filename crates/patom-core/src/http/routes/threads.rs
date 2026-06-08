@@ -344,22 +344,23 @@ fn history_row_to_message(row: HistoryRow) -> Result<ThreadMessage, HttpError> {
     // The schema enforces these shapes, so a violation is a malformed-DB
     // anomaly, not bad input — log it and degrade to a typed 500 rather than
     // panicking the handler (§6/§12: no `expect` across the HTTP boundary).
-    let sender = decode_sender(
+    let sender = Participant::from_colleague_columns((
         sender_colleague_id,
         sender_kind,
         sender_user_id,
         sender_agent_id,
-    )
+    ))
+    .map(MessageSender::from_participant)
     .map_err(|e| {
         tracing::error!(error = e, "thread.history.decode_sender");
         HttpError::Internal
     })?;
-    let receiver = decode_receiver(
+    let receiver = Participant::from_colleague_columns((
         Some(receiver_colleague_id),
         Some(receiver_kind),
         receiver_user_id,
         receiver_agent_id,
-    )
+    ))
     .map_err(|e| {
         tracing::error!(error = e, "thread.history.decode_receiver");
         HttpError::Internal
@@ -373,57 +374,6 @@ fn history_row_to_message(row: HistoryRow) -> Result<ThreadMessage, HttpError> {
         created_at,
         request_id,
     })
-}
-
-/// Mirror of `crate::session::pg_store::decode_participant` for the threads
-/// route — both speak the same schema shape but the threads SQL builds its
-/// own row shape (it returns extra columns the session store doesn't need).
-fn decode_sender(
-    cid: Option<crate::colleagues::ColleagueId>,
-    kind: Option<crate::colleagues::ColleagueKind>,
-    user_id: Option<crate::auth::UserId>,
-    agent_id: Option<AgentId>,
-) -> Result<MessageSender, &'static str> {
-    use crate::colleagues::ColleagueKind;
-    match (cid, kind) {
-        (None, _) => Ok(MessageSender::System),
-        (Some(c), Some(ColleagueKind::Human)) => {
-            let u = user_id.ok_or("human sender missing user_id")?;
-            Ok(MessageSender::Human {
-                colleague_id: c,
-                user_id: u,
-            })
-        }
-        (Some(c), Some(ColleagueKind::Agent)) => {
-            let a = agent_id.ok_or("agent sender missing agent_id")?;
-            Ok(MessageSender::Agent {
-                colleague_id: c,
-                agent_id: a,
-            })
-        }
-        (Some(_), None) => Err("colleague_id present without joined kind"),
-    }
-}
-
-fn decode_receiver(
-    cid: Option<crate::colleagues::ColleagueId>,
-    kind: Option<crate::colleagues::ColleagueKind>,
-    user_id: Option<crate::auth::UserId>,
-    agent_id: Option<AgentId>,
-) -> Result<Participant, &'static str> {
-    use crate::colleagues::ColleagueKind;
-    match (cid, kind) {
-        (None, _) => Ok(Participant::System),
-        (Some(c), Some(ColleagueKind::Human)) => {
-            let u = user_id.ok_or("human receiver missing user_id")?;
-            Ok(Participant::human(c, u))
-        }
-        (Some(c), Some(ColleagueKind::Agent)) => {
-            let a = agent_id.ok_or("agent receiver missing agent_id")?;
-            Ok(Participant::agent(c, a))
-        }
-        (Some(_), None) => Err("colleague_id present without joined kind"),
-    }
 }
 
 // ─── G3 ─────────────────────────────────────────────────────────────────

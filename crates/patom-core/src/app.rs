@@ -219,6 +219,7 @@ impl Collaborators {
             memory_store.clone(),
             sessions.clone(),
             colleagues.clone(),
+            roster_cache.clone(),
             embedding_provider.clone(),
             session_memory_cache.clone(),
         );

@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId};
-use crate::types::ParseError;
+use crate::types::{ParseError, Participant};
 
 use super::error::ColleagueError;
 use super::limits::COLLEAGUE_NAME_MAX_LEN;
@@ -229,6 +229,29 @@ impl Colleague {
             id: self.id,
             kind: self.kind,
             display_name: self.display_name.clone(),
+        }
+    }
+
+    /// Project to the addressing-layer [`Participant`].
+    ///
+    /// The kind ⇔ satellite invariant established by [`Self::try_new`]
+    /// guarantees the matching satellite id is present, so this is total: a
+    /// missing id here means the invariant was bypassed, which is an assertion
+    /// failure (§6), not a recoverable error. Callers that hold a `Colleague`
+    /// no longer re-match `kind` and re-unwrap the satellite themselves.
+    #[must_use]
+    pub fn as_participant(&self) -> Participant {
+        match self.kind {
+            ColleagueKind::Human => Participant::human(
+                self.id,
+                self.user_id
+                    .expect("invariant: human colleague carries user_id"),
+            ),
+            ColleagueKind::Agent => Participant::agent(
+                self.id,
+                self.agent_id
+                    .expect("invariant: agent colleague carries agent_id"),
+            ),
         }
     }
 }

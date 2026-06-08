@@ -66,6 +66,7 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
         store.clone(),
         sessions.clone(),
         colleagues.clone(),
+        roster_cache.clone(),
         embeddings,
         session_cache,
     );
