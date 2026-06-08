@@ -84,7 +84,6 @@ export function Sidebar({
               key={c.id}
               icon={<Hash className="h-3 w-3 text-[var(--color-muted-foreground)]" />}
               label={c.name}
-              prefix="#"
               trailing={
                 c.can_manage ? (
                   <button
