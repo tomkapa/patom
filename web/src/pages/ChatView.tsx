@@ -170,10 +170,10 @@ export function ChatView() {
     [agents, selectedAgentId],
   );
 
-  const selectedChannel = useMemo(
-    () => channels.find((c) => c.id === selectedChannelId) ?? null,
-    [channels, selectedChannelId],
-  );
+  // Cheap find over a short list; no memo needed (it allocates a new result
+  // each render anyway).
+  const selectedChannel =
+    channels.find((c) => c.id === selectedChannelId) ?? null;
   const channelName = selectedChannel?.name ?? "general";
 
   const selectedThread = useMemo(
@@ -346,7 +346,6 @@ export function ChatView() {
     {!isDemo && (
       <ChannelDialog
         open={dialogOpen}
-        mode={manageChannel ? "manage" : "create"}
         channel={manageChannel ?? undefined}
         onClose={() => setDialogOpen(false)}
         onArchived={(id) => {

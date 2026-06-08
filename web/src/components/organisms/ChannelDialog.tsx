@@ -29,14 +29,12 @@ function channelError(e: unknown): string {
 
 export function ChannelDialog({
   open,
-  mode,
   channel,
   onClose,
   onArchived,
 }: {
   open: boolean;
-  mode: "create" | "manage";
-  /** Required for `mode === "manage"`. */
+  /** Present → manage that channel; absent → create a new one. */
   channel?: Channel;
   onClose: () => void;
   /** Called after a successful archive so the parent can deselect it. */
@@ -44,11 +42,11 @@ export function ChannelDialog({
 }) {
   return (
     <Modal open={open} onClose={onClose} ariaLabel="Channel" width={460}>
-      {mode === "create" ? (
-        <CreateBody onClose={onClose} />
-      ) : channel ? (
+      {channel ? (
         <ManageBody channel={channel} onClose={onClose} onArchived={onArchived} />
-      ) : null}
+      ) : (
+        <CreateBody onClose={onClose} />
+      )}
     </Modal>
   );
 }
@@ -153,9 +151,15 @@ function ManageBody({
       ),
     [rosterQ.data],
   );
+  // O(1) id → row lookup for `label()`, which the member list calls several
+  // times per row.
+  const rosterById = useMemo(
+    () => new Map(roster.map((r) => [r.user_id, r])),
+    [roster],
+  );
   const candidates = roster.filter((r) => r.user_id && !memberIds.has(r.user_id));
   const label = (id: string) => {
-    const row = roster.find((r) => r.user_id === id);
+    const row = rosterById.get(id);
     return row?.display_name ?? row?.email ?? id;
   };
 
