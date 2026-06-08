@@ -25,6 +25,7 @@ const en = {
   "sidebar.channels": "Channels",
   "sidebar.dms": "Direct Messages",
   "sidebar.empty_agents": "No agents registered.",
+  "sidebar.empty_channels": "No channels yet.",
 
   "menu.home": "Home",
   "menu.agent": "Agent",

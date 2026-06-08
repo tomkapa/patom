@@ -21,6 +21,7 @@ const vi: TranslationTable = {
   "sidebar.channels": "Kênh",
   "sidebar.dms": "Tin nhắn riêng",
   "sidebar.empty_agents": "Chưa có agent nào được đăng ký.",
+  "sidebar.empty_channels": "Chưa có kênh nào.",
 
   "menu.home": "Trang chủ",
   "menu.agent": "Agent",

@@ -1,10 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 
-export function useThreads() {
+/**
+ * Channel feed. `channelId` selects a channel's threads; `null` returns the
+ * caller's direct messages (BE: human-rooted threads with no channel). The
+ * key includes `channelId` so switching channels refetches rather than
+ * showing the previous feed.
+ */
+export function useThreads(channelId: string | null = null) {
   return useQuery({
-    queryKey: ["threads"],
-    queryFn: api.threads,
+    queryKey: ["threads", { channelId }],
+    queryFn: () => api.threads(channelId),
     refetchInterval: 15_000,
     refetchOnWindowFocus: true,
   });

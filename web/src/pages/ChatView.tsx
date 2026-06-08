@@ -6,7 +6,9 @@ import { Composer } from "../components/organisms/Composer";
 import { MessageList } from "../components/organisms/MessageList";
 import { Sidebar } from "../components/organisms/Sidebar";
 import { ThreadPanel } from "../components/organisms/ThreadPanel";
+import { ChannelDialog } from "../components/organisms/ChannelDialog";
 import { useAgents } from "../hooks/useAgents";
+import { useChannels } from "../hooks/useChannels";
 import { useActiveOrg } from "../hooks/useMe";
 import { useAuthStore } from "../stores/authStore";
 import { useThreads } from "../hooks/useThreads";
@@ -30,8 +32,20 @@ import { uuidv7 } from "../lib/utils";
 import { prefixMention } from "../lib/mentions";
 import { useIsWide } from "../hooks/useMediaQuery";
 import { useT } from "../i18n";
+import type { Channel } from "../types/api";
 
-const CHANNEL = "general";
+/** Demo mode has no backend; show a single read-only #general so the feed
+ *  renders. Real channels come from `useChannels`. */
+const DEMO_CHANNELS: Channel[] = [
+  {
+    id: "general",
+    name: "general",
+    system: true,
+    can_manage: false,
+    created_at: new Date(0).toISOString(),
+    archived_at: null,
+  },
+];
 
 /** Force demo fixtures via `?demo=1` (or empty backend). */
 function isDemoMode(): boolean {
@@ -47,6 +61,16 @@ export function ChatView() {
   // When set, the channel feed is filtered to threads where this agent is
   // the human's first recipient (`first_agent.id === selectedAgentId`).
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  // The selected channel (mutually exclusive with `selectedAgentId`: an agent
+  // DM or a channel feed, never both). `null` until channels load; an effect
+  // defaults it to the first channel (#general).
+  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(
+    forcedDemo ? DEMO_CHANNELS[0]!.id : null,
+  );
+  // Create / manage channel dialog. `manageChannel` is set for the manage
+  // variant; `null` + `dialogOpen` is the create variant.
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [manageChannel, setManageChannel] = useState<Channel | null>(null);
   // On wide screens the thread panel is a default-visible side column; on
   // compact screens it's a drill-in overlay that stays closed until the
   // reader opens a thread (otherwise it would cover the feed on load).
@@ -77,7 +101,16 @@ export function ChatView() {
   };
 
   const agentsQ = useAgents();
-  const threadsQ = useThreads();
+  const channelsQ = useChannels();
+  // DM mode (agent selected) reads the caller's direct messages (channel-less
+  // feed); channel mode reads the selected channel. Passing `null` to
+  // `useThreads` requests the DM feed.
+  const feedChannelId = selectedAgentId ? null : selectedChannelId;
+  const threadsQ = useThreads(forcedDemo ? null : feedChannelId);
+  // The sidebar's per-agent badges count DM threads, which must NOT depend on
+  // the channel currently in view. Read the DM feed on its own; react-query
+  // dedupes it with `threadsQ` whenever we're already in DM mode.
+  const dmThreadsQ = useThreads(null);
   const submit = useSubmitPrompt();
   const me = useAuthStore((s) => s.me);
   const activeOrg = useActiveOrg();
@@ -90,7 +123,18 @@ export function ChatView() {
   // dropped by the `if (isDemo) return;` guards below.
   const isDemo = forcedDemo;
   const agents = isDemo ? DEMO_AGENTS : (agentsQ.data ?? []);
+  const channels = isDemo ? DEMO_CHANNELS : (channelsQ.data ?? []);
   const threads = isDemo ? DEMO_THREADS : (threadsQ.data ?? []);
+  // DM threads drive the sidebar agent counts regardless of the active feed.
+  const dmThreads = isDemo ? DEMO_THREADS : (dmThreadsQ.data ?? []);
+
+  // Default the channel selection to the first channel (#general) once the
+  // list loads, unless the reader is already in a channel or an agent DM.
+  useEffect(() => {
+    if (selectedChannelId || selectedAgentId) return;
+    const first = channels[0];
+    if (first) setSelectedChannelId(first.id);
+  }, [channels, selectedChannelId, selectedAgentId]);
   const poster = isDemo
     ? { ...DEMO_HUMAN_POSTER, avatar_url: null }
     : {
@@ -132,6 +176,12 @@ export function ChatView() {
     [agents, selectedAgentId],
   );
 
+  // Cheap find over a short list; no memo needed (it allocates a new result
+  // each render anyway).
+  const selectedChannel =
+    channels.find((c) => c.id === selectedChannelId) ?? null;
+  const channelName = selectedChannel?.name ?? "general";
+
   const selectedThread = useMemo(
     () => threads.find((t) => t.root_request_id === selectedRoot) ?? null,
     [threads, selectedRoot],
@@ -158,6 +208,9 @@ export function ChatView() {
       const res = await submit.mutateAsync({
         content: input.content,
         agent_id,
+        // In channel mode the new thread is stamped with the channel; a DM
+        // (agent selected) leaves it unset so the BE files it as a DM.
+        ...(selectedAgentId ? {} : { channel_id: selectedChannelId ?? undefined }),
       });
       setSelectedRoot(res.request_id);
     } catch (e) {
@@ -202,27 +255,38 @@ export function ChatView() {
   // useMcpServers poll; the agent's next response arrives via the
   // existing thread stream.
 
-  // Feed label: agent DMs read `dm/<name>`, the channel reads bare
-  // `general` (the `#` prefix is added only where a header wants it).
-  const channelLabel = selectedAgent ? `dm/${selectedAgent.name}` : CHANNEL;
+  // Feed label: agent DMs read `dm/<name>`, a channel reads its bare name
+  // (the `#` prefix is added only where a header wants it).
+  const channelLabel = selectedAgent ? `dm/${selectedAgent.name}` : channelName;
 
   return (
+    <>
     <ChatLayout
-      title={selectedAgent ? channelLabel : `#${CHANNEL}`}
+      title={selectedAgent ? channelLabel : `#${channelName}`}
       sidebar={
         <Sidebar
           workspace={activeOrg?.name ?? "Patom"}
-          threads={threads}
+          dmThreads={dmThreads}
+          channels={channels}
           agents={agents}
-          selectedChannel={selectedAgentId ? "" : CHANNEL}
+          selectedChannelId={selectedAgentId ? null : selectedChannelId}
           selectedAgentId={selectedAgentId}
-          onSelectChannel={() => {
+          onSelectChannel={(id) => {
             setSelectedAgentId(null);
+            setSelectedChannelId(id);
             setSelectedRoot(null);
           }}
           onSelectAgent={(id) => {
             setSelectedAgentId(id);
             setSelectedRoot(null);
+          }}
+          onAddChannel={() => {
+            setManageChannel(null);
+            setDialogOpen(true);
+          }}
+          onManageChannel={(c) => {
+            setManageChannel(c);
+            setDialogOpen(true);
           }}
         />
       }
@@ -257,7 +321,7 @@ export function ChatView() {
             agents={agents}
             mode={selectedAgent ? "dm" : "channel"}
             dmAgent={selectedAgent ?? undefined}
-            channel={CHANNEL}
+            channel={channelName}
             pending={submit.isPending}
             disabled={agentsQ.isLoading && !isDemo}
             onSubmit={onSubmit}
@@ -268,7 +332,7 @@ export function ChatView() {
       onPanelClose={() => setShowPanel(false)}
       panel={
         <ThreadPanel
-          channel={CHANNEL}
+          channel={channelName}
           resizable={isWide}
           thread={selectedThread}
           agents={agents}
@@ -283,6 +347,19 @@ export function ChatView() {
         />
       }
     />
+    {!isDemo && (
+      <ChannelDialog
+        open={dialogOpen}
+        channel={manageChannel ?? undefined}
+        onClose={() => setDialogOpen(false)}
+        onArchived={(id) => {
+          // Deselect an archived channel; the default-select effect falls back
+          // to the first remaining channel.
+          if (selectedChannelId === id) setSelectedChannelId(null);
+        }}
+      />
+    )}
+    </>
   );
 }
 

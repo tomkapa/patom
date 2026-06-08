@@ -277,12 +277,33 @@ async fn list_threads_attributes_starter_to_real_author(pool: PgPool) {
     let bob_root = enqueue_human_root_as(&h, bob, "from bob", "k-bob").await;
     let alice_root = enqueue_human_root_as(&h, alice, "from alice", "k-alice").await;
 
+    // Starter attribution is a multi-user concern, which now lives in shared
+    // channels — a channel-less root is a DM private to its creator, so Bob
+    // would never see Alice's there. Bob and Alice are both auto-enrolled in
+    // their org's #general, so post both roots into it and read that channel
+    // feed as Bob.
+    let general_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM channels WHERE org_id = $1 AND name = 'general' AND archived_at IS NULL",
+    )
+    .bind(h.seed.org_id)
+    .fetch_one(&h.state.pool)
+    .await
+    .expect("general channel seeded");
+    for root in [bob_root, alice_root] {
+        sqlx::query("UPDATE prompt_requests SET channel_id = $1 WHERE id = $2")
+            .bind(general_id)
+            .bind(root)
+            .execute(&h.state.pool)
+            .await
+            .expect("stamp channel");
+    }
+
     // Fetched as Bob (the harness principal).
     let app = router(h.state.clone());
     let res = app
         .oneshot(
             axum::http::Request::builder()
-                .uri("/api/threads")
+                .uri(format!("/api/threads?channel_id={general_id}").as_str())
                 .header("cookie", &h.auth_cookie)
                 .body(axum::body::Body::empty())
                 .expect("request"),

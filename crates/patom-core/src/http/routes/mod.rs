@@ -10,6 +10,7 @@
 
 mod agents;
 mod auth;
+mod channels;
 mod healthz;
 mod mcp;
 mod me;
@@ -134,6 +135,7 @@ pub fn router(state: AppState) -> Router {
     let private = Router::new()
         .merge(prompts::router())
         .merge(agents::router())
+        .merge(channels::router())
         .merge(scheduling::router())
         .merge(mcp::router())
         .merge(memory::router())
