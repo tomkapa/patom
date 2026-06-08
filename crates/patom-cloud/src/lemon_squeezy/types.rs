@@ -71,6 +71,10 @@ ls_string_id! {
     LsVariantId, "ls_variant_id"
 }
 ls_string_id! {
+    /// Lemon Squeezy store id the checkout is created against.
+    LsStoreId, "ls_store_id"
+}
+ls_string_id! {
     /// Per-event idempotency key for an inbound webhook.
     ///
     /// Ensures a redelivery is applied exactly once. Lemon Squeezy sends no

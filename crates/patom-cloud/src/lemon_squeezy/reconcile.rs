@@ -9,13 +9,15 @@ use chrono::Duration;
 use patom::clock::SharedClock;
 use patom::scheduling::ScheduledTask;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
-use super::client::SharedCheckoutClient;
+use super::client::{LsCheckoutClient, SharedCheckoutClient};
 use super::config::LemonSqueezyConfig;
 use super::error::LemonSqueezyError;
 use super::limits::{RECONCILE_BATCH, RECONCILE_INTERVAL, RECONCILE_STALE_AFTER_SECS};
-use super::store::{NewSubscription, SharedSubscriptionStore};
+use super::store::{
+    NewSubscription, SharedSubscriptionStore, SubscriptionRecord, SubscriptionStore,
+};
 
 /// Handles the reconcile poll needs, cloned into the spawned task.
 #[derive(Debug, Clone)]
@@ -30,42 +32,68 @@ pub struct ReconcileDeps {
 /// `limit`) from the Lemon Squeezy API, upserting the truth. Returns how many
 /// were refreshed.
 ///
+/// Per-item failures are logged and skipped, never aborting the sweep: stale
+/// rows are oldest-first, so one repeatedly-failing oldest row must not starve
+/// the newer ones. Only the initial `list_stale` failure propagates.
+///
 /// # Errors
-/// [`LemonSqueezyError`] from the store or the API; a failing sweep is logged
-/// by the scheduler and retried next tick.
+/// [`LemonSqueezyError::Db`] if listing the stale set fails.
 pub async fn reconcile_once(
-    client: &dyn super::client::LsCheckoutClient,
-    store: &dyn super::store::SubscriptionStore,
+    client: &dyn LsCheckoutClient,
+    store: &dyn SubscriptionStore,
     config: &LemonSqueezyConfig,
     cutoff: chrono::DateTime<chrono::Utc>,
     limit: i64,
 ) -> Result<usize, LemonSqueezyError> {
     let stale = store.list_stale(cutoff, limit).await?;
-    let mut refreshed = 0;
+    let mut refreshed = 0usize;
+    let mut failed = 0usize;
     for sub in stale {
-        let remote = client.get_subscription(&sub.ls_subscription_id).await?;
-        // Keep the existing plan/variant when the remote variant isn't in the
-        // configured map (or absent) — only status/period are authoritative
-        // here.
-        let plan = remote
-            .variant_id
-            .as_ref()
-            .and_then(|v| config.plan_for(v))
-            .unwrap_or(sub.plan);
-        store
-            .upsert(NewSubscription {
-                org_id: sub.org_id,
-                ls_customer_id: remote.customer_id.or(sub.ls_customer_id),
-                ls_subscription_id: sub.ls_subscription_id,
-                ls_variant_id: remote.variant_id.or(sub.ls_variant_id),
-                plan,
-                status: remote.status,
-                current_period_end: remote.current_period_end,
-            })
-            .await?;
-        refreshed += 1;
+        match refresh_one(client, store, config, &sub).await {
+            Ok(()) => refreshed += 1,
+            Err(e) => {
+                failed += 1;
+                warn!(
+                    error = %e,
+                    subscription = sub.ls_subscription_id.as_str(),
+                    event = "lemon_squeezy.reconcile.item_failed",
+                );
+            }
+        }
+    }
+    if failed > 0 {
+        warn!(event = "lemon_squeezy.reconcile.partial", refreshed, failed);
     }
     Ok(refreshed)
+}
+
+/// Refresh one subscription from the API. Isolated so a single failure can be
+/// logged and skipped without aborting the batch.
+async fn refresh_one(
+    client: &dyn LsCheckoutClient,
+    store: &dyn SubscriptionStore,
+    config: &LemonSqueezyConfig,
+    sub: &SubscriptionRecord,
+) -> Result<(), LemonSqueezyError> {
+    let remote = client.get_subscription(&sub.ls_subscription_id).await?;
+    // Keep the existing plan/variant when the remote variant isn't in the
+    // configured map (or absent) — only status/period are authoritative here.
+    let plan = remote
+        .variant_id
+        .as_ref()
+        .and_then(|v| config.plan_for(v))
+        .unwrap_or(sub.plan);
+    store
+        .upsert(NewSubscription {
+            org_id: sub.org_id,
+            ls_customer_id: remote.customer_id.or_else(|| sub.ls_customer_id.clone()),
+            ls_subscription_id: sub.ls_subscription_id.clone(),
+            ls_variant_id: remote.variant_id.or_else(|| sub.ls_variant_id.clone()),
+            plan,
+            status: remote.status,
+            current_period_end: remote.current_period_end,
+        })
+        .await
 }
 
 /// Spawn the reconciliation poll. The returned [`ScheduledTask`] ticks every
@@ -145,7 +173,7 @@ mod tests {
         LemonSqueezyConfig::new(
             patom::types::SecretString::try_from("s".to_string()).expect("secret"),
             patom::types::SecretString::try_from("a".to_string()).expect("api"),
-            "store".to_string(),
+            super::super::types::LsStoreId::try_from("store").expect("store id"),
             HashMap::new(),
         )
     }

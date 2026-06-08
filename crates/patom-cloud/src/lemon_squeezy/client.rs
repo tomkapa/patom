@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use super::error::LemonSqueezyError;
 use super::limits::LS_API_TIMEOUT;
-use super::types::{LsCustomerId, LsSubscriptionId, LsVariantId, SubscriptionStatus};
+use super::types::{LsCustomerId, LsStoreId, LsSubscriptionId, LsVariantId, SubscriptionStatus};
 
 /// Default Lemon Squeezy API base. Overridable (sandbox / tests) at construction.
 pub const LEMON_SQUEEZY_API_BASE: &str = "https://api.lemonsqueezy.com";
@@ -22,7 +22,7 @@ pub const LEMON_SQUEEZY_API_BASE: &str = "https://api.lemonsqueezy.com";
 /// Inputs to create a hosted checkout for one variant.
 #[derive(Debug, Clone)]
 pub struct CheckoutCreate {
-    pub store_id: String,
+    pub store_id: LsStoreId,
     pub variant: LsVariantId,
     /// Org to attribute the resulting subscription to — echoed back on every
     /// webhook as `meta.custom_data.org_id`.
@@ -122,7 +122,7 @@ impl LsCheckoutClient for HttpLemonSqueezyClient {
                 "type": "checkouts",
                 "attributes": attributes,
                 "relationships": {
-                    "store": { "data": { "type": "stores", "id": req.store_id } },
+                    "store": { "data": { "type": "stores", "id": req.store_id.as_str() } },
                     "variant": { "data": { "type": "variants", "id": req.variant.as_str() } }
                 }
             }
@@ -141,9 +141,7 @@ impl LsCheckoutClient for HttpLemonSqueezyClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(LemonSqueezyError::Upstream {
-                status: status.as_u16(),
-            });
+            return Err(LemonSqueezyError::Upstream { status });
         }
         let parsed: CheckoutResponse = response.json().await?;
         Ok(parsed.data.attributes.url)
@@ -168,9 +166,7 @@ impl LsCheckoutClient for HttpLemonSqueezyClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(LemonSqueezyError::Upstream {
-                status: status.as_u16(),
-            });
+            return Err(LemonSqueezyError::Upstream { status });
         }
         let parsed: SubscriptionResponse = response.json().await?;
         let attrs = parsed.data.attributes;

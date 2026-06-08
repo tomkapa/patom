@@ -165,6 +165,9 @@ impl SubscriptionStore for PgSubscriptionStore {
         cutoff: DateTime<Utc>,
         limit: i64,
     ) -> Result<Vec<SubscriptionRecord>, LemonSqueezyError> {
+        // A non-positive LIMIT is a caller bug (the only caller passes the
+        // RECONCILE_BATCH constant); assert rather than issue invalid SQL (§6).
+        assert!(limit > 0, "list_stale limit must be positive, got {limit}");
         let sql = format!(
             "SELECT {SUBSCRIPTION_SELECT} WHERE updated_at < $1 ORDER BY updated_at ASC LIMIT $2"
         );

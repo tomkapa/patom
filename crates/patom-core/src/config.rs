@@ -108,6 +108,16 @@ pub enum SettingsError {
 
     #[error("smtp: PATOM_EMAIL_FROM {raw:?} is not a valid email address ({reason})")]
     InvalidEmailFrom { raw: String, reason: &'static str },
+
+    #[error(
+        "lemon squeezy: partial configuration; set all of \
+         PATOM_LEMON_SQUEEZY_API_KEY, PATOM_LEMON_SQUEEZY_WEBHOOK_SECRET, \
+         PATOM_LEMON_SQUEEZY_STORE_ID — or none"
+    )]
+    PartialLemonSqueezyConfig,
+
+    #[error("lemon squeezy: PATOM_LEMON_SQUEEZY_STORE_ID must not be empty")]
+    EmptyLemonSqueezyStoreId,
 }
 
 /// Process-wide configuration loaded once at startup. Secrets are wrapped in
@@ -158,6 +168,34 @@ pub struct Settings {
     /// recoverable from the structured logs — a first-class deployment for
     /// local dev and operators who haven't provisioned a relay yet.
     pub smtp: Option<SmtpSettings>,
+    /// Lemon Squeezy billing (Cloud edition). Present iff all the required
+    /// `PATOM_LEMON_SQUEEZY_*` env vars are set. Consumed by `patom-cloud`
+    /// under `--features cloud`; the OSS / self-host build never reads it.
+    pub lemon_squeezy: Option<LemonSqueezySettings>,
+}
+
+/// Lemon Squeezy billing configuration (Cloud edition).
+///
+/// The three credential/identity fields are required as a group (rejected
+/// partial via [`SettingsError::PartialLemonSqueezyConfig`]); the four per-plan
+/// variant ids are independently optional. `patom-cloud` maps the variant ids
+/// to its `Plan` type — kept as plain strings here so core stays plan-agnostic.
+#[derive(Debug, Clone)]
+pub struct LemonSqueezySettings {
+    /// API key for the Lemon Squeezy REST API (checkout, reconciliation).
+    pub api_key: SecretString,
+    /// Webhook signing secret — verifies the `X-Signature` HMAC.
+    pub webhook_secret: SecretString,
+    /// Store id the checkout is created against.
+    pub store_id: String,
+    /// Lemon Squeezy variant id sold as the Starter plan, if configured.
+    pub variant_starter: Option<String>,
+    /// Variant id sold as the Growth plan.
+    pub variant_growth: Option<String>,
+    /// Variant id sold as the Scale plan.
+    pub variant_scale: Option<String>,
+    /// Variant id sold as the Enterprise plan.
+    pub variant_enterprise: Option<String>,
 }
 
 /// Outbound SMTP relay configuration for transactional mail.
@@ -581,6 +619,26 @@ struct RawSettings {
     patom_email_from: Option<String>,
     #[serde(default)]
     patom_email_from_name: Option<String>,
+
+    // Lemon Squeezy billing (Cloud edition; consumed by patom-cloud under
+    // `--features cloud`). Same all-or-nothing rule as Slack/SMTP for the three
+    // required fields; the four per-plan variant ids are independently
+    // optional. Read here (not via std::env in patom-cloud) so all config flows
+    // through the one serde boundary.
+    #[serde(default)]
+    patom_lemon_squeezy_api_key: Option<SecretString>,
+    #[serde(default)]
+    patom_lemon_squeezy_webhook_secret: Option<SecretString>,
+    #[serde(default)]
+    patom_lemon_squeezy_store_id: Option<String>,
+    #[serde(default)]
+    patom_lemon_squeezy_variant_starter: Option<String>,
+    #[serde(default)]
+    patom_lemon_squeezy_variant_growth: Option<String>,
+    #[serde(default)]
+    patom_lemon_squeezy_variant_scale: Option<String>,
+    #[serde(default)]
+    patom_lemon_squeezy_variant_enterprise: Option<String>,
 }
 
 fn default_web_dist() -> PathBuf {
@@ -898,6 +956,15 @@ impl TryFrom<RawSettings> for Settings {
             raw.patom_email_from,
             raw.patom_email_from_name,
         )?;
+        let lemon_squeezy = resolve_lemon_squeezy(
+            raw.patom_lemon_squeezy_api_key,
+            raw.patom_lemon_squeezy_webhook_secret,
+            raw.patom_lemon_squeezy_store_id,
+            raw.patom_lemon_squeezy_variant_starter,
+            raw.patom_lemon_squeezy_variant_growth,
+            raw.patom_lemon_squeezy_variant_scale,
+            raw.patom_lemon_squeezy_variant_enterprise,
+        )?;
         Ok(Self {
             providers,
             brave_search_api_key: raw.brave_search_api_key,
@@ -911,7 +978,43 @@ impl TryFrom<RawSettings> for Settings {
             slack,
             object_storage,
             smtp,
+            lemon_squeezy,
         })
+    }
+}
+
+/// Assemble [`LemonSqueezySettings`] from its raw fields with the same
+/// all-or-nothing rule as Slack/SMTP: the credential trio is required as a
+/// group; the per-plan variant ids are independently optional (empty → unset).
+#[allow(clippy::too_many_arguments)]
+fn resolve_lemon_squeezy(
+    api_key: Option<SecretString>,
+    webhook_secret: Option<SecretString>,
+    store_id: Option<String>,
+    variant_starter: Option<String>,
+    variant_growth: Option<String>,
+    variant_scale: Option<String>,
+    variant_enterprise: Option<String>,
+) -> Result<Option<LemonSqueezySettings>, SettingsError> {
+    let norm = |v: Option<String>| v.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    match (api_key, webhook_secret, store_id) {
+        (None, None, None) => Ok(None),
+        (Some(api_key), Some(webhook_secret), Some(store_id)) => {
+            let store_id = store_id.trim().to_owned();
+            if store_id.is_empty() {
+                return Err(SettingsError::EmptyLemonSqueezyStoreId);
+            }
+            Ok(Some(LemonSqueezySettings {
+                api_key,
+                webhook_secret,
+                store_id,
+                variant_starter: norm(variant_starter),
+                variant_growth: norm(variant_growth),
+                variant_scale: norm(variant_scale),
+                variant_enterprise: norm(variant_enterprise),
+            }))
+        }
+        _ => Err(SettingsError::PartialLemonSqueezyConfig),
     }
 }
 
@@ -1153,6 +1256,13 @@ mod tests {
             patom_smtp_password: None,
             patom_email_from: None,
             patom_email_from_name: None,
+            patom_lemon_squeezy_api_key: None,
+            patom_lemon_squeezy_webhook_secret: None,
+            patom_lemon_squeezy_store_id: None,
+            patom_lemon_squeezy_variant_starter: None,
+            patom_lemon_squeezy_variant_growth: None,
+            patom_lemon_squeezy_variant_scale: None,
+            patom_lemon_squeezy_variant_enterprise: None,
         }
     }
 
@@ -1540,6 +1650,52 @@ mod tests {
         raw.anthropic_api_key = Some(secret("sk-ant"));
         let s = Settings::try_from(raw).expect("valid");
         assert!(s.object_storage.is_none());
+    }
+
+    #[test]
+    fn no_lemon_squeezy_is_ok() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        let s = Settings::try_from(raw).expect("valid");
+        assert!(s.lemon_squeezy.is_none());
+    }
+
+    #[test]
+    fn partial_lemon_squeezy_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        // API key set, but webhook secret + store id missing → partial.
+        raw.patom_lemon_squeezy_api_key = Some(secret("ls-key"));
+        let err = Settings::try_from(raw).expect_err("partial");
+        assert!(matches!(err, SettingsError::PartialLemonSqueezyConfig));
+    }
+
+    #[test]
+    fn full_lemon_squeezy_parses_with_variants() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_lemon_squeezy_api_key = Some(secret("ls-key"));
+        raw.patom_lemon_squeezy_webhook_secret = Some(secret("ls-secret"));
+        raw.patom_lemon_squeezy_store_id = Some("store_1".to_string());
+        raw.patom_lemon_squeezy_variant_starter = Some("111".to_string());
+        // Empty variant string is normalised to None.
+        raw.patom_lemon_squeezy_variant_growth = Some("  ".to_string());
+        let s = Settings::try_from(raw).expect("valid");
+        let ls = s.lemon_squeezy.expect("configured");
+        assert_eq!(ls.store_id, "store_1");
+        assert_eq!(ls.variant_starter.as_deref(), Some("111"));
+        assert_eq!(ls.variant_growth, None);
+    }
+
+    #[test]
+    fn empty_lemon_squeezy_store_id_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_lemon_squeezy_api_key = Some(secret("ls-key"));
+        raw.patom_lemon_squeezy_webhook_secret = Some(secret("ls-secret"));
+        raw.patom_lemon_squeezy_store_id = Some("   ".to_string());
+        let err = Settings::try_from(raw).expect_err("empty store id");
+        assert!(matches!(err, SettingsError::EmptyLemonSqueezyStoreId));
     }
 
     fn with_smtp(raw: &mut RawSettings) {

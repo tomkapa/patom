@@ -33,9 +33,11 @@ pub enum LemonSqueezyError {
     #[error("lemon squeezy request failed: {0}")]
     Http(#[from] reqwest::Error),
 
-    /// Lemon Squeezy returned a non-success status. → 502.
+    /// Lemon Squeezy returned a non-success status. → 502. Carries the typed
+    /// [`reqwest::StatusCode`] rather than a bare `u16` so the value is always a
+    /// valid status (CLAUDE.md §1).
     #[error("lemon squeezy returned status {status}")]
-    Upstream { status: u16 },
+    Upstream { status: reqwest::StatusCode },
 
     /// Postgres error from the subscription store / idempotency ledger.
     #[error(transparent)]

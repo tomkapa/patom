@@ -47,12 +47,13 @@ pub fn checkout_router(deps: Arc<CloudDeps>) -> Router<AppState> {
         .layer(Extension(deps))
 }
 
+#[tracing::instrument(skip_all, name = "lemon_squeezy.checkout", fields(patom.org.id = %principal.active_org_id))]
 async fn handle(
     principal: Principal,
     Extension(deps): Extension<Arc<CloudDeps>>,
     Json(req): Json<CheckoutRequest>,
 ) -> Result<Json<CheckoutResponse>, StatusCode> {
-    create_checkout_for(
+    match create_checkout_for(
         &deps.config,
         deps.checkout_client.as_ref(),
         deps.app_base_url.as_deref(),
@@ -60,8 +61,15 @@ async fn handle(
         &req,
     )
     .await
-    .map(Json)
-    .map_err(status_for)
+    {
+        Ok(resp) => Ok(Json(resp)),
+        Err(e) => {
+            // Emit the error event inside the span before mapping to a status —
+            // the OTel bridge sets span status from it (CLAUDE.md §2).
+            tracing::error!(error = ?e, event = "lemon_squeezy.checkout.failed");
+            Err(status_for(e))
+        }
+    }
 }
 
 /// Validate the variant, build the checkout, and return its URL.
@@ -117,7 +125,7 @@ mod tests {
     use patom::types::SecretString;
 
     use super::super::client::CheckoutCreate;
-    use super::super::types::Plan;
+    use super::super::types::{LsStoreId, Plan};
 
     const VARIANT: &str = "555";
 
@@ -138,7 +146,9 @@ mod tests {
             _id: &super::super::types::LsSubscriptionId,
         ) -> Result<super::super::client::RemoteSubscription, LemonSqueezyError> {
             // Not exercised by the checkout tests.
-            Err(LemonSqueezyError::Upstream { status: 501 })
+            Err(LemonSqueezyError::Upstream {
+                status: reqwest::StatusCode::NOT_IMPLEMENTED,
+            })
         }
     }
 
@@ -151,7 +161,7 @@ mod tests {
         LemonSqueezyConfig::new(
             SecretString::try_from("secret".to_string()).expect("secret"),
             SecretString::try_from("api".to_string()).expect("api"),
-            "store_9".to_string(),
+            LsStoreId::try_from("store_9").expect("store id"),
             variants,
         )
     }
@@ -172,7 +182,7 @@ mod tests {
 
         let seen = client.seen.lock().expect("lock").clone().expect("captured");
         assert_eq!(seen.org_id, org, "org must be attached as custom data");
-        assert_eq!(seen.store_id, "store_9");
+        assert_eq!(seen.store_id.as_str(), "store_9");
         assert_eq!(seen.variant.as_str(), VARIANT);
         assert_eq!(
             seen.redirect_url.as_deref(),

@@ -149,7 +149,7 @@ mod tests {
     use crate::lemon_squeezy::client::{HttpLemonSqueezyClient, LEMON_SQUEEZY_API_BASE};
     use crate::lemon_squeezy::config::LemonSqueezyConfig;
     use crate::lemon_squeezy::pg_store::PgSubscriptionStore;
-    use crate::lemon_squeezy::types::{LsVariantId, Plan};
+    use crate::lemon_squeezy::types::{LsStoreId, LsVariantId, Plan};
 
     const SECRET: &str = "test_webhook_secret";
     const VARIANT: &str = "555";
@@ -164,7 +164,7 @@ mod tests {
         let config = LemonSqueezyConfig::new(
             SecretString::try_from(SECRET.to_string()).expect("secret"),
             SecretString::try_from("api".to_string()).expect("api key"),
-            "store_1".to_string(),
+            LsStoreId::try_from("store_1").expect("store id"),
             variants,
         );
         Arc::new(CloudDeps {

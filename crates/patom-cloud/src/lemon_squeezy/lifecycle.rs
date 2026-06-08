@@ -50,7 +50,16 @@ pub async fn apply(
         warn!(event = "lemon_squeezy.webhook.incomplete", name = event);
         return Ok(());
     };
-    let ls_variant_id = LsVariantId::try_from(variant.to_string())?;
+    // Malformed ids/status ack-and-skip (log) rather than propagate: the event
+    // is already deduped before `apply`, so a `?` here would permanently drop
+    // the state update. Only a DB failure (below) is retriable.
+    let Ok(ls_variant_id) = LsVariantId::try_from(variant.to_string()) else {
+        warn!(
+            event = "lemon_squeezy.webhook.bad_variant_id",
+            variant = variant
+        );
+        return Ok(());
+    };
     let Some(plan) = deps.config.plan_for(&ls_variant_id) else {
         warn!(
             event = "lemon_squeezy.webhook.unmapped_variant",
@@ -65,15 +74,23 @@ pub async fn apply(
         );
         return Ok(());
     };
+    let Ok(ls_subscription_id) = LsSubscriptionId::try_from(sub_id.to_owned()) else {
+        warn!(
+            event = "lemon_squeezy.webhook.bad_subscription_id",
+            name = event
+        );
+        return Ok(());
+    };
+    // A malformed customer id (effectively impossible from an i64) just drops to
+    // None rather than failing the whole event.
     let ls_customer_id = attrs
         .customer_id
-        .map(|c| LsCustomerId::try_from(c.to_string()))
-        .transpose()?;
+        .and_then(|c| LsCustomerId::try_from(c.to_string()).ok());
     deps.subscriptions
         .upsert(NewSubscription {
             org_id: org,
             ls_customer_id,
-            ls_subscription_id: LsSubscriptionId::try_from(sub_id.to_owned())?,
+            ls_subscription_id,
             ls_variant_id: Some(ls_variant_id),
             plan,
             status,

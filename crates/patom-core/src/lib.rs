@@ -37,8 +37,8 @@ pub use agent_core::{Agent, AgentBuilder, AgentError};
 pub use agents::{AgentId, AgentRecord, AgentStore, SharedAgentStore};
 pub use app::{CloudBuilder, CloudCtx, CloudParts};
 pub use config::{
-    ObjectStorageSettings, ProviderCredentials, ProviderSettings, Settings, SettingsError,
-    SlackSettings,
+    LemonSqueezySettings, ObjectStorageSettings, ProviderCredentials, ProviderSettings, Settings,
+    SettingsError, SlackSettings,
 };
 pub use entitlements::{
     AgentLimit, Entitlements, Feature, LicenseError, SharedEntitlements, UnlimitedEntitlements,

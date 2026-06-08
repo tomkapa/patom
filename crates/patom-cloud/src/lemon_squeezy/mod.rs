@@ -35,7 +35,7 @@ pub use pg_store::PgSubscriptionStore;
 pub use reconcile::{ReconcileDeps, reconcile_once};
 pub use store::{NewSubscription, SharedSubscriptionStore, SubscriptionRecord, SubscriptionStore};
 pub use types::{
-    LsCustomerId, LsEventId, LsOrderId, LsSubscriptionId, LsVariantId, Plan, SubscriptionId,
-    SubscriptionStatus,
+    LsCustomerId, LsEventId, LsOrderId, LsStoreId, LsSubscriptionId, LsVariantId, Plan,
+    SubscriptionId, SubscriptionStatus,
 };
 pub use webhook::{WEBHOOK_PATH, webhook_router};
