@@ -37,11 +37,13 @@ secret:
     DEEPSEEK_API_KEY: "CHANGE_ME"
     # ANTHROPIC_API_KEY: "CHANGE_ME"
     # OPENAI_API_KEY: "CHANGE_ME"
-    # Login: Google preset (default). For generic OIDC instead, drop these two,
-    # set PATOM_OIDC_CLIENT_ID / PATOM_OIDC_CLIENT_SECRET here and
-    # PATOM_OIDC_ISSUER / PATOM_OIDC_REDIRECT_URL under `env`.
-    GOOGLE_CLIENT_ID: "CHANGE_ME"
-    GOOGLE_CLIENT_SECRET: "CHANGE_ME"
+    # Login: OIDC (required). Point ISSUER at any OIDC IdP (Google, Keycloak,
+    # Okta, Entra, …); REDIRECT_URL is "{public-url}/auth/oidc/callback" and must
+    # be registered with that IdP. For Google use ISSUER https://accounts.google.com.
+    PATOM_OIDC_ISSUER: "https://accounts.google.com"
+    PATOM_OIDC_CLIENT_ID: "CHANGE_ME"
+    PATOM_OIDC_CLIENT_SECRET: "CHANGE_ME"
+    PATOM_OIDC_REDIRECT_URL: "https://patom.example.com/auth/oidc/callback"
 
     # --- optional groups (uncomment the whole group to enable) ---
     # Slack (inbound webhook + OAuth):

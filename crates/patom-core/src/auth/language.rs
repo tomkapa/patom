@@ -31,10 +31,10 @@ impl Language {
     /// callback time.
     ///
     /// Rules:
-    /// 1. Google's `locale` (from `userinfo`) wins if its primary subtag
+    /// 1. The IdP's `locale` (from `userinfo`) wins if its primary subtag
     ///    matches a known language.
     /// 2. Otherwise the inbound `Accept-Language` primary subtag is
-    ///    tried. (Captured at `/auth/google/login` and stashed on the
+    ///    tried. (Captured at `/auth/oidc/login` and stashed on the
     ///    `oauth_login_states` row.)
     /// 3. Otherwise [`Self::DEFAULT`].
     ///

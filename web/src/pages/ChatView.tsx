@@ -271,6 +271,7 @@ export function ChatView() {
       panel={
         <ThreadPanel
           channel={CHANNEL}
+          resizable={isWide}
           thread={selectedThread}
           agents={agents}
           bubbles={bubbles}

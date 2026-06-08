@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 mod common;
-use common::auth::{SeededPrincipal, seed_principal};
+use common::auth::{SeededPrincipal, join_second_org, seed_principal};
 use common::pg::seed_tenant;
 
 struct AuthMcpHarness {
@@ -87,6 +87,7 @@ impl AuthMcpHarness {
             responses,
             sessions,
             agents,
+            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),
@@ -325,6 +326,73 @@ async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
         .map(|r| r["catalog_id"].as_str().expect("catalog_id"))
         .collect();
     assert_eq!(aliases, vec!["theirs"]);
+}
+
+#[sqlx::test]
+async fn list_scoped_to_active_org_not_all_memberships(pool: PgPool) {
+    // A user who belongs to two orgs must see only the *active* org's
+    // servers. RLS gates on membership in *any* org, so the route has to
+    // pin the active org explicitly.
+    let h = AuthMcpHarness::new(&pool).await;
+    let other_org = join_second_org(&h.state.pool, h.primary.user_id).await;
+    h.seed_mcp(h.primary.org_id, h.primary.user_id, "active-srv")
+        .await;
+    h.seed_mcp(other_org, h.primary.user_id, "other-srv").await;
+
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/mcp-servers")
+                .header("cookie", h.primary.cookie_header())
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let aliases: Vec<&str> = json
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|r| r["catalog_id"].as_str().expect("catalog_id"))
+        .collect();
+    assert_eq!(aliases, vec!["active-srv"]);
+}
+
+#[sqlx::test]
+async fn read_by_id_404s_for_non_active_org_membership(pool: PgPool) {
+    // `visible_to` must pin the active org: a server in another org the
+    // user belongs to is not readable while that org is not active.
+    let h = AuthMcpHarness::new(&pool).await;
+    let other_org = join_second_org(&h.state.pool, h.primary.user_id).await;
+    h.seed_mcp(other_org, h.primary.user_id, "other-srv").await;
+    let id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM mcp_servers WHERE catalog_id = 'other-srv' AND org_id = $1",
+    )
+    .bind(other_org)
+    .fetch_one(&h.state.pool)
+    .await
+    .expect("read seeded server id");
+
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/api/mcp-servers/{id}"))
+                .header("cookie", h.primary.cookie_header())
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
 #[sqlx::test]

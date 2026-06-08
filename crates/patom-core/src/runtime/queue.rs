@@ -291,6 +291,11 @@ pub struct ClaimedSession {
     /// reads from within the turn evaluate against the right principal.
     pub created_by_user_id: UserId,
     pub receiver_agent_id: AgentId,
+    /// Colleague identity of `receiver_agent_id` within the org. Joined from
+    /// the `colleagues` partial-unique on `(org_id, agent_id)` during the
+    /// claim so the worker builds a colleague-backed [`Participant`] for
+    /// snapshot / append without an extra round-trip per turn.
+    pub receiver_colleague_id: crate::colleagues::ColleagueId,
     pub prompts: Vec<ClaimedPrompt>,
     pub lease: LeaseToken,
     pub traceparent: Option<String>,

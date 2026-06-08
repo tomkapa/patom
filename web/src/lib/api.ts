@@ -24,6 +24,8 @@ import type {
   OrgDetails,
   PromptVersionList,
   RestorePromptVersionResponse,
+  ScheduledTask,
+  ScheduledTaskList,
   OAuthStartRequest,
   OAuthStartResponse,
   Role,
@@ -47,7 +49,7 @@ const CSRF_COOKIE = "patom_csrf";
 const CSRF_HEADER = "X-CSRF-Token";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-// JSON endpoints live under this prefix; `/auth/google/*` bypasses it.
+// JSON endpoints live under this prefix; `/auth/oidc/*` bypasses it.
 export const API_PREFIX = "/api";
 
 export async function request<T>(
@@ -136,7 +138,15 @@ export const api = {
   // ─── Workspace settings (src/http/routes/org.rs) ────────────────────
   /** Read the General-tab payload for the active workspace. */
   org: () => request<OrgDetails>("/me/org"),
-  updateOrg: (patch: { name?: string; slug?: string }) =>
+  /** Update the active workspace. Body fields are independent — pass
+   *  any subset. `onboarded: true` flips the org's `onboarded_at` from
+   *  NULL to NOW() (idempotent via COALESCE; never un-marks); the FE
+   *  wizard's final step uses this to release the `OnboardingGate`. */
+  updateOrg: (patch: {
+    name?: string;
+    slug?: string;
+    onboarded?: boolean;
+  }) =>
     request<OrgDetails>("/me/org", {
       method: "PATCH",
       body: JSON.stringify(patch),
@@ -210,6 +220,23 @@ export const api = {
 
   agents: () => request<Agent[]>("/agents"),
   agent: (id: string) => request<Agent>(`/agents/${id}`),
+  /** Create one agent. Mirrors `src/http/routes/agents.rs::CreateAgentRequest`.
+   *  Used by the onboarding wizard to hire each preset agent
+   *  ({@link teamPresets}) sequentially — the entitlements gate fires
+   *  per call so cloud quotas still apply. */
+  createAgent: (payload: {
+    name: string;
+    system_prompt: string;
+    description: string;
+    is_default?: boolean;
+    allowed_mcp_tools?: Record<string, string[] | null>;
+    model?: string | null;
+    avatar_url?: string | null;
+  }) =>
+    request<Agent>("/agents", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   updateAgent: (id: string, patch: UpdateAgentRequest) =>
     request<Agent>(`/agents/${id}`, {
       method: "PUT",
@@ -227,6 +254,32 @@ export const api = {
       `/agents/${id}/tool-calls${q ? `?${q}` : ""}`,
     );
   },
+
+  // ─── Scheduled tasks ──────────────────────────────────────────────────
+  /** Page through the agent's scheduled tasks. `summary` is a tenant-gated
+   *  server rollup, so the stats strip stays correct regardless of which
+   *  page is in view. Tenant-gated server-side; a 404 means "not visible
+   *  to your principal". */
+  scheduledTasks: (
+    id: string,
+    params?: { page?: number; per_page?: number },
+  ) => {
+    const search = new URLSearchParams();
+    if (params?.page !== undefined) search.set("page", String(params.page));
+    if (params?.per_page !== undefined)
+      search.set("per_page", String(params.per_page));
+    const q = search.toString();
+    return request<ScheduledTaskList>(
+      `/agents/${id}/scheduled-tasks${q ? `?${q}` : ""}`,
+    );
+  },
+  /** Cancel one scheduled task. Idempotent: cancelling an already-cancelled
+   *  task is a no-op 200. Returns the updated row. */
+  cancelScheduledTask: (id: string, taskId: string) =>
+    request<ScheduledTask>(
+      `/agents/${id}/scheduled-tasks/${taskId}/cancel`,
+      { method: "POST" },
+    ),
 
   // ─── Agent logs & metrics ────────────────────────────────────────────
   // Declared in `src/http/routes/agents.rs`. All paths are tenant-gated

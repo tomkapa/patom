@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 mod common;
-use common::auth::{SeededPrincipal, seed_principal};
+use common::auth::{SeededPrincipal, join_second_org, seed_principal};
 use common::pg::seed_tenant;
 
 struct AuthAgentsHarness {
@@ -92,6 +92,7 @@ impl AuthAgentsHarness {
             responses,
             sessions,
             agents: agents.clone(),
+            colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
             budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
                 pool.clone(),
@@ -268,6 +269,53 @@ async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
         .map(|r| r["name"].as_str().expect("name"))
         .collect();
     assert_eq!(names, vec!["beta"]);
+}
+
+#[sqlx::test]
+async fn list_scoped_to_active_org_not_all_memberships(pool: PgPool) {
+    // A single user who belongs to *two* orgs must see only the agents
+    // of the org their session is active in — RLS alone (membership in
+    // *any* org) is not enough; the route must pin the active org. This
+    // is the duplicate-recruiter-in-the-sidebar bug: an invited user who
+    // also owns a personal workspace saw both orgs' default agents.
+    let h = AuthAgentsHarness::new(&pool).await;
+
+    // The primary principal's session is active in `primary.org_id`.
+    // Make them a member of a *second* org as well.
+    let other_org = join_second_org(&h.state.pool, h.primary.user_id).await;
+
+    // One agent in the active org, one in the other org the user belongs to.
+    h.seed_agent(h.primary.org_id, "active-agent").await;
+    h.seed_agent(other_org, "other-agent").await;
+
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/agents")
+                .header("cookie", h.primary.cookie_header())
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let names: Vec<&str> = json
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|r| r["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["active-agent"],
+        "only the active org's agent is listed, not the other membership's",
+    );
 }
 
 /// Issue #43: `POST /agents` accepts `avatar_url` and echoes it in the

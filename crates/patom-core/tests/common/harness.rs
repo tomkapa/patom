@@ -85,14 +85,29 @@ pub struct WorkerHarness {
     pub hub: Arc<PgResponseHub>,
     pub sessions: SharedSessionStore,
     pub dag: SharedDagBudget,
+    pub pool: PgPool,
     pub default_agent_id: patom::agents::AgentId,
+    pub default_agent_colleague_id: patom::colleagues::ColleagueId,
     /// Seeded owning org id — needed by `NewPromptRequest` and any
     /// helper that mints a fresh session under this harness's tenant.
     pub default_org_id: patom::auth::OrgId,
     /// Seeded owning user id — pairs with `default_org_id` to pin
     /// sessions created via this harness to the test principal.
     pub default_user_id: patom::auth::UserId,
+    pub default_user_colleague_id: patom::colleagues::ColleagueId,
     pub workers: WorkerPoolHandle,
+}
+
+impl WorkerHarness {
+    /// Build a colleague-backed `Participant` for the seeded default agent.
+    pub fn default_agent_participant(&self) -> patom::types::Participant {
+        patom::types::Participant::agent(self.default_agent_colleague_id, self.default_agent_id)
+    }
+
+    /// Build a colleague-backed `Participant` for the seeded human user.
+    pub fn default_human_participant(&self) -> patom::types::Participant {
+        patom::types::Participant::human(self.default_user_colleague_id, self.default_user_id)
+    }
 }
 
 /// Build a single-worker harness with a [`SendMessageTool`] registered in
@@ -112,6 +127,8 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
 
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let agent_store: SharedAgentStore = super::pg::shared_agent_store(pool.clone(), clock.clone());
+    let colleagues: patom::colleagues::SharedColleagueStore =
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
     let memory_store: patom::memory::SharedMemoryStore =
         Arc::new(patom::memory::PgMemoryStore::new(
@@ -135,6 +152,7 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
             queue.clone(),
             dag.clone(),
             agent_store.clone(),
+            colleagues.clone(),
             sink.clone(),
         )))
         .build();
@@ -177,14 +195,26 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
     )
     .spawn();
 
+    let default_agent_colleague_id =
+        patom::colleagues::resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
+            .await
+            .expect("seed agent colleague");
+    let default_user_colleague_id =
+        patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+            .await
+            .expect("seed user colleague");
+
     WorkerHarness {
         queue,
         hub,
         sessions,
         dag,
+        pool,
         default_agent_id: seed.agent_id,
+        default_agent_colleague_id,
         default_org_id: seed.org_id,
         default_user_id: seed.user_id,
+        default_user_colleague_id,
         workers,
     }
 }

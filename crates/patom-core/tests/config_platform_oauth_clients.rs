@@ -59,8 +59,8 @@ fn unpaired_client_secret_is_skipped() {
 
 #[test]
 fn non_patom_prefixed_vars_are_ignored() {
-    // `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` are the existing
-    // Login-with-Google envs — they must not bleed into the MCP map.
+    // Only `PATOM_<VENDOR>_CLIENT_*` feeds the MCP platform map; a bare,
+    // non-prefixed third-party var must never bleed into it.
     let vars = vec![
         ("GOOGLE_CLIENT_ID".to_string(), "login-id".to_string()),
         (

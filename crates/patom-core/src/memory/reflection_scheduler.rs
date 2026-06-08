@@ -174,15 +174,17 @@ impl SchedulerInner {
                  GROUP BY m.session_id
              ),
              agent_sessions AS (
-                 SELECT id, participant_a_agent_id AS agent_id, root_request_id,
-                        org_id, created_by_user_id
-                 FROM sessions
-                 WHERE participant_a_kind = 'agent'
+                 SELECT s.id, ca.agent_id, s.root_request_id,
+                        s.org_id, s.created_by_user_id
+                 FROM sessions s
+                 JOIN colleagues ca ON ca.id = s.participant_a_colleague_id
+                 WHERE ca.kind = 'agent'
                  UNION ALL
-                 SELECT id, participant_b_agent_id AS agent_id, root_request_id,
-                        org_id, created_by_user_id
-                 FROM sessions
-                 WHERE participant_b_kind = 'agent'
+                 SELECT s.id, cb.agent_id, s.root_request_id,
+                        s.org_id, s.created_by_user_id
+                 FROM sessions s
+                 JOIN colleagues cb ON cb.id = s.participant_b_colleague_id
+                 WHERE cb.kind = 'agent'
              )
              SELECT a.agent_id,
                     a.id AS session_id,
@@ -252,7 +254,15 @@ impl SchedulerInner {
     /// two ticks (because the previous enqueue is still pending) maps back
     /// to the same row.
     async fn enqueue_reflection(&self, c: &ReflectionCandidate) -> Result<(), EnqueueError> {
-        let viewer = Participant::agent(c.agent_id);
+        let agent_colleague =
+            crate::colleagues::resolve_agent_colleague(&self.pool, c.org_id, c.agent_id)
+                .await
+                .map_err(|e| {
+                    EnqueueError::Queue(crate::runtime::PromptError::Backend(format!(
+                        "resolve agent colleague: {e}"
+                    )))
+                })?;
+        let viewer = Participant::agent(agent_colleague, c.agent_id);
         let key = IdempotencyKey::try_from(format!(
             "reflect-{agent}-{session}-{turn}",
             agent = c.agent_id,
@@ -320,8 +330,10 @@ impl SchedulerInner {
                          -1
                      ) AS high
              )
-             SELECT m.sender_agent_id, m.body
-             FROM session_messages m, bounds
+             SELECT sc.agent_id, m.body
+             FROM session_messages m
+             JOIN bounds ON TRUE
+             LEFT JOIN colleagues sc ON sc.id = m.sender_colleague_id
              WHERE m.session_id = $1
                AND m.seq > bounds.low
                AND m.seq <= bounds.high
@@ -337,6 +349,7 @@ impl SchedulerInner {
         let mut out = Vec::with_capacity(rows.len());
         for (sender_agent_id, body) in rows {
             let stored: ChatMessage = serde_json::from_value(body)?;
+            // System sender (`sc` = NULL → `agent_id` IS NULL) is never the viewer.
             let is_self = sender_agent_id == Some(viewer_agent_id);
             out.push(map_for_viewer(stored, is_self));
         }

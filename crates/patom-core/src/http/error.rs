@@ -78,6 +78,9 @@ pub enum HttpError {
     #[error("org: {0}")]
     Org(#[from] OrgError),
 
+    #[error("colleague: {0}")]
+    Colleague(#[from] crate::colleagues::ColleagueError),
+
     /// Entitlement gate refused the action (agent cap hit, or an unlicensed
     /// feature). Maps to 402 Payment Required so the FE can prompt an upgrade.
     #[error("license: {0}")]
@@ -114,8 +117,10 @@ impl IntoResponse for HttpError {
             Self::Session(SessionError::NotFound(_)) => {
                 (StatusCode::NOT_FOUND, "session not found".into())
             }
-            Self::Session(SessionError::AgentNotFound(_))
-            | Self::Agent(AgentStoreError::NotFound(_)) => {
+            Self::Session(SessionError::ColleagueNotFound(_)) => {
+                (StatusCode::BAD_REQUEST, "unknown colleague_id".into())
+            }
+            Self::Agent(AgentStoreError::NotFound(_)) => {
                 (StatusCode::BAD_REQUEST, "unknown agent_id".into())
             }
             Self::Agent(AgentStoreError::NameNotFound(_)) => {
@@ -132,6 +137,13 @@ impl IntoResponse for HttpError {
                 "budget store error".into(),
             ),
             Self::Session(e) => (StatusCode::BAD_REQUEST, e.to_string()),
+            Self::Colleague(crate::colleagues::ColleagueError::NotFound(_)) => {
+                (StatusCode::NOT_FOUND, "colleague not found".into())
+            }
+            Self::Colleague(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "colleague directory error".into(),
+            ),
             Self::Agent(
                 AgentStoreError::DefaultDeletionForbidden
                 | AgentStoreError::InUse(_)

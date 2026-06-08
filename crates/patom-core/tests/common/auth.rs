@@ -117,6 +117,34 @@ impl SeededPrincipal {
     }
 }
 
+/// Add an existing `user_id` to a freshly-minted org as a plain `member`
+/// and return that org's id. For tests exercising multi-org behaviour —
+/// a user who belongs to more than one org — without minting a whole new
+/// principal.
+pub async fn join_second_org(pool: &PgPool, user_id: UserId) -> OrgId {
+    let org_id = OrgId::new();
+    let now = chrono::Utc::now();
+    let slug = format!("second-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    sqlx::query("INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at) VALUES ($1, $2, $3, 'en', $4, $4)")
+        .bind(org_id)
+        .bind("Second Org")
+        .bind(&slug)
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("seed second org");
+    sqlx::query(
+        "INSERT INTO org_members (org_id, user_id, role, created_at) VALUES ($1, $2, 'member', $3)",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("join second org");
+    org_id
+}
+
 /// Insert a `users` + `organizations` + `org_members` triple into the
 /// test schema and mint a JWT cookie for them. The org slug is unique
 /// per call via uuid.

@@ -63,7 +63,7 @@ use patom::runtime::{
 use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::tools::system::SendMessageTool;
 use patom::tools::{ToolBox, ToolRegistry};
-use patom::types::{Participant, Prompt, ToolName};
+use patom::types::{Prompt, ToolName};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 
@@ -216,12 +216,15 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
     let model = Model::try_from("test-model").expect("catalog");
 
+    let colleagues: patom::colleagues::SharedColleagueStore =
+        Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
     let tool_registry = ToolRegistry::builder()
         .with(Arc::new(SendMessageTool::new(
             sessions.clone(),
             queue.clone(),
             dag.clone(),
             agent_store.clone(),
+            colleagues.clone(),
             sink.clone(),
         )))
         .build();
@@ -319,7 +322,7 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
     let outcome = queue
         .enqueue(NewPromptRequest {
             session: None,
-            sender: Participant::Human,
+            sender: common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
             receiver_agent_id: coordinator_id,
             parent_session: None,
             content: Prompt::try_from("translate 'hello' to French please").expect("prompt"),
@@ -406,10 +409,12 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
         "Translator should have run once",
     );
 
-    // DAG budget bumped exactly four times — once per send_message call:
+    // DAG budget bumped once per *agent*-spawning send_message — the human
+    // delivery does not consume an agent turn (Stage 7), so only the two
+    // agent→agent sends bump:
     //   Coordinator → Translator
     //   Translator → Coordinator
-    //   Coordinator → Human
+    //   (Coordinator → Human does NOT bump)
     let (turns_used, turns_cap): (i64, i64) = sqlx::query_as(
         "SELECT turns_used, turns_cap FROM prompt_request_dags WHERE root_request_id = $1",
     )
@@ -417,7 +422,7 @@ async fn translator_delegation_round_trips_and_emits_root_done(pool: PgPool) {
     .fetch_one(&pool)
     .await
     .expect("dag row");
-    assert_eq!(turns_used, 3, "three send_message bumps observed");
+    assert_eq!(turns_used, 2, "two agent→agent send_message bumps observed");
     assert!(turns_cap > turns_used, "well under cap (cap={turns_cap})");
 
     // Three sessions exist for the DAG — one per pair: (Human, Coordinator),

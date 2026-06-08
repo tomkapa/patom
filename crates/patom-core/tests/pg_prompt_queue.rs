@@ -17,7 +17,7 @@ use patom::runtime::{
     PromptRequestId, RequestStatus, WorkerId,
 };
 use patom::session::{PgSessionStore, SessionId};
-use patom::types::{Participant, Prompt};
+use patom::types::Prompt;
 use sqlx::PgPool;
 
 mod common;
@@ -40,8 +40,14 @@ async fn fresh(pool: PgPool) -> Fixture {
     let test_clock = Arc::new(TestClock::new());
     let clock: SharedClock = test_clock.clone();
     let session_store = PgSessionStore::new(pool.clone(), clock.clone());
-    let session =
-        human_to_agent_session(&session_store, seed.agent_id, seed.org_id, seed.user_id).await;
+    let session = human_to_agent_session(
+        &pool,
+        &session_store,
+        seed.agent_id,
+        seed.org_id,
+        seed.user_id,
+    )
+    .await;
     let timing = LeaseTiming::try_new(LEASE_TTL, HEARTBEAT).expect("valid timing");
     let queue = Arc::new(PgPromptQueue::with_caps(pool.clone(), clock, timing, 32, 3));
     let agent_id = seed.agent_id;
@@ -57,6 +63,7 @@ async fn fresh(pool: PgPool) -> Fixture {
 
 fn req(
     session: SessionId,
+    sender: patom::types::Participant,
     agent_id: AgentId,
     content: &str,
     key: &str,
@@ -65,7 +72,7 @@ fn req(
 ) -> NewPromptRequest {
     NewPromptRequest {
         session: Some(session),
-        sender: Participant::Human,
+        sender,
         receiver_agent_id: agent_id,
         parent_session: None,
         content: Prompt::try_from(content).expect("p"),
@@ -81,12 +88,21 @@ async fn enqueue_is_idempotent_on_repeat_key(pool: PgPool) {
     let f = fresh(pool).await;
     let (q, s, agent_id) = (&f.queue, f.session, f.agent_id);
     let first = q
-        .enqueue(req(s, agent_id, "hi", "k1", f.seed.org_id, f.seed.user_id))
+        .enqueue(req(
+            s,
+            common::pg::human_participant(&f.pool, f.seed.org_id, f.seed.user_id).await,
+            agent_id,
+            "hi",
+            "k1",
+            f.seed.org_id,
+            f.seed.user_id,
+        ))
         .await
         .expect("first");
     let second = q
         .enqueue(req(
             s,
+            common::pg::human_participant(&f.pool, f.seed.org_id, f.seed.user_id).await,
             agent_id,
             "hi-again",
             "k1",
@@ -103,12 +119,28 @@ async fn claim_drains_all_pending_for_session(pool: PgPool) {
     let f = fresh(pool).await;
     let (q, s, agent_id) = (&f.queue, f.session, f.agent_id);
     let r1 = q
-        .enqueue(req(s, agent_id, "a", "k1", f.seed.org_id, f.seed.user_id))
+        .enqueue(req(
+            s,
+            common::pg::human_participant(&f.pool, f.seed.org_id, f.seed.user_id).await,
+            agent_id,
+            "a",
+            "k1",
+            f.seed.org_id,
+            f.seed.user_id,
+        ))
         .await
         .expect("ok")
         .request_id();
     let r2 = q
-        .enqueue(req(s, agent_id, "b", "k2", f.seed.org_id, f.seed.user_id))
+        .enqueue(req(
+            s,
+            common::pg::human_participant(&f.pool, f.seed.org_id, f.seed.user_id).await,
+            agent_id,
+            "b",
+            "k2",
+            f.seed.org_id,
+            f.seed.user_id,
+        ))
         .await
         .expect("ok")
         .request_id();
@@ -128,7 +160,15 @@ async fn second_claim_skips_leased_session(pool: PgPool) {
     let f = fresh(pool).await;
     let (q, s, agent_id) = (&f.queue, f.session, f.agent_id);
     let _ = q
-        .enqueue(req(s, agent_id, "a", "k1", f.seed.org_id, f.seed.user_id))
+        .enqueue(req(
+            s,
+            common::pg::human_participant(&f.pool, f.seed.org_id, f.seed.user_id).await,
+            agent_id,
+            "a",
+            "k1",
+            f.seed.org_id,
+            f.seed.user_id,
+        ))
         .await
         .expect("ok");
     let _first = q
@@ -145,7 +185,15 @@ async fn lease_expiry_returns_orphan_to_pending(pool: PgPool) {
     let f = fresh(pool).await;
     let (q, clock, s, agent_id) = (&f.queue, &f.clock, f.session, f.agent_id);
     let _ = q
-        .enqueue(req(s, agent_id, "a", "k1", f.seed.org_id, f.seed.user_id))
+        .enqueue(req(
+            s,
+            common::pg::human_participant(&f.pool, f.seed.org_id, f.seed.user_id).await,
+            agent_id,
+            "a",
+            "k1",
+            f.seed.org_id,
+            f.seed.user_id,
+        ))
         .await
         .expect("ok");
     let _ = q
@@ -169,7 +217,15 @@ async fn mark_done_with_stale_token_fails(pool: PgPool) {
     let f = fresh(pool).await;
     let (q, clock, s, agent_id) = (&f.queue, &f.clock, f.session, f.agent_id);
     let _ = q
-        .enqueue(req(s, agent_id, "a", "k1", f.seed.org_id, f.seed.user_id))
+        .enqueue(req(
+            s,
+            common::pg::human_participant(&f.pool, f.seed.org_id, f.seed.user_id).await,
+            agent_id,
+            "a",
+            "k1",
+            f.seed.org_id,
+            f.seed.user_id,
+        ))
         .await
         .expect("ok")
         .request_id();
@@ -199,11 +255,20 @@ async fn poisons_after_max_attempts_via_orphan_path(pool: PgPool) {
     let clock: SharedClock = test_clock.clone();
     let session_store = PgSessionStore::new(pool.clone(), clock.clone());
     let agent_id = seed.agent_id;
-    let session = human_to_agent_session(&session_store, agent_id, seed.org_id, seed.user_id).await;
+    let session =
+        human_to_agent_session(&pool, &session_store, agent_id, seed.org_id, seed.user_id).await;
     let timing = LeaseTiming::try_new(LEASE_TTL, HEARTBEAT).expect("timing");
     let q = Arc::new(PgPromptQueue::with_caps(pool.clone(), clock, timing, 8, 2));
     let r = q
-        .enqueue(req(session, agent_id, "a", "k1", seed.org_id, seed.user_id))
+        .enqueue(req(
+            session,
+            common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+            agent_id,
+            "a",
+            "k1",
+            seed.org_id,
+            seed.user_id,
+        ))
         .await
         .expect("ok")
         .request_id();
@@ -232,7 +297,15 @@ async fn heartbeat_extends_lease(pool: PgPool) {
     let f = fresh(pool).await;
     let (q, clock, s, agent_id) = (&f.queue, &f.clock, f.session, f.agent_id);
     let _ = q
-        .enqueue(req(s, agent_id, "a", "k1", f.seed.org_id, f.seed.user_id))
+        .enqueue(req(
+            s,
+            common::pg::human_participant(&f.pool, f.seed.org_id, f.seed.user_id).await,
+            agent_id,
+            "a",
+            "k1",
+            f.seed.org_id,
+            f.seed.user_id,
+        ))
         .await
         .expect("ok");
     let claim = q
@@ -254,7 +327,15 @@ async fn release_clears_lease_so_others_can_claim(pool: PgPool) {
     let f = fresh(pool).await;
     let (q, s, agent_id) = (&f.queue, f.session, f.agent_id);
     let _ = q
-        .enqueue(req(s, agent_id, "a", "k1", f.seed.org_id, f.seed.user_id))
+        .enqueue(req(
+            s,
+            common::pg::human_participant(&f.pool, f.seed.org_id, f.seed.user_id).await,
+            agent_id,
+            "a",
+            "k1",
+            f.seed.org_id,
+            f.seed.user_id,
+        ))
         .await
         .expect("ok");
     let claim = q
@@ -267,6 +348,7 @@ async fn release_clears_lease_so_others_can_claim(pool: PgPool) {
 
     let session_store = PgSessionStore::new(f.pool.clone(), f.clock.clone());
     let s2 = human_to_agent_session(
+        &f.pool,
         &session_store,
         f.seed.agent_id,
         f.seed.org_id,
@@ -274,7 +356,15 @@ async fn release_clears_lease_so_others_can_claim(pool: PgPool) {
     )
     .await;
     let _ = q
-        .enqueue(req(s2, agent_id, "b", "k2", f.seed.org_id, f.seed.user_id))
+        .enqueue(req(
+            s2,
+            common::pg::human_participant(&f.pool, f.seed.org_id, f.seed.user_id).await,
+            agent_id,
+            "b",
+            "k2",
+            f.seed.org_id,
+            f.seed.user_id,
+        ))
         .await
         .expect("ok");
     let again = q.claim_next_session(WorkerId::new()).await.expect("c2");
@@ -288,17 +378,42 @@ async fn enqueue_caps_pending_per_session(pool: PgPool) {
     let clock: SharedClock = test_clock;
     let session_store = PgSessionStore::new(pool.clone(), clock.clone());
     let agent_id = seed.agent_id;
-    let session = human_to_agent_session(&session_store, agent_id, seed.org_id, seed.user_id).await;
+    let session =
+        human_to_agent_session(&pool, &session_store, agent_id, seed.org_id, seed.user_id).await;
     let timing = LeaseTiming::try_new(LEASE_TTL, HEARTBEAT).expect("valid timing");
     let q = Arc::new(PgPromptQueue::with_caps(pool.clone(), clock, timing, 2, 3));
-    q.enqueue(req(session, agent_id, "a", "k1", seed.org_id, seed.user_id))
-        .await
-        .expect("ok1");
-    q.enqueue(req(session, agent_id, "b", "k2", seed.org_id, seed.user_id))
-        .await
-        .expect("ok2");
+    q.enqueue(req(
+        session,
+        common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+        agent_id,
+        "a",
+        "k1",
+        seed.org_id,
+        seed.user_id,
+    ))
+    .await
+    .expect("ok1");
+    q.enqueue(req(
+        session,
+        common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+        agent_id,
+        "b",
+        "k2",
+        seed.org_id,
+        seed.user_id,
+    ))
+    .await
+    .expect("ok2");
     let err = q
-        .enqueue(req(session, agent_id, "c", "k3", seed.org_id, seed.user_id))
+        .enqueue(req(
+            session,
+            common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
+            agent_id,
+            "c",
+            "k3",
+            seed.org_id,
+            seed.user_id,
+        ))
         .await
         .expect_err("over cap");
     assert!(matches!(err, PromptError::PendingCapExceeded { .. }));

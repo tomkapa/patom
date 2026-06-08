@@ -79,6 +79,9 @@ struct OrgDetailsView {
     role: Role,
     /// `null` → FE renders the default tile.
     avatar_url: Option<String>,
+    /// `false` → the user is still inside the /onboarding wizard for
+    /// this org. The FE gate reads this to decide whether to redirect.
+    onboarded: bool,
 }
 
 impl OrgDetailsView {
@@ -92,6 +95,7 @@ impl OrgDetailsView {
             created_at: details.created_at,
             role,
             avatar_url: details.avatar_url.map(|a| a.as_str().to_owned()),
+            onboarded: details.onboarded,
         }
     }
 }
@@ -115,6 +119,11 @@ struct UpdateOrgRequest {
     name: Option<String>,
     /// New URL slug. Absent or null → no change.
     slug: Option<String>,
+    /// `true` → stamp `onboarded_at = NOW()` if currently NULL
+    /// (idempotent). `false` or absent → no change. The PATCH path
+    /// never un-marks; clearing would be a separate operation.
+    #[serde(default)]
+    onboarded: bool,
 }
 
 async fn update_org(
@@ -129,7 +138,15 @@ async fn update_org(
     let now = state.clock.now_utc();
     let details = state
         .orgs
-        .update_org(principal.active_org_id, OrgUpdate { name, slug }, now)
+        .update_org(
+            principal.active_org_id,
+            OrgUpdate {
+                name,
+                slug,
+                mark_onboarded: req.onboarded,
+            },
+            now,
+        )
         .await?;
     Ok(Json(OrgDetailsView::new(details, role)).into_response())
 }

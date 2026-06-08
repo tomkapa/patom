@@ -47,12 +47,16 @@ crate::str_enum! {
     /// reserved Rust keyword; the wire label stays `"self"` so the column
     /// constraint and operator UI are unaffected.
     pub enum MemoryKind {
-        /// Identity, style, preferences ("I default to terse replies").
+        /// The agent's *own* identity, style, or preferences ("I default to
+        /// terse replies") — never a fact about the user.
         Identity     => "self",
-        /// Beliefs about specific peers or humans (external).
+        /// A belief about a person or entity *outside* the org directory — one
+        /// with no `colleague_id`. In-org coworkers use [`Self::Collaborator`].
         Other        => "other",
-        /// Beliefs about other *agents* in the network, written from the
-        /// agent's delegation experience (doc/agent_discovery_plan.md §4).
+        /// A belief about a specific colleague — a human teammate or another
+        /// agent — keyed by `subject_colleague_id`. Covers both "what the agent
+        /// remembers about Tom" and agent-to-agent delegation experience
+        /// (doc/agent_discovery_plan.md §4).
         Collaborator => "collaborator",
         /// Learned how-tos.
         Procedure    => "procedure",

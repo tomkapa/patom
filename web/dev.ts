@@ -18,12 +18,21 @@ const forwardAsIs = (req: Request): Promise<Response> => {
   });
 };
 
+// Honor PORT (set by the preview harness' autoPort) but fall back to 5173
+// on anything non-numeric or out of range, so a bad env can't crash startup.
+const DEFAULT_PORT = 5173;
+const parsePort = (raw: string | undefined): number => {
+  if (!raw) return DEFAULT_PORT;
+  const n = Number.parseInt(raw, 10);
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : DEFAULT_PORT;
+};
+
 const server = Bun.serve({
-  port: 5173,
+  port: parsePort(process.env.PORT),
   development: true,
   routes: {
     "/api/*": forwardAsIs,
-    "/auth/google/*": forwardAsIs,
+    "/auth/oidc/*": forwardAsIs,
     "/mcp-oauth/*": forwardAsIs,
     "/*": index,
   },

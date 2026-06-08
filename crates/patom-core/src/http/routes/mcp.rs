@@ -536,6 +536,9 @@ async fn list_mcp_servers(
     // Identity tables (`users`) are intentionally REVOKED from `patom_app`
     // (migration 14), so the creator-email enrichment runs as a second
     // round-trip through the privileged `users` store after the tx commits.
+    // Pin the active org: RLS gates on membership in any org, not the
+    // active one, so a multi-org user would otherwise see every
+    // membership's servers at once.
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let rows = sqlx::query_as::<_, McpServerRowForList>(
         "SELECT s.id, s.org_id, s.catalog_id, s.enabled, s.config, s.description, \
@@ -544,8 +547,10 @@ async fn list_mcp_servers(
                 c.kind AS credentials_kind \
          FROM mcp_servers s \
          LEFT JOIN mcp_server_credentials c ON c.server_id = s.id \
+         WHERE s.org_id = $1 \
          ORDER BY s.catalog_id ASC",
     )
+    .bind(principal.active_org_id)
     .fetch_all(&mut *tx)
     .await
     .map_err(AuthError::from)?;
@@ -570,6 +575,8 @@ async fn read_mcp_server(
     Path(id): Path<Uuid>,
 ) -> Result<Json<McpServerResponse>, HttpError> {
     let id = McpServerId::from(id);
+    // Pin the active org (see `list_mcp_servers`): a multi-org user must
+    // not read a server that lives in a non-active workspace by id.
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     let row = sqlx::query_as::<_, McpServerRowForList>(
         "SELECT s.id, s.org_id, s.catalog_id, s.enabled, s.config, s.description, \
@@ -578,9 +585,10 @@ async fn read_mcp_server(
                 c.kind AS credentials_kind \
          FROM mcp_servers s \
          LEFT JOIN mcp_server_credentials c ON c.server_id = s.id \
-         WHERE s.id = $1",
+         WHERE s.id = $1 AND s.org_id = $2",
     )
     .bind(id)
+    .bind(principal.active_org_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(AuthError::from)?;
