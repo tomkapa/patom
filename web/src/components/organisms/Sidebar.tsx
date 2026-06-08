@@ -9,7 +9,7 @@ import type { Agent, Channel, ThreadSummary } from "../../types/api";
 
 export function Sidebar({
   workspace = "Acme Robotics",
-  threads,
+  dmThreads,
   channels,
   agents,
   selectedChannelId,
@@ -20,7 +20,9 @@ export function Sidebar({
   onManageChannel,
 }: {
   workspace?: string;
-  threads: ThreadSummary[];
+  /** The caller's direct-message threads — drives the per-agent badge counts.
+   *  Must be the DM feed, not the active channel's feed. */
+  dmThreads: ThreadSummary[];
   channels: Channel[];
   agents: Agent[];
   selectedChannelId: string | null;
@@ -33,11 +35,11 @@ export function Sidebar({
   const { t } = useT();
   const threadCountByAgent = useMemo(() => {
     const m = new Map<string, number>();
-    for (const t of threads) {
+    for (const t of dmThreads) {
       m.set(t.first_agent.id, (m.get(t.first_agent.id) ?? 0) + 1);
     }
     return m;
-  }, [threads]);
+  }, [dmThreads]);
 
   return (
     <aside

@@ -181,7 +181,12 @@ async fn send(
     let json = if bytes.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            panic!(
+                "response body is not JSON ({e}): {}",
+                String::from_utf8_lossy(&bytes)
+            )
+        })
     };
     (status, json)
 }
@@ -311,7 +316,7 @@ async fn non_member_cannot_see_or_post_to_channel(pool: PgPool) {
     )
     .await;
     let ch_id = ch["id"].as_str().expect("id").to_owned();
-    send(
+    let (seed_status, _) = send(
         &state,
         "POST",
         "/api/prompts",
@@ -319,6 +324,11 @@ async fn non_member_cannot_see_or_post_to_channel(pool: PgPool) {
         Some(json!({"content":"hi","idempotency_key":"k-ch","agent_id":agent,"channel_id":ch_id})),
     )
     .await;
+    assert_eq!(
+        seed_status,
+        axum::http::StatusCode::ACCEPTED,
+        "seed post enqueued"
+    );
 
     // Non-member's view of the channel feed is empty.
     let (_, feed) = send(

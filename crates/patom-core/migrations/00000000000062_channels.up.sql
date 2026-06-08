@@ -22,7 +22,12 @@ CREATE TABLE channels (
     -- NULL for the system-owned default channel; otherwise the creator.
     created_by_user_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at         TIMESTAMPTZ NOT NULL,
-    archived_at        TIMESTAMPTZ NULL
+    archived_at        TIMESTAMPTZ NULL,
+    -- Composite-FK target: lets `channel_members` / `prompt_requests` bind
+    -- (channel_id, org_id) so a row's org can never disagree with its
+    -- channel's org, even under a privileged/manual write (the route layer
+    -- assumes this when it pins the active org).
+    CONSTRAINT channels_id_org_unique UNIQUE (id, org_id)
 );
 -- One active channel per (org, name); archiving frees the name for reuse.
 -- Doubles as the ON CONFLICT inference target for the seed below.
@@ -31,19 +36,29 @@ CREATE UNIQUE INDEX channels_org_name_active_unique
 CREATE INDEX channels_org_idx ON channels (org_id);
 
 -- Human members only. `org_id` is carried for the org-isolation RLS policy and
--- the per-user membership scan in the thread-list query.
+-- the per-user membership scan in the thread-list query; the composite FK
+-- forces it to match the channel's org.
 CREATE TABLE channel_members (
-    channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    channel_id UUID NOT NULL,
     user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     org_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     added_at   TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (channel_id, user_id)
+    PRIMARY KEY (channel_id, user_id),
+    FOREIGN KEY (channel_id, org_id)
+        REFERENCES channels (id, org_id) ON DELETE CASCADE
 );
 CREATE INDEX channel_members_user_idx ON channel_members (user_id);
 CREATE INDEX channel_members_org_idx  ON channel_members (org_id);
 
+-- (channel_id, org_id) → channels(id, org_id) so a root's stamped channel must
+-- belong to the root's own org. ON DELETE SET NULL nulls only `channel_id`
+-- (Postgres column-list form) — `prompt_requests.org_id` is NOT NULL and must
+-- survive; channels are soft-archived, not deleted, so this is belt-and-braces.
+ALTER TABLE prompt_requests ADD COLUMN channel_id UUID NULL;
 ALTER TABLE prompt_requests
-    ADD COLUMN channel_id UUID NULL REFERENCES channels(id) ON DELETE SET NULL;
+    ADD CONSTRAINT prompt_requests_channel_org_fk
+    FOREIGN KEY (channel_id, org_id)
+        REFERENCES channels (id, org_id) ON DELETE SET NULL (channel_id);
 CREATE INDEX prompt_requests_channel_idx
     ON prompt_requests (channel_id) WHERE channel_id IS NOT NULL;
 

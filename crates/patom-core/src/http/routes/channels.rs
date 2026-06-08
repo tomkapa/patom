@@ -26,9 +26,8 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, patch, post};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use crate::auth::{AuthError, Principal, UserId, begin_as, run_privileged};
+use crate::auth::{AuthError, OrgId, Principal, UserId, begin_as, run_privileged};
 use crate::channels::{CHANNEL_LIST_FETCH_MAX, ChannelId, ChannelName, MAX_CHANNELS_PER_ORG};
 
 use super::super::error::HttpError;
@@ -206,10 +205,9 @@ struct UpdateChannelRequest {
 async fn update_channel(
     State(state): State<AppState>,
     principal: Principal,
-    Path(id): Path<Uuid>,
+    Path(id): Path<ChannelId>,
     Json(payload): Json<UpdateChannelRequest>,
 ) -> Result<Json<ChannelResponse>, HttpError> {
-    let id = ChannelId::from(id);
     let new_name = payload.name.map(ChannelName::try_from).transpose()?;
     let now = state.clock.now_utc();
 
@@ -251,19 +249,22 @@ struct MemberResponse {
 async fn list_members(
     State(state): State<AppState>,
     principal: Principal,
-    Path(id): Path<Uuid>,
+    Path(id): Path<ChannelId>,
 ) -> Result<Json<Vec<MemberResponse>>, HttpError> {
-    let id = ChannelId::from(id);
+    let org = principal.active_org_id;
     let mut tx = begin_as(&state.pool, &principal).await?;
-    // Only members see the roster; non-members (and unknown ids) 404.
-    if !caller_is_member(&mut tx, id, principal.user_id).await? {
+    // Only members see the roster; non-members (and unknown ids) 404. Pinned to
+    // the active org so a multi-org caller can't read another workspace's
+    // roster by id.
+    if !caller_is_member(&mut tx, id, principal.user_id, org).await? {
         return Err(HttpError::NotFound);
     }
     let members = sqlx::query_as::<_, MemberResponse>(
         "SELECT user_id, added_at FROM channel_members \
-         WHERE channel_id = $1 ORDER BY added_at ASC LIMIT $2",
+         WHERE channel_id = $1 AND org_id = $2 ORDER BY added_at ASC LIMIT $3",
     )
     .bind(id)
+    .bind(org)
     .bind(CHANNEL_LIST_FETCH_MAX)
     .fetch_all(&mut *tx)
     .await
@@ -274,28 +275,29 @@ async fn list_members(
 
 #[derive(Debug, Deserialize)]
 struct AddMemberRequest {
-    user_id: Uuid,
+    user_id: UserId,
 }
 
 async fn add_member(
     State(state): State<AppState>,
     principal: Principal,
-    Path(id): Path<Uuid>,
+    Path(id): Path<ChannelId>,
     Json(payload): Json<AddMemberRequest>,
 ) -> Result<StatusCode, HttpError> {
-    let id = ChannelId::from(id);
-    let target = UserId::from(payload.user_id);
+    let target = payload.user_id;
     let org = principal.active_org_id;
+    let now = state.clock.now_utc();
+    let mut tx = begin_as(&state.pool, &principal).await?;
+    // Authorize first: load + creator-gate before probing org membership, so a
+    // non-creator can't use the `not_in_org` vs `not_owner` response split to
+    // enumerate who belongs to the org.
+    let channel = load_channel(&mut tx, id, org).await?;
+    ensure_creator(&channel, principal.user_id)?;
     // Target must already belong to the active org. `org_members` is REVOKEd
     // from `patom_app`, so the check runs through a privileged tx.
     if !is_org_member(&state, org, target).await? {
         return Err(HttpError::BadRequest("user.not_in_org".into()));
     }
-
-    let now = state.clock.now_utc();
-    let mut tx = begin_as(&state.pool, &principal).await?;
-    let channel = load_channel(&mut tx, id, org).await?;
-    ensure_creator(&channel, principal.user_id)?;
     sqlx::query(
         "INSERT INTO channel_members (channel_id, user_id, org_id, added_at) \
          VALUES ($1, $2, $3, $4) ON CONFLICT (channel_id, user_id) DO NOTHING",
@@ -314,10 +316,8 @@ async fn add_member(
 async fn remove_member(
     State(state): State<AppState>,
     principal: Principal,
-    Path((id, user_id)): Path<(Uuid, Uuid)>,
+    Path((id, target)): Path<(ChannelId, UserId)>,
 ) -> Result<StatusCode, HttpError> {
-    let id = ChannelId::from(id);
-    let target = UserId::from(user_id);
     let mut tx = begin_as(&state.pool, &principal).await?;
     let channel = load_channel(&mut tx, id, principal.active_org_id).await?;
     ensure_creator(&channel, principal.user_id)?;
@@ -337,7 +337,7 @@ async fn remove_member(
 async fn load_channel(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: ChannelId,
-    org: crate::auth::OrgId,
+    org: OrgId,
 ) -> Result<ChannelRow, HttpError> {
     sqlx::query_as::<_, ChannelRow>(&format!(
         "SELECT {CHANNEL_COLS} FROM channels WHERE id = $1 AND org_id = $2"
@@ -363,12 +363,15 @@ async fn caller_is_member(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: ChannelId,
     user: UserId,
+    org: OrgId,
 ) -> Result<bool, HttpError> {
     let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM channel_members WHERE channel_id = $1 AND user_id = $2)",
+        "SELECT EXISTS(SELECT 1 FROM channel_members \
+         WHERE channel_id = $1 AND user_id = $2 AND org_id = $3)",
     )
     .bind(id)
     .bind(user)
+    .bind(org)
     .fetch_one(&mut **tx)
     .await
     .map_err(AuthError::from)?;
@@ -377,11 +380,7 @@ async fn caller_is_member(
 
 /// Privileged membership probe — `org_members` is REVOKEd from `patom_app`,
 /// so this reads it through an owner-role tx (RLS off).
-async fn is_org_member(
-    state: &AppState,
-    org: crate::auth::OrgId,
-    user: UserId,
-) -> Result<bool, HttpError> {
+async fn is_org_member(state: &AppState, org: OrgId, user: UserId) -> Result<bool, HttpError> {
     run_privileged(&state.pool, async |tx| {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM org_members WHERE org_id = $1 AND user_id = $2)",

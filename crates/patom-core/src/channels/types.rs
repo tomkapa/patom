@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use super::limits::CHANNEL_NAME_MAX_LEN;
 use crate::types::ParseError;
 
 crate::uuid_newtype! {
@@ -21,7 +22,9 @@ crate::uuid_newtype! {
 pub struct ChannelName(Arc<str>);
 
 impl ChannelName {
-    pub const MAX_BYTES: usize = 63;
+    /// Single source of truth lives in [`super::limits`]; aliased here so the
+    /// DB CHECK, the limits constant, and this newtype cannot drift (§5).
+    pub const MAX_BYTES: usize = CHANNEL_NAME_MAX_LEN;
 
     #[must_use]
     pub fn as_str(&self) -> &str {

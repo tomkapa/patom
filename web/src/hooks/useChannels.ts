@@ -48,13 +48,21 @@ export function useChannelMembers(id: string | null) {
   });
 }
 
+/** Invalidate the roster, plus the channel list and thread feed: when the
+ *  caller's own membership changes, the sidebar and the visible feed both
+ *  depend on it. */
+function invalidateMembership(qc: ReturnType<typeof useQueryClient>, id: string) {
+  void qc.invalidateQueries({ queryKey: MEMBERS_KEY(id) });
+  void qc.invalidateQueries({ queryKey: LIST_KEY });
+  void qc.invalidateQueries({ queryKey: ["threads"] });
+}
+
 export function useAddChannelMember() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, userId }: { id: string; userId: string }) =>
       api.addChannelMember(id, userId),
-    onSuccess: (_, vars) =>
-      qc.invalidateQueries({ queryKey: MEMBERS_KEY(vars.id) }),
+    onSuccess: (_, vars) => invalidateMembership(qc, vars.id),
   });
 }
 
@@ -63,7 +71,6 @@ export function useRemoveChannelMember() {
   return useMutation({
     mutationFn: ({ id, userId }: { id: string; userId: string }) =>
       api.removeChannelMember(id, userId),
-    onSuccess: (_, vars) =>
-      qc.invalidateQueries({ queryKey: MEMBERS_KEY(vars.id) }),
+    onSuccess: (_, vars) => invalidateMembership(qc, vars.id),
   });
 }

@@ -107,6 +107,10 @@ export function ChatView() {
   // `useThreads` requests the DM feed.
   const feedChannelId = selectedAgentId ? null : selectedChannelId;
   const threadsQ = useThreads(forcedDemo ? null : feedChannelId);
+  // The sidebar's per-agent badges count DM threads, which must NOT depend on
+  // the channel currently in view. Read the DM feed on its own; react-query
+  // dedupes it with `threadsQ` whenever we're already in DM mode.
+  const dmThreadsQ = useThreads(null);
   const submit = useSubmitPrompt();
   const me = useAuthStore((s) => s.me);
   const activeOrg = useActiveOrg();
@@ -121,6 +125,8 @@ export function ChatView() {
   const agents = isDemo ? DEMO_AGENTS : (agentsQ.data ?? []);
   const channels = isDemo ? DEMO_CHANNELS : (channelsQ.data ?? []);
   const threads = isDemo ? DEMO_THREADS : (threadsQ.data ?? []);
+  // DM threads drive the sidebar agent counts regardless of the active feed.
+  const dmThreads = isDemo ? DEMO_THREADS : (dmThreadsQ.data ?? []);
 
   // Default the channel selection to the first channel (#general) once the
   // list loads, unless the reader is already in a channel or an agent DM.
@@ -260,7 +266,7 @@ export function ChatView() {
       sidebar={
         <Sidebar
           workspace={activeOrg?.name ?? "Patom"}
-          threads={threads}
+          dmThreads={dmThreads}
           channels={channels}
           agents={agents}
           selectedChannelId={selectedAgentId ? null : selectedChannelId}

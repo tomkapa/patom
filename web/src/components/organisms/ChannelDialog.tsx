@@ -239,9 +239,13 @@ function ManageBody({
                 <button
                   type="button"
                   aria-label={`Remove ${label(m.user_id)}`}
-                  onClick={() =>
-                    removeMember.mutate({ id: channel.id, userId: m.user_id })
-                  }
+                  onClick={() => {
+                    setError(null);
+                    removeMember.mutate(
+                      { id: channel.id, userId: m.user_id },
+                      { onError: () => setError("Couldn't remove that member.") },
+                    );
+                  }}
                   className="shrink-0 text-[var(--color-muted-foreground)] hover:text-[var(--color-rose)]"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -265,9 +269,13 @@ function ManageBody({
                   <button
                     key={r.user_id}
                     type="button"
-                    onClick={() =>
-                      addMember.mutate({ id: channel.id, userId: r.user_id! })
-                    }
+                    onClick={() => {
+                      setError(null);
+                      addMember.mutate(
+                        { id: channel.id, userId: r.user_id! },
+                        { onError: () => setError("Couldn't add that member.") },
+                      );
+                    }}
                     className="inline-flex items-center gap-1 border border-[var(--color-line)] bg-[var(--color-card)] px-2 py-1 text-[12px] hover:border-[var(--color-moss)]"
                   >
                     <UserPlus className="h-3 w-3" />
