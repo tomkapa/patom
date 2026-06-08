@@ -32,18 +32,15 @@ async fn main() -> Result<()> {
     #[cfg(feature = "cloud")]
     let cloud: Option<std::sync::Arc<dyn app::CloudBuilder>> = {
         let app_base_url = settings.auth.web_base_url.clone();
-        match settings.lemon_squeezy.as_ref() {
-            None => None,
-            Some(ls) => {
-                let cfg = patom_cloud::LemonSqueezyConfig::from_settings(ls)
-                    .context("build lemon squeezy config")?;
+        patom_cloud::LemonSqueezyConfig::from_env()
+            .context("load lemon squeezy config")?
+            .map(|cfg| {
                 // Typed binding coerces the concrete builder to the trait object
                 // without an `as` cast (CLAUDE.md §7).
                 let builder: std::sync::Arc<dyn app::CloudBuilder> =
                     std::sync::Arc::new(patom_cloud::LemonSqueezyCloud::new(cfg, app_base_url));
-                Some(builder)
-            }
-        }
+                builder
+            })
     };
     #[cfg(not(feature = "cloud"))]
     let cloud: Option<std::sync::Arc<dyn app::CloudBuilder>> = None;
