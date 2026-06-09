@@ -565,6 +565,9 @@ impl PgUserStore {
         // is released on commit/rollback. `hashtextextended` is the
         // built-in stable bigint hash `pg_advisory_xact_lock` wants.
         if let Some(cap) = cap {
+            // §6: a non-positive cap would reject every create with a
+            // confusing 409; the only caller passes MAX_ORGS_PER_USER (> 0).
+            assert!(cap > 0, "org cap must be positive");
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind(format!("org-create:{}", user_id.as_uuid()))
                 .execute(&mut *tx)

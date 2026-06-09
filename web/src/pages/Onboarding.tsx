@@ -64,6 +64,10 @@ export function Onboarding() {
       } else {
         logout.mutate();
       }
+    } catch {
+      // Delete failed (e.g. network/server error). Swallow rather than
+      // leave an unhandled rejection; `finally` re-enables the button so
+      // the user stays in the wizard and can retry Cancel.
     } finally {
       setCancelling(false);
     }
