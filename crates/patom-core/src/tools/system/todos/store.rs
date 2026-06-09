@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::auth::{OrgId, UserId, run_as_user, run_privileged};
 use crate::clock::SharedClock;
 use crate::runtime::PromptRequestId;
-use crate::session::SessionId;
+use crate::threads::AgentThreadId;
 use crate::types::ParseError;
 
 use super::types::{TodoItem, TodoList};
@@ -35,12 +35,12 @@ pub enum TodoStoreError {
 
 #[async_trait]
 pub trait SessionTodoStore: Send + Sync + fmt::Debug {
-    /// Atomically replace the session's todo list. Returns the freshly
+    /// Atomically replace the agent's per-thread todo list. Returns the freshly
     /// stored list (echoed back to the model so it sees its own state).
     async fn replace(
         &self,
         acting_user_id: UserId,
-        session_id: SessionId,
+        state_id: AgentThreadId,
         org_id: OrgId,
         updated_in_request_id: PromptRequestId,
         list: TodoList,
@@ -48,10 +48,10 @@ pub trait SessionTodoStore: Send + Sync + fmt::Debug {
 
     /// Read the current list for the worker's pre-turn context
     /// assembly. Bypasses RLS (worker-internal read path — the worker
-    /// has already claimed `session_id`, which is the PK, so a foreign
+    /// has already claimed `state_id`, which is the PK, so a foreign
     /// principal cannot reach this code path with a foreign id);
     /// returns the empty list when no row exists yet.
-    async fn get(&self, session_id: SessionId) -> Result<TodoList, TodoStoreError>;
+    async fn get(&self, state_id: AgentThreadId) -> Result<TodoList, TodoStoreError>;
 }
 
 pub type SharedSessionTodoStore = Arc<dyn SessionTodoStore>;
@@ -83,7 +83,7 @@ impl SessionTodoStore for PgSessionTodoStore {
     async fn replace(
         &self,
         acting_user_id: UserId,
-        session_id: SessionId,
+        state_id: AgentThreadId,
         org_id: OrgId,
         updated_in_request_id: PromptRequestId,
         list: TodoList,
@@ -94,15 +94,15 @@ impl SessionTodoStore for PgSessionTodoStore {
         run_as_user(&self.pool, acting_user_id, async |tx| {
             sqlx::query(
                 "INSERT INTO session_todos \
-                   (session_id, org_id, items, item_count, updated_at, updated_in_request_id) \
+                   (state_id, org_id, items, item_count, updated_at, updated_in_request_id) \
                  VALUES ($1, $2, $3, $4, $5, $6) \
-                 ON CONFLICT (session_id) DO UPDATE SET \
+                 ON CONFLICT (state_id) DO UPDATE SET \
                    items = EXCLUDED.items, \
                    item_count = EXCLUDED.item_count, \
                    updated_at = EXCLUDED.updated_at, \
                    updated_in_request_id = EXCLUDED.updated_in_request_id",
             )
-            .bind(session_id)
+            .bind(state_id)
             .bind(org_id)
             .bind(Json(items_for_bind))
             .bind(item_count)
@@ -116,12 +116,12 @@ impl SessionTodoStore for PgSessionTodoStore {
         Ok(list)
     }
 
-    async fn get(&self, session_id: SessionId) -> Result<TodoList, TodoStoreError> {
+    async fn get(&self, state_id: AgentThreadId) -> Result<TodoList, TodoStoreError> {
         let row: Option<(Json<Vec<TodoItem>>,)> = run_privileged(&self.pool, async |tx| {
             let row = sqlx::query_as::<_, (Json<Vec<TodoItem>>,)>(
-                "SELECT items FROM session_todos WHERE session_id = $1",
+                "SELECT items FROM session_todos WHERE state_id = $1",
             )
-            .bind(session_id)
+            .bind(state_id)
             .fetch_optional(&mut **tx.tx_mut())
             .await?;
             Ok::<_, TodoStoreError>(row)

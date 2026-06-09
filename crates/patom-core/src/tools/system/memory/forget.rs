@@ -88,8 +88,7 @@ impl Tool for MemoryForgetTool {
         check_cap(&self.deps.counter, ctx.request_id)?;
 
         let handle = MemoryHandle::try_from(parsed.handle.as_str()).map_err(parse_to_tool_err)?;
-        let memory_id =
-            resolve_handle(&self.deps, ctx.session_id, agent, &ctx.kind_payload, handle).await?;
+        let memory_id = resolve_handle(&self.deps, agent, &ctx.kind_payload, handle).await?;
 
         let outcome = self
             .deps

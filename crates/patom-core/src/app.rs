@@ -40,23 +40,21 @@ use crate::mcp::{
 };
 use crate::memory::{
     AgentMemory, LibrarianScheduler, MemorySectionLoader, PgMemoryStore, ReflectionScheduler,
-    SESSION_MEMORY_CACHE_CAP, SESSION_MEMORY_CACHE_TTL_SECS, SessionMemoryCache, SharedMemory,
-    SharedMemoryStore,
+    SharedMemory, SharedMemoryStore,
 };
 use crate::prompts::Prompts;
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::openai::{OpenAiEmbeddingProvider, OpenAiProvider};
 use crate::provider::{SharedEmbeddingProvider, SharedProviderRegistry};
 use crate::runtime::{
-    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
-    SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream, WorkerConfig,
-    WorkerPool, WorkerPoolHandle,
+    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedPromptQueue,
+    SharedResponseSink, SharedResponseSource, SharedThreadStream, WorkerConfig, WorkerPool,
+    WorkerPoolHandle,
 };
 use crate::scheduling::{
     DefaultTimezone, PgScheduledTaskStore, ScheduledTaskScheduler, SharedScheduledTaskStore,
     Timezone,
 };
-use crate::session::{PgSessionStore, SharedSessionStore};
 use crate::tools::system::{
     CancelScheduledTaskTool, CreateAgentTool, ListScheduledTasksTool, MemoryForgetTool,
     MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool, PgSessionTodoStore,
@@ -113,7 +111,6 @@ pub struct Server {
 struct Collaborators {
     providers: SharedProviderRegistry,
     pool: PgPool,
-    sessions: SharedSessionStore,
     threads: crate::threads::SharedThreadStore,
     background: crate::background::SharedBackgroundStore,
     agents: SharedAgentStore,
@@ -123,7 +120,6 @@ struct Collaborators {
     clock: SharedClock,
     builtin_tools: ToolRegistry,
     queue: SharedPromptQueue,
-    leases: SharedLeaseManager,
     dag: SharedDagBudget,
     sink: SharedResponseSink,
     responses: SharedResponseSource,
@@ -186,9 +182,6 @@ impl Collaborators {
         ));
         let agents: SharedAgentStore = agents_impl;
 
-        let sessions: SharedSessionStore =
-            Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
-
         let threads: crate::threads::SharedThreadStore = Arc::new(
             crate::threads::PgThreadStore::new(pool.clone(), clock.clone()),
         );
@@ -215,23 +208,16 @@ impl Collaborators {
             clock.clone(),
             embedding_provider.clone(),
         ));
-        let session_memory_cache = SessionMemoryCache::new(
-            SESSION_MEMORY_CACHE_CAP,
-            Duration::from_secs(SESSION_MEMORY_CACHE_TTL_SECS),
-            clock.clone(),
-        );
         // One loader, two consumers — `AgentMemory` (system-prompt
         // assembly) and `MemoryToolDeps` (handle resolution inside the
-        // mutation tools). Sharing the loader is what keeps the
-        // contextual layer consistent across the two paths that write
-        // into the same `(session, agent)` cache key.
+        // mutation tools). Sharing the loader keeps both paths composing the
+        // same stable section, so resolved `M-NN` handles match what was
+        // rendered.
         let memory_loader = MemorySectionLoader::new(
             memory_store.clone(),
-            sessions.clone(),
             colleagues.clone(),
             roster_cache.clone(),
             embedding_provider.clone(),
-            session_memory_cache.clone(),
         );
         // Identity-side store + per-org language resolver. Built before
         // `AgentMemory` so the resolver can be cloned into it; the
@@ -302,9 +288,7 @@ impl Collaborators {
         // `send_message` system tool can hold them without a later
         // round-trip. The hub's publish/subscribe halves split between
         // `send_message` (human-receiver branch) and the SSE route.
-        let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
-        let queue: SharedPromptQueue = queue_impl.clone();
-        let leases: SharedLeaseManager = queue_impl;
+        let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
         let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
@@ -352,15 +336,13 @@ impl Collaborators {
             mcp_store: mcp_store.clone(),
         })?;
 
-        // `memory_store` and `session_memory_cache` are not held on
-        // `Collaborators`: they're cheap-clone handles already
-        // distributed to every consumer (AgentMemory and the memory
-        // tools) by the clones above. The reflection scheduler builds
+        // `memory_store` is not held on `Collaborators`: it's a cheap-clone
+        // handle already distributed to every consumer (AgentMemory and the
+        // memory tools) by the clones above. The reflection scheduler builds
         // its own handles from `pieces.pool` / `pieces.queue` later.
         Ok(Self {
             providers: build_provider_registry(settings)?,
             pool,
-            sessions,
             threads,
             background,
             agents,
@@ -370,7 +352,6 @@ impl Collaborators {
             clock,
             builtin_tools,
             queue,
-            leases,
             dag,
             sink,
             responses,
@@ -397,7 +378,6 @@ impl Collaborators {
 #[derive(Clone)]
 struct AgentFactoryPieces {
     providers: SharedProviderRegistry,
-    sessions: SharedSessionStore,
     threads: crate::threads::SharedThreadStore,
     background: crate::background::SharedBackgroundStore,
     memory: SharedMemory,
@@ -443,27 +423,22 @@ impl AgentFactoryPieces {
             patom.model = %model,
             patom.model.source = source,
         );
-        AgentBuilder::new(
-            self.providers.clone(),
-            self.sessions.clone(),
-            self.memory.clone(),
-            model,
-        )
-        .expect("invariant: limits constants are static and parse")
-        .with_tools(toolbox)
-        .with_hooks(HookChain::new())
-        .with_clock(self.clock.clone())
-        .with_thread_store(self.threads.clone())
-        .with_background_store(self.background.clone())
-        .with_tool_call_store(self.tool_call_store.clone())
-        .with_todos_store(self.todos_store.clone())
-        .with_turn_metrics(
-            self.turn_metrics_store.clone(),
-            record.id,
-            record.current_prompt_version_id,
-        )
-        .with_budget(self.budget.clone())
-        .build()
+        AgentBuilder::new(self.providers.clone(), self.memory.clone(), model)
+            .expect("invariant: limits constants are static and parse")
+            .with_tools(toolbox)
+            .with_hooks(HookChain::new())
+            .with_clock(self.clock.clone())
+            .with_thread_store(self.threads.clone())
+            .with_background_store(self.background.clone())
+            .with_tool_call_store(self.tool_call_store.clone())
+            .with_todos_store(self.todos_store.clone())
+            .with_turn_metrics(
+                self.turn_metrics_store.clone(),
+                record.id,
+                record.current_prompt_version_id,
+            )
+            .with_budget(self.budget.clone())
+            .build()
     }
 }
 
@@ -607,7 +582,6 @@ fn build_agent_from(pieces: &Collaborators, settings: &Settings) -> Agent {
     );
     AgentBuilder::new(
         pieces.providers.clone(),
-        pieces.sessions.clone(),
         pieces.memory.clone(),
         settings.model,
     )
@@ -650,7 +624,6 @@ pub async fn build_server(
     ));
     let factory_pieces = AgentFactoryPieces {
         providers: pieces.providers.clone(),
-        sessions: pieces.sessions.clone(),
         threads: pieces.threads.clone(),
         background: pieces.background.clone(),
         memory: pieces.memory.clone(),
@@ -707,6 +680,7 @@ pub async fn build_server(
         pieces.pool.clone(),
         pieces.memory_store.clone(),
         pieces.queue.clone(),
+        pieces.background.clone(),
         pieces.clock.clone(),
         cancel.clone(),
     );
@@ -865,9 +839,7 @@ pub async fn build_server(
 
     let state = AppState {
         queue: pieces.queue,
-        leases: pieces.leases,
         responses: pieces.responses,
-        sessions: pieces.sessions,
         agents: pieces.agents,
         colleagues: pieces.colleagues,
         dag: pieces.dag,

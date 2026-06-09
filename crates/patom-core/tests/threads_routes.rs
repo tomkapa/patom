@@ -26,10 +26,9 @@ use patom::http::{AppState, router};
 use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
 use patom::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, PromptRequestId, ResponseChunk,
-    SharedDagBudget, SharedLeaseManager, SharedPromptQueue, SharedResponseSink,
-    SharedResponseSource, SharedThreadStream, ThreadStreamEvent,
+    SharedDagBudget, SharedPromptQueue, SharedResponseSink, SharedResponseSource,
+    SharedThreadStream, ThreadStreamEvent,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::threads::ThreadId;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
@@ -64,14 +63,11 @@ impl ThreadsHarness {
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
-        let leases: SharedLeaseManager = queue_impl;
 
         let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
         let sink: SharedResponseSink = hub.clone();
         let responses: SharedResponseSource = hub;
 
-        let sessions: SharedSessionStore =
-            Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
         let agent_store: SharedAgentStore =
             common::pg::shared_agent_store(pool.clone(), clock.clone());
         let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
@@ -99,9 +95,7 @@ impl ThreadsHarness {
         let users = common::auth::user_store(pool.clone());
         let state = AppState {
             queue: queue.clone(),
-            leases,
             responses,
-            sessions,
             agents: agent_store,
             colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,

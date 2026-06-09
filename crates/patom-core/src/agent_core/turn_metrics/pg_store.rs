@@ -42,7 +42,7 @@ impl TurnMetricsStore for PgTurnMetricsStore {
         skip_all,
         name = "turn_metrics.record",
         fields(
-            patom.session.id = %row.session_id,
+            patom.state.id = %row.state_id,
             patom.agent.id = %row.agent_id,
             patom.request.id = %row.request_id,
             patom.request.kind = row.kind.as_str(),
@@ -60,7 +60,7 @@ impl TurnMetricsStore for PgTurnMetricsStore {
         run_privileged::<(), TurnRecorderError>(&self.pool, async |tx| {
             sqlx::query(
                 "INSERT INTO turn_metrics \
-                     (id, request_id, org_id, session_id, agent_id, prompt_version_id, \
+                     (id, request_id, org_id, state_id, agent_id, prompt_version_id, \
                       kind, model, provider, \
                       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, \
                       duration_ms, stop_reason, started_at, created_at) \
@@ -69,7 +69,7 @@ impl TurnMetricsStore for PgTurnMetricsStore {
             .bind(row.id)
             .bind(row.request_id)
             .bind(row.org_id)
-            .bind(row.session_id)
+            .bind(row.state_id)
             .bind(row.agent_id)
             .bind(row.prompt_version_id)
             .bind(row.kind.as_str())

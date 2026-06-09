@@ -30,7 +30,6 @@ use crate::memory::{
     MemoryStoreError, ResolutionOutcome, SharedMemoryStore,
 };
 use crate::runtime::{PromptRequestId, RequestKindPayload};
-use crate::session::SessionId;
 use crate::types::ParseError;
 
 use super::super::traits::{ToolCallContext, ToolError};
@@ -194,23 +193,20 @@ pub(super) async fn maybe_close_resolution(
     Ok(())
 }
 
-/// Resolve a session-scoped `M-NN` handle to its underlying memory id.
+/// Resolve a `M-NN` handle to its underlying memory id.
 ///
 /// Delegates to the shared [`MemorySectionLoader`] so the renderer and
-/// the mutation tools cannot bind divergent values into the same cache
-/// entry. On cache miss the loader composes the section in-line; a
-/// session that just rolled past TTL pays one cache reload, not an
-/// error.
+/// the mutation tools cannot bind divergent values — both compose the
+/// same stable section.
 pub(super) async fn resolve_handle(
     deps: &MemoryToolDeps,
-    session: SessionId,
     agent: AgentId,
     kind_payload: &RequestKindPayload,
     handle: MemoryHandle,
 ) -> Result<MemoryId, ToolError> {
     let resolved = deps
         .loader
-        .resolve_handle(session, agent, kind_payload, handle)
+        .resolve_handle(agent, kind_payload, handle)
         .await
         .map_err(|e| ToolError::Backend(e.to_string()))?;
     resolved.ok_or_else(|| {

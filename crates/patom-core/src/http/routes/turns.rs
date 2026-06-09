@@ -39,8 +39,7 @@ use crate::auth::{AuthError, Principal, UserId, VisibilityTable, visible_to};
 use crate::mcp::McpServerId;
 use crate::memory::{MemoryEventId, MemoryId};
 use crate::provider::{Model, ProviderId};
-use crate::runtime::{PromptRequestId, RequestKind};
-use crate::session::SessionId;
+use crate::runtime::{ClaimKey, PromptRequestId, RequestKind};
 use crate::tools::ToolCallRowId;
 // MessageSenderKind was the old wire-typed enum; after Stage 3 the kind is
 // joined from colleagues so the route binds the literal "agent" string.
@@ -125,7 +124,9 @@ struct TurnMetricsResponse {
     /// call; several share a `request_id` for a multi-turn reply.
     id: TurnMetricsId,
     request_id: PromptRequestId,
-    session_id: SessionId,
+    /// Agent participation id (`agent_thread_state.id`) the turn ran under —
+    /// the recorder FK that replaced the legacy `session_id`.
+    state_id: ClaimKey,
     /// Root prompt request of the human-rooted DAG this turn belongs to.
     /// Used by the FE to map a turn id back to the chat thread it lives
     /// in so links from the memory pane can deep-link the right panel.
@@ -288,7 +289,7 @@ async fn fetch_turn_row(
     turn_id: TurnMetricsId,
 ) -> Result<TurnMetricsResponse, TurnDetailError> {
     let row = sqlx::query_as::<_, TurnMetricsResponse>(
-        "SELECT tm.id, tm.request_id, tm.session_id, s.root_request_id, \
+        "SELECT tm.id, tm.request_id, tm.state_id, pr.root_request_id, \
                 tm.agent_id, tm.prompt_version_id, \
                 tm.kind, tm.model, tm.provider, \
                 tm.input_tokens, tm.output_tokens, \
@@ -298,7 +299,6 @@ async fn fetch_turn_row(
                 pr.failure_reason \
          FROM turn_metrics tm \
          JOIN prompt_requests pr ON pr.id = tm.request_id \
-         JOIN sessions s ON s.id = tm.session_id \
          WHERE tm.id = $1",
     )
     .bind(turn_id)
@@ -321,15 +321,16 @@ async fn fetch_reasoning(
     tx: &mut TenantTx<'_>,
     request_id: PromptRequestId,
 ) -> Result<Vec<ReasoningBlock>, TurnDetailError> {
+    // Reasoning blocks live in the agent's owner-private feed artifacts
+    // (`thread_messages` with `owner_agent_id` set) — the rehome of the old
+    // `session_messages` assistant rows. Filter to the producing request.
     let bodies: Vec<(SqlxJson<JsonValue>,)> = sqlx::query_as(
-        "SELECT sm.body FROM session_messages sm \
-         JOIN colleagues sc ON sc.id = sm.sender_colleague_id \
-         WHERE sm.request_id = $1 AND sc.kind = $2 \
-         ORDER BY sm.seq ASC \
-         LIMIT $3",
+        "SELECT tmsg.body FROM thread_messages tmsg \
+         WHERE tmsg.request_id = $1 AND tmsg.owner_agent_id IS NOT NULL \
+         ORDER BY tmsg.seq ASC \
+         LIMIT $2",
     )
     .bind(request_id)
-    .bind("agent")
     .bind(i64::try_from(MAX_REASONING_BLOCKS_PER_TURN).unwrap_or(i64::MAX))
     .fetch_all(&mut **tx)
     .await?;

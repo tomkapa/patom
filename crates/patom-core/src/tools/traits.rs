@@ -5,8 +5,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::auth::{OrgId, UserId};
-use crate::runtime::{PromptRequestId, RequestKindPayload};
-use crate::session::SessionId;
+use crate::runtime::{ClaimKey, PromptRequestId, RequestKindPayload};
 use crate::threads::{AgentThreadId, ThreadId};
 use crate::types::{Participant, ToolName};
 
@@ -52,20 +51,20 @@ pub enum ToolError {
 /// (`send_message`, `get_session`, memory tools) consume it.
 #[derive(Debug, Clone)]
 pub struct ToolCallContext {
-    /// The session that produced this tool call.
-    ///
-    /// Legacy pair-session identity. In the thread-feed path this carries the
-    /// `state_id` bridged through `SessionId::from` (see [`state_id`] for the
-    /// typed value); session-coupled tools that have not yet been rehomed onto
-    /// `state_id` still read it.
+    /// Polymorphic turn scope for this tool call — `agent_thread_state.id`
+    /// (chat) or `background_turn_id` (background). The memory / hook / tracing
+    /// contexts key on this; recorder rows source their FK from [`state_id`]
+    /// instead, which is `None` on the background path.
     ///
     /// [`state_id`]: Self::state_id
-    pub session_id: SessionId,
-    /// Thread the tool call belongs to, in the thread-feed path. `None` on the
-    /// legacy pair-session path. `send_message` posts the egress row here.
+    pub claim_key: ClaimKey,
+    /// Thread the tool call belongs to, in the thread-feed chat path. `None` on
+    /// the background-cognition path. `send_message` posts the egress row here.
     pub thread_id: Option<ThreadId>,
     /// The agent's participation id (`agent_thread_state.id`) for this turn —
-    /// the thread-feed turn scope. `None` on the legacy pair-session path.
+    /// the recorder FK (`turn_metrics.state_id` / `tool_calls.state_id` /
+    /// `session_todos.state_id`). `None` on the background path (no
+    /// `agent_thread_state` row), where recording is skipped.
     pub state_id: Option<AgentThreadId>,
     /// The agent currently running — its identity is what `send_message`'s
     /// receiver is checked against and what authors any messages the tool

@@ -29,7 +29,6 @@ use patom::runtime::{
     RequestKindPayload, SharedDagBudget, SharedPromptQueue, SharedResponseSink, WorkerConfig,
     WorkerPool,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::threads::{MessageKind, NewMessage, PgThreadStore, SharedThreadStore};
 use patom::tools::{ToolBox, ToolRegistry};
 use sqlx::PgPool;
@@ -108,24 +107,18 @@ async fn no_egress_nudges_then_fails(pool: PgPool) {
             .insert(ProviderId::Anthropic, shared)
             .build(),
     );
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
     let model_for_factory = model;
     let threads_for_factory = threads.clone();
     let clock_for_factory = clock.clone();
     let factory: AgentFactory = Arc::new(move |_record| {
-        AgentBuilder::new(
-            providers.clone(),
-            sessions.clone(),
-            memory.clone(),
-            model_for_factory,
-        )
-        .expect("builder")
-        .with_clock(clock_for_factory.clone())
-        .with_thread_store(threads_for_factory.clone())
-        .with_tools(ToolBox::from_builtins(ToolRegistry::empty()))
-        .with_hooks(HookChain::new())
-        .build()
+        AgentBuilder::new(providers.clone(), memory.clone(), model_for_factory)
+            .expect("builder")
+            .with_clock(clock_for_factory.clone())
+            .with_thread_store(threads_for_factory.clone())
+            .with_tools(ToolBox::from_builtins(ToolRegistry::empty()))
+            .with_hooks(HookChain::new())
+            .build()
     });
     let agents: SharedAgents = Arc::new(CachedAgents::new(
         common::pg::shared_agent_store(pool.clone(), clock.clone()),

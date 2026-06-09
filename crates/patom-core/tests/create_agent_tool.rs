@@ -11,16 +11,14 @@
 use patom::agents::{AgentName, AllowedMcpTools, SharedAgentStore, ToolScope};
 use patom::clock::SystemClock;
 use patom::mcp::McpCatalogId;
-use patom::runtime::{PromptRequestId, RequestKindPayload};
-use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::runtime::{ClaimKey, PromptRequestId, RequestKindPayload};
 use patom::tools::system::CreateAgentTool;
 use patom::tools::{Tool, ToolCallContext, ToolError};
 use serde_json::{Value, json};
-use std::sync::Arc;
 use uuid::Uuid;
 
 mod common;
-use common::pg::{human_to_agent_session, seed_tenant, shared_agent_store};
+use common::pg::{seed_tenant, shared_agent_store};
 use sqlx::PgPool;
 
 struct Fixture {
@@ -35,19 +33,9 @@ struct Fixture {
 
 async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let agents = shared_agent_store(pool.clone(), SystemClock::shared());
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
-    let session = human_to_agent_session(
-        pool,
-        sessions.as_ref(),
-        seed.agent_id,
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
     let request_id = PromptRequestId::new();
     let ctx = ToolCallContext {
-        session_id: session,
+        claim_key: ClaimKey::new(),
         thread_id: None,
         state_id: None,
         viewer: common::pg::agent_participant(pool, seed.org_id, seed.agent_id).await,
@@ -74,7 +62,7 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
 
 fn human_ctx(f: &Fixture) -> ToolCallContext {
     ToolCallContext {
-        session_id: f.ctx.session_id,
+        claim_key: f.ctx.claim_key,
         thread_id: None,
         state_id: None,
         viewer: patom::types::Participant::human(f.user_colleague_id, f.user_id),

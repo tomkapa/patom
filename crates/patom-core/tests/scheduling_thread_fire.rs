@@ -36,7 +36,6 @@ use patom::scheduling::{
     NewScheduledTask, PgScheduledTaskStore, ScheduleSpec, ScheduledPrompt, ScheduledTaskName,
     ScheduledTaskScheduler, ScheduledTaskState, SharedScheduledTaskStore,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::threads::{PgThreadStore, SharedThreadStore};
 use patom::tools::system::SendMessageTool;
 use patom::tools::{ToolBox, ToolRegistry};
@@ -113,7 +112,6 @@ async fn fire_creates_thread_and_agent_posts_summary_tagging_owner(pool: PgPool)
     let sink: SharedResponseSink = hub.clone();
     let colleagues: SharedColleagueStore = Arc::new(PgColleagueStore::new(pool.clone()));
     let agent_store: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
 
     // Agent factory: PostsSummary provider + a real send_message tool wired so
     // the agent's reply lands a posted feed row (the egress).
@@ -138,7 +136,7 @@ async fn fire_creates_thread_and_agent_posts_summary_tagging_owner(pool: PgPool)
     let threads_for_factory = threads.clone();
     let clock_for_factory = clock.clone();
     let factory: AgentFactory = Arc::new(move |_record| {
-        AgentBuilder::new(providers.clone(), sessions.clone(), memory.clone(), model)
+        AgentBuilder::new(providers.clone(), memory.clone(), model)
             .expect("builder")
             .with_clock(clock_for_factory.clone())
             .with_thread_store(threads_for_factory.clone())

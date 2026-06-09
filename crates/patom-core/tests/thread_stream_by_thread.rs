@@ -23,7 +23,7 @@ use patom::clock::SystemClock;
 use patom::colleagues::resolve_user_colleague;
 use patom::runtime::{
     IdempotencyKey, LeaseTiming, NewTrigger, PgPromptQueue, PgResponseHub, PgThreadStream,
-    RequestKindPayload, ResponseChunk, ResponseSink as _, ThreadStreamEvent,
+    PromptQueue, RequestKindPayload, ResponseChunk, ResponseSink as _, ThreadStreamEvent,
 };
 use patom::threads::{PgThreadStore, ThreadStore};
 use sqlx::PgPool;

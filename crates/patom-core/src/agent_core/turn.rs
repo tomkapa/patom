@@ -18,13 +18,12 @@ use crate::provider::{
     UserContent,
 };
 use crate::runtime::{PromptRequestId, RequestKind, RequestKindPayload};
-use crate::session::{SessionError, SessionId};
 use crate::threads::{AgentThreadId, MessageKind, NewMessage, ThreadId};
 use crate::tools::{
     SharedTool, TOOL_RESULT_MAX_BYTES, ToolBox, ToolCallContext, ToolCallRow, ToolCallRowId,
     clip_error_message, truncate_to_char_boundary,
 };
-use crate::types::{MessageSender, Participant, TurnIndex};
+use crate::types::{Participant, TurnIndex};
 
 use crate::auth::OrgId;
 use crate::budget::{BudgetError, price_for, turn_cost};
@@ -34,152 +33,11 @@ use super::error::AgentError;
 use super::limits::MAX_TOOL_CALLS_PER_TURN;
 use super::log;
 use super::observer::SharedTurnObserver;
-use super::outcome::viewer_kind;
 use super::turn_metrics::{
     DurationMs, InputTokens, OutputTokens, StopReasonLabel, TurnMetricsId, TurnMetricsRow,
 };
 
 impl Agent {
-    /// Run one provider call + its tool-call follow-up. Returns `Some(text)` when
-    /// the turn ends with a final answer; `None` to continue the loop.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn run_turn(
-        &self,
-        ctx: TurnContext,
-        viewer: Participant,
-        counterpart: Participant,
-        viewer_as_sender: MessageSender,
-        root_request_id: PromptRequestId,
-        request_id: PromptRequestId,
-        caller: Caller,
-        kind_payload: &RequestKindPayload,
-        send_message_calls: &mut usize,
-        cancel: &CancellationToken,
-        observer: Option<&SharedTurnObserver>,
-    ) -> Result<Option<String>, AgentError> {
-        self.hooks().before_turn(ctx).await?.into_result()?;
-        // Spend gate before the (paid) provider call. Stops a long-running DAG
-        // the moment it crosses the org's monthly cap; the HTTP admission gate
-        // only checked the root prompt.
-        self.budget_gate(caller.org_id).await?;
-        // Wall-clock `started_at` from the agent clock (CLAUDE.md §11) so
-        // tests can pin timestamps; `started_mono` runs alongside so a
-        // paused / faked wall clock cannot zero out `duration_ms`.
-        let started_at = self.clock().now_utc();
-        let started_mono = Instant::now();
-        let response = self
-            .send_one_turn(ctx.session_id, viewer, counterpart, kind_payload, cancel)
-            .await?;
-        let duration = started_mono.elapsed();
-        self.record_turn_metrics(
-            request_id,
-            ctx.session_id,
-            caller.org_id,
-            kind_payload.kind(),
-            started_at,
-            duration,
-            &response,
-        )
-        .await;
-        // Post-paid settle: charge the org for what this turn actually cost.
-        // Awaited but fail-open (see `budget_settle`).
-        self.budget_settle(caller.org_id, &response).await;
-        self.hooks()
-            .after_turn(ctx, &response)
-            .await?
-            .into_result()?;
-
-        for block in &response.content {
-            log::assistant_block(ctx.turn_index.get(), block);
-        }
-        if let Some(obs) = observer {
-            for block in &response.content {
-                obs.on_assistant(block).await;
-            }
-        }
-
-        // Reflection / resolution sessions pair the agent with `System`, which
-        // can never be a message receiver (receivers are NOT NULL). The agent
-        // is the audience of its own audit output, so address it to itself; a
-        // normal session keeps the real counterpart. Self-detection on read
-        // keys off the sender, so an agent→agent row still renders as the
-        // viewer's Assistant turn.
-        let output_receiver = if counterpart.is_system() {
-            viewer
-        } else {
-            counterpart
-        };
-        self.sessions()
-            .append_for_user(
-                caller.user_id,
-                ctx.session_id,
-                viewer_as_sender,
-                output_receiver,
-                ChatMessage::Assistant(response.content.clone()),
-                request_id,
-            )
-            .await?;
-
-        let tool_calls = response.tool_calls();
-        tracing::Span::current().record("patom.tool_calls.count", tool_calls.len());
-        if tool_calls.is_empty() {
-            let text = response.text();
-            if text.is_empty() {
-                return Err(AgentError::EmptyReply);
-            }
-            return Ok(Some(text));
-        }
-        if tool_calls.len() > MAX_TOOL_CALLS_PER_TURN {
-            return Err(AgentError::TooManyToolCalls {
-                max: MAX_TOOL_CALLS_PER_TURN,
-            });
-        }
-
-        let tool_ctx = ToolCallContext {
-            session_id: ctx.session_id,
-            thread_id: None,
-            state_id: None,
-            viewer,
-            root_request_id,
-            request_id,
-            kind_payload: kind_payload.clone(),
-            acting_user_id: caller.user_id,
-            org_id: caller.org_id,
-        };
-        // Counted regardless of tool error — the model already saw the failure
-        // via the tool result; the worker's ping-pong guard cares only about
-        // attempts to deliver.
-        for call in &tool_calls {
-            if call.name.as_str() == send_message_tool_name() {
-                *send_message_calls += 1;
-            }
-        }
-        let results = self
-            .run_tools(
-                ctx,
-                &tool_calls,
-                self.tools(),
-                kind_payload.kind(),
-                &tool_ctx,
-                cancel,
-                observer,
-            )
-            .await?;
-        // Sender = `System` so the row renders to viewer-as-User without
-        // claiming the human authored the result.
-        self.sessions()
-            .append_for_user(
-                caller.user_id,
-                ctx.session_id,
-                MessageSender::System,
-                viewer,
-                ChatMessage::User(results.into_iter().map(UserContent::ToolResult).collect()),
-                request_id,
-            )
-            .await?;
-        Ok(None)
-    }
-
     /// Run one thread-feed turn: build the request from the feed (read-at-run),
     /// call the provider, append the agent's artifacts back to the feed. Returns
     /// `Some(text)` when the turn ends with a final answer; `None` to continue.
@@ -208,7 +66,7 @@ impl Agent {
         let started_at = self.clock().now_utc();
         let started_mono = Instant::now();
         let request = self
-            .build_thread_request(thread, viewer, kind_payload)
+            .build_thread_request(claim_key, thread, viewer, kind_payload)
             .await?;
         let response = self
             .call_provider(request, self.provider_timeout(), cancel)
@@ -216,7 +74,7 @@ impl Agent {
         let duration = started_mono.elapsed();
         self.record_turn_metrics(
             request_id,
-            ctx.session_id,
+            Some(claim_key),
             caller.org_id,
             kind_payload.kind(),
             started_at,
@@ -241,7 +99,7 @@ impl Agent {
 
         // §6: the thread path only ever runs for an agent viewer.
         let agent_id = viewer.agent_id().ok_or_else(|| {
-            SessionError::Backend("run_thread_turn requires an agent viewer".to_string())
+            AgentError::Internal("run_thread_turn requires an agent viewer".to_string())
         })?;
 
         let tool_calls = response.tool_calls();
@@ -350,12 +208,12 @@ impl Agent {
         cancel: &CancellationToken,
         observer: Option<&SharedTurnObserver>,
     ) -> Result<(), AgentError> {
-        // `session_id` carries `claim_key` bridged via `SessionId::from` for the
-        // legacy-typed contexts; `state_id` carries the typed participation id.
-        // `root_request_id` is the real DAG root (resolved by the worker), so
-        // `send_message`'s budget bump lands on the right `prompt_request_dags`.
+        // `claim_key` is the polymorphic turn scope (here the participation id);
+        // `state_id` carries the same id as the recorder FK. `root_request_id`
+        // is the real DAG root (resolved by the worker), so `send_message`'s
+        // budget bump lands on the right `prompt_request_dags`.
         let tool_ctx = ToolCallContext {
-            session_id: ctx.session_id,
+            claim_key: ctx.claim_key,
             thread_id: Some(thread),
             state_id: Some(claim_key),
             viewer,
@@ -407,31 +265,52 @@ impl Agent {
     )]
     async fn build_thread_request(
         &self,
+        state_id: AgentThreadId,
         thread: ThreadId,
         viewer: Participant,
         kind_payload: &RequestKindPayload,
     ) -> Result<ChatRequest, AgentError> {
         let span = tracing::Span::current();
         let agent_id = viewer.agent_id().ok_or_else(|| {
-            SessionError::Backend("build_thread_request requires an agent viewer".to_string())
+            AgentError::Internal("build_thread_request requires an agent viewer".to_string())
         })?;
         let viewer_colleague = viewer.colleague_id().ok_or_else(|| {
-            SessionError::Backend("build_thread_request agent viewer has no colleague".to_string())
+            AgentError::Internal("build_thread_request agent viewer has no colleague".to_string())
         })?;
         // The feed read and the system-prompt compose hit independent stores;
         // run them concurrently so the turn pays one round-trip latency, not two.
-        let (messages, system) = tokio::join!(
+        let (messages, memory_system) = tokio::join!(
             self.threads()
                 .context_for_agent(thread, agent_id, viewer_colleague),
             self.memory().system_prompt_for_thread(viewer, kind_payload),
         );
         let messages = messages?;
-        let system = system?;
+        let memory_system = memory_system?;
         assert!(
             !messages.is_empty(),
             "thread turn must read at least one feed message"
         );
         span.record("patom.history.count", messages.len());
+
+        // Fold the agent's per-thread todo list (keyed on `state_id`, the
+        // participation id) into the system-prompt tail. Empty / missing-store
+        // cases render to the empty string, so `format!` leaves no trailing
+        // separator. `TodoWriteTool` writes the same `state_id`.
+        let todos_block = match self.todos_store() {
+            Some(store) => {
+                let list =
+                    tokio::time::timeout(super::limits::TODOS_LOAD_TIMEOUT, store.get(state_id))
+                        .await
+                        .map_err(|_| AgentError::TodosLoadTimeout)??;
+                crate::tools::system::todos::render_section(&list)
+            }
+            None => String::new(),
+        };
+        let system: std::sync::Arc<str> = if todos_block.is_empty() {
+            memory_system
+        } else {
+            std::sync::Arc::from(format!("{memory_system}\n{todos_block}").as_str())
+        };
         span.record("patom.system_prompt.bytes", system.len());
 
         let tools = self.tools().specs_for(kind_payload.kind());
@@ -472,9 +351,11 @@ impl Agent {
             .call_provider(request, self.provider_timeout(), cancel)
             .await?;
         let duration = started_mono.elapsed();
+        // Background turns have no `agent_thread_state` row, so the recorder FK
+        // would fail — skip recording (state_id = None) for cognition turns.
         self.record_turn_metrics(
             request_id,
-            ctx.session_id,
+            None,
             caller.org_id,
             kind_payload.kind(),
             started_at,
@@ -499,7 +380,7 @@ impl Agent {
 
         // §6: the background path only ever runs for an agent viewer.
         let _agent_id = viewer.agent_id().ok_or_else(|| {
-            SessionError::Backend("run_background_turn requires an agent viewer".to_string())
+            AgentError::Internal("run_background_turn requires an agent viewer".to_string())
         })?;
         // The assistant turn → the turn's private log (never the chat feed).
         self.append_background(
@@ -527,10 +408,11 @@ impl Agent {
         }
 
         // Cognition tools (memory write/update/forget/validate, contradiction
-        // close) run with thread/state unset; `session_id` carries the turn id
-        // bridged for the legacy-typed contexts.
+        // close) run with thread/state unset; `claim_key` is the background
+        // turn id (the polymorphic turn scope) and `state_id` is `None` so no
+        // recorder FK is attempted.
         let tool_ctx = ToolCallContext {
-            session_id: ctx.session_id,
+            claim_key: ctx.claim_key,
             thread_id: None,
             state_id: None,
             viewer,
@@ -667,15 +549,17 @@ impl Agent {
     }
 
     /// Best-effort write to `turn_metrics`. Skipped when the recorder is
-    /// not wired (agent_core unit tests). DB / conversion failures emit
-    /// `tracing::error!` and continue — the user has already seen the
-    /// turn (CLAUDE.md §6: observability never blocks the user-visible
-    /// path; the row going missing is one chart cell, not a turn replay).
+    /// not wired (agent_core unit tests) or when `state_id` is `None` (the
+    /// background-cognition path has no `agent_thread_state` row, so the FK
+    /// would fail). DB / conversion failures emit `tracing::error!` and
+    /// continue — the user has already seen the turn (CLAUDE.md §6:
+    /// observability never blocks the user-visible path; the row going
+    /// missing is one chart cell, not a turn replay).
     #[allow(clippy::too_many_arguments)] // recorder bundles per-call audit fields, not branching
     async fn record_turn_metrics(
         &self,
         request_id: PromptRequestId,
-        session_id: SessionId,
+        state_id: Option<AgentThreadId>,
         org_id: crate::auth::OrgId,
         kind: RequestKind,
         started_at: chrono::DateTime<chrono::Utc>,
@@ -683,6 +567,11 @@ impl Agent {
         response: &ChatResponse,
     ) {
         let Some(binding) = self.turn_metrics() else {
+            return;
+        };
+        // `turn_metrics.state_id` FKs `agent_thread_state`; cognition turns
+        // have no such row, so skip recording rather than FK-fail.
+        let Some(state_id) = state_id else {
             return;
         };
         // Token counts come from the provider as `u32`; the newtype's
@@ -712,7 +601,7 @@ impl Agent {
             id: TurnMetricsId::new(),
             request_id,
             org_id,
-            session_id,
+            state_id,
             agent_id: binding.agent_id,
             prompt_version_id: binding.prompt_version_id,
             kind,
@@ -735,21 +624,6 @@ impl Agent {
         }
     }
 
-    pub(super) async fn send_one_turn(
-        &self,
-        session: SessionId,
-        viewer: Participant,
-        counterpart: Participant,
-        kind_payload: &RequestKindPayload,
-        cancel: &CancellationToken,
-    ) -> Result<ChatResponse, AgentError> {
-        let request = self
-            .build_chat_request(session, viewer, counterpart, kind_payload)
-            .await?;
-        self.call_provider(request, self.provider_timeout(), cancel)
-            .await
-    }
-
     /// Single LLM provider entry point. Every code path that talks to a
     /// model — normal turn, reflection, resolution — funnels through here
     /// so timeout, cancellation, and error mapping live in one place.
@@ -769,103 +643,6 @@ impl Agent {
                 Err(_) => Err(AgentError::ProviderTimeout),
             },
         }
-    }
-
-    /// Assemble the per-turn provider request: own-session history, optional
-    /// parent-session prefix, system prompt, tool specs.
-    #[tracing::instrument(
-        skip_all,
-        name = "session.context.build",
-        fields(
-            patom.session.id = %session,
-            patom.viewer = %viewer,
-            patom.viewer.kind = viewer_kind(viewer),
-            patom.history.count = tracing::field::Empty,
-            patom.parent_session.included = tracing::field::Empty,
-            patom.parent_session.history.count = tracing::field::Empty,
-            patom.system_prompt.bytes = tracing::field::Empty,
-            patom.messages.count = tracing::field::Empty,
-        ),
-    )]
-    async fn build_chat_request(
-        &self,
-        session: SessionId,
-        viewer: Participant,
-        counterpart: Participant,
-        kind_payload: &RequestKindPayload,
-    ) -> Result<ChatRequest, AgentError> {
-        let kind = kind_payload.kind();
-        let span = tracing::Span::current();
-        // §6: worker turns only ever run for an agent viewer (real colleague).
-        // Surface a backend-error rather than panic if a caller breaks the
-        // invariant — the trait signature speaks `ColleagueId` honestly.
-        let viewer_colleague = viewer.colleague_id().ok_or_else(|| {
-            crate::session::SessionError::Backend(
-                "build_chat_request called with System viewer; worker invariant".to_string(),
-            )
-        })?;
-        let own = self.sessions().snapshot(session, viewer_colleague).await?;
-        assert!(
-            !own.is_empty(),
-            "session must contain at least the user prompt"
-        );
-        span.record("patom.history.count", own.len());
-
-        // Prepend the immediate parent session's history when the viewer
-        // participates in the parent — i.e. the agent's own conversation
-        // continues across the fork (e.g. `default` reading `human↔default`
-        // while processing a reply from `default↔translator`). Foreign viewers
-        // get an empty parent history; framing comes through `send_message`'s
-        // `context_summary`, with `get_session` for deeper lookups.
-        let parent = self
-            .sessions()
-            .parent_history_for_viewer(session, viewer_colleague)
-            .await?;
-        span.record("patom.parent_session.included", !parent.is_empty());
-        span.record("patom.parent_session.history.count", parent.len());
-
-        let mut messages: Vec<ChatMessage> = Vec::with_capacity(parent.len() + own.len());
-        messages.extend(parent);
-        messages.extend(own);
-
-        let memory_system = self
-            .memory()
-            .system_prompt(session, viewer, counterpart, kind_payload)
-            .await?;
-        // Fold the session's current todo list into the system prompt
-        // tail. Empty / missing-store cases render to the empty string,
-        // which `format!` below leaves as a no-op (no trailing
-        // separator). See `tools::system::todos::render_section` for
-        // the block format.
-        let todos_block = match self.todos_store() {
-            Some(store) => {
-                // CLAUDE.md §5: every I/O await is wrapped. PK-lookup
-                // against a single row; the bound here just keeps a
-                // stalled pool/connection from holding the turn hostage.
-                let list =
-                    tokio::time::timeout(super::limits::TODOS_LOAD_TIMEOUT, store.get(session))
-                        .await
-                        .map_err(|_| AgentError::TodosLoadTimeout)??;
-                crate::tools::system::todos::render_section(&list)
-            }
-            None => String::new(),
-        };
-        let system: std::sync::Arc<str> = if todos_block.is_empty() {
-            memory_system
-        } else {
-            std::sync::Arc::from(format!("{memory_system}\n{todos_block}").as_str())
-        };
-        span.record("patom.system_prompt.bytes", system.len());
-        span.record("patom.messages.count", messages.len());
-
-        let tools = self.tools().specs_for(kind);
-        Ok(ChatRequest {
-            model: self.model(),
-            system,
-            messages,
-            tools,
-            max_output_tokens: self.max_output_tokens(),
-        })
     }
 
     /// Execute every tool call from the assistant turn against `tools`,
@@ -930,10 +707,12 @@ impl Agent {
     }
 
     /// Best-effort write to the `tool_calls` audit log. Skipped when no
-    /// store is wired or the viewer is not an agent (system / human
+    /// store is wired, the viewer is not an agent (system / human
     /// participants never dispatch tools but the type system can't
-    /// prove it here). DB failures emit `tracing::error!` and continue
-    /// — the user has already seen the result.
+    /// prove it here), or `state_id` is `None` (background-cognition turn —
+    /// `tool_calls.state_id` FKs `agent_thread_state`, which a cognition
+    /// turn has no row in, so the FK would fail). DB failures emit
+    /// `tracing::error!` and continue — the user has already seen the result.
     async fn record_tool_call(
         &self,
         tool_ctx: &ToolCallContext,
@@ -947,6 +726,9 @@ impl Agent {
         let Some(agent_id) = tool_ctx.viewer.agent_id() else {
             return;
         };
+        let Some(state_id) = tool_ctx.state_id else {
+            return;
+        };
         // Carries *what* failed for the audit row, not just *that* it failed.
         let error_message = outcome
             .result
@@ -955,7 +737,7 @@ impl Agent {
         let row = ToolCallRow {
             id: ToolCallRowId::new(),
             org_id: tool_ctx.org_id,
-            session_id: tool_ctx.session_id,
+            state_id,
             request_id: tool_ctx.request_id,
             agent_id,
             mcp_server_id: tools.server_id_for(call.name.as_str()),
@@ -984,7 +766,7 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Result<CallOutcome, AgentError> {
         let hook_ctx = ToolContext {
-            session_id: ctx.session_id,
+            claim_key: ctx.claim_key,
             turn_index: ctx.turn_index,
             call,
         };
@@ -1018,7 +800,7 @@ impl Agent {
             gen_ai.tool.name = %call.name,
             gen_ai.tool.call.id = %call.id.as_str(),
             patom.tool = %call.name,
-            patom.session.id = %tool_ctx.session_id.as_uuid(),
+            patom.claim_key = %tool_ctx.claim_key.as_uuid(),
         ),
     )]
     async fn run_one_tool(

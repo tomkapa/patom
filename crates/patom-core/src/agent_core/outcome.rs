@@ -1,7 +1,7 @@
 //! Stable, low-cardinality labels recorded on agent.* spans so dashboards
 //! can `GROUP BY patom.outcome` instead of grepping log strings.
 
-use crate::types::{AgentReply, Participant};
+use crate::types::AgentReply;
 
 use super::error::AgentError;
 
@@ -40,19 +40,11 @@ fn error_label(err: &AgentError) -> &'static str {
         AgentError::BudgetExceeded { .. } => "budget_exceeded",
         AgentError::HookDenied(_) => "hook_denied",
         AgentError::Hook(_) => "hook_error",
-        AgentError::Session(_) => "session_error",
+        AgentError::Internal(_) => "internal_error",
         AgentError::Thread(_) => "thread_error",
         AgentError::Background(_) => "background_error",
         AgentError::Memory(_) => "memory_error",
         AgentError::Todos(_) => "todos_error",
         AgentError::TodosLoadTimeout => "todos_load_timeout",
-    }
-}
-
-pub(super) fn viewer_kind(viewer: Participant) -> &'static str {
-    match viewer {
-        Participant::Human { .. } => "human",
-        Participant::Agent { .. } => "agent",
-        Participant::System => "system",
     }
 }

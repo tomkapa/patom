@@ -17,16 +17,16 @@ use std::time::Duration;
 use crate::agents::AgentId;
 use crate::cache::BoundedTtlCache;
 use crate::clock::SharedClock;
-use crate::session::SessionId;
+use crate::runtime::ClaimKey;
 
 use super::composer::MemorySection;
 
-/// Per (session, agent) cache of composed sections. Cheap-clone — the
+/// Per (claim_key, agent) cache of composed sections. Cheap-clone — the
 /// inner [`BoundedTtlCache`] is itself an `Arc`, so cloning shares the
 /// underlying state.
 #[derive(Debug, Clone)]
 pub struct SessionMemoryCache {
-    inner: BoundedTtlCache<(SessionId, AgentId), Arc<MemorySection>>,
+    inner: BoundedTtlCache<(ClaimKey, AgentId), Arc<MemorySection>>,
 }
 
 impl SessionMemoryCache {
@@ -37,13 +37,13 @@ impl SessionMemoryCache {
         }
     }
 
-    /// Return the cached section for `(session, agent)`, calling
+    /// Return the cached section for `(claim_key, agent)`, calling
     /// `compose` to produce one on miss or expiry. The lock is released
     /// before `compose` runs so a slow store does not block other
     /// workers.
     pub async fn get_or_load<F, Fut, E>(
         &self,
-        session: SessionId,
+        claim_key: ClaimKey,
         agent: AgentId,
         compose: F,
     ) -> Result<Arc<MemorySection>, E>
@@ -52,7 +52,7 @@ impl SessionMemoryCache {
         Fut: std::future::Future<Output = Result<MemorySection, E>>,
     {
         self.inner
-            .get_or_load((session, agent), || async move {
+            .get_or_load((claim_key, agent), || async move {
                 let composed = compose().await?;
                 Ok::<_, E>(Arc::new(composed))
             })

@@ -35,10 +35,9 @@ use patom::http::{AppState, router};
 use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
 use patom::provider::{AssistantContent, ChatResponse, StopReason, ToolCall, ToolCallId};
 use patom::runtime::{
-    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
-    SharedPromptQueue, SharedResponseSource, SharedThreadStream,
+    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedPromptQueue,
+    SharedResponseSource, SharedThreadStream,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::slack::SlackAppState;
 use patom::slack::bridge::{self, BridgeDeps};
 use patom::slack::identity::{PgSlackIdentityStore, SharedSlackIdentityStore};
@@ -146,12 +145,9 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
 
     // Queue / session / response stores — the bridge enqueues into the
     // same Postgres the worker polls.
-    let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = queue_impl.clone();
-    let leases: SharedLeaseManager = queue_impl;
+    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
     let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let responses: SharedResponseSource = hub;
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
@@ -267,9 +263,7 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
 
     let state = AppState {
         queue: queue.clone(),
-        leases,
         responses,
-        sessions: sessions.clone(),
         agents: agents.clone(),
         colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
 

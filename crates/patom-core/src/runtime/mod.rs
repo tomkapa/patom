@@ -33,16 +33,15 @@ pub use pg_thread_stream::{
     ThreadStreamItem,
 };
 pub use queue::{
-    ClaimReceipt, ClaimedPrompt, ClaimedSession, ClaimedTurn, EnqueueOutcome, LeaseManager,
-    LeaseTiming, LeaseToken, NewPromptRequest, NewTrigger, PromptQueue, RequestStatusView,
-    SharedLeaseManager, SharedPromptQueue, TurnReceipt,
+    ClaimedTurn, LeaseTiming, NewTrigger, PromptQueue, RequestStatusView, SharedPromptQueue,
+    TurnReceipt,
 };
 pub use response::{
     ResponseChunk, ResponseChunkEnvelope, ResponseSink, ResponseSource, SharedResponseSink,
     SharedResponseSource, StreamEvent,
 };
 pub use types::{
-    Attempts, ChunkSeq, FailureReason, IdempotencyKey, PromptRequestId, RequestKind,
+    Attempts, ChunkSeq, ClaimKey, FailureReason, IdempotencyKey, PromptRequestId, RequestKind,
     RequestKindPayload, RequestStatus, SeqOverflow, TurnSeq, WorkerId,
 };
 pub use worker::{WorkerConfig, WorkerPool, WorkerPoolHandle};

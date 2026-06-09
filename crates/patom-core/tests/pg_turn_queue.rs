@@ -10,7 +10,8 @@ use patom::auth::{Caller, OrgId, UserId};
 use patom::clock::SystemClock;
 use patom::colleagues::{ColleagueId, resolve_user_colleague};
 use patom::runtime::{
-    IdempotencyKey, NewTrigger, PgPromptQueue, PromptRequestId, RequestKindPayload, WorkerId,
+    IdempotencyKey, NewTrigger, PgPromptQueue, PromptQueue, PromptRequestId, RequestKindPayload,
+    WorkerId,
 };
 use patom::threads::{AgentThreadId, PgThreadStore, ThreadId, ThreadStore};
 use sqlx::PgPool;

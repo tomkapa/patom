@@ -31,7 +31,6 @@ use patom::runtime::{
     RequestStatus, SharedDagBudget, SharedPromptQueue, SharedResponseSink, WorkerConfig,
     WorkerPool,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::threads::{MessageKind, NewMessage, PgThreadStore, SharedThreadStore};
 use patom::tools::{ToolBox, ToolRegistry};
 use sqlx::PgPool;
@@ -129,29 +128,22 @@ async fn reflection_writes_no_thread_message_rows(pool: PgPool) {
             .insert(ProviderId::Anthropic, shared)
             .build(),
     );
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
     let model_f = model;
     let providers_f = providers;
-    let sessions_f = sessions;
     let memory_f = memory;
     let background_f = background.clone();
     let threads_f = threads.clone();
     let clock_f = clock.clone();
     let factory: AgentFactory = Arc::new(move |_record| {
-        AgentBuilder::new(
-            providers_f.clone(),
-            sessions_f.clone(),
-            memory_f.clone(),
-            model_f,
-        )
-        .expect("builder")
-        .with_clock(clock_f.clone())
-        .with_thread_store(threads_f.clone())
-        .with_background_store(background_f.clone())
-        .with_tools(ToolBox::from_builtins(ToolRegistry::empty()))
-        .with_hooks(HookChain::new())
-        .build()
+        AgentBuilder::new(providers_f.clone(), memory_f.clone(), model_f)
+            .expect("builder")
+            .with_clock(clock_f.clone())
+            .with_thread_store(threads_f.clone())
+            .with_background_store(background_f.clone())
+            .with_tools(ToolBox::from_builtins(ToolRegistry::empty()))
+            .with_hooks(HookChain::new())
+            .build()
     });
     let agents: SharedAgents = Arc::new(CachedAgents::new(
         common::pg::shared_agent_store(pool.clone(), clock.clone()),

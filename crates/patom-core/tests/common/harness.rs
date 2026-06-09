@@ -33,7 +33,6 @@ use patom::runtime::{
     LeaseTiming, PgDagBudget, PgPromptQueue, PgResponseHub, SharedDagBudget, WorkerConfig,
     WorkerPool, WorkerPoolHandle,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::tools::system::SendMessageTool;
 use patom::tools::{ToolBox, ToolRegistry};
 use sqlx::PgPool;
@@ -83,7 +82,6 @@ impl LlmProvider for ScriptedProvider {
 pub struct WorkerHarness {
     pub queue: Arc<PgPromptQueue>,
     pub hub: Arc<PgResponseHub>,
-    pub sessions: SharedSessionStore,
     pub dag: SharedDagBudget,
     pub pool: PgPool,
     pub default_agent_id: patom::agents::AgentId,
@@ -124,7 +122,6 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
     let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let sink = hub.clone();
 
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let threads: patom::threads::SharedThreadStore = Arc::new(patom::threads::PgThreadStore::new(
         pool.clone(),
         clock.clone(),
@@ -155,7 +152,7 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
         .build();
     let toolbox = ToolBox::from_builtins(tool_registry);
 
-    let agent = AgentBuilder::new(providers, sessions.clone(), memory, model)
+    let agent = AgentBuilder::new(providers, memory, model)
         .expect("builder")
         .with_clock(clock.clone())
         .with_thread_store(threads.clone())
@@ -201,7 +198,6 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
     WorkerHarness {
         queue,
         hub,
-        sessions,
         dag,
         pool,
         default_agent_id: seed.agent_id,

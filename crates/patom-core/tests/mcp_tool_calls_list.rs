@@ -17,10 +17,9 @@ use patom::mcp::{
 };
 use patom::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, PromptRequestId, SharedDagBudget,
-    SharedLeaseManager, SharedPromptQueue, SharedResponseSink, SharedResponseSource,
-    SharedThreadStream,
+    SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream,
 };
-use patom::session::{PgSessionStore, SessionId, SharedSessionStore};
+use patom::threads::AgentThreadId;
 use patom::tools::ToolCallRowId;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
@@ -28,7 +27,7 @@ use tower::ServiceExt;
 
 mod common;
 use common::auth::{SeededPrincipal, principal_for_default_org, seed_principal};
-use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
+use common::pg::{seed_agent_thread_state, seed_prompt_request, seed_tenant};
 
 struct Harness {
     org_id: OrgId,
@@ -49,16 +48,11 @@ impl Harness {
         let seed = seed_tenant(&pool).await;
         let clock: SharedClock = SystemClock::shared();
 
-        let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
-        let queue: SharedPromptQueue = queue_impl.clone();
-        let leases: SharedLeaseManager = queue_impl;
+        let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
 
         let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
         let _sink: SharedResponseSink = hub.clone();
         let responses: SharedResponseSource = hub;
-
-        let sessions: SharedSessionStore =
-            Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
         let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
         let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
@@ -86,9 +80,9 @@ impl Harness {
         let primary = principal_for_default_org(seed.user_id, seed.org_id, &jwt);
         let state = AppState {
             queue,
-            leases,
+
             responses,
-            sessions,
+
             agents: agents.clone(),
             colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
@@ -184,7 +178,7 @@ impl Harness {
 struct ToolCallSeed<'a> {
     pool: &'a PgPool,
     org: OrgId,
-    session: SessionId,
+    state_id: AgentThreadId,
     request: PromptRequestId,
     agent: AgentId,
     mcp_server: McpServerId,
@@ -197,7 +191,7 @@ struct ToolCallSeed<'a> {
 async fn insert_tool_call(seed: ToolCallSeed<'_>) {
     let pool = seed.pool;
     let org = seed.org;
-    let session = seed.session;
+    let state_id = seed.state_id;
     let request = seed.request;
     let agent = seed.agent;
     let mcp_server = seed.mcp_server;
@@ -208,14 +202,14 @@ async fn insert_tool_call(seed: ToolCallSeed<'_>) {
     let id = ToolCallRowId::new();
     sqlx::query(
         "INSERT INTO tool_calls
-             (id, org_id, session_id, request_id, agent_id,
+             (id, org_id, state_id, request_id, agent_id,
               mcp_server_id, tool_name, started_at, duration_ms,
               is_error, error_message, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $8)",
     )
     .bind(id)
     .bind(org)
-    .bind(session)
+    .bind(state_id)
     .bind(request)
     .bind(agent)
     .bind(mcp_server)
@@ -263,21 +257,15 @@ async fn lists_tool_calls_for_server_with_agent_name_and_error_message(pool: PgP
     let h = Harness::new(pool.clone()).await;
     let server = h.seed_mcp(h.org_id, h.user_id, "primary").await;
 
-    let session = human_to_agent_session(
-        &pool,
-        h.state.sessions.as_ref(),
-        h.agent_id,
-        h.org_id,
-        h.user_id,
-    )
-    .await;
-    let request = seed_prompt_request(&h.state.pool, session, h.agent_id, h.org_id).await;
+    let state_id = seed_agent_thread_state(&pool, h.org_id, h.agent_id).await;
+    let request =
+        seed_prompt_request(&h.state.pool, state_id, h.agent_id, h.org_id, h.user_id).await;
 
     let now = Utc::now();
     let base = ToolCallSeed {
         pool: &h.state.pool,
         org: h.org_id,
-        session,
+        state_id,
         request,
         agent: h.agent_id,
         mcp_server: server,
@@ -343,15 +331,9 @@ async fn lists_tool_calls_for_server_with_agent_name_and_error_message(pool: PgP
 async fn cursor_pagination_walks_backward_in_time(pool: PgPool) {
     let h = Harness::new(pool.clone()).await;
     let server = h.seed_mcp(h.org_id, h.user_id, "paged").await;
-    let session = human_to_agent_session(
-        &pool,
-        h.state.sessions.as_ref(),
-        h.agent_id,
-        h.org_id,
-        h.user_id,
-    )
-    .await;
-    let request = seed_prompt_request(&h.state.pool, session, h.agent_id, h.org_id).await;
+    let state_id = seed_agent_thread_state(&pool, h.org_id, h.agent_id).await;
+    let request =
+        seed_prompt_request(&h.state.pool, state_id, h.agent_id, h.org_id, h.user_id).await;
 
     let base = Utc::now();
     for i in 0..5_i64 {
@@ -359,7 +341,7 @@ async fn cursor_pagination_walks_backward_in_time(pool: PgPool) {
         insert_tool_call(ToolCallSeed {
             pool: &h.state.pool,
             org: h.org_id,
-            session,
+            state_id,
             request,
             agent: h.agent_id,
             mcp_server: server,

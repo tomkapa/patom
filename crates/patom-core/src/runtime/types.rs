@@ -79,6 +79,12 @@ crate::uuid_newtype! {
     pub WorkerId
 }
 
+crate::uuid_newtype! {
+    /// Polymorphic turn scope — `agent_thread_state.id` (chat) or `background_turn_id`
+    /// (background). The hook/tracing/memory contexts key on this.
+    pub ClaimKey
+}
+
 /// Monotonically-increasing sequence number bumped on every claim. Stale writes from
 /// a zombie worker are rejected when the token's seq does not match the current row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

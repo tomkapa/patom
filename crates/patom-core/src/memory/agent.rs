@@ -30,14 +30,11 @@ use crate::auth::{OrganizationRule, SharedOrgLanguageResolver, SharedOrgRuleReso
 use crate::clock::SharedClock;
 use crate::colleagues::{
     ColleagueError, ColleagueId, ColleagueRosterCache, SharedColleagueStore, render_roster_block,
-    render_speaking_with,
 };
 use crate::prompts::Prompts;
 use crate::runtime::{RequestKind, RequestKindPayload};
-use crate::session::SessionId;
 use crate::types::Participant;
 
-use super::composer::MemorySection;
 use super::loader::MemorySectionLoader;
 use super::traits::{Memory, MemoryError};
 use super::types::{MemoryHandle, MemoryId};
@@ -135,35 +132,23 @@ impl AgentMemory {
         }
     }
 
-    /// Resolve a `M-NN` handle the model produced inside `(session,
-    /// agent)` back to the underlying [`MemoryId`]. Returns `None` if
-    /// the handle was never minted for this session — typically a
-    /// hallucinated reference or a session whose composition has been
-    /// evicted from the cache.
+    /// Resolve a `M-NN` handle the model produced back to the underlying
+    /// [`MemoryId`]. Returns `None` if the handle was never minted for this
+    /// agent's stable section — typically a hallucinated reference or a row
+    /// that has since been forgotten.
     ///
-    /// Composes the section on the spot if the cache misses; this is
-    /// the same path `system_prompt` takes, so resolving against a
-    /// session that just rolled past TTL is a single cache reload, not
-    /// an error.
+    /// Composes the section on the spot; this is the same path
+    /// `system_prompt_for_thread` takes, so the handles a tool resolves match
+    /// what the model saw rendered.
     pub async fn resolve_handle(
         &self,
-        session: SessionId,
         agent: AgentId,
         kind_payload: &RequestKindPayload,
         handle: MemoryHandle,
     ) -> Result<Option<MemoryId>, MemoryError> {
         self.loader
-            .resolve_handle(session, agent, kind_payload, handle)
+            .resolve_handle(agent, kind_payload, handle)
             .await
-    }
-
-    async fn composed_section(
-        &self,
-        session: SessionId,
-        agent: AgentId,
-        kind_payload: &RequestKindPayload,
-    ) -> Result<Arc<MemorySection>, MemoryError> {
-        self.loader.load(session, agent, kind_payload).await
     }
 
     /// Render the `<colleagues>` colleague-roster block for the viewer.
@@ -185,23 +170,6 @@ impl AgentMemory {
         );
         Ok(render_roster_block(&roster, viewer))
     }
-
-    /// Render the `<speaking-with>` block naming this session's counterpart.
-    ///
-    /// Reads the counterpart authoritatively by id (not via the roster cache)
-    /// so a colleague who joined this turn — not yet in the cached roster —
-    /// still resolves. A `System` counterpart (reflection/resolution) has no
-    /// colleague row, so the block is empty.
-    async fn speaking_with_block(
-        &self,
-        counterpart: Participant,
-    ) -> Result<String, ColleagueError> {
-        let Some(cid) = counterpart.colleague_id() else {
-            return Ok(String::new());
-        };
-        let colleague = self.colleagues.read(cid).await?;
-        Ok(render_speaking_with(&colleague.to_ref()))
-    }
 }
 
 impl std::fmt::Debug for AgentMemory {
@@ -212,85 +180,6 @@ impl std::fmt::Debug for AgentMemory {
 
 #[async_trait]
 impl Memory for AgentMemory {
-    async fn system_prompt(
-        &self,
-        session: SessionId,
-        viewer: Participant,
-        counterpart: Participant,
-        kind_payload: &RequestKindPayload,
-    ) -> Result<Arc<str>, MemoryError> {
-        // Workers only run for agent receivers; a Human viewer is a wiring bug.
-        let agent_id = viewer.agent_id().ok_or_else(|| {
-            MemoryError::Backend("system_prompt called with Human viewer; agent worker only".into())
-        })?;
-        let role = self
-            .prompt_cache
-            .get_or_load(agent_id, &self.agents)
-            .await?;
-        let memory_section = self
-            .composed_section(session, agent_id, kind_payload)
-            .await?;
-
-        // `<colleagues>` colleague roster (Colleagues plan, Stage 6). Lists every
-        // colleague in the viewer's org — humans and agents alike — so the
-        // agent perceives human coworkers as addressable peers. Cached per org
-        // with the same TTL as `AgentPromptCache` so a membership change or
-        // rename propagates within one liveness window. Self-only and empty
-        // orgs yield an empty string; the renderer omits the envelope. A
-        // directory outage degrades to an empty block — the roster enriches the
-        // turn but is not load-bearing.
-        let viewer_colleague = viewer.colleague_id().ok_or_else(|| {
-            MemoryError::Backend(
-                "system_prompt viewer has no colleague_id; agent worker only".into(),
-            )
-        })?;
-        let roster = match self.roster_block(viewer_colleague).await {
-            Ok(block) => block,
-            Err(e) => {
-                tracing::warn!(error = %e, "colleagues.roster.error");
-                String::new()
-            }
-        };
-
-        // `<speaking-with>` names this session's counterpart so the model knows
-        // exactly who it's addressing (and their colleague id) rather than
-        // guessing from the roster — ambiguous once the org has >1 human. A
-        // directory outage degrades to an empty block, like the roster.
-        let speaking_with = match self.speaking_with_block(counterpart).await {
-            Ok(block) => block,
-            Err(e) => {
-                tracing::warn!(error = %e, "colleagues.speaking_with.error");
-                String::new()
-            }
-        };
-
-        // Per-org language. Cached behind the resolver so consecutive
-        // turns for the same agent stay one mutex round-trip away from
-        // the right directive. A switch propagates via the PATCH
-        // /me/org/language handler invalidating the cache.
-        let language = self.language_resolver.language_for_agent(agent_id).await?;
-        let directive = self.prompts.set(language).language_directive.clone();
-
-        // Per-org `<organization-rule>`. Cached behind its own resolver
-        // for the same hot-path reason as the language. `None` is the
-        // "no rule configured" sentinel — the tag is omitted entirely
-        // so empty configs don't waste prompt budget. The resolver
-        // error type intentionally mirrors `LanguageResolverError` and
-        // surfaces here as `MemoryError::Backend` via the same
-        // conversion path the language uses.
-        let org_rule = self.rule_resolver.rule_for_agent(agent_id).await?;
-
-        Ok(self.assemble_prompt(
-            kind_payload.kind(),
-            role.as_str(),
-            org_rule.as_ref().map(OrganizationRule::as_str),
-            &roster,
-            &speaking_with,
-            directive.as_ref(),
-            memory_section.text(),
-        ))
-    }
-
     async fn system_prompt_for_thread(
         &self,
         viewer: Participant,
@@ -342,10 +231,9 @@ impl Memory for AgentMemory {
 
 impl AgentMemory {
     /// Assemble the final system-prompt string from its already-resolved
-    /// pieces. Shared by the pair-session ([`Memory::system_prompt`]) and
-    /// thread-feed ([`Memory::system_prompt_for_thread`]) paths so the tag order
-    /// and cache-prefix layout live in one place. `speaking_with` is the empty
-    /// string when there is no single counterpart to name.
+    /// pieces. The tag order and cache-prefix layout live in one place.
+    /// `speaking_with` is the empty string when there is no single counterpart
+    /// to name (always the case on the multi-party thread feed today).
     #[allow(clippy::too_many_arguments)]
     fn assemble_prompt(
         &self,

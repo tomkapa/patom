@@ -23,8 +23,7 @@ use patom::provider::{
     AssistantContent, ChatMessage, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError,
     ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, UserContent,
 };
-use patom::runtime::{IdempotencyKey, NewTrigger, PgPromptQueue, RequestKindPayload};
-use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::runtime::{IdempotencyKey, NewTrigger, PgPromptQueue, PromptQueue, RequestKindPayload};
 use patom::threads::{MessageKind, NewMessage, PgThreadStore, SharedThreadStore};
 use patom::tools::ToolRegistry;
 use sqlx::PgPool;
@@ -157,9 +156,8 @@ async fn context_is_read_at_run(pool: PgPool) {
             .insert(model.provider(), shared)
             .build(),
     );
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let memory: SharedMemory = Arc::new(StaticMemory::new("test prompt"));
-    let agent = AgentBuilder::new(providers, sessions, memory, model)
+    let agent = AgentBuilder::new(providers, memory, model)
         .expect("builder")
         .with_thread_store(threads.clone())
         .with_builtin_tools(ToolRegistry::empty())

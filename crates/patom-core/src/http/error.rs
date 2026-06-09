@@ -13,7 +13,6 @@ use crate::entitlements::LicenseError;
 use crate::mcp::McpError;
 use crate::orgs::OrgError;
 use crate::runtime::{PromptError, ResponseError};
-use crate::session::SessionError;
 use crate::types::ParseError;
 
 /// One error type for the HTTP boundary. CLAUDE.md §12: `IntoResponse` lives next to
@@ -43,9 +42,6 @@ pub enum HttpError {
 
     #[error("parse: {0}")]
     Parse(#[from] ParseError),
-
-    #[error("session: {0}")]
-    Session(#[from] SessionError),
 
     #[error("agent: {0}")]
     Agent(#[from] AgentStoreError),
@@ -114,21 +110,13 @@ impl IntoResponse for HttpError {
             Self::Parse(e) | Self::Auth(AuthError::Parse(e)) => {
                 (StatusCode::BAD_REQUEST, e.to_string())
             }
-            Self::Session(SessionError::NotFound(_)) => {
-                (StatusCode::NOT_FOUND, "session not found".into())
-            }
-            Self::Session(SessionError::ColleagueNotFound(_)) => {
-                (StatusCode::BAD_REQUEST, "unknown colleague_id".into())
-            }
             Self::Agent(AgentStoreError::NotFound(_)) => {
                 (StatusCode::BAD_REQUEST, "unknown agent_id".into())
             }
             Self::Agent(AgentStoreError::NameNotFound(_)) => {
                 (StatusCode::NOT_FOUND, self.to_string())
             }
-            Self::Session(SessionError::MessageCapExceeded { .. })
-            | Self::Prompt(PromptError::PendingCapExceeded { .. })
-            | Self::Mcp(McpError::ServerCapExceeded { .. })
+            Self::Mcp(McpError::ServerCapExceeded { .. })
             | Self::Budget(BudgetError::Exceeded { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, self.to_string())
             }
@@ -136,7 +124,6 @@ impl IntoResponse for HttpError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "budget store error".into(),
             ),
-            Self::Session(e) => (StatusCode::BAD_REQUEST, e.to_string()),
             Self::Colleague(crate::colleagues::ColleagueError::NotFound(_)) => {
                 (StatusCode::NOT_FOUND, "colleague not found".into())
             }
@@ -179,7 +166,7 @@ impl IntoResponse for HttpError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "prompt version error".into(),
             ),
-            Self::Prompt(PromptError::RequestNotFound(_) | PromptError::SessionNotFound(_)) => {
+            Self::Prompt(PromptError::RequestNotFound(_)) => {
                 (StatusCode::NOT_FOUND, "not found".into())
             }
             Self::Prompt(e) => (StatusCode::BAD_REQUEST, e.to_string()),

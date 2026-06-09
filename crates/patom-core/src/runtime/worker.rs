@@ -465,7 +465,7 @@ impl Worker {
             AgentError::HookDenied(d) => FailureReason::Hook(d.0),
             AgentError::BudgetExceeded { .. } => FailureReason::BudgetExceeded,
             e @ (AgentError::Provider(_)
-            | AgentError::Session(_)
+            | AgentError::Internal(_)
             | AgentError::Thread(_)
             | AgentError::Background(_)
             | AgentError::Memory(_)

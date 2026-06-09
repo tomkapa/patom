@@ -8,7 +8,6 @@ use crate::clock::{SharedClock, SystemClock};
 use crate::hook::HookChain;
 use crate::memory::SharedMemory;
 use crate::provider::{Model, SharedProviderRegistry};
-use crate::session::SharedSessionStore;
 use crate::threads::SharedThreadStore;
 use crate::tools::system::todos::SharedSessionTodoStore;
 use crate::tools::{SharedToolCallStore, ToolBox, ToolRegistry};
@@ -23,13 +22,12 @@ use super::limits::{
 
 /// Composition-root builder for [`Agent`].
 ///
-/// Required pieces (providers, sessions, memory, model) are constructor arguments;
+/// Required pieces (providers, memory, model) are constructor arguments;
 /// everything else has a sensible default. The builder consumes itself on `build` so a
 /// half-configured agent is unrepresentable.
 #[derive(Debug)]
 pub struct AgentBuilder {
     providers: SharedProviderRegistry,
-    sessions: SharedSessionStore,
     memory: SharedMemory,
     clock: SharedClock,
     tools: ToolBox,
@@ -44,8 +42,9 @@ pub struct AgentBuilder {
     turn_metrics: Option<TurnMetricsBinding>,
     budget: Option<SharedBudgetService>,
     /// Thread-feed store backing the read-at-run chat path
-    /// ([`Agent::reply_in_thread`]). `None` in the legacy pair-session unit
-    /// tests; the production factory wires [`crate::threads::PgThreadStore`].
+    /// ([`Agent::reply_in_thread`]). `None` in unit tests that do not exercise
+    /// the thread path; the production factory wires
+    /// [`crate::threads::PgThreadStore`].
     threads: Option<SharedThreadStore>,
     /// Background-cognition store backing [`Agent::reply_background`]
     /// (reflection / resolution). `None` outside the worker's background path.
@@ -66,13 +65,11 @@ impl AgentBuilder {
     /// Construct a builder with mandatory pieces. Uses defaults for everything else.
     pub fn new(
         providers: SharedProviderRegistry,
-        sessions: SharedSessionStore,
         memory: SharedMemory,
         model: Model,
     ) -> Result<Self, ParseError> {
         Ok(Self {
             providers,
-            sessions,
             memory,
             clock: SystemClock::shared(),
             tools: ToolBox::from_builtins(ToolRegistry::empty()),
@@ -94,8 +91,7 @@ impl AgentBuilder {
     /// Attach the thread-feed store that backs [`Agent::reply_in_thread`].
     ///
     /// Required for the thread-feed chat path (read-at-run context + appending
-    /// the agent's private artifacts to the feed); the legacy pair-session
-    /// `reply` / `resume` path does not use it.
+    /// the agent's private artifacts to the feed).
     #[must_use]
     pub fn with_thread_store(mut self, threads: SharedThreadStore) -> Self {
         self.threads = Some(threads);
@@ -223,7 +219,6 @@ impl AgentBuilder {
     pub fn build(self) -> Agent {
         Agent::new(
             self.providers,
-            self.sessions,
             self.memory,
             self.clock,
             self.tools,

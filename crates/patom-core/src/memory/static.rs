@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::runtime::RequestKindPayload;
-use crate::session::SessionId;
 use crate::types::Participant;
 
 use super::traits::{Memory, MemoryError};
@@ -25,16 +24,6 @@ impl StaticMemory {
 
 #[async_trait]
 impl Memory for StaticMemory {
-    async fn system_prompt(
-        &self,
-        _session: SessionId,
-        _viewer: Participant,
-        _counterpart: Participant,
-        _kind_payload: &RequestKindPayload,
-    ) -> Result<Arc<str>, MemoryError> {
-        Ok(self.prompt.clone())
-    }
-
     async fn system_prompt_for_thread(
         &self,
         _viewer: Participant,

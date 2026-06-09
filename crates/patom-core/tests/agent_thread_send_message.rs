@@ -102,7 +102,7 @@ async fn send_to_human_non_member_rejected_no_autoadd(pool: PgPool) {
     let tool = SendMessageTool::new(threads.clone(), queue, dag, agents, colleagues, sink);
 
     let ctx = ToolCallContext {
-        session_id: patom::session::SessionId::from(state.as_uuid()),
+        claim_key: patom::runtime::ClaimKey::from(state.as_uuid()),
         thread_id: Some(thread),
         state_id: Some(state),
         viewer: agent_participant(&pool, seed.org_id, seed.agent_id).await,

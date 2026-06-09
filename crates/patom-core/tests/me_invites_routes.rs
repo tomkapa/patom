@@ -31,18 +31,15 @@ async fn build_state(pool: PgPool) -> (AppState, patom::mcp::McpRefresher) {
     use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
     use patom::runtime::{
         PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget,
-        SharedLeaseManager, SharedPromptQueue, SharedResponseSource, SharedThreadStream,
+        SharedPromptQueue, SharedResponseSource, SharedThreadStream,
     };
-    use patom::session::{PgSessionStore, SharedSessionStore};
     use tokio_util::sync::CancellationToken;
 
     let clock: SharedClock = SystemClock::shared();
     let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
     let queue: SharedPromptQueue = queue_impl.clone();
-    let leases: SharedLeaseManager = queue_impl;
     let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let responses: SharedResponseSource = hub;
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let agent_store = common::pg::shared_agent_store(pool.clone(), clock.clone());
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
     let mcp_store: SharedMcpServerStore =
@@ -66,9 +63,7 @@ async fn build_state(pool: PgPool) -> (AppState, patom::mcp::McpRefresher) {
     let users = common::auth::user_store(pool.clone());
     let state = AppState {
         queue,
-        leases,
         responses,
-        sessions,
         agents: agent_store,
         colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
         dag,

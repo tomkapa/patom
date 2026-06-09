@@ -23,10 +23,9 @@ use patom::clock::SystemClock;
 use patom::http::{AppState, router};
 use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
 use patom::runtime::{
-    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
-    SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream,
+    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedPromptQueue,
+    SharedResponseSink, SharedResponseSource, SharedThreadStream,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -51,14 +50,11 @@ impl AuthPromptsHarness {
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
-        let leases: SharedLeaseManager = queue_impl;
 
         let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
         let _sink: SharedResponseSink = hub.clone();
         let responses: SharedResponseSource = hub;
 
-        let sessions: SharedSessionStore =
-            Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
         let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
         let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
@@ -92,9 +88,7 @@ impl AuthPromptsHarness {
 
         let state = AppState {
             queue: queue.clone(),
-            leases,
             responses,
-            sessions,
             agents: agents.clone(),
             colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
@@ -233,11 +227,11 @@ async fn authenticated_post_prompt_returns_202_with_request_id(pool: PgPool) {
         "response carries a valid request_id uuid",
     );
     assert!(
-        json.get("session_id")
+        json.get("thread_id")
             .and_then(|v| v.as_str())
             .and_then(|s| Uuid::parse_str(s).ok())
             .is_some(),
-        "response carries a valid session_id uuid",
+        "response carries a valid thread_id uuid",
     );
     assert_eq!(json.get("status").and_then(|v| v.as_str()), Some("pending"));
 }

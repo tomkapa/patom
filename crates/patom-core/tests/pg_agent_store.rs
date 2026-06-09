@@ -14,12 +14,11 @@ use patom::agents::{
 use patom::auth::OrgId;
 use patom::clock::SystemClock;
 use patom::mcp::McpCatalogId;
-use patom::session::PgSessionStore;
 use patom::types::AvatarUrl;
 use sqlx::PgPool;
 
 mod common;
-use common::pg::{agent_store, human_to_agent_session, seed_tenant};
+use common::pg::{agent_store, seed_tenant};
 
 fn store(pool: &PgPool) -> Arc<PgAgentStore> {
     agent_store(pool.clone(), SystemClock::shared())
@@ -554,20 +553,4 @@ async fn list_for_org_excludes_other_orgs(pool: PgPool) {
     let other = OrgId::new();
     let pairs = store.list_for_org(other).await.expect("list_for_org other");
     assert!(pairs.is_empty(), "got: {pairs:?}");
-}
-
-#[sqlx::test]
-async fn delete_refuses_when_referenced_by_a_session(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let store = store(&pool);
-
-    let agent = store
-        .create(new_agent(seed.org_id, "attached", "in use", false))
-        .await
-        .expect("create");
-    let sessions = PgSessionStore::new(pool.clone(), SystemClock::shared());
-    let _ = human_to_agent_session(&pool, &sessions, agent.id, seed.org_id, seed.user_id).await;
-
-    let err = store.delete(agent.id).await.expect_err("in use");
-    assert!(matches!(err, AgentStoreError::InUse(_)));
 }
