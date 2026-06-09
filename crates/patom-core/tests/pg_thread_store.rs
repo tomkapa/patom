@@ -7,8 +7,11 @@ use patom::agents::AgentId;
 use patom::auth::Caller;
 use patom::clock::SystemClock;
 use patom::colleagues::{resolve_agent_colleague, resolve_user_colleague};
-use patom::provider::{AssistantContent, ChatMessage, UserContent};
+use patom::provider::{
+    AssistantContent, ChatMessage, ToolCall, ToolCallId, ToolResult, UserContent,
+};
 use patom::threads::{MessageKind, NewMessage, PgThreadStore, ThreadStore};
+use patom::types::ToolName;
 use sqlx::PgPool;
 
 use common::pg::seed_tenant;
@@ -64,6 +67,110 @@ fn user_text_present(ctx: &[ChatMessage], needle: &str) -> bool {
         matches!(m, ChatMessage::User(blocks)
             if blocks.iter().any(|b| matches!(b, UserContent::Text(t) if t == needle)))
     })
+}
+
+fn tool_use(owner: AgentId, call_id: &str) -> NewMessage {
+    NewMessage {
+        kind: MessageKind::ToolUse,
+        sender: None,
+        owner_agent_id: Some(owner),
+        receiver: None,
+        body: ChatMessage::Assistant(vec![AssistantContent::ToolCall(ToolCall {
+            id: ToolCallId::try_from(call_id).expect("call id"),
+            name: ToolName::try_from("web_search").expect("tool name"),
+            input: serde_json::json!({ "q": "x" }),
+        })]),
+        request_id: None,
+    }
+}
+
+fn tool_result(owner: AgentId, call_id: &str) -> NewMessage {
+    NewMessage {
+        kind: MessageKind::ToolResult,
+        sender: None,
+        owner_agent_id: Some(owner),
+        receiver: None,
+        body: ChatMessage::User(vec![UserContent::ToolResult(ToolResult {
+            call_id: ToolCallId::try_from(call_id).expect("call id"),
+            output: "search results".into(),
+            is_error: false,
+        })]),
+        request_id: None,
+    }
+}
+
+/// note 13: a peer's posted row can land between an agent's tool_use and its
+/// tool_result by `seq` (threads are multi-writer). `context_for_agent` must
+/// re-pair them so the provider sees the tool_result immediately after the
+/// tool_use — never split by the interleaved post.
+#[sqlx::test]
+async fn context_repairs_tool_use_result_split_by_peer_post(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
+    let caller = Caller::new(seed.user_id, seed.org_id);
+
+    let agent_a = seed.agent_id;
+    let col_a = resolve_agent_colleague(&pool, seed.org_id, agent_a)
+        .await
+        .expect("colleague a");
+    let col_h = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+
+    let thread = store
+        .create_thread(&caller, None, None, col_h)
+        .await
+        .expect("create thread");
+    store
+        .resolve_participation(&caller, thread, agent_a)
+        .await
+        .expect("participation a");
+
+    // A emits a tool_use; a human posts before A's tool_result lands; then the
+    // tool_result arrives. By `seq`: tool_use < posted < tool_result.
+    for m in [
+        tool_use(agent_a, "call-1"),
+        posted(
+            col_h,
+            Some(col_a),
+            "interrupting while the tool runs",
+            false,
+        ),
+        tool_result(agent_a, "call-1"),
+    ] {
+        store.append(&caller, thread, m).await.expect("append");
+    }
+
+    let ctx = store
+        .context_for_agent(thread, agent_a, col_a)
+        .await
+        .expect("ctx");
+    assert_eq!(ctx.len(), 3);
+
+    // The tool_use (Assistant w/ ToolCall) is immediately followed by its
+    // tool_result (User w/ ToolResult); the peer post is deferred to after.
+    let tool_use_idx = ctx
+        .iter()
+        .position(|m| {
+            matches!(m, ChatMessage::Assistant(b)
+                if b.iter().any(|x| matches!(x, AssistantContent::ToolCall(_))))
+        })
+        .expect("tool_use present");
+    assert!(
+        matches!(&ctx[tool_use_idx + 1], ChatMessage::User(b)
+            if b.iter().any(|x| matches!(x, UserContent::ToolResult(_)))),
+        "tool_result must immediately follow tool_use, got {:?}",
+        ctx[tool_use_idx + 1],
+    );
+    // The interleaving peer post lands after the pair, not between it.
+    assert!(
+        user_text_present(&ctx, "interrupting while the tool runs"),
+        "peer post is preserved (deferred after the pair)"
+    );
+    assert_eq!(
+        tool_use_idx, 0,
+        "tool_use stays first; post moved after pair"
+    );
 }
 
 #[sqlx::test]

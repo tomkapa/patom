@@ -447,14 +447,51 @@ impl ThreadStore for PgThreadStore {
         .await?;
         tracing::Span::current().record("patom.history.count", rows.len());
 
-        let mut out = Vec::with_capacity(rows.len());
+        let mut mapped: Vec<(MessageKind, ChatMessage)> = Vec::with_capacity(rows.len());
         for (kind, sender, body) in rows {
             let stored: ChatMessage = serde_json::from_value(body)
                 .map_err(|e| ThreadError::Backend(format!("deserialize message: {e}")))?;
-            out.push(map_row_for_viewer(kind, sender, stored, viewer));
+            mapped.push((kind, map_row_for_viewer(kind, sender, stored, viewer)));
         }
-        Ok(out)
+        Ok(repair_tool_pairs(mapped))
     }
+}
+
+/// Re-pair an agent's `tool_use` with its `tool_result` (note 13).
+///
+/// A turn appends the assistant's `tool_use` row and then the matching
+/// `tool_result` row at consecutive `seq`s — but threads are multi-writer, so a
+/// peer's `posted` row can land *between* them by `seq` while the tool runs.
+/// The provider requires the `tool_result` user message to immediately follow
+/// the `tool_use` assistant message, so this stable pass defers any rows that
+/// fall between a `ToolUse` and its `ToolResult` to *after* the pair, leaving
+/// every other relative order intact. Only `posted`/`reasoning`/`system_note`
+/// rows ever interleave (never another `ToolUse`, since a turn closes its
+/// tool_use before the next), so the single-pending-result model is sufficient.
+fn repair_tool_pairs(rows: Vec<(MessageKind, ChatMessage)>) -> Vec<ChatMessage> {
+    let mut out: Vec<ChatMessage> = Vec::with_capacity(rows.len());
+    let mut deferred: Vec<ChatMessage> = Vec::new();
+    let mut awaiting_result = false;
+    for (kind, msg) in rows {
+        if awaiting_result {
+            if kind == MessageKind::ToolResult {
+                out.push(msg); // the result, immediately after its tool_use
+                awaiting_result = false;
+                out.append(&mut deferred); // flush rows that interleaved the pair
+            } else {
+                deferred.push(msg); // hold a peer post until the pair closes
+            }
+        } else {
+            let is_tool_use = kind == MessageKind::ToolUse;
+            out.push(msg);
+            awaiting_result = is_tool_use;
+        }
+    }
+    // An unclosed tool_use (turn cancelled before its result) — flush whatever
+    // we held; the provider would reject the orphan regardless, but we never
+    // drop rows.
+    out.append(&mut deferred);
+    out
 }
 
 /// One [`FEED_SQL`] row: seq, kind, the sender's colleague satellites, the
