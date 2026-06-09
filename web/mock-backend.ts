@@ -1194,6 +1194,27 @@ const server = Bun.serve({
       : url.pathname;
     const method = req.method.toUpperCase();
 
+    // Org-less guard: the real backend rejects every org-scoped route for
+    // a session with no active org (require_principal 401s an org-less
+    // token), so the mock must too — otherwise org-less mode would only
+    // affect /me and could mask onboarding/routing regressions. The create
+    // route (`POST /me/orgs`) is exempt: it's how a user leaves org-less
+    // state. `/me` (GET) is not org-scoped and is handled below.
+    const isOrgScopedPath =
+      path.startsWith("/me/org") ||
+      path.startsWith("/agents") ||
+      path.startsWith("/channels") ||
+      path.startsWith("/threads") ||
+      path.startsWith("/mcp-servers") ||
+      path.startsWith("/uploads");
+    if (
+      orgLess &&
+      isOrgScopedPath &&
+      !(path === "/me/orgs" && method === "POST")
+    ) {
+      return json({ error: "org.required" }, 403);
+    }
+
     if (path === "/me" && method === "GET") {
       // Preview hook: `?fresh=1` simulates a brand-new user whose org
       // still needs onboarding. Flips `orgState.onboarded` to false and

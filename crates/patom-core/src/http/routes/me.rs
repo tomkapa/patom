@@ -183,21 +183,23 @@ async fn create_org(
     }
     // Parse at the boundary (§1) before any write.
     let name = OrgName::try_from(req.name)?;
-    // Per-user cap (§5). Counted on owner rows; deletion frees slots.
-    let owned = state.users.count_owned_orgs(session.user_id).await?;
-    if owned >= MAX_ORGS_PER_USER {
-        return Err(AuthError::OrgLimitReached {
-            max: MAX_ORGS_PER_USER,
-        }
-        .into());
-    }
     let now = state.clock.now_utc();
     // No locale context on this path; the user can change the workspace
     // language later in Settings → General.
     let language = Language::DEFAULT;
+    // Per-user cap (§5), enforced atomically inside the create transaction
+    // (advisory lock + count + insert) so concurrent creates can't both
+    // slip past it. Over the cap → 409 via `AuthError::OrgLimitReached`.
     let new_org = state
         .users
-        .create_personal_org(session.user_id, name.as_str(), name.as_str(), language, now)
+        .create_personal_org(
+            session.user_id,
+            name.as_str(),
+            name.as_str(),
+            language,
+            Some(MAX_ORGS_PER_USER),
+            now,
+        )
         .await?;
     // Same seeding policy the OAuth callback uses (one copy).
     super::auth::seed_default_agent(&state, new_org.id, language).await?;

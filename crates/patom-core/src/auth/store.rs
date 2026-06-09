@@ -102,12 +102,22 @@ pub trait UserStore: std::fmt::Debug + Send + Sync + 'static {
     /// `default_language` is the per-org language picked by the OAuth
     /// callback from the user's locale hints — see
     /// [`Language::from_locale_hint`].
+    ///
+    /// `cap` enforces a per-user owned-org ceiling **atomically**: when
+    /// `Some(n)`, the implementation takes a per-user advisory lock and
+    /// re-counts the caller's Owner memberships inside the same
+    /// transaction as the insert, returning
+    /// [`AuthError::OrgLimitReached`] when already at `n`. This closes the
+    /// check-then-insert race that a separate count + insert would leave
+    /// open. `None` skips the check — the OAuth callback's auto-created
+    /// personal org is never capped.
     async fn create_personal_org(
         &self,
         user_id: UserId,
         suggested_slug: &str,
         display_name: &str,
         language: Language,
+        cap: Option<i64>,
         now: DateTime<Utc>,
     ) -> Result<NewOrg, AuthError>;
 
@@ -132,12 +142,6 @@ pub trait UserStore: std::fmt::Debug + Send + Sync + 'static {
 
     /// List every org the user belongs to.
     async fn list_user_orgs(&self, user_id: UserId) -> Result<Vec<OrgMembership>, AuthError>;
-
-    /// Count the orgs the user **owns** (role = Owner). Backs the
-    /// per-user workspace-creation cap (`MAX_ORGS_PER_USER`) on the
-    /// self-service create path. Counts owner rows only — invited
-    /// memberships don't count against the cap.
-    async fn count_owned_orgs(&self, user_id: UserId) -> Result<i64, AuthError>;
 
     /// Return the user's role in `org_id`, or `None` if they're not a
     /// member.

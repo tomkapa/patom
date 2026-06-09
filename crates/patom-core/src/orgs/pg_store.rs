@@ -525,6 +525,7 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(patom.org.id = %org_id))]
     async fn delete_org(&self, org_id: OrgId) -> Result<(), OrgError> {
         let mut tx = auth::begin_privileged(&self.pool).await?;
         // One DELETE cascades to every `org_id` FK (all declared

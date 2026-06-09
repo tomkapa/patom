@@ -115,10 +115,11 @@ export function OrgSwitcher() {
             aria-hidden="true"
             className="my-1 border-t border-[var(--color-line)]"
           />
-          <li role="none">
+          <li>
             <button
               type="button"
-              role="menuitem"
+              role="option"
+              aria-selected={false}
               disabled={switchOrg.isPending}
               onClick={() => {
                 close();

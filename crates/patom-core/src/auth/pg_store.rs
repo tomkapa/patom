@@ -155,6 +155,7 @@ impl UserStore for PgUserStore {
         suggested_slug: &str,
         display_name: &str,
         language: Language,
+        cap: Option<i64>,
         now: DateTime<Utc>,
     ) -> Result<NewOrg, AuthError> {
         let base = sanitize_slug(suggested_slug);
@@ -176,7 +177,7 @@ impl UserStore for PgUserStore {
                 Err(e) => return Err(AuthError::Parse(e)),
             };
             match self
-                .try_insert_org(user_id, slug.as_str(), display_name, language, now)
+                .try_insert_org(user_id, slug.as_str(), display_name, language, cap, now)
                 .await
             {
                 Ok(new_org) => return Ok(new_org),
@@ -287,21 +288,6 @@ impl UserStore for PgUserStore {
                 })
             })
             .collect()
-    }
-
-    async fn count_owned_orgs(&self, user_id: UserId) -> Result<i64, AuthError> {
-        let mut tx = super::begin_privileged(&self.pool).await?;
-        let count: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM org_members WHERE user_id = $1 AND role = $2")
-                .bind(user_id)
-                .bind(Role::Owner.as_str())
-                .fetch_one(&mut *tx)
-                .await?;
-        tx.commit().await?;
-        // §6: a count is never negative; surfacing a corrupt aggregate
-        // early beats letting a bogus cap check through.
-        assert!(count >= 0, "count(*) of owned orgs is never negative");
-        Ok(count)
     }
 
     async fn membership(&self, user_id: UserId, org_id: OrgId) -> Result<Option<Role>, AuthError> {
@@ -567,9 +553,35 @@ impl PgUserStore {
         slug: &str,
         display_name: &str,
         language: Language,
+        cap: Option<i64>,
         now: DateTime<Utc>,
     ) -> Result<NewOrg, AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
+        // Atomic cap enforcement (self-service create only). The lock +
+        // count + insert share one transaction: take a per-user advisory
+        // xact lock so concurrent same-user creates serialize, then count
+        // owned orgs under that lock. Without the lock two requests both
+        // read count = N and both insert, overshooting the cap. The lock
+        // is released on commit/rollback. `hashtextextended` is the
+        // built-in stable bigint hash `pg_advisory_xact_lock` wants.
+        if let Some(cap) = cap {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("org-create:{}", user_id.as_uuid()))
+                .execute(&mut *tx)
+                .await?;
+            let count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM org_members WHERE user_id = $1 AND role = $2",
+            )
+            .bind(user_id)
+            .bind(Role::Owner.as_str())
+            .fetch_one(&mut *tx)
+            .await?;
+            // §6: assert what we expect and what we don't before branching.
+            assert!(count >= 0, "count(*) of owned orgs is never negative");
+            if count >= cap {
+                return Err(AuthError::OrgLimitReached { max: cap });
+            }
+        }
         let id = OrgId::new();
         insert_org_and_owner(&mut tx, id, user_id, slug, display_name, language, now).await?;
         tx.commit().await?;

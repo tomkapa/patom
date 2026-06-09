@@ -264,7 +264,8 @@ async fn resolve_active_org(
     }
     let new_org = state
         .users
-        .create_personal_org(user.id, slug_seed, &display, language, now)
+        // `None` cap: the auto-created personal org is never capped.
+        .create_personal_org(user.id, slug_seed, &display, language, None, now)
         .await?;
     seed_default_agent(state, new_org.id, language).await?;
     Ok(Some(new_org.id))
