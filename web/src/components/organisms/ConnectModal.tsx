@@ -158,7 +158,7 @@ function OAuthBody({
         {errorText ? <Banner variant="rose">{errorText}</Banner> : null}
       </div>
       <ModalFooter>
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="secondary" onClick={onClose}>
           {t("connections.modal.cancel")}
         </Button>
         <Button
@@ -218,7 +218,7 @@ function NoAuthBody({
         {errorText ? <Banner variant="rose">{errorText}</Banner> : null}
       </div>
       <ModalFooter>
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="secondary" onClick={onClose}>
           {t("connections.modal.cancel")}
         </Button>
         <Button
@@ -315,7 +315,7 @@ function ApiTokenBody({
         {errorText ? <Banner variant="rose">{errorText}</Banner> : null}
       </div>
       <ModalFooter>
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="secondary" onClick={onClose}>
           {t("connections.modal.cancel")}
         </Button>
         <Button
@@ -411,7 +411,7 @@ function ReconnectBody({
         {errorText ? <Banner variant="rose">{errorText}</Banner> : null}
       </div>
       <ModalFooter>
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="secondary" onClick={onClose}>
           {t("connections.modal.reconnect.notNow")}
         </Button>
         <Button
@@ -574,7 +574,7 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
         {errorText ? <Banner variant="rose">{errorText}</Banner> : null}
       </div>
       <ModalFooter>
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="secondary" onClick={onClose}>
           {t("connections.modal.cancel")}
         </Button>
         <Button

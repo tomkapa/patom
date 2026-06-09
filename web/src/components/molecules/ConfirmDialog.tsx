@@ -51,7 +51,7 @@ export function ConfirmDialog({
         </div>
       </div>
       <ModalFooter>
-        <Button variant="ghost" onClick={onCancel}>
+        <Button variant="secondary" onClick={onCancel}>
           {cancelLabel}
         </Button>
         <Button

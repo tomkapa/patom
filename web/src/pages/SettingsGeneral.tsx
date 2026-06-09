@@ -356,7 +356,7 @@ export function SettingsGeneral() {
           {t("settings.general.danger.leave.confirm", { name: org.name })}
         </div>
         <ModalFooter>
-          <Button variant="ghost" onClick={() => setLeaveOpen(false)}>
+          <Button variant="secondary" onClick={() => setLeaveOpen(false)}>
             {t("settings.general.cancel")}
           </Button>
           <button
@@ -416,7 +416,7 @@ export function SettingsGeneral() {
         </div>
         <ModalFooter>
           <Button
-            variant="ghost"
+            variant="secondary"
             onClick={() => {
               setDeleteOpen(false);
               setDeleteInput("");

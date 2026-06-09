@@ -202,7 +202,7 @@ export function SettingsIntegrations() {
             </div>
             <ModalFooter>
               <Button
-                variant="ghost"
+                variant="secondary"
                 onClick={() => setPendingDisconnect(null)}
               >
                 {t("settings.integrations.disconnect.cancel")}
