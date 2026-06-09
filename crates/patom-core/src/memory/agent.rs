@@ -26,14 +26,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::agents::{AgentId, AgentPromptCache, SharedAgentStore};
-use crate::auth::{SharedOrgLanguageResolver, SharedOrgRuleResolver};
+use crate::auth::{OrganizationRule, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use crate::clock::SharedClock;
 use crate::colleagues::{
     ColleagueError, ColleagueId, ColleagueRosterCache, SharedColleagueStore, render_roster_block,
     render_speaking_with,
 };
 use crate::prompts::Prompts;
-use crate::runtime::RequestKindPayload;
+use crate::runtime::{RequestKind, RequestKindPayload};
 use crate::session::SessionId;
 use crate::types::Participant;
 
@@ -73,6 +73,12 @@ pub const LANGUAGE_TAG_CLOSE: &str = "\n</language>";
 /// machine-parseable and human-friendly anchors for relative-date reasoning
 /// ("next Friday", "tomorrow").
 pub const DATE_FORMAT: &str = "%Y-%m-%d (%A, UTC)";
+
+/// `"\n"` when `s` is non-empty, else `""` — the separator before an optional
+/// prompt section so an absent block leaves no stray blank line.
+const fn newline_sep(s: &str) -> &'static str {
+    if s.is_empty() { "" } else { "\n" }
+}
 
 /// Composite memory backing the per-turn system prompt.
 ///
@@ -273,21 +279,94 @@ impl Memory for AgentMemory {
         // surfaces here as `MemoryError::Backend` via the same
         // conversion path the language uses.
         let org_rule = self.rule_resolver.rule_for_agent(agent_id).await?;
-        let (rule_open, rule_body, rule_close) = org_rule.as_ref().map_or(("", "", ""), |r| {
-            (ORG_RULE_TAG_OPEN, r.as_str(), ORG_RULE_TAG_CLOSE)
-        });
-        let rule_sep = if rule_open.is_empty() { "" } else { "\n" };
 
-        let core_arc = self.prompts.cores.for_kind(kind_payload.kind());
+        Ok(self.assemble_prompt(
+            kind_payload.kind(),
+            role.as_str(),
+            org_rule.as_ref().map(OrganizationRule::as_str),
+            &roster,
+            &speaking_with,
+            directive.as_ref(),
+            memory_section.text(),
+        ))
+    }
+
+    async fn system_prompt_for_thread(
+        &self,
+        viewer: Participant,
+        kind_payload: &RequestKindPayload,
+    ) -> Result<Arc<str>, MemoryError> {
+        let agent_id = viewer.agent_id().ok_or_else(|| {
+            MemoryError::Backend(
+                "system_prompt_for_thread called with non-agent viewer; agent worker only".into(),
+            )
+        })?;
+        let viewer_colleague = viewer.colleague_id().ok_or_else(|| {
+            MemoryError::Backend(
+                "system_prompt_for_thread viewer has no colleague_id; agent worker only".into(),
+            )
+        })?;
+
+        let role = self
+            .prompt_cache
+            .get_or_load(agent_id, &self.agents)
+            .await?;
+        // Stable layer only — the session-keyed contextual retrieval is not yet
+        // rehomed onto the thread feed (degrades empty; enrichment, not
+        // load-bearing). The `<colleagues>` roster still renders.
+        let memory_section = self.loader.load_stable(agent_id, kind_payload).await?;
+        let roster = match self.roster_block(viewer_colleague).await {
+            Ok(block) => block,
+            Err(e) => {
+                tracing::warn!(error = %e, "colleagues.roster.error");
+                String::new()
+            }
+        };
+        let language = self.language_resolver.language_for_agent(agent_id).await?;
+        let directive = self.prompts.set(language).language_directive.clone();
+        let org_rule = self.rule_resolver.rule_for_agent(agent_id).await?;
+
+        // No `<speaking-with>` line: a thread feed is multi-party, so there is
+        // no single counterpart to name.
+        Ok(self.assemble_prompt(
+            kind_payload.kind(),
+            role.as_str(),
+            org_rule.as_ref().map(OrganizationRule::as_str),
+            &roster,
+            "",
+            directive.as_ref(),
+            memory_section.text(),
+        ))
+    }
+}
+
+impl AgentMemory {
+    /// Assemble the final system-prompt string from its already-resolved
+    /// pieces. Shared by the pair-session ([`Memory::system_prompt`]) and
+    /// thread-feed ([`Memory::system_prompt_for_thread`]) paths so the tag order
+    /// and cache-prefix layout live in one place. `speaking_with` is the empty
+    /// string when there is no single counterpart to name.
+    #[allow(clippy::too_many_arguments)]
+    fn assemble_prompt(
+        &self,
+        kind: RequestKind,
+        role_str: &str,
+        org_rule: Option<&str>,
+        roster: &str,
+        speaking_with: &str,
+        directive_str: &str,
+        memory_str: &str,
+    ) -> Arc<str> {
+        let core_arc = self.prompts.cores.for_kind(kind);
         let core = core_arc.as_ref();
-        let role_str = role.as_str();
-        let memory_str = memory_section.text();
-        let memory_sep = if memory_str.is_empty() { "" } else { "\n" };
-        let roster_sep = if roster.is_empty() { "" } else { "\n" };
-        // Per-session, so it sits in the tail (after `<language>`) — keeping it
-        // out of the org-stable prefix preserves prompt-cache hits across the
-        // agent's other sessions.
-        let speaking_with_sep = if speaking_with.is_empty() { "" } else { "\n" };
+        let (rule_open, rule_body, rule_close) =
+            org_rule.map_or(("", "", ""), |r| (ORG_RULE_TAG_OPEN, r, ORG_RULE_TAG_CLOSE));
+        let rule_sep = newline_sep(rule_open);
+        let memory_sep = newline_sep(memory_str);
+        let roster_sep = newline_sep(roster);
+        // Per-turn tail (after `<language>`) — keeping it out of the org-stable
+        // prefix preserves prompt-cache hits across the agent's other turns.
+        let speaking_with_sep = newline_sep(speaking_with);
 
         // `<date>` sits between `<role>` and `<memory>` so the daily-churn seam
         // lies between the per-agent stable prefix and the per-turn memory tail.
@@ -297,7 +376,6 @@ impl Memory for AgentMemory {
         let date_str = now_utc.format(DATE_FORMAT).to_string();
         let date_sep = "\n";
         let lang_sep = "\n";
-        let directive_str = directive.as_ref();
 
         let mut out = String::with_capacity(
             CORE_TAG_OPEN.len()
@@ -335,7 +413,7 @@ impl Memory for AgentMemory {
         out.push_str(rule_body);
         out.push_str(rule_close);
         out.push_str(rule_sep);
-        out.push_str(&roster);
+        out.push_str(roster);
         out.push_str(roster_sep);
         out.push_str(ROLE_TAG_OPEN);
         out.push_str(role_str);
@@ -349,10 +427,10 @@ impl Memory for AgentMemory {
         out.push_str(directive_str);
         out.push_str(LANGUAGE_TAG_CLOSE);
         out.push_str(speaking_with_sep);
-        out.push_str(&speaking_with);
+        out.push_str(speaking_with);
         out.push_str(memory_sep);
         out.push_str(memory_str);
 
-        Ok(Arc::from(out))
+        Arc::from(out)
     }
 }

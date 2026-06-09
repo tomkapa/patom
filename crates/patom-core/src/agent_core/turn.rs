@@ -17,7 +17,8 @@ use crate::provider::{
     UserContent,
 };
 use crate::runtime::{PromptRequestId, RequestKind, RequestKindPayload};
-use crate::session::SessionId;
+use crate::session::{SessionError, SessionId};
+use crate::threads::{AgentThreadId, MessageKind, NewMessage, ThreadId};
 use crate::tools::{
     SharedTool, TOOL_RESULT_MAX_BYTES, ToolBox, ToolCallContext, ToolCallRow, ToolCallRowId,
     clip_error_message, truncate_to_char_boundary,
@@ -135,6 +136,8 @@ impl Agent {
 
         let tool_ctx = ToolCallContext {
             session_id: ctx.session_id,
+            thread_id: None,
+            state_id: None,
             viewer,
             root_request_id,
             request_id,
@@ -174,6 +177,265 @@ impl Agent {
             )
             .await?;
         Ok(None)
+    }
+
+    /// Run one thread-feed turn: build the request from the feed (read-at-run),
+    /// call the provider, append the agent's artifacts back to the feed. Returns
+    /// `Some(text)` when the turn ends with a final answer; `None` to continue.
+    ///
+    /// The assistant turn and its tool results are appended as **owner-private**
+    /// feed rows (shown to all, ingested only by this agent next turn). The
+    /// posted egress to peers is the `send_message` tool, not this raw
+    /// completion.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn run_thread_turn(
+        &self,
+        ctx: TurnContext,
+        claim_key: AgentThreadId,
+        thread: ThreadId,
+        viewer: Participant,
+        request_id: PromptRequestId,
+        caller: Caller,
+        kind_payload: &RequestKindPayload,
+        send_message_calls: &mut usize,
+        cancel: &CancellationToken,
+        observer: Option<&SharedTurnObserver>,
+    ) -> Result<Option<String>, AgentError> {
+        self.hooks().before_turn(ctx).await?.into_result()?;
+        self.budget_gate(caller.org_id).await?;
+        let started_at = self.clock().now_utc();
+        let started_mono = Instant::now();
+        let request = self
+            .build_thread_request(thread, viewer, kind_payload)
+            .await?;
+        let response = self
+            .call_provider(request, self.provider_timeout(), cancel)
+            .await?;
+        let duration = started_mono.elapsed();
+        self.record_turn_metrics(
+            request_id,
+            ctx.session_id,
+            caller.org_id,
+            kind_payload.kind(),
+            started_at,
+            duration,
+            &response,
+        )
+        .await;
+        self.budget_settle(caller.org_id, &response).await;
+        self.hooks()
+            .after_turn(ctx, &response)
+            .await?
+            .into_result()?;
+
+        for block in &response.content {
+            log::assistant_block(ctx.turn_index.get(), block);
+        }
+        if let Some(obs) = observer {
+            for block in &response.content {
+                obs.on_assistant(block).await;
+            }
+        }
+
+        // §6: the thread path only ever runs for an agent viewer.
+        let agent_id = viewer.agent_id().ok_or_else(|| {
+            SessionError::Backend("run_thread_turn requires an agent viewer".to_string())
+        })?;
+
+        let tool_calls = response.tool_calls();
+        tracing::Span::current().record("patom.tool_calls.count", tool_calls.len());
+
+        // The assistant turn → an owner-private artifact. `ToolUse` when the
+        // turn issued tool calls, else `Reasoning`; either way owner-scoped so
+        // only this agent re-ingests it (peers see it for transparency).
+        let assistant_kind = if tool_calls.is_empty() {
+            MessageKind::Reasoning
+        } else {
+            MessageKind::ToolUse
+        };
+        self.append_private(
+            &caller,
+            thread,
+            assistant_kind,
+            viewer.colleague_id(),
+            agent_id,
+            ChatMessage::Assistant(response.content.clone()),
+            request_id,
+        )
+        .await?;
+
+        if tool_calls.is_empty() {
+            let text = response.text();
+            if text.is_empty() {
+                return Err(AgentError::EmptyReply);
+            }
+            return Ok(Some(text));
+        }
+        if tool_calls.len() > MAX_TOOL_CALLS_PER_TURN {
+            return Err(AgentError::TooManyToolCalls {
+                max: MAX_TOOL_CALLS_PER_TURN,
+            });
+        }
+
+        self.run_thread_tool_calls(
+            ctx,
+            claim_key,
+            thread,
+            viewer,
+            agent_id,
+            request_id,
+            caller,
+            kind_payload,
+            &tool_calls,
+            send_message_calls,
+            cancel,
+            observer,
+        )
+        .await?;
+        Ok(None)
+    }
+
+    /// Append one **owner-private** feed artifact (reasoning / tool_use /
+    /// tool_result): shown to everyone in the thread but ingested only by
+    /// `owner` on its next turn. Thin wrapper over [`crate::threads::ThreadStore::append`]
+    /// so the two call sites in [`Self::run_thread_turn`] stay terse.
+    #[allow(clippy::too_many_arguments)]
+    async fn append_private(
+        &self,
+        caller: &Caller,
+        thread: ThreadId,
+        kind: MessageKind,
+        sender: Option<crate::colleagues::ColleagueId>,
+        owner: crate::agents::AgentId,
+        body: ChatMessage,
+        request_id: PromptRequestId,
+    ) -> Result<(), AgentError> {
+        self.threads()
+            .append(
+                caller,
+                thread,
+                NewMessage {
+                    kind,
+                    sender,
+                    owner_agent_id: Some(owner),
+                    receiver: None,
+                    body,
+                    request_id: Some(request_id),
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Run the assistant turn's tool calls and append their results as an
+    /// owner-private `tool_result` artifact. Counts `send_message` attempts for
+    /// the worker's ping-pong guard regardless of per-call error.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_thread_tool_calls(
+        &self,
+        ctx: TurnContext,
+        claim_key: AgentThreadId,
+        thread: ThreadId,
+        viewer: Participant,
+        agent_id: crate::agents::AgentId,
+        request_id: PromptRequestId,
+        caller: Caller,
+        kind_payload: &RequestKindPayload,
+        tool_calls: &[&ToolCall],
+        send_message_calls: &mut usize,
+        cancel: &CancellationToken,
+        observer: Option<&SharedTurnObserver>,
+    ) -> Result<(), AgentError> {
+        // `session_id` carries `claim_key` bridged via `SessionId::from` for the
+        // legacy-typed contexts; `state_id` carries the typed participation id.
+        let tool_ctx = ToolCallContext {
+            session_id: ctx.session_id,
+            thread_id: Some(thread),
+            state_id: Some(claim_key),
+            viewer,
+            root_request_id: request_id,
+            request_id,
+            kind_payload: kind_payload.clone(),
+            acting_user_id: caller.user_id,
+            org_id: caller.org_id,
+        };
+        for call in tool_calls {
+            if call.name.as_str() == send_message_tool_name() {
+                *send_message_calls += 1;
+            }
+        }
+        let results = self
+            .run_tools(
+                ctx,
+                tool_calls,
+                self.tools(),
+                kind_payload.kind(),
+                &tool_ctx,
+                cancel,
+                observer,
+            )
+            .await?;
+        self.append_private(
+            &caller,
+            thread,
+            MessageKind::ToolResult,
+            None,
+            agent_id,
+            ChatMessage::User(results.into_iter().map(UserContent::ToolResult).collect()),
+            request_id,
+        )
+        .await
+    }
+
+    /// Assemble a thread-feed turn's provider request: the agent's feed context
+    /// (read-at-run, viewer-mapped) + the thread system prompt + tool specs.
+    #[tracing::instrument(
+        skip_all,
+        name = "thread.context.build",
+        fields(
+            patom.thread.id = %thread,
+            patom.viewer = %viewer,
+            patom.history.count = tracing::field::Empty,
+            patom.system_prompt.bytes = tracing::field::Empty,
+        ),
+    )]
+    async fn build_thread_request(
+        &self,
+        thread: ThreadId,
+        viewer: Participant,
+        kind_payload: &RequestKindPayload,
+    ) -> Result<ChatRequest, AgentError> {
+        let span = tracing::Span::current();
+        let agent_id = viewer.agent_id().ok_or_else(|| {
+            SessionError::Backend("build_thread_request requires an agent viewer".to_string())
+        })?;
+        let viewer_colleague = viewer.colleague_id().ok_or_else(|| {
+            SessionError::Backend("build_thread_request agent viewer has no colleague".to_string())
+        })?;
+        // The feed read and the system-prompt compose hit independent stores;
+        // run them concurrently so the turn pays one round-trip latency, not two.
+        let (messages, system) = tokio::join!(
+            self.threads()
+                .context_for_agent(thread, agent_id, viewer_colleague),
+            self.memory().system_prompt_for_thread(viewer, kind_payload),
+        );
+        let messages = messages?;
+        let system = system?;
+        assert!(
+            !messages.is_empty(),
+            "thread turn must read at least one feed message"
+        );
+        span.record("patom.history.count", messages.len());
+        span.record("patom.system_prompt.bytes", system.len());
+
+        let tools = self.tools().specs_for(kind_payload.kind());
+        Ok(ChatRequest {
+            model: self.model(),
+            system,
+            messages,
+            tools,
+            max_output_tokens: self.max_output_tokens(),
+        })
     }
 
     /// Pre-turn spend gate. Returns [`AgentError::BudgetExceeded`] when the org

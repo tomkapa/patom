@@ -712,6 +712,7 @@ impl Worker {
             AgentError::BudgetExceeded { .. } => FailureReason::BudgetExceeded,
             e @ (AgentError::Provider(_)
             | AgentError::Session(_)
+            | AgentError::Thread(_)
             | AgentError::Memory(_)
             | AgentError::Todos(_)
             | AgentError::Hook(_)

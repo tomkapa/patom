@@ -74,6 +74,8 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
 fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
     ToolCallContext {
         session_id: f.session,
+        thread_id: None,
+        state_id: None,
         viewer: patom::types::Participant::agent(f.agent_colleague_id, f.agent_id),
         root_request_id: request_id,
         request_id,

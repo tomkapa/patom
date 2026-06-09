@@ -133,6 +133,42 @@ wires in when `send_message` is rewritten (P5).
 
 A `/simplify` pass ran on P1–P3 code: only change applied was `i64`→`TurnSeq` for the lease seq.
 
+**P4 core ✅** — `agent_core/{builder,core,turn,error,outcome}.rs` + `memory/{traits,static,agent,loader}.rs`.
+`AgentBuilder::with_thread_store` + `Agent::reply_in_thread(claim_key, thread, viewer, …)` (no `prompts`
+arg — read-at-run). `build_thread_request` reads `ThreadStore::context_for_agent`; the assistant turn +
+tool results are appended as **owner-private** feed rows (`Reasoning`/`ToolUse`/`ToolResult`, owner =
+agent). New `Memory::system_prompt_for_thread` (no session / no counterpart; multi-party feed) backed by
+`MemorySectionLoader::load_stable` (stable layer only — contextual retrieval degrades empty until rehomed).
+Hook/tracing/tool contexts still speak `SessionId`, bridged via `SessionId::from(claim_key.as_uuid())`
+(= `turn_metrics.state_id`/`tool_calls.state_id`). `AgentError::Thread` variant added. Test
+`tests/agent_thread_loop.rs::context_is_read_at_run` green; lib clippy `-D warnings` + fmt clean.
+**Remaining in P4 / deferred:** the `tool_use`/`tool_result` re-pair at context-build (note 13) is still a
+TODO; `todos` block + `turn_metrics`/`tool_calls` recorders are **not** wired into the thread path yet
+(skipped — recorders still `INSERT session_id`; retype + wire in P6). `ToolCallContext` keeps `session_id`
+(bridged) until P5 rehomes the session-coupled system tools onto `state_id`/`thread_id`.
+
+**P5 core ✅** — `send_message` is now the thread-feed egress.
+- `ToolCallContext` gains `thread_id`/`state_id` (legacy path = `None`; thread loop sets them, threading
+  `claim_key` through `run_thread_turn`/`run_thread_tool_calls` — no UUID round-trip). `session_id` stays
+  (bridged) for the still-session-coupled tools (get_session/scheduling/memory/todos — rehomed in their phases).
+- `ThreadStore::is_channel_member` (human gate) + `ThreadStore::append` now returns `ThreadMessageId`.
+- `PromptQueue` trait gains `enqueue_trigger` + `claim_next_turn` (so `SharedPromptQueue` reaches them; the
+  trait methods delegate to the inherent impls via `Self::` — inherent shadows trait, no recursion; P11
+  collapses to single defs).
+- `tools/system/send_message.rs` rewritten: drops sessions/`context_summary`/`resolve_or_create_for_pair`,
+  takes `SharedThreadStore`. `receiver` is `Option` (None ⇒ untagged post). Always posts a `kind='posted'`
+  row at `ctx.thread_id` (the egress). Human → `is_channel_member` gate (reject `InvalidInput`, no auto-add,
+  no post); Agent → post + `resolve_participation` + `bump_dag_budget` + `enqueue_trigger` (root inherited,
+  `trigger_message_id` = posted row, idempotency `tag:{thread}:{agent}:{message}`).
+- Wired: `app.rs` (constructs `PgThreadStore` into `BuiltinToolDeps`) + `tests/common/harness.rs` +
+  `tests/runtime_pipeline.rs`. Deleted obsolete pair tests `{send_message_colleague,agent_to_agent,human_delivery}.rs`.
+- Test `tests/agent_thread_send_message.rs::send_to_human_non_member_rejected_no_autoadd` green; full
+  `cargo check --tests` compiles; lib+tests clippy `-D warnings` + fmt clean.
+**Remaining in P5 / deferred:** the human-member happy path, agent-delivery, and untagged-post branches have
+no dedicated tests yet (only the reject case); the SSE notify on human delivery is dropped until the P10
+stream re-key (posting to the feed is the durable delivery). `ctx.root_request_id` in the thread loop is
+still `= request_id`, not the resolved DAG root — wire the real root in P6 (worker → `ClaimedTurn`).
+
 ## 7. Discovered gaps / handoff notes (read before resuming)
 
 These are facts learned while building P0–P3 that aren't obvious from the plan:

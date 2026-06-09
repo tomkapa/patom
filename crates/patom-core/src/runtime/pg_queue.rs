@@ -392,6 +392,20 @@ impl PromptQueue for PgPromptQueue {
             )
             .collect())
     }
+
+    // Thread-feed trigger surface. The implementations live in the inherent
+    // `impl PgPromptQueue` block below (alongside their private SQL helpers); the
+    // fully-qualified calls expose them on the `dyn PromptQueue` surface without
+    // ambiguity. Collapsed into single definitions in the P11 dead-code sweep.
+    async fn enqueue_trigger(&self, trig: NewTrigger) -> Result<PromptRequestId, PromptError> {
+        // `Self::` resolves to the inherent method (inherent items shadow trait
+        // items of the same name), so this is delegation, not recursion.
+        Self::enqueue_trigger(self, trig).await
+    }
+
+    async fn claim_next_turn(&self, worker: WorkerId) -> Result<Option<ClaimedTurn>, PromptError> {
+        Self::claim_next_turn(self, worker).await
+    }
 }
 
 #[async_trait]
@@ -1178,7 +1192,8 @@ impl PgPromptQueue {
             return Ok(None);
         };
         let lease_seq = bump_claim_seq(&mut tx, claim_key, org_id).await?;
-        if !try_take_claim_lease(&mut tx, claim_key, org_id, worker, lease_seq, deadline, now).await?
+        if !try_take_claim_lease(&mut tx, claim_key, org_id, worker, lease_seq, deadline, now)
+            .await?
         {
             tx.commit().await?;
             return Ok(None);

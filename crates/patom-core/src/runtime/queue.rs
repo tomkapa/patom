@@ -109,6 +109,14 @@ pub trait PromptQueue: fmt::Debug + Send + Sync {
         &self,
         worker: WorkerId,
     ) -> Result<Option<ClaimedSession>, PromptError>;
+    /// Enqueue a thread-feed *trigger* (wake an agent for a turn). Idempotent on
+    /// `(org_id, idempotency_key)`; the message itself already lives in
+    /// `thread_messages`. Tenant-scoped on the trigger's `acting_user_id`.
+    async fn enqueue_trigger(&self, trig: NewTrigger) -> Result<PromptRequestId, PromptError>;
+    /// Claim the next pending trigger, coalescing every pending trigger for one
+    /// `claim_key` into a single [`ClaimedTurn`] under a per-`claim_key` lease.
+    /// The thread-feed analogue of [`Self::claim_next_session`].
+    async fn claim_next_turn(&self, worker: WorkerId) -> Result<Option<ClaimedTurn>, PromptError>;
     /// Mark every request in `receipt` as `Done`. The receipt binds the lease and the
     /// claimed ids together — there is no API for passing a foreign id list, so the
     /// "every id belongs to this lease's session" invariant is enforced by
@@ -439,7 +447,9 @@ pub type SharedLeaseManager = Arc<dyn LeaseManager>;
 // [`super::pg_queue::PgPromptQueue`]; the old session-keyed path coexists until
 // the dead-code sweep.
 
-/// A wake-up trigger to enqueue. Exactly one of `state_id` / `background_turn_id`
+/// A wake-up trigger to enqueue.
+///
+/// Exactly one of `state_id` / `background_turn_id`
 /// is `Some` (the `prompt_requests_claim_key_xor` CHECK enforces it). For a chat
 /// trigger, `thread_id` + `state_id` are set and `trigger_message_id` points at
 /// the feed message that caused the wake.
@@ -465,7 +475,9 @@ pub struct NewTrigger {
 }
 
 /// A drained, leased batch of triggers for one `claim_key` — the thread-feed
-/// analogue of [`ClaimedSession`]. `trigger_ids` are the coalesced wake rows
+/// analogue of [`ClaimedSession`].
+///
+/// `trigger_ids` are the coalesced wake rows
 /// (one logical turn); the worker reads the thread feed at run time rather than
 /// from any per-row `content`.
 #[derive(Debug, Clone)]

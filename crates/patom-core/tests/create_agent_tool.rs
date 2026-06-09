@@ -48,6 +48,8 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let request_id = PromptRequestId::new();
     let ctx = ToolCallContext {
         session_id: session,
+        thread_id: None,
+        state_id: None,
         viewer: common::pg::agent_participant(pool, seed.org_id, seed.agent_id).await,
         root_request_id: request_id,
         request_id,
@@ -73,6 +75,8 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
 fn human_ctx(f: &Fixture) -> ToolCallContext {
     ToolCallContext {
         session_id: f.ctx.session_id,
+        thread_id: None,
+        state_id: None,
         viewer: patom::types::Participant::human(f.user_colleague_id, f.user_id),
         root_request_id: f.ctx.root_request_id,
         request_id: f.ctx.request_id,

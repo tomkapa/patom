@@ -126,6 +126,10 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
     let sink = hub.clone();
 
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let threads: patom::threads::SharedThreadStore = Arc::new(patom::threads::PgThreadStore::new(
+        pool.clone(),
+        clock.clone(),
+    ));
     let agent_store: SharedAgentStore = super::pg::shared_agent_store(pool.clone(), clock.clone());
     let colleagues: patom::colleagues::SharedColleagueStore =
         Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
@@ -148,7 +152,7 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
 
     let tool_registry = ToolRegistry::builder()
         .with(Arc::new(SendMessageTool::new(
-            sessions.clone(),
+            threads.clone(),
             queue.clone(),
             dag.clone(),
             agent_store.clone(),
@@ -161,6 +165,7 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
     let agent = AgentBuilder::new(providers, sessions.clone(), memory, model)
         .expect("builder")
         .with_clock(clock.clone())
+        .with_thread_store(threads.clone())
         .with_tools(toolbox)
         .with_hooks(HookChain::new())
         .build();

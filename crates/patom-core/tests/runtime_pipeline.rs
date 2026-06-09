@@ -125,6 +125,10 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
     let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
     let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let threads: patom::threads::SharedThreadStore = Arc::new(patom::threads::PgThreadStore::new(
+        pool.clone(),
+        clock.clone(),
+    ));
 
     let provider: SharedProvider = provider;
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
@@ -142,7 +146,7 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
     // send_message, so test scripts must invoke it.
     let registry = ToolRegistry::builder()
         .with(Arc::new(SendMessageTool::new(
-            sessions.clone(),
+            threads.clone(),
             queue_impl.clone(),
             dag.clone(),
             agent_store.clone(),

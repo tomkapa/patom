@@ -8,6 +8,7 @@ use crate::hook::HookChain;
 use crate::memory::SharedMemory;
 use crate::provider::{Model, SharedProviderRegistry};
 use crate::session::SharedSessionStore;
+use crate::threads::SharedThreadStore;
 use crate::tools::system::todos::SharedSessionTodoStore;
 use crate::tools::{SharedToolCallStore, ToolBox, ToolRegistry};
 use crate::types::{MaxOutputTokens, MaxTurns, ParseError};
@@ -41,6 +42,10 @@ pub struct AgentBuilder {
     todos_store: Option<SharedSessionTodoStore>,
     turn_metrics: Option<TurnMetricsBinding>,
     budget: Option<SharedBudgetService>,
+    /// Thread-feed store backing the read-at-run chat path
+    /// ([`Agent::reply_in_thread`]). `None` in the legacy pair-session unit
+    /// tests; the production factory wires [`crate::threads::PgThreadStore`].
+    threads: Option<SharedThreadStore>,
 }
 
 /// Per-record identity needed to write a `turn_metrics` row. Bound at build
@@ -77,7 +82,19 @@ impl AgentBuilder {
             todos_store: None,
             turn_metrics: None,
             budget: None,
+            threads: None,
         })
+    }
+
+    /// Attach the thread-feed store that backs [`Agent::reply_in_thread`].
+    ///
+    /// Required for the thread-feed chat path (read-at-run context + appending
+    /// the agent's private artifacts to the feed); the legacy pair-session
+    /// `reply` / `resume` path does not use it.
+    #[must_use]
+    pub fn with_thread_store(mut self, threads: SharedThreadStore) -> Self {
+        self.threads = Some(threads);
+        self
     }
 
     #[must_use]
@@ -207,6 +224,7 @@ impl AgentBuilder {
             self.todos_store,
             self.turn_metrics,
             self.budget,
+            self.threads,
         )
     }
 }

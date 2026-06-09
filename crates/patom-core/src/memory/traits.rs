@@ -62,6 +62,21 @@ pub trait Memory: Send + Sync + fmt::Debug {
         counterpart: Participant,
         kind_payload: &RequestKindPayload,
     ) -> Result<Arc<str>, MemoryError>;
+
+    /// System prompt for a thread-feed turn (the read-at-run chat path).
+    ///
+    /// Unlike [`Self::system_prompt`], a thread turn has no single
+    /// `counterpart` (the feed is multi-party) and no `SessionId` (the
+    /// participation id is the turn scope). The agent's role + stable memory +
+    /// org roster + language + rule are composed from `viewer` alone. The
+    /// session-scoped contextual-memory layer (top-K retrieval keyed on the
+    /// opening message) degrades to empty here until it is rehomed onto the
+    /// thread feed — it is enrichment, never load-bearing (doc/memory.md §1.3).
+    async fn system_prompt_for_thread(
+        &self,
+        viewer: Participant,
+        kind_payload: &RequestKindPayload,
+    ) -> Result<Arc<str>, MemoryError>;
 }
 
 pub type SharedMemory = Arc<dyn Memory>;

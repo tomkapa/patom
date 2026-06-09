@@ -16,7 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::agents::AgentId;
-use crate::auth::Caller;
+use crate::auth::{Caller, UserId};
 use crate::channels::ChannelId;
 use crate::colleagues::ColleagueId;
 use crate::provider::ChatMessage;
@@ -55,7 +55,9 @@ crate::str_enum! {
     }
 }
 
-/// A row to append to a thread feed. `sender = None` encodes the synthetic
+/// A row to append to a thread feed.
+///
+/// `sender = None` encodes the synthetic
 /// System sender (tool results, nudges, scheduled seeds). `owner_agent_id` is
 /// required for every non-`Posted` kind and forbidden for `Posted` (enforced by
 /// the `thread_messages_owner_kind` CHECK). `receiver` may be set only on a
@@ -95,13 +97,29 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
     ) -> Result<AgentThreadId, ThreadError>;
 
     /// Append one feed row, allocating the next per-thread `seq` atomically and
-    /// bumping `threads.last_activity_at`. Returns the assigned `seq`.
+    /// bumping `threads.last_activity_at`. Returns the new row's
+    /// [`ThreadMessageId`] — the surface id a reply-thread roots on and the
+    /// `trigger_message_id` an agent→agent wake carries.
     async fn append(
         &self,
         caller: &Caller,
         thread: ThreadId,
         message: NewMessage,
-    ) -> Result<i64, ThreadError>;
+    ) -> Result<ThreadMessageId, ThreadError>;
+
+    /// Whether `user_id` may receive a posted message in `thread` — the
+    /// `send_message` human gate (no auto-add).
+    ///
+    /// A channel thread requires the human to be in `channel_members`; a DM
+    /// thread (`channel_id IS NULL`) is private to its creator, so its human is
+    /// always reachable. Returns [`ThreadError::NotFound`] if the thread is
+    /// missing. Privileged read — agents are org-global and gate humans by
+    /// membership, not by the acting principal.
+    async fn is_channel_member(
+        &self,
+        thread: ThreadId,
+        user_id: UserId,
+    ) -> Result<bool, ThreadError>;
 
     /// Build `agent`'s LLM context for `thread`: every `posted` row (from
     /// anyone) plus `agent`'s own private artifacts, in `seq` order, mapped to

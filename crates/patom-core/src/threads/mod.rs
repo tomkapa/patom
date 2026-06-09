@@ -1,5 +1,7 @@
 //! Thread-feed chat store — the multi-participant successor to the 2-party
-//! `session` model. A thread is one ordered feed; an agent's "session" is its
+//! `session` model.
+//!
+//! A thread is one ordered feed; an agent's "session" is its
 //! `(thread_id, agent_id)` participation ([`AgentThreadId`]).
 
 mod error;

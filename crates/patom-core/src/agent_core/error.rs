@@ -5,6 +5,7 @@ use crate::hook::{HookDenied, HookError};
 use crate::memory::MemoryError;
 use crate::provider::ProviderError;
 use crate::session::SessionError;
+use crate::threads::ThreadError;
 use crate::tools::system::todos::TodoStoreError;
 
 #[derive(Debug, Error)]
@@ -14,6 +15,9 @@ pub enum AgentError {
 
     #[error("session: {0}")]
     Session(#[from] SessionError),
+
+    #[error("thread: {0}")]
+    Thread(#[from] ThreadError),
 
     #[error("memory: {0}")]
     Memory(#[from] MemoryError),

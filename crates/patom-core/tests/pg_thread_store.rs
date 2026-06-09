@@ -13,13 +13,25 @@ use sqlx::PgPool;
 
 use common::pg::seed_tenant;
 
-fn posted(sender: patom::colleagues::ColleagueId, receiver: Option<patom::colleagues::ColleagueId>, text: &str, assistant: bool) -> NewMessage {
+fn posted(
+    sender: patom::colleagues::ColleagueId,
+    receiver: Option<patom::colleagues::ColleagueId>,
+    text: &str,
+    assistant: bool,
+) -> NewMessage {
     let body = if assistant {
         ChatMessage::Assistant(vec![AssistantContent::Text(text.into())])
     } else {
         ChatMessage::User(vec![UserContent::Text(text.into())])
     };
-    NewMessage { kind: MessageKind::Posted, sender: Some(sender), owner_agent_id: None, receiver, body, request_id: None }
+    NewMessage {
+        kind: MessageKind::Posted,
+        sender: Some(sender),
+        owner_agent_id: None,
+        receiver,
+        body,
+        request_id: None,
+    }
 }
 
 fn reasoning(sender: patom::colleagues::ColleagueId, owner: AgentId, text: &str) -> NewMessage {
@@ -75,13 +87,28 @@ async fn context_filters_private_rows_by_owner(pool: PgPool) {
     .await
     .expect("insert agent b");
 
-    let col_a = resolve_agent_colleague(&pool, seed.org_id, agent_a).await.expect("colleague a");
-    let col_b = resolve_agent_colleague(&pool, seed.org_id, agent_b).await.expect("colleague b");
-    let col_h = resolve_user_colleague(&pool, seed.org_id, seed.user_id).await.expect("human colleague");
+    let col_a = resolve_agent_colleague(&pool, seed.org_id, agent_a)
+        .await
+        .expect("colleague a");
+    let col_b = resolve_agent_colleague(&pool, seed.org_id, agent_b)
+        .await
+        .expect("colleague b");
+    let col_h = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
 
-    let thread = store.create_thread(&caller, None, None, col_h).await.expect("create thread");
-    store.resolve_participation(&caller, thread, agent_a).await.expect("participation a");
-    store.resolve_participation(&caller, thread, agent_b).await.expect("participation b");
+    let thread = store
+        .create_thread(&caller, None, None, col_h)
+        .await
+        .expect("create thread");
+    store
+        .resolve_participation(&caller, thread, agent_a)
+        .await
+        .expect("participation a");
+    store
+        .resolve_participation(&caller, thread, agent_b)
+        .await
+        .expect("participation b");
 
     // Feed: human post, A's post, A's private reasoning, B's private reasoning.
     for m in [
@@ -93,19 +120,46 @@ async fn context_filters_private_rows_by_owner(pool: PgPool) {
         store.append(&caller, thread, m).await.expect("append");
     }
 
-    let ctx_a = store.context_for_agent(thread, agent_a, col_a).await.expect("ctx a");
-    let ctx_b = store.context_for_agent(thread, agent_b, col_b).await.expect("ctx b");
+    let ctx_a = store
+        .context_for_agent(thread, agent_a, col_a)
+        .await
+        .expect("ctx a");
+    let ctx_b = store
+        .context_for_agent(thread, agent_b, col_b)
+        .await
+        .expect("ctx b");
 
     // A: human post + A's post + A's reasoning = 3; B's reasoning excluded.
     assert_eq!(ctx_a.len(), 3, "A sees posted ∪ own-private");
-    assert!(has_reasoning(&ctx_a, "A thinking"), "A sees its own reasoning");
-    assert!(!has_reasoning(&ctx_a, "B thinking"), "A must NOT see B's reasoning");
-    assert!(assistant_text_present(&ctx_a, "hi from A"), "A's own post maps to Assistant");
-    assert!(user_text_present(&ctx_a, "hello"), "human post maps to User");
+    assert!(
+        has_reasoning(&ctx_a, "A thinking"),
+        "A sees its own reasoning"
+    );
+    assert!(
+        !has_reasoning(&ctx_a, "B thinking"),
+        "A must NOT see B's reasoning"
+    );
+    assert!(
+        assistant_text_present(&ctx_a, "hi from A"),
+        "A's own post maps to Assistant"
+    );
+    assert!(
+        user_text_present(&ctx_a, "hello"),
+        "human post maps to User"
+    );
 
     // B: human post + A's post (as User) + B's reasoning = 3; A's reasoning excluded.
     assert_eq!(ctx_b.len(), 3, "B sees posted ∪ own-private");
-    assert!(has_reasoning(&ctx_b, "B thinking"), "B sees its own reasoning");
-    assert!(!has_reasoning(&ctx_b, "A thinking"), "B must NOT see A's reasoning");
-    assert!(user_text_present(&ctx_b, "hi from A"), "A's post maps to User for B");
+    assert!(
+        has_reasoning(&ctx_b, "B thinking"),
+        "B sees its own reasoning"
+    );
+    assert!(
+        !has_reasoning(&ctx_b, "A thinking"),
+        "B must NOT see A's reasoning"
+    );
+    assert!(
+        user_text_present(&ctx_b, "hi from A"),
+        "A's post maps to User for B"
+    );
 }

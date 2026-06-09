@@ -7,6 +7,7 @@ use thiserror::Error;
 use crate::auth::{OrgId, UserId};
 use crate::runtime::{PromptRequestId, RequestKindPayload};
 use crate::session::SessionId;
+use crate::threads::{AgentThreadId, ThreadId};
 use crate::types::{Participant, ToolName};
 
 use super::modes::RequestKindModes;
@@ -52,7 +53,20 @@ pub enum ToolError {
 #[derive(Debug, Clone)]
 pub struct ToolCallContext {
     /// The session that produced this tool call.
+    ///
+    /// Legacy pair-session identity. In the thread-feed path this carries the
+    /// `state_id` bridged through `SessionId::from` (see [`state_id`] for the
+    /// typed value); session-coupled tools that have not yet been rehomed onto
+    /// `state_id` still read it.
+    ///
+    /// [`state_id`]: Self::state_id
     pub session_id: SessionId,
+    /// Thread the tool call belongs to, in the thread-feed path. `None` on the
+    /// legacy pair-session path. `send_message` posts the egress row here.
+    pub thread_id: Option<ThreadId>,
+    /// The agent's participation id (`agent_thread_state.id`) for this turn —
+    /// the thread-feed turn scope. `None` on the legacy pair-session path.
+    pub state_id: Option<AgentThreadId>,
     /// The agent currently running — its identity is what `send_message`'s
     /// receiver is checked against and what authors any messages the tool
     /// appends.

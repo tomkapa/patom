@@ -34,4 +34,12 @@ impl Memory for StaticMemory {
     ) -> Result<Arc<str>, MemoryError> {
         Ok(self.prompt.clone())
     }
+
+    async fn system_prompt_for_thread(
+        &self,
+        _viewer: Participant,
+        _kind_payload: &RequestKindPayload,
+    ) -> Result<Arc<str>, MemoryError> {
+        Ok(self.prompt.clone())
+    }
 }

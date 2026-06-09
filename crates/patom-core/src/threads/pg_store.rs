@@ -19,7 +19,9 @@ use crate::colleagues::ColleagueId;
 use crate::provider::{AssistantContent, ChatMessage, UserContent};
 
 use super::error::ThreadError;
-use super::traits::{AgentThreadId, MessageKind, NewMessage, ThreadId, ThreadMessageId, ThreadStore};
+use super::traits::{
+    AgentThreadId, MessageKind, NewMessage, ThreadId, ThreadMessageId, ThreadStore,
+};
 
 /// Postgres-backed [`ThreadStore`].
 pub struct PgThreadStore {
@@ -94,20 +96,24 @@ impl ThreadStore for PgThreadStore {
     ) -> Result<AgentThreadId, ThreadError> {
         let now = self.now();
         let new_id = AgentThreadId::new();
-        let row: Option<(AgentThreadId,)> = run_as_user::<Option<(AgentThreadId,)>, ThreadError>(&self.pool, caller.user_id, async |tx| {
-            Ok(sqlx::query_as(
-                "INSERT INTO agent_thread_state (id, thread_id, agent_id, org_id, created_at) \
+        let row: Option<(AgentThreadId,)> = run_as_user::<Option<(AgentThreadId,)>, ThreadError>(
+            &self.pool,
+            caller.user_id,
+            async |tx| {
+                Ok(sqlx::query_as(
+                    "INSERT INTO agent_thread_state (id, thread_id, agent_id, org_id, created_at) \
                  SELECT $1, $2, $3, t.org_id, $4 FROM threads t WHERE t.id = $2 \
                  ON CONFLICT (thread_id, agent_id) DO UPDATE SET id = agent_thread_state.id \
                  RETURNING id",
-            )
-            .bind(new_id)
-            .bind(thread)
-            .bind(agent)
-            .bind(now)
-            .fetch_optional(&mut **tx)
-            .await?)
-        })
+                )
+                .bind(new_id)
+                .bind(thread)
+                .bind(agent)
+                .bind(now)
+                .fetch_optional(&mut **tx)
+                .await?)
+            },
+        )
         .await?;
         row.map(|(id,)| id).ok_or(ThreadError::NotFound(thread))
     }
@@ -118,16 +124,17 @@ impl ThreadStore for PgThreadStore {
         caller: &Caller,
         thread: ThreadId,
         message: NewMessage,
-    ) -> Result<i64, ThreadError> {
+    ) -> Result<ThreadMessageId, ThreadError> {
         let now = self.now();
         let body = serde_json::to_value(&message.body)
             .map_err(|e| ThreadError::Backend(format!("serialize message: {e}")))?;
         let id = ThreadMessageId::new();
         // One round trip: bump the per-thread seq, insert the row at that seq,
         // and bump last_activity_at — all gated on the thread existing (`t`).
-        let row: Option<(i64,)> = run_as_user::<Option<(i64,)>, ThreadError>(&self.pool, caller.user_id, async |tx| {
-            Ok(sqlx::query_as(
-                "WITH t AS (SELECT org_id FROM threads WHERE id = $1), \
+        let row: Option<(i64,)> =
+            run_as_user::<Option<(i64,)>, ThreadError>(&self.pool, caller.user_id, async |tx| {
+                Ok(sqlx::query_as(
+                    "WITH t AS (SELECT org_id FROM threads WHERE id = $1), \
                  seqx AS ( \
                      INSERT INTO thread_seq (thread_id, next_seq, org_id) \
                      SELECT $1, 1, t.org_id FROM t \
@@ -147,21 +154,53 @@ impl ThreadStore for PgThreadStore {
                      WHERE id = $1 AND EXISTS (SELECT 1 FROM ins) \
                  ) \
                  SELECT seq FROM ins",
-            )
-            .bind(thread)
-            .bind(id)
-            .bind(message.kind)
-            .bind(message.sender)
-            .bind(message.owner_agent_id)
-            .bind(message.receiver)
-            .bind(body)
-            .bind(message.request_id)
-            .bind(now)
-            .fetch_optional(&mut **tx)
-            .await?)
-        })
-        .await?;
-        row.map(|(seq,)| seq).ok_or(ThreadError::NotFound(thread))
+                )
+                .bind(thread)
+                .bind(id)
+                .bind(message.kind)
+                .bind(message.sender)
+                .bind(message.owner_agent_id)
+                .bind(message.receiver)
+                .bind(body)
+                .bind(message.request_id)
+                .bind(now)
+                .fetch_optional(&mut **tx)
+                .await?)
+            })
+            .await?;
+        // The `seq` row confirms the insert fired (thread exists); we return the
+        // surface id we minted, which callers thread into reply-roots / triggers.
+        row.map(|(_seq,)| id).ok_or(ThreadError::NotFound(thread))
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.is_channel_member", fields(patom.thread.id = %thread, patom.user.id = %user_id))]
+    async fn is_channel_member(
+        &self,
+        thread: ThreadId,
+        user_id: crate::auth::UserId,
+    ) -> Result<bool, ThreadError> {
+        // One round trip: resolve the thread's channel and, for a channel
+        // thread, test membership; a DM thread (NULL channel) is always
+        // reachable by its human. Privileged — the agent is org-global and the
+        // (channel, user) pair is fully qualified, so no cross-org leak.
+        let row: Option<(bool,)> =
+            run_privileged::<Option<(bool,)>, ThreadError>(&self.pool, async |tx| {
+                Ok(sqlx::query_as(
+                    "SELECT CASE \
+                         WHEN t.channel_id IS NULL THEN true \
+                         ELSE EXISTS ( \
+                             SELECT 1 FROM channel_members m \
+                             WHERE m.channel_id = t.channel_id AND m.user_id = $2 \
+                         ) END \
+                     FROM threads t WHERE t.id = $1",
+                )
+                .bind(thread)
+                .bind(user_id)
+                .fetch_optional(&mut **tx)
+                .await?)
+            })
+            .await?;
+        row.map(|(ok,)| ok).ok_or(ThreadError::NotFound(thread))
     }
 
     #[tracing::instrument(skip_all, name = "thread.context_for_agent", fields(patom.thread.id = %thread, patom.agent.id = %agent, patom.history.count = tracing::field::Empty))]

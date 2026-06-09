@@ -180,6 +180,46 @@ impl MemorySectionLoader {
             .await
     }
 
+    /// Compose the agent's **stable** memory section only — pinned + Identity
+    /// rows, trimmed to byte budget — with no session-keyed contextual layer.
+    ///
+    /// The thread-feed chat path ([`Memory::system_prompt_for_thread`]) has no
+    /// `SessionId` to key the opening-message retrieval on, so the contextual
+    /// layer is omitted (it degrades empty in the session path too; it is
+    /// enrichment, never load-bearing — doc/memory.md §1.3). Computed fresh on
+    /// every call: there is no thread-keyed cache yet, and the stable layer is a
+    /// single `store.list(agent)` read.
+    ///
+    /// [`Memory::system_prompt`]: super::Memory::system_prompt
+    /// [`Memory::system_prompt_for_thread`]: super::Memory::system_prompt_for_thread
+    pub async fn load_stable(
+        &self,
+        agent: AgentId,
+        kind_payload: &RequestKindPayload,
+    ) -> Result<Arc<MemorySection>, MemoryError> {
+        let contradiction = match kind_payload {
+            RequestKindPayload::Resolution {
+                contradiction_event_id,
+            } => Some(*contradiction_event_id),
+            _ => None,
+        };
+        let rows = self
+            .store
+            .list(agent)
+            .await
+            .map_err(|e| MemoryError::Backend(e.to_string()))?;
+        let reserved = resolve_reserved_pair(&*self.store, contradiction).await?;
+        let subjects = hydrate_subjects(&self.roster_cache, &self.colleagues, rows.iter()).await?;
+        // No contextual layer in the thread path (no session-keyed opening
+        // message to retrieve against) — an empty slice, not a wasted alloc.
+        Ok(Arc::new(compose_memory_section(
+            &rows,
+            &[],
+            &reserved,
+            &subjects,
+        )))
+    }
+
     /// Resolve a session-scoped `M-NN` handle to its underlying memory
     /// id. Returns `None` when the handle was never minted for this
     /// session (a hallucinated reference, or a section whose cache entry

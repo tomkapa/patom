@@ -28,7 +28,8 @@ async fn enqueue(
     state: AgentThreadId,
     agent: AgentId,
 ) -> PromptRequestId {
-    let key = IdempotencyKey::try_from(format!("trig-{}", Uuid::new_v4())).expect("idempotency key");
+    let key =
+        IdempotencyKey::try_from(format!("trig-{}", Uuid::new_v4())).expect("idempotency key");
     queue
         .enqueue_trigger(NewTrigger {
             org_id: org,
@@ -53,18 +54,56 @@ async fn claim_coalesces_pending_for_one_agent(pool: PgPool) {
     let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
     let queue = PgPromptQueue::new(pool.clone(), SystemClock::shared());
     let caller = Caller::new(seed.user_id, seed.org_id);
-    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id).await.expect("human colleague");
+    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
 
-    let thread = store.create_thread(&caller, None, None, human).await.expect("thread");
-    let state_a = store.resolve_participation(&caller, thread, seed.agent_id).await.expect("participation");
+    let thread = store
+        .create_thread(&caller, None, None, human)
+        .await
+        .expect("thread");
+    let state_a = store
+        .resolve_participation(&caller, thread, seed.agent_id)
+        .await
+        .expect("participation");
 
     // Two pending triggers for the same (thread, agent).
-    enqueue(&queue, seed.org_id, seed.user_id, human, thread, state_a, seed.agent_id).await;
-    enqueue(&queue, seed.org_id, seed.user_id, human, thread, state_a, seed.agent_id).await;
+    enqueue(
+        &queue,
+        seed.org_id,
+        seed.user_id,
+        human,
+        thread,
+        state_a,
+        seed.agent_id,
+    )
+    .await;
+    enqueue(
+        &queue,
+        seed.org_id,
+        seed.user_id,
+        human,
+        thread,
+        state_a,
+        seed.agent_id,
+    )
+    .await;
 
-    let claimed = queue.claim_next_turn(WorkerId::new()).await.expect("claim").expect("a turn");
-    assert_eq!(claimed.claim_key, state_a.as_uuid(), "keyed by (thread, agent)");
-    assert_eq!(claimed.trigger_ids.len(), 2, "both pending triggers coalesce into one turn");
+    let claimed = queue
+        .claim_next_turn(WorkerId::new())
+        .await
+        .expect("claim")
+        .expect("a turn");
+    assert_eq!(
+        claimed.claim_key,
+        state_a.as_uuid(),
+        "keyed by (thread, agent)"
+    );
+    assert_eq!(
+        claimed.trigger_ids.len(),
+        2,
+        "both pending triggers coalesce into one turn"
+    );
     assert_eq!(claimed.receiver_agent_id, seed.agent_id);
     assert_eq!(claimed.thread_id, Some(thread));
 }
@@ -75,7 +114,9 @@ async fn claim_serializes_per_thread_agent(pool: PgPool) {
     let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
     let queue = PgPromptQueue::new(pool.clone(), SystemClock::shared());
     let caller = Caller::new(seed.user_id, seed.org_id);
-    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id).await.expect("human colleague");
+    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
 
     let agent_a = seed.agent_id;
     let agent_b = AgentId::new();
@@ -89,17 +130,55 @@ async fn claim_serializes_per_thread_agent(pool: PgPool) {
     .await
     .expect("insert agent b");
 
-    let thread = store.create_thread(&caller, None, None, human).await.expect("thread");
-    let state_a = store.resolve_participation(&caller, thread, agent_a).await.expect("a");
-    let state_b = store.resolve_participation(&caller, thread, agent_b).await.expect("b");
+    let thread = store
+        .create_thread(&caller, None, None, human)
+        .await
+        .expect("thread");
+    let state_a = store
+        .resolve_participation(&caller, thread, agent_a)
+        .await
+        .expect("a");
+    let state_b = store
+        .resolve_participation(&caller, thread, agent_b)
+        .await
+        .expect("b");
 
-    enqueue(&queue, seed.org_id, seed.user_id, human, thread, state_a, agent_a).await;
-    enqueue(&queue, seed.org_id, seed.user_id, human, thread, state_b, agent_b).await;
+    enqueue(
+        &queue,
+        seed.org_id,
+        seed.user_id,
+        human,
+        thread,
+        state_a,
+        agent_a,
+    )
+    .await;
+    enqueue(
+        &queue,
+        seed.org_id,
+        seed.user_id,
+        human,
+        thread,
+        state_b,
+        agent_b,
+    )
+    .await;
 
     // Two agents in ONE thread both claim concurrently (not serialized per thread).
-    let c1 = queue.claim_next_turn(WorkerId::new()).await.expect("c1").expect("first turn");
-    let c2 = queue.claim_next_turn(WorkerId::new()).await.expect("c2").expect("second turn");
-    assert_ne!(c1.claim_key, c2.claim_key, "distinct (thread, agent) turns run concurrently");
+    let c1 = queue
+        .claim_next_turn(WorkerId::new())
+        .await
+        .expect("c1")
+        .expect("first turn");
+    let c2 = queue
+        .claim_next_turn(WorkerId::new())
+        .await
+        .expect("c2")
+        .expect("second turn");
+    assert_ne!(
+        c1.claim_key, c2.claim_key,
+        "distinct (thread, agent) turns run concurrently"
+    );
     let mut got = [c1.claim_key, c2.claim_key];
     got.sort();
     let mut want = [state_a.as_uuid(), state_b.as_uuid()];
@@ -107,7 +186,19 @@ async fn claim_serializes_per_thread_agent(pool: PgPool) {
     assert_eq!(got, want, "both participations claimed");
 
     // A second trigger for the already-leased agent A is NOT re-claimed.
-    enqueue(&queue, seed.org_id, seed.user_id, human, thread, state_a, agent_a).await;
+    enqueue(
+        &queue,
+        seed.org_id,
+        seed.user_id,
+        human,
+        thread,
+        state_a,
+        agent_a,
+    )
+    .await;
     let c3 = queue.claim_next_turn(WorkerId::new()).await.expect("c3");
-    assert!(c3.is_none(), "a trigger for a leased (thread, agent) waits — serialized per agent");
+    assert!(
+        c3.is_none(),
+        "a trigger for a leased (thread, agent) waits — serialized per agent"
+    );
 }

@@ -41,6 +41,7 @@ fn error_label(err: &AgentError) -> &'static str {
         AgentError::HookDenied(_) => "hook_denied",
         AgentError::Hook(_) => "hook_error",
         AgentError::Session(_) => "session_error",
+        AgentError::Thread(_) => "thread_error",
         AgentError::Memory(_) => "memory_error",
         AgentError::Todos(_) => "todos_error",
         AgentError::TodosLoadTimeout => "todos_load_timeout",

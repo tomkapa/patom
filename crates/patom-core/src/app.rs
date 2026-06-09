@@ -187,6 +187,10 @@ impl Collaborators {
         let sessions: SharedSessionStore =
             Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
 
+        let threads: crate::threads::SharedThreadStore = Arc::new(
+            crate::threads::PgThreadStore::new(pool.clone(), clock.clone()),
+        );
+
         let colleagues: crate::colleagues::SharedColleagueStore =
             Arc::new(crate::colleagues::PgColleagueStore::new(pool.clone()));
 
@@ -326,6 +330,7 @@ impl Collaborators {
             http,
             settings,
             sessions: sessions.clone(),
+            threads: threads.clone(),
             queue: queue.clone(),
             dag: dag.clone(),
             agents: agents.clone(),
@@ -458,6 +463,7 @@ struct BuiltinToolDeps<'a> {
     http: Client,
     settings: &'a Settings,
     sessions: SharedSessionStore,
+    threads: crate::threads::SharedThreadStore,
     queue: SharedPromptQueue,
     dag: SharedDagBudget,
     agents: SharedAgentStore,
@@ -490,7 +496,7 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.settings.brave_search_api_key.clone(),
         )))
         .with(Arc::new(SendMessageTool::new(
-            deps.sessions.clone(),
+            deps.threads.clone(),
             deps.queue.clone(),
             deps.dag.clone(),
             deps.agents.clone(),

@@ -21,7 +21,9 @@ async fn two_tags_one_message_mint_two_dags(pool: PgPool) {
     let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
     let queue = PgPromptQueue::new(pool.clone(), SystemClock::shared());
     let caller = Caller::new(seed.user_id, seed.org_id);
-    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id).await.expect("human colleague");
+    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
 
     let agent_a = seed.agent_id;
     let agent_b = AgentId::new();
@@ -35,9 +37,18 @@ async fn two_tags_one_message_mint_two_dags(pool: PgPool) {
     .await
     .expect("insert agent b");
 
-    let thread = store.create_thread(&caller, None, None, human).await.expect("thread");
-    let state_a = store.resolve_participation(&caller, thread, agent_a).await.expect("a");
-    let state_b = store.resolve_participation(&caller, thread, agent_b).await.expect("b");
+    let thread = store
+        .create_thread(&caller, None, None, human)
+        .await
+        .expect("thread");
+    let state_a = store
+        .resolve_participation(&caller, thread, agent_a)
+        .await
+        .expect("a");
+    let state_b = store
+        .resolve_participation(&caller, thread, agent_b)
+        .await
+        .expect("b");
 
     let trig = |agent: AgentId, state: AgentThreadId| NewTrigger {
         org_id: seed.org_id,
@@ -53,8 +64,14 @@ async fn two_tags_one_message_mint_two_dags(pool: PgPool) {
         kind_payload: RequestKindPayload::Normal {},
     };
 
-    let r_a = queue.enqueue_trigger(trig(agent_a, state_a)).await.expect("enqueue a");
-    let r_b = queue.enqueue_trigger(trig(agent_b, state_b)).await.expect("enqueue b");
+    let r_a = queue
+        .enqueue_trigger(trig(agent_a, state_a))
+        .await
+        .expect("enqueue a");
+    let r_b = queue
+        .enqueue_trigger(trig(agent_b, state_b))
+        .await
+        .expect("enqueue b");
 
     let dags: Vec<(Uuid, i64)> =
         sqlx::query_as("SELECT root_request_id, turns_cap FROM prompt_request_dags")
@@ -62,9 +79,22 @@ async fn two_tags_one_message_mint_two_dags(pool: PgPool) {
             .await
             .expect("read dags");
 
-    assert_eq!(dags.len(), 2, "@A @B in one message mints two independent DAGs");
-    assert!(dags.iter().all(|(_, cap)| *cap == 64), "each DAG capped at MAX_DAG_TURNS (64)");
+    assert_eq!(
+        dags.len(),
+        2,
+        "@A @B in one message mints two independent DAGs"
+    );
+    assert!(
+        dags.iter().all(|(_, cap)| *cap == 64),
+        "each DAG capped at MAX_DAG_TURNS (64)"
+    );
     let roots: std::collections::HashSet<Uuid> = dags.iter().map(|(r, _)| *r).collect();
-    assert!(roots.contains(&r_a.as_uuid()), "DAG anchored on A's trigger id");
-    assert!(roots.contains(&r_b.as_uuid()), "DAG anchored on B's trigger id");
+    assert!(
+        roots.contains(&r_a.as_uuid()),
+        "DAG anchored on A's trigger id"
+    );
+    assert!(
+        roots.contains(&r_b.as_uuid()),
+        "DAG anchored on B's trigger id"
+    );
 }
