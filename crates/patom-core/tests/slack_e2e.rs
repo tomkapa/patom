@@ -297,6 +297,7 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         jwt,
         oauth,
         bootstrap_admin: false,
+        cloud: false,
         users,
         clock: clock.clone(),
         cookie_secure: false,

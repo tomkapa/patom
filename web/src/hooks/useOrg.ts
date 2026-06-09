@@ -49,6 +49,30 @@ export function useUpdateOrg() {
   });
 }
 
+/** Create a new workspace and switch into it. The server re-mints the
+ *  session cookie, so we invalidate every query to refetch under the new
+ *  active org — same posture as `useSwitchOrg`. The mutation resolves to
+ *  `{ active_org_id, role }`; callers await it before navigating. */
+export function useCreateOrg() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.createOrg(name),
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
+/** Delete the active workspace. The server re-mints the session into the
+ *  next remaining org (or an org-less session). Invalidate everything so
+ *  the app re-renders under the new session; the caller routes off the
+ *  returned `active_org_id`. */
+export function useDeleteOrg() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteOrg(),
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
 export function useChangeMemberRole() {
   const qc = useQueryClient();
   return useMutation({

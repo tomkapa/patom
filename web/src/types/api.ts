@@ -36,8 +36,12 @@ export type User = {
 export type Me = {
   user: User;
   orgs: Org[];
-  active_org_id: string;
-  role: Role;
+  /** `null` for an **org-less** session — a freshly signed-in cloud user
+   *  who hasn't created a workspace yet. `OnboardingGate` routes them
+   *  into the wizard. `orgs` is then empty. */
+  active_org_id: string | null;
+  /** The caller's role in `active_org_id`; `null` when org-less. */
+  role: Role | null;
 };
 
 export type AgentRef = { id: string; name: string };

@@ -41,6 +41,7 @@ pub use store::{
 pub use types::{
     Email, InviteId, InviteToken, IssuerUrl, OAuthState, OidcNonce, OidcProfile, OidcSubject,
     OrgId, OrgMembership, OrgName, OrgSlug, PkceVerifier, Principal, Role, User, UserId,
+    UserSession,
 };
 
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};

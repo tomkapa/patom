@@ -118,6 +118,7 @@ impl Harness {
             jwt,
             oauth,
             bootstrap_admin: false,
+            cloud: false,
             users,
             clock: clock.clone(),
             cookie_secure: false,
@@ -214,7 +215,7 @@ async fn seed_member(pool: &PgPool, org: OrgId, jwt: &JwtSigner) -> SeededPrinci
     .execute(pool)
     .await
     .expect("seed org member");
-    let cookie_value = jwt.mint(user_id, org).expect("mint test jwt");
+    let cookie_value = jwt.mint(user_id, Some(org)).expect("mint test jwt");
     SeededPrincipal {
         user_id,
         org_id: org,

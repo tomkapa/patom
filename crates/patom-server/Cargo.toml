@@ -42,7 +42,7 @@ patom-cloud = { workspace = true, optional = true }
 # Pulls in `patom-cloud` (paid-tier / billing). Off by default → the OSS /
 # self-host binary excludes all cloud code; `cargo build --features cloud`
 # builds the commercial binary.
-cloud = ["dep:patom-cloud"]
+cloud = ["dep:patom-cloud", "patom-core/cloud"]
 
 [lints]
 workspace = true

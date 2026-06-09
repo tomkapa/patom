@@ -13,6 +13,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
+use axum_extra::extract::CookieJar;
 use chrono::Duration as ChronoDuration;
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +31,10 @@ use super::super::state::AppState;
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
-        .route("/me/org", get(read_org).patch(update_org))
+        .route(
+            "/me/org",
+            get(read_org).patch(update_org).delete(delete_org),
+        )
         .route("/me/org/budget", get(read_budget).put(set_budget))
         .route("/me/org/members", get(list_members))
         .route("/me/org/members/{user_id}", delete(remove_member))
@@ -149,6 +153,46 @@ async fn update_org(
         )
         .await?;
     Ok(Json(OrgDetailsView::new(details, role)).into_response())
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// DELETE /me/org — permanently delete the workspace (owner only).
+//
+// A single DELETE cascades to every org-scoped table. The caller's
+// session still names the now-deleted org, so we re-mint the cookie into
+// their first remaining org — or an org-less session (cloud onboarding)
+// when they have none left — and return the new active org id so the FE
+// can route accordingly.
+// ─────────────────────────────────────────────────────────────────────
+
+async fn delete_org(
+    State(state): State<AppState>,
+    principal: Principal,
+    jar: CookieJar,
+) -> Result<Response, HttpError> {
+    let role = live_role(&state, &principal).await?;
+    // Stricter than `require_admin`: only an owner may delete the
+    // workspace. The last-owner guard that protects member removal does
+    // not apply — deleting the org intentionally removes everyone.
+    if !matches!(role, Role::Owner) {
+        return Err(HttpError::Forbidden(
+            "owner role required to delete workspace",
+        ));
+    }
+    state.orgs.delete_org(principal.active_org_id).await?;
+
+    // Re-mint: the deleted org id is still in the session cookie, so the
+    // next org-scoped request would 401. Land the user in their first
+    // remaining org, or org-less if this was their last.
+    let remaining = state.users.list_user_orgs(principal.user_id).await?;
+    let next_org = remaining.first().map(|m| m.org_id);
+    let jar = super::auth::remint_session(&state, jar, principal.user_id, next_org)?;
+    tracing::info!(
+        event = "org.deleted",
+        patom.user.id = %principal.user_id,
+        patom.org.id = %principal.active_org_id,
+    );
+    Ok((jar, Json(serde_json::json!({ "active_org_id": next_org }))).into_response())
 }
 
 // ─────────────────────────────────────────────────────────────────────

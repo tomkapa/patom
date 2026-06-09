@@ -53,6 +53,12 @@ pub enum AuthError {
     #[error("parse: {0}")]
     Parse(#[from] ParseError),
 
+    /// Self-service workspace creation refused: the caller already owns
+    /// the maximum number of workspaces (see
+    /// [`super::limits::MAX_ORGS_PER_USER`]). Maps to 409.
+    #[error("workspace limit reached: max {max} owned per user")]
+    OrgLimitReached { max: i64 },
+
     /// Postgres-side failure that isn't an RLS denial.
     #[error("db: {0}")]
     Db(#[from] sqlx::Error),

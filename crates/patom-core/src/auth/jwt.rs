@@ -26,10 +26,18 @@ const EXP_LEEWAY_SECS: i64 = 5;
 
 /// Claims minted on login and consumed by [`crate::http::auth_layer`].
 /// `sub` = user id, `org` = active org id, `exp/iat` = epoch seconds.
+///
+/// `org` is `None` for an **org-less session**: a freshly-authenticated
+/// cloud user who has not yet created a workspace through onboarding. Such
+/// a token is accepted only by the onboarding subtree (`/me`,
+/// `POST /me/orgs`); every org-scoped route rejects it (see
+/// [`crate::http::auth_layer::require_principal`]). The claim is a clean
+/// `Option` with no serde back-compat shim — a pre-deploy cookie that
+/// fails to verify simply forces a re-login.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtClaims {
     pub sub: UserId,
-    pub org: OrgId,
+    pub org: Option<OrgId>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -87,8 +95,9 @@ impl JwtSigner {
             .expect("invariant: JWT_TTL fits in i64 (config-controlled, weeks at most)")
     }
 
-    /// Mint a JWT for `(user, org)` with the configured TTL.
-    pub fn mint(&self, user: UserId, org: OrgId) -> Result<String, AuthError> {
+    /// Mint a JWT for `(user, org)` with the configured TTL. `org` is
+    /// `None` for an org-less onboarding session (see [`JwtClaims`]).
+    pub fn mint(&self, user: UserId, org: Option<OrgId>) -> Result<String, AuthError> {
         let now = self.now_epoch();
         let claims = JwtClaims {
             sub: user,
@@ -157,17 +166,27 @@ mod tests {
         let s = signer();
         let user = UserId::new();
         let org = OrgId::new();
-        let token = s.mint(user, org).expect("mint");
+        let token = s.mint(user, Some(org)).expect("mint");
         let claims = s.verify(&token).expect("verify");
         assert_eq!(claims.sub.as_uuid(), user.as_uuid());
-        assert_eq!(claims.org.as_uuid(), org.as_uuid());
+        assert_eq!(claims.org.expect("org present").as_uuid(), org.as_uuid());
         assert!(claims.exp > claims.iat);
+    }
+
+    #[test]
+    fn org_less_round_trip() {
+        let s = signer();
+        let user = UserId::new();
+        let token = s.mint(user, None).expect("mint");
+        let claims = s.verify(&token).expect("verify");
+        assert_eq!(claims.sub.as_uuid(), user.as_uuid());
+        assert!(claims.org.is_none(), "org-less token must carry no org");
     }
 
     #[test]
     fn tampered_signature_rejected() {
         let s = signer();
-        let token = s.mint(UserId::new(), OrgId::new()).expect("mint");
+        let token = s.mint(UserId::new(), Some(OrgId::new())).expect("mint");
         let mut bytes: Vec<u8> = token.into_bytes();
         // Flip a bit deep in the signature.
         let last = bytes.len() - 1;
@@ -183,7 +202,7 @@ mod tests {
         let s = JwtSigner::new(&secret, clock.clone())
             .expect("signer")
             .with_ttl(Duration::from_secs(1));
-        let token = s.mint(UserId::new(), OrgId::new()).expect("mint");
+        let token = s.mint(UserId::new(), Some(OrgId::new())).expect("mint");
         // Past the leeway window (Validation::leeway = 5s above).
         clock.advance(Duration::from_secs(7));
         assert!(s.verify(&token).is_err());

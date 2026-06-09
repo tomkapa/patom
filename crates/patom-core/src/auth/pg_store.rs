@@ -289,6 +289,21 @@ impl UserStore for PgUserStore {
             .collect()
     }
 
+    async fn count_owned_orgs(&self, user_id: UserId) -> Result<i64, AuthError> {
+        let mut tx = super::begin_privileged(&self.pool).await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM org_members WHERE user_id = $1 AND role = $2")
+                .bind(user_id)
+                .bind(Role::Owner.as_str())
+                .fetch_one(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        // §6: a count is never negative; surfacing a corrupt aggregate
+        // early beats letting a bogus cap check through.
+        assert!(count >= 0, "count(*) of owned orgs is never negative");
+        Ok(count)
+    }
+
     async fn membership(&self, user_id: UserId, org_id: OrgId) -> Result<Option<Role>, AuthError> {
         let mut tx = super::begin_privileged(&self.pool).await?;
         let row: Option<String> =

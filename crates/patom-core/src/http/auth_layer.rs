@@ -17,10 +17,26 @@ use axum::response::Response;
 use axum_extra::extract::CookieJar;
 use tracing::warn;
 
-use crate::auth::{AuthError, Principal};
+use crate::auth::{AuthError, JwtClaims, Principal, UserSession};
 
 use super::error::HttpError;
 use super::state::AppState;
+
+/// Verify the session cookie and return its claims, or `Unauthenticated`.
+/// Shared by both middlewares so the cookie-read + verify path lives once.
+fn verify_cookie(state: &AppState, jar: &CookieJar) -> Result<JwtClaims, AuthError> {
+    let token = jar
+        .get(crate::auth::limits::COOKIE_NAME)
+        .map(|c| c.value().to_owned())
+        .ok_or(AuthError::Unauthenticated)?;
+    state.jwt.verify(&token).map_err(|e| {
+        // Verify failures collapse to Unauthenticated at the HTTP layer
+        // (don't leak signature vs expiry to the caller); the warn line
+        // keeps the differentiation in logs for operators.
+        warn!(error = %e, "auth.jwt.verify_failed");
+        AuthError::Unauthenticated
+    })
+}
 
 /// Middleware: extract + validate the session cookie, attach a
 /// [`Principal`] to the request, and call the next handler.
@@ -34,34 +50,47 @@ pub(super) async fn require_principal(
     mut request: Request,
     next: Next,
 ) -> Result<Response, HttpError> {
-    let token = jar
-        .get(crate::auth::limits::COOKIE_NAME)
-        .map(|c| c.value().to_owned())
-        .ok_or(AuthError::Unauthenticated)?;
-    let claims = state.jwt.verify(&token).map_err(|e| {
-        // Verify failures collapse to Unauthenticated at the HTTP layer
-        // (don't leak signature vs expiry to the caller); the warn line
-        // keeps the differentiation in logs for operators.
-        warn!(error = %e, "auth.jwt.verify_failed");
-        AuthError::Unauthenticated
-    })?;
-    let role = if let Some(cached) = state.memberships.lookup(claims.sub, claims.org) {
+    let claims = verify_cookie(&state, &jar)?;
+    // An org-less session (cloud user mid-onboarding) carries no org and
+    // must not reach any org-scoped route — 401 here, before the handler.
+    // Only the onboarding subtree (`require_user`) accepts such a token.
+    let org = claims.org.ok_or(AuthError::Unauthenticated)?;
+    let role = if let Some(cached) = state.memberships.lookup(claims.sub, org) {
         cached
     } else {
         let fresh = state
             .users
-            .membership(claims.sub, claims.org)
+            .membership(claims.sub, org)
             .await?
-            .ok_or(AuthError::NotMember(claims.org))?;
-        state.memberships.insert(claims.sub, claims.org, fresh);
+            .ok_or(AuthError::NotMember(org))?;
+        state.memberships.insert(claims.sub, org, fresh);
         fresh
     };
     let principal = Principal {
         user_id: claims.sub,
-        active_org_id: claims.org,
+        active_org_id: org,
         role,
     };
     request.extensions_mut().insert(principal);
+    Ok(next.run(request).await)
+}
+
+/// Middleware for the **onboarding tier** (`GET /me`, `POST /me/orgs`).
+/// Verifies the session cookie and stashes a [`UserSession`] — no
+/// membership lookup, so it succeeds for both org-ful and org-less
+/// tokens. The handler reads `UserSession` via the extractor below.
+pub(super) async fn require_user(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, HttpError> {
+    let claims = verify_cookie(&state, &jar)?;
+    let session = UserSession {
+        user_id: claims.sub,
+        active_org: claims.org,
+    };
+    request.extensions_mut().insert(session);
     Ok(next.run(request).await)
 }
 
@@ -74,7 +103,7 @@ mod extract {
     use axum::http::request::Parts;
     use axum::response::{IntoResponse, Response};
 
-    use crate::auth::Principal;
+    use crate::auth::{Principal, UserSession};
 
     impl<S: Send + Sync> FromRequestParts<S> for Principal {
         type Rejection = MissingPrincipal;
@@ -91,9 +120,24 @@ mod extract {
         }
     }
 
-    /// Returned when a handler tagged with `Principal` was reached
-    /// without the auth middleware in front of it. Always a 500 — it's
-    /// a bug in the routing graph.
+    impl<S: Send + Sync> FromRequestParts<S> for UserSession {
+        type Rejection = MissingPrincipal;
+
+        async fn from_request_parts(
+            parts: &mut Parts,
+            _state: &S,
+        ) -> Result<Self, Self::Rejection> {
+            parts
+                .extensions
+                .get::<Self>()
+                .cloned()
+                .ok_or(MissingPrincipal)
+        }
+    }
+
+    /// Returned when a handler tagged with `Principal` / `UserSession` was
+    /// reached without the matching auth middleware in front of it. Always
+    /// a 500 — it's a bug in the routing graph.
     #[derive(Debug)]
     pub struct MissingPrincipal;
 

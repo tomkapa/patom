@@ -104,6 +104,7 @@ async fn build(pool: &PgPool) -> (AppState, SeededPrincipal) {
         jwt,
         oauth,
         bootstrap_admin: false,
+        cloud: false,
         users,
         clock: clock.clone(),
         cookie_secure: false,
@@ -145,7 +146,7 @@ async fn add_member_user(pool: &PgPool, jwt: &JwtSigner, org: OrgId) -> SeededPr
     SeededPrincipal {
         user_id,
         org_id: org,
-        cookie_value: jwt.mint(user_id, org).expect("mint jwt"),
+        cookie_value: jwt.mint(user_id, Some(org)).expect("mint jwt"),
     }
 }
 

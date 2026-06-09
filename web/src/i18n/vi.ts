@@ -30,6 +30,7 @@ const vi: TranslationTable = {
 
   "orgswitcher.aria.switch": "Chuyển không gian làm việc",
   "orgswitcher.aria.list": "Không gian làm việc",
+  "orgswitcher.create": "Tạo không gian làm việc",
 
   "usermenu.signout": "Đăng xuất",
   "usermenu.language.label": "Ngôn ngữ",

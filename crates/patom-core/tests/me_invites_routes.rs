@@ -98,6 +98,7 @@ async fn build_state(pool: PgPool) -> (AppState, patom::mcp::McpRefresher) {
         jwt,
         oauth,
         bootstrap_admin: false,
+        cloud: false,
         users,
         clock: clock.clone(),
         cookie_secure: false,

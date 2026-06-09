@@ -34,6 +34,7 @@ const en = {
 
   "orgswitcher.aria.switch": "Switch workspace",
   "orgswitcher.aria.list": "Workspaces",
+  "orgswitcher.create": "Create workspace",
 
   "usermenu.signout": "Sign out",
   "usermenu.language.label": "Language",

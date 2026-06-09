@@ -253,4 +253,11 @@ pub trait OrgStore: std::fmt::Debug + Send + Sync + 'static {
         avatar_url: Option<&AvatarUrl>,
         now: DateTime<Utc>,
     ) -> Result<(), OrgError>;
+
+    /// Permanently delete the org and everything scoped to it. A single
+    /// `DELETE FROM organizations` cascades to every `org_id` foreign key
+    /// (members, agents, channels, sessions, invites, budgets, …; all
+    /// declared `ON DELETE CASCADE`). Returns [`OrgError::NotFound`] when
+    /// no row matched. The handler gates this on Owner role.
+    async fn delete_org(&self, org_id: OrgId) -> Result<(), OrgError>;
 }

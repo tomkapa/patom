@@ -1,4 +1,5 @@
-import { Check } from "lucide-react";
+import { Check, Plus } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../../stores/authStore";
 import { useActiveOrg } from "../../hooks/useMe";
 import { useSwitchOrg } from "../../hooks/useSwitchOrg";
@@ -18,6 +19,7 @@ export function OrgSwitcher() {
   const me = useAuthStore((s) => s.me);
   const activeOrg = useActiveOrg();
   const switchOrg = useSwitchOrg();
+  const navigate = useNavigate();
 
   const workspaceLogo = activeOrg?.avatar_url ?? appLogoUrl;
   const workspaceName = activeOrg?.name ?? "Patom";
@@ -105,6 +107,33 @@ export function OrgSwitcher() {
               </li>
             );
           })}
+          {/* Create-another-workspace entry. Routes into the onboarding
+              wizard with the explicit ?new=1 intent so the gate lets an
+              already-onboarded user back in to create a fresh workspace. */}
+          <li
+            role="separator"
+            aria-hidden="true"
+            className="my-1 border-t border-[var(--color-line)]"
+          />
+          <li role="none">
+            <button
+              type="button"
+              role="menuitem"
+              disabled={switchOrg.isPending}
+              onClick={() => {
+                close();
+                navigate("/onboarding?new=1");
+              }}
+              className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-paper-2)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="flex h-6 w-6 items-center justify-center text-[var(--color-muted-foreground)]">
+                <Plus className="h-4 w-4" />
+              </span>
+              <span className="text-[13px] font-semibold text-[var(--color-ink)]">
+                {t("orgswitcher.create")}
+              </span>
+            </button>
+          </li>
         </ul>
       )}
     </Dropdown>

@@ -133,6 +133,12 @@ pub trait UserStore: std::fmt::Debug + Send + Sync + 'static {
     /// List every org the user belongs to.
     async fn list_user_orgs(&self, user_id: UserId) -> Result<Vec<OrgMembership>, AuthError>;
 
+    /// Count the orgs the user **owns** (role = Owner). Backs the
+    /// per-user workspace-creation cap (`MAX_ORGS_PER_USER`) on the
+    /// self-service create path. Counts owner rows only — invited
+    /// memberships don't count against the cap.
+    async fn count_owned_orgs(&self, user_id: UserId) -> Result<i64, AuthError>;
+
     /// Return the user's role in `org_id`, or `None` if they're not a
     /// member.
     async fn membership(&self, user_id: UserId, org_id: OrgId) -> Result<Option<Role>, AuthError>;
