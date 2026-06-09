@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug};
 
 use crate::auth::Caller;
+use crate::background::{BackgroundTurnId, SharedBackgroundStore};
 use crate::budget::SharedBudgetService;
 use crate::clock::SharedClock;
 use crate::hook::{HookChain, TurnContext};
@@ -76,6 +77,9 @@ pub struct Agent {
     /// only exercise the legacy pair-session path; the production factory
     /// wires [`crate::threads::PgThreadStore`].
     threads: Option<SharedThreadStore>,
+    /// Background-cognition store backing [`Agent::reply_background`]. `None`
+    /// outside the worker's background path.
+    background: Option<SharedBackgroundStore>,
 }
 
 impl Agent {
@@ -97,6 +101,7 @@ impl Agent {
         turn_metrics: Option<TurnMetricsBinding>,
         budget: Option<SharedBudgetService>,
         threads: Option<SharedThreadStore>,
+        background: Option<SharedBackgroundStore>,
     ) -> Self {
         Self {
             providers,
@@ -115,6 +120,7 @@ impl Agent {
             turn_metrics,
             budget,
             threads,
+            background,
         }
     }
 
@@ -184,6 +190,15 @@ impl Agent {
         self.threads.as_ref().expect(
             "invariant: reply_in_thread requires a thread store; the production agent \
              factory wires PgThreadStore for the thread-feed worker path",
+        )
+    }
+    /// Background-cognition store. The `expect` is a named assertion (§6):
+    /// [`Agent::reply_background`] is only reachable from the worker's
+    /// background claim path, which the factory always wires with a store.
+    pub(super) fn background(&self) -> &SharedBackgroundStore {
+        self.background.as_ref().expect(
+            "invariant: reply_background requires a background store; the production agent \
+             factory wires PgBackgroundStore for the cognition worker path",
         )
     }
 
@@ -441,6 +456,108 @@ impl Agent {
             record_turn(&turn_span, &outcome);
             if let Some(text) = outcome? {
                 debug!(turn, "agent.thread.turn.final");
+                return Ok(AgentReply::new(text, send_message_calls));
+            }
+        }
+        Err(AgentError::MaxTurnsExceeded(self.max_turns.get()))
+    }
+
+    /// Drive a **background-cognition** turn loop (reflection / resolution) for
+    /// `viewer`, reading + appending to the [`crate::background::BackgroundStore`].
+    ///
+    /// Like [`Self::reply_in_thread`] but off the chat feed: context comes from
+    /// the background turn's private log (seeded by the scheduler / librarian),
+    /// the agent's exchange is appended back there, and there is **no ping-pong
+    /// guard** — a cognition turn may legitimately end without `send_message`.
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(
+        skip_all,
+        name = "agent.reply_background",
+        fields(
+            patom.background.turn.id = %turn,
+            patom.viewer = %viewer,
+            patom.request.kind = kind_payload.kind().as_str(),
+            patom.provider = self.provider().name(),
+            patom.model = %self.model,
+            patom.outcome = tracing::field::Empty,
+        ),
+    )]
+    pub async fn reply_background(
+        &self,
+        turn: BackgroundTurnId,
+        viewer: Participant,
+        request_id: PromptRequestId,
+        caller: Caller,
+        kind_payload: RequestKindPayload,
+        cancel: CancellationToken,
+        observer: Option<SharedTurnObserver>,
+    ) -> Result<AgentReply, AgentError> {
+        let result = self
+            .run_background_loop(
+                turn,
+                viewer,
+                request_id,
+                caller,
+                &kind_payload,
+                cancel,
+                observer,
+            )
+            .await;
+        record_reply(&result);
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_background_loop(
+        &self,
+        turn: BackgroundTurnId,
+        viewer: Participant,
+        request_id: PromptRequestId,
+        caller: Caller,
+        kind_payload: &RequestKindPayload,
+        cancel: CancellationToken,
+        observer: Option<SharedTurnObserver>,
+    ) -> Result<AgentReply, AgentError> {
+        // The background turn id is this turn's scope; the hook/tracing contexts
+        // that still speak `SessionId` carry it bridged through `SessionId::from`.
+        let scope = SessionId::from(turn.as_uuid());
+        let observer = observer.as_ref();
+        let mut send_message_calls = 0usize;
+        for turn_idx in 0..self.max_turns.get() {
+            if cancel.is_cancelled() {
+                return Err(AgentError::Cancelled);
+            }
+            let ctx = TurnContext {
+                session_id: scope,
+                turn_index: turn_index(turn_idx),
+            };
+            let turn_span = tracing::info_span!(
+                "agent.turn",
+                patom.background.turn.id = %turn,
+                patom.turn_index = turn_idx,
+                patom.viewer = %viewer,
+                patom.turn.outcome = tracing::field::Empty,
+                patom.tool_calls.count = tracing::field::Empty,
+            );
+            let outcome = async {
+                self.run_background_turn(
+                    ctx,
+                    turn,
+                    viewer,
+                    request_id,
+                    caller,
+                    kind_payload,
+                    &mut send_message_calls,
+                    &cancel,
+                    observer,
+                )
+                .await
+            }
+            .instrument(turn_span.clone())
+            .await;
+            record_turn(&turn_span, &outcome);
+            if let Some(text) = outcome? {
+                debug!(turn_idx, "agent.background.turn.final");
                 return Ok(AgentReply::new(text, send_message_calls));
             }
         }

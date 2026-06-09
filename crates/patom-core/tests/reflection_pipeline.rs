@@ -1,491 +1,236 @@
-//! Trait-contract tests for the reflection pipeline:
+//! P8: a reflection turn runs as background cognition — its LLM exchange lands
+//! in `background_turn_messages`, never the chat feed.
 //!
-//! - The queue's claim path returns `RequestKind::Reflection` rows with
-//!   their `kind_payload` and serialises memory-mutating jobs per agent.
-//! - `ReflectionScheduler::tick` finds idle sessions whose latest
-//!   message is past any existing checkpoint and enqueues exactly one
-//!   reflection row.
-//! - Repeated ticks against the same idle session do not duplicate.
+//! Drives the worker end-to-end: a background trigger is claimed, the agent
+//! reads the seeded reflection prompt from the background store, replies, and
+//! the worker marks it done — adding ZERO `thread_messages` rows.
 
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
-use patom::clock::{SharedClock, SystemClock};
-use patom::memory::ReflectionScheduler;
+use async_trait::async_trait;
+
+use patom::agent_core::AgentBuilder;
+use patom::agents::{
+    AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL, AgentFactory, CachedAgents, SharedAgents,
+};
+use patom::auth::Caller;
+use patom::background::{NewBackgroundMessage, PgBackgroundStore, SharedBackgroundStore};
+use patom::clock::SystemClock;
+use patom::colleagues::{resolve_agent_colleague, resolve_user_colleague};
+use patom::hook::HookChain;
+use patom::memory::{SharedMemory, StaticMemory};
+use patom::provider::{
+    AssistantContent, ChatMessage, ChatRequest, ChatResponse, LlmProvider, Model, ProviderError,
+    ProviderId, ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, UserContent,
+};
 use patom::runtime::{
-    IdempotencyKey, NewPromptRequest, PgPromptQueue, PromptRequestId, RequestKind,
-    RequestKindPayload, SharedPromptQueue, WorkerId,
+    IdempotencyKey, NewTrigger, PgDagBudget, PgPromptQueue, PgResponseHub, RequestKindPayload,
+    RequestStatus, SharedDagBudget, SharedPromptQueue, SharedResponseSink, WorkerConfig,
+    WorkerPool,
 };
 use patom::session::{PgSessionStore, SharedSessionStore};
-use patom::types::Prompt;
+use patom::threads::{MessageKind, NewMessage, PgThreadStore, SharedThreadStore};
+use patom::tools::{ToolBox, ToolRegistry};
 use sqlx::PgPool;
+use uuid::Uuid;
 
 mod common;
-use common::pg::{human_to_agent_session, seed_tenant};
+use common::pg::seed_tenant;
 
-// Test helper mirroring `NewPromptRequest`'s field set; the colleague-backed
-// `sender` pushed it to 8 params. Bundling them into a struct would just
-// duplicate `NewPromptRequest` at the call site for no clarity gain.
-#[allow(clippy::too_many_arguments)]
-async fn enqueue_reflection_row(
-    queue: &SharedPromptQueue,
-    sender: patom::types::Participant,
-    session: patom::session::SessionId,
-    agent_id: patom::agents::AgentId,
-    up_to: PromptRequestId,
-    key: &str,
-    org_id: patom::auth::OrgId,
-    user_id: patom::auth::UserId,
-) -> PromptRequestId {
-    let req = NewPromptRequest {
-        session: Some(session),
-        sender,
-        receiver_agent_id: agent_id,
-        parent_session: None,
-        content: Prompt::try_from("(reflection)").expect("p"),
-        idempotency_key: IdempotencyKey::try_from(key).expect("k"),
-        org_id,
-        created_by_user_id: user_id,
-        kind_payload: RequestKindPayload::Reflection {
-            session_id: session,
-            up_to_turn_id: up_to,
-        },
-    };
-    queue.enqueue(req).await.expect("enqueue").request_id()
-}
+/// Provider that always replies with plain reflection text (no tools).
+#[derive(Debug)]
+struct AlwaysText;
 
-#[sqlx::test]
-async fn claim_returns_reflection_kind_and_payload(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let clock: SharedClock = SystemClock::shared();
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock));
-
-    let session = human_to_agent_session(
-        &pool,
-        sessions.as_ref(),
-        seed.agent_id,
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
-    // The reflection's `since_turn_id` references a real prompt row to
-    // satisfy the JSON payload's UUID — any id works since the worker
-    // does not dereference it during a claim.
-    let since = PromptRequestId::new();
-    let _ = enqueue_reflection_row(
-        &queue,
-        common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
-        session,
-        seed.agent_id,
-        since,
-        "k1",
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
-
-    let claimed = queue
-        .claim_next_session(WorkerId::new())
-        .await
-        .expect("claim")
-        .expect("some");
-    assert_eq!(claimed.kind_payload.kind(), RequestKind::Reflection);
-    match claimed.kind_payload {
-        RequestKindPayload::Reflection {
-            session_id,
-            up_to_turn_id,
-        } => {
-            assert_eq!(session_id, session);
-            assert_eq!(up_to_turn_id, since);
-        }
-        other => panic!("unexpected payload {other:?}"),
+#[async_trait]
+impl LlmProvider for AlwaysText {
+    fn name(&self) -> &'static str {
+        "always-text"
+    }
+    async fn send(&self, _request: ChatRequest) -> Result<ChatResponse, ProviderError> {
+        Ok(ChatResponse {
+            content: vec![AssistantContent::Text(
+                "reflected: nothing to remember".into(),
+            )],
+            stop_reason: StopReason::EndTurn,
+            ..Default::default()
+        })
     }
 }
 
 #[sqlx::test]
-async fn per_agent_serialization_skips_session_with_in_flight_reflection(pool: PgPool) {
-    // A reflection row in `processing` for agent X must lock out any
-    // other claim against agent X — even on a different session of the
-    // same agent. This protects the journal from concurrent reflection
-    // mutations.
+async fn reflection_writes_no_thread_message_rows(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
-    let clock: SharedClock = SystemClock::shared();
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock));
-
-    let agent_id = seed.agent_id;
-    let s1 = human_to_agent_session(
-        &pool,
-        sessions.as_ref(),
-        agent_id,
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
-
-    // Enqueue + claim the first reflection — it goes to `processing`
-    // and holds a lease.
-    let _ = enqueue_reflection_row(
-        &queue,
-        common::pg::agent_participant(&pool, seed.org_id, agent_id).await,
-        s1,
-        agent_id,
-        PromptRequestId::new(),
-        "k1",
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
-    let first = queue
-        .claim_next_session(WorkerId::new())
+    let clock = SystemClock::shared();
+    let caller = Caller::new(seed.user_id, seed.org_id);
+    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
         .await
-        .expect("claim")
-        .expect("some");
-    assert_eq!(first.kind_payload.kind(), RequestKind::Reflection);
-
-    // A normal prompt on a different session for the SAME agent should
-    // claim fine — only memory-mutating kinds are serialised per agent.
-    let s2_root = PromptRequestId::new();
-    let _ = sessions
-        .resolve_or_create_for_pair(
-            s2_root,
-            common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
-            common::pg::agent_participant(&pool, seed.org_id, agent_id).await,
-            None,
-            seed.org_id,
-            seed.user_id,
-        )
+        .expect("human colleague");
+    let agent_col = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
         .await
-        .expect("s2");
-    let normal = NewPromptRequest::normal(
-        None,
-        common::pg::human_participant(&pool, seed.org_id, seed.user_id).await,
-        agent_id,
-        None,
-        Prompt::try_from("hello").expect("p"),
-        IdempotencyKey::try_from("normal-k").expect("k"),
-        seed.org_id,
-        seed.user_id,
-    );
-    let outcome = queue.enqueue(normal).await.expect("enqueue normal");
-    let claim = queue
-        .claim_next_session(WorkerId::new())
-        .await
-        .expect("claim normal")
-        .expect("normal claimed");
-    assert_eq!(claim.kind_payload.kind(), RequestKind::Normal);
-    assert_eq!(claim.session, outcome.session());
+        .expect("agent colleague");
 
-    // BUT: a second reflection on a different session for the same
-    // agent must be skipped while the first reflection is still
-    // processing. (Use s2 which is now bound to the same agent.)
-    let _ = enqueue_reflection_row(
-        &queue,
-        common::pg::agent_participant(&pool, seed.org_id, agent_id).await,
-        outcome.session(),
-        agent_id,
-        PromptRequestId::new(),
-        "k2",
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
-    let second = queue
-        .claim_next_session(WorkerId::new())
-        .await
-        .expect("claim again");
-    assert!(
-        second.is_none(),
-        "second reflection on the same agent must wait, got {second:?}"
-    );
-}
-
-#[sqlx::test]
-async fn scheduler_tick_enqueues_for_idle_session_with_unprocessed_turns(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let clock: SharedClock = SystemClock::shared();
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let threads: SharedThreadStore = Arc::new(PgThreadStore::new(pool.clone(), clock.clone()));
+    let background: SharedBackgroundStore =
+        Arc::new(PgBackgroundStore::new(pool.clone(), clock.clone()));
     let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
+    let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
+    let sink: SharedResponseSink = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
 
-    // Mint a session, append one message back-dated past the idle
-    // threshold so the scheduler's "idle" predicate fires immediately.
-    let session = human_to_agent_session(
-        &pool,
-        sessions.as_ref(),
-        seed.agent_id,
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
-    let request_id =
-        common::pg::seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
-    let stale_ts = Utc::now() - chrono::Duration::seconds(60 * 60);
-    sqlx::query(
-        "INSERT INTO session_messages
-             (session_id, seq, request_id, body,
-              sender_colleague_id, receiver_colleague_id, created_at, org_id)
-         SELECT $1, 1, $2, $3,
-                hc.id, ac.id, $5, $6
-           FROM colleagues hc, colleagues ac
-          WHERE hc.org_id = $6 AND hc.user_id = (SELECT created_by_user_id FROM sessions WHERE id = $1)
-            AND ac.org_id = $6 AND ac.agent_id = $4",
-    )
-    .bind(session)
-    .bind(request_id)
-    .bind(serde_json::json!({
-        "role": "user",
-        "contents": [{"kind": "text", "value": "old message"}]
-    }))
-    .bind(seed.agent_id)
-    .bind(stale_ts)
-    .bind(seed.org_id)
-    .execute(&pool)
-    .await
-    .expect("seed message");
-
-    // Spawn the scheduler with a tight poll cadence so the test does
-    // not have to wait the production 60s. We only need one tick.
-    let scheduler = ReflectionScheduler::spawn_with_cadence(
-        pool.clone(),
-        queue.clone(),
-        clock,
-        Duration::from_millis(100),
-        None,
-    );
-    // Poll until the reflection row appears. The link from conversation to
-    // reflection row is `kind_payload.data.session_id`, not
-    // `prompt_requests.session_id` (which points at the reflection's own
-    // off-conversation session).
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut found = None;
-    while std::time::Instant::now() < deadline {
-        let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-            "SELECT id FROM prompt_requests
-             WHERE kind = 'reflection'
-               AND kind_payload->'data'->>'session_id' = $1::text
-             LIMIT 1",
-        )
-        .bind(session.as_uuid().to_string())
-        .fetch_optional(&pool)
+    // A conversation thread with one posted message — the slice the reflection
+    // is "about" (its id is the frozen up_to_message_id).
+    let thread = threads
+        .create_thread(&caller, None, None, human)
         .await
-        .expect("query");
-        if row.is_some() {
-            found = row;
+        .expect("thread");
+    let convo_msg = threads
+        .append(
+            &caller,
+            thread,
+            NewMessage {
+                kind: MessageKind::Posted,
+                sender: Some(human),
+                owner_agent_id: None,
+                receiver: Some(agent_col),
+                body: ChatMessage::User(vec![UserContent::Text("the meeting is at noon".into())]),
+                request_id: None,
+            },
+        )
+        .await
+        .expect("seed conversation");
+
+    // The scheduler seeds the background turn with the reflection prompt.
+    let turn = background
+        .create_turn(&caller, seed.agent_id)
+        .await
+        .expect("create background turn");
+    background
+        .append(
+            &caller,
+            turn,
+            NewBackgroundMessage {
+                sender: None,
+                body: ChatMessage::User(vec![UserContent::Text(
+                    "Reflect on the conversation above.".into(),
+                )]),
+                request_id: None,
+            },
+        )
+        .await
+        .expect("seed reflection prompt");
+
+    // Agent factory: background store wired, always-text provider, no tools.
+    let model = Model::try_from("test-model").expect("catalog");
+    let shared: SharedProvider = Arc::new(AlwaysText);
+    let providers: SharedProviderRegistry = Arc::new(
+        ProviderRegistry::builder()
+            .insert(ProviderId::Anthropic, shared)
+            .build(),
+    );
+    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
+    let model_f = model;
+    let providers_f = providers;
+    let sessions_f = sessions;
+    let memory_f = memory;
+    let background_f = background.clone();
+    let threads_f = threads.clone();
+    let clock_f = clock.clone();
+    let factory: AgentFactory = Arc::new(move |_record| {
+        AgentBuilder::new(
+            providers_f.clone(),
+            sessions_f.clone(),
+            memory_f.clone(),
+            model_f,
+        )
+        .expect("builder")
+        .with_clock(clock_f.clone())
+        .with_thread_store(threads_f.clone())
+        .with_background_store(background_f.clone())
+        .with_tools(ToolBox::from_builtins(ToolRegistry::empty()))
+        .with_hooks(HookChain::new())
+        .build()
+    });
+    let agents: SharedAgents = Arc::new(CachedAgents::new(
+        common::pg::shared_agent_store(pool.clone(), clock.clone()),
+        factory,
+        AGENT_PROMPT_CACHE_CAP,
+        AGENT_PROMPT_CACHE_TTL,
+        clock.clone(),
+    ));
+
+    let cfg = WorkerConfig {
+        workers: 1,
+        max_turn_duration: Duration::from_secs(10),
+        idle_poll: Duration::from_millis(20),
+        cancel_poll: Duration::from_millis(50),
+        ..WorkerConfig::default()
+    };
+    let workers = WorkerPool::new(queue.clone(), sink, agents, threads.clone(), dag, cfg).spawn();
+
+    // A background reflection trigger (claim_key = the background turn).
+    let trigger = queue
+        .enqueue_trigger(NewTrigger {
+            org_id: seed.org_id,
+            acting_user_id: seed.user_id,
+            thread_id: None,
+            state_id: None,
+            background_turn_id: Some(turn),
+            sender_colleague_id: agent_col,
+            receiver_agent_id: seed.agent_id,
+            root_request_id: None,
+            trigger_message_id: None,
+            idempotency_key: IdempotencyKey::try_from(format!("reflect-{}", Uuid::new_v4()))
+                .expect("key"),
+            kind_payload: RequestKindPayload::Reflection {
+                thread_id: thread,
+                up_to_message_id: convo_msg,
+            },
+        })
+        .await
+        .expect("enqueue reflection trigger");
+
+    let mut done = false;
+    for _ in 0..200u32 {
+        let view = queue.status(trigger).await.expect("status");
+        if view.status == RequestStatus::Done {
+            done = true;
             break;
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            view.status != RequestStatus::Failed,
+            "reflection turn must not fail: {:?}",
+            view.failure_reason
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    scheduler.shutdown().await;
-    assert!(
-        found.is_some(),
-        "scheduler should have enqueued one reflection"
-    );
-}
+    workers.shutdown().await;
+    assert!(done, "reflection trigger reached Done");
 
-#[sqlx::test]
-async fn scheduler_does_not_duplicate_pending_reflection(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let clock: SharedClock = SystemClock::shared();
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock));
-    let session = human_to_agent_session(
-        &pool,
-        sessions.as_ref(),
-        seed.agent_id,
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
-    let since = PromptRequestId::new();
-
-    // Pre-seed a reflection row in `pending`. The scheduler's predicate
-    // (NOT EXISTS pending/processing reflection) should refuse to add
-    // another for the same session.
-    let _ = enqueue_reflection_row(
-        &queue,
-        common::pg::agent_participant(&pool, seed.org_id, seed.agent_id).await,
-        session,
-        seed.agent_id,
-        since,
-        "preseeded",
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
-    let count_before: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM prompt_requests
-         WHERE session_id = $1 AND kind = 'reflection'",
-    )
-    .bind(session)
-    .fetch_one(&pool)
-    .await
-    .expect("count");
-    assert_eq!(count_before.0, 1);
-
-    // Now back-date a message so the scheduler would otherwise enqueue
-    // a fresh reflection. The dedup predicate must keep the count at 1.
-    let request_id =
-        common::pg::seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
-    sqlx::query(
-        "INSERT INTO session_messages
-             (session_id, seq, request_id, body,
-              sender_colleague_id, receiver_colleague_id, created_at, org_id)
-         SELECT $1, 1, $2, $3,
-                hc.id, ac.id, $5, $6
-           FROM colleagues hc, colleagues ac
-          WHERE hc.org_id = $6 AND hc.user_id = (SELECT created_by_user_id FROM sessions WHERE id = $1)
-            AND ac.org_id = $6 AND ac.agent_id = $4",
-    )
-    .bind(session)
-    .bind(request_id)
-    .bind(serde_json::json!({
-        "role": "user",
-        "contents": [{"kind": "text", "value": "older"}]
-    }))
-    .bind(seed.agent_id)
-    .bind(Utc::now() - chrono::Duration::seconds(60 * 60))
-    .bind(seed.org_id)
-    .execute(&pool)
-    .await
-    .expect("seed message");
-
-    let scheduler = ReflectionScheduler::spawn_with_cadence(
-        pool.clone(),
-        queue,
-        SystemClock::shared(),
-        Duration::from_millis(100),
-        None,
-    );
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    scheduler.shutdown().await;
-
-    let count_after: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM prompt_requests
-         WHERE session_id = $1 AND kind = 'reflection'",
-    )
-    .bind(session)
-    .fetch_one(&pool)
-    .await
-    .expect("count after");
-    assert_eq!(
-        count_after.0, 1,
-        "scheduler must not duplicate while a pending reflection exists"
-    );
-}
-
-#[sqlx::test]
-async fn scheduler_skips_session_whose_seed_turn_is_reflection(pool: PgPool) {
-    // Regression: the scheduler used to find every agent-participant session
-    // including the off-DAG sessions it had just minted for reflection jobs,
-    // which produced reflections of reflections of reflections ad nauseam.
-    // The fix filters candidates to sessions whose seed prompt_request has
-    // `kind = 'normal'`.
-    let seed = seed_tenant(&pool).await;
-    let clock: SharedClock = SystemClock::shared();
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
-
-    let agent_id = seed.agent_id;
-    let session = human_to_agent_session(
-        &pool,
-        sessions.as_ref(),
-        agent_id,
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
-
-    // Insert a seed prompt_request whose id matches the session's
-    // root_request_id and whose kind is 'reflection' — i.e. the shape of
-    // a freshly-minted reflection session in production.
-    let root_id: uuid::Uuid =
-        sqlx::query_scalar("SELECT root_request_id FROM sessions WHERE id = $1")
-            .bind(session)
+    // Headline invariant: the reflection added NO chat-feed rows — only the one
+    // conversation message we seeded remains.
+    let (thread_rows,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM thread_messages WHERE thread_id = $1")
+            .bind(thread)
             .fetch_one(&pool)
             .await
-            .expect("fetch root");
-    let now = chrono::Utc::now();
-    // After migration 59 the prompt_requests participant columns are
-    // colleague-backed. Reflection rows are agent → agent (the agent talks
-    // to itself for audit), so both sides bind the agent's colleague id.
-    sqlx::query(
-        "INSERT INTO prompt_requests
-             (id, session_id, org_id, content, idempotency_key, status,
-              sender_colleague_id, receiver_colleague_id, root_request_id,
-              kind, kind_payload, created_at, updated_at)
-         SELECT $1, $2, $7, '(reflection)', $3, 'done',
-                ac.id, ac.id, $1,
-                'reflection', $5, $6, $6
-           FROM colleagues ac
-          WHERE ac.org_id = $7 AND ac.agent_id = $4",
-    )
-    .bind(root_id)
-    .bind(session)
-    .bind(format!("seed-reflection-{root_id}"))
-    .bind(agent_id)
-    .bind(serde_json::json!({
-        "kind": "reflection",
-        "data": { "session_id": session, "up_to_turn_id": root_id }
-    }))
-    .bind(now)
-    .bind(seed.org_id)
-    .execute(&pool)
-    .await
-    .expect("seed reflection-kind root request");
-
-    // Append a back-dated message so the scheduler's idle predicate would
-    // otherwise fire. The seed-kind filter must keep this session out.
-    sqlx::query(
-        "INSERT INTO session_messages
-             (session_id, seq, request_id, body,
-              sender_colleague_id, receiver_colleague_id, created_at, org_id)
-         SELECT $1, 1, $2, $3, ac.id, ac.id, $5, $6
-           FROM colleagues ac
-          WHERE ac.org_id = $6 AND ac.agent_id = $4",
-    )
-    .bind(session)
-    .bind(root_id)
-    .bind(serde_json::json!({
-        "role": "assistant",
-        "contents": [{"kind": "text", "value": "prior reflection output"}]
-    }))
-    .bind(agent_id)
-    .bind(Utc::now() - chrono::Duration::seconds(60 * 60))
-    .bind(seed.org_id)
-    .execute(&pool)
-    .await
-    .expect("seed message");
-
-    let scheduler = ReflectionScheduler::spawn_with_cadence(
-        pool.clone(),
-        queue,
-        clock,
-        Duration::from_millis(100),
-        None,
-    );
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    scheduler.shutdown().await;
-
-    // Count reflections targeting the test session but excluding the seed
-    // row we inserted ourselves — the scheduler-enqueued reflections live on
-    // their own off-DAG (agent, system) session, so filtering on session_id
-    // != test session is the cleanest separator.
-    let scheduled_reflections: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM prompt_requests
-         WHERE kind = 'reflection'
-           AND kind_payload->'data'->>'session_id' = $1::text
-           AND session_id <> $1",
-    )
-    .bind(session)
-    .fetch_one(&pool)
-    .await
-    .expect("count");
+            .expect("count thread_messages");
     assert_eq!(
-        scheduled_reflections.0, 0,
-        "scheduler must not enqueue a reflection on a reflection-rooted session"
+        thread_rows, 1,
+        "reflection must add no thread_messages rows (only the seeded conversation message)"
+    );
+
+    // The cognition landed in the background turn: seeded prompt + the reply.
+    let (bg_rows,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM background_turn_messages WHERE turn_id = $1")
+            .bind(turn)
+            .fetch_one(&pool)
+            .await
+            .expect("count background_turn_messages");
+    assert!(
+        bg_rows >= 2,
+        "the reflection exchange is recorded in the background turn, got {bg_rows}"
     );
 }

@@ -9,6 +9,7 @@ pub mod agents;
 pub mod app;
 pub mod assets;
 pub mod auth;
+pub mod background;
 pub mod budget;
 pub mod cache;
 pub mod channels;

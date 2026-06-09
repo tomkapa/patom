@@ -28,6 +28,7 @@ use async_trait::async_trait;
 use crate::agent_core::{Agent, AgentError, SharedTurnObserver, TurnObserver};
 use crate::agents::SharedAgents;
 use crate::auth::{Caller, UserId};
+use crate::background::BackgroundTurnId;
 use crate::observability::log::preview;
 use crate::provider::{AssistantContent, ChatMessage, ToolResult, UserContent};
 use crate::threads::{AgentThreadId, MessageKind, NewMessage, SharedThreadStore, ThreadId};
@@ -246,14 +247,8 @@ impl Worker {
                     .await;
             }
             RequestKind::Reflection | RequestKind::Resolution => {
-                // Background cognition is rehomed onto `background_turns` in P8;
-                // no background triggers exist yet, so a claimed one is a wiring
-                // fault rather than work to run.
-                warn!(patom.state.id = %claim.claim_key, patom.request.kind = claim.kind.as_str(), "worker.background.not_supported");
-                let reason =
-                    FailureReason::Unrecoverable("background turn path not built (P8)".into());
-                self.publish_failure(&receipt, &reason).await;
-                self.finalise(&receipt, reason).await;
+                self.run_background(&agent, &claim, &receipt, cancel.clone())
+                    .await;
             }
         }
 
@@ -322,6 +317,54 @@ impl Worker {
                     self.finalise(receipt, FailureReason::Timeout).await;
                     return;
                 }
+            }
+        }
+    }
+
+    /// Run a background-cognition turn (reflection / resolution). No ping-pong
+    /// guard — the turn may legitimately end without `send_message` — and the
+    /// exchange lands in the background store, never the chat feed. On success
+    /// the trigger is marked done; the reflection checkpoint / resolution close
+    /// post-turn is a P8 follow-up.
+    async fn run_background(
+        &self,
+        agent: &Agent,
+        claim: &ClaimedTurn,
+        receipt: &TurnReceipt,
+        cancel: CancellationToken,
+    ) {
+        let viewer = Participant::agent(claim.receiver_colleague_id, claim.receiver_agent_id);
+        let outcome = timeout(
+            self.cfg.max_turn_duration,
+            agent.reply_background(
+                BackgroundTurnId::from(claim.claim_key),
+                viewer,
+                lead_request_id(claim),
+                Caller::new(claim.acting_user_id, claim.org_id),
+                claim.kind_payload.clone(),
+                cancel,
+                None,
+            ),
+        )
+        .await;
+        match outcome {
+            // The reply text is unused — a cognition turn has no SSE consumer;
+            // the artifacts already landed in the background store.
+            Ok(Ok(_)) => {
+                info!(
+                    patom.state.id = %claim.claim_key,
+                    patom.request.kind = claim.kind.as_str(),
+                    "worker.background.ok",
+                );
+                if let Err(e) = self.queue.mark_turn_done(receipt).await {
+                    warn!(error = %e, "worker.background.mark_turn_done.error");
+                }
+                self.maybe_emit_quiescence(receipt).await;
+            }
+            Ok(Err(e)) => self.handle_agent_error(receipt, e).await,
+            Err(_elapsed) => {
+                warn!(patom.state.id = %claim.claim_key, "worker.background.timeout");
+                self.finalise(receipt, FailureReason::Timeout).await;
             }
         }
     }
@@ -424,6 +467,7 @@ impl Worker {
             e @ (AgentError::Provider(_)
             | AgentError::Session(_)
             | AgentError::Thread(_)
+            | AgentError::Background(_)
             | AgentError::Memory(_)
             | AgentError::Todos(_)
             | AgentError::Hook(_)

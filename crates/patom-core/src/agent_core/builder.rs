@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use crate::agents::AgentId;
 use crate::agents::prompt_versions::PromptVersionId;
+use crate::background::SharedBackgroundStore;
 use crate::budget::SharedBudgetService;
 use crate::clock::{SharedClock, SystemClock};
 use crate::hook::HookChain;
@@ -46,6 +47,9 @@ pub struct AgentBuilder {
     /// ([`Agent::reply_in_thread`]). `None` in the legacy pair-session unit
     /// tests; the production factory wires [`crate::threads::PgThreadStore`].
     threads: Option<SharedThreadStore>,
+    /// Background-cognition store backing [`Agent::reply_background`]
+    /// (reflection / resolution). `None` outside the worker's background path.
+    background: Option<SharedBackgroundStore>,
 }
 
 /// Per-record identity needed to write a `turn_metrics` row. Bound at build
@@ -83,6 +87,7 @@ impl AgentBuilder {
             turn_metrics: None,
             budget: None,
             threads: None,
+            background: None,
         })
     }
 
@@ -94,6 +99,14 @@ impl AgentBuilder {
     #[must_use]
     pub fn with_thread_store(mut self, threads: SharedThreadStore) -> Self {
         self.threads = Some(threads);
+        self
+    }
+
+    /// Attach the background-cognition store that backs
+    /// [`Agent::reply_background`] (reflection / resolution turns).
+    #[must_use]
+    pub fn with_background_store(mut self, background: SharedBackgroundStore) -> Self {
+        self.background = Some(background);
         self
     }
 
@@ -225,6 +238,7 @@ impl AgentBuilder {
             self.turn_metrics,
             self.budget,
             self.threads,
+            self.background,
         )
     }
 }

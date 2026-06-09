@@ -115,6 +115,7 @@ struct Collaborators {
     pool: PgPool,
     sessions: SharedSessionStore,
     threads: crate::threads::SharedThreadStore,
+    background: crate::background::SharedBackgroundStore,
     agents: SharedAgentStore,
     colleagues: crate::colleagues::SharedColleagueStore,
     memory: SharedMemory,
@@ -190,6 +191,10 @@ impl Collaborators {
 
         let threads: crate::threads::SharedThreadStore = Arc::new(
             crate::threads::PgThreadStore::new(pool.clone(), clock.clone()),
+        );
+
+        let background: crate::background::SharedBackgroundStore = Arc::new(
+            crate::background::PgBackgroundStore::new(pool.clone(), clock.clone()),
         );
 
         let colleagues: crate::colleagues::SharedColleagueStore =
@@ -358,6 +363,7 @@ impl Collaborators {
             pool,
             sessions,
             threads,
+            background,
             agents,
             colleagues,
             memory,
@@ -394,6 +400,7 @@ struct AgentFactoryPieces {
     providers: SharedProviderRegistry,
     sessions: SharedSessionStore,
     threads: crate::threads::SharedThreadStore,
+    background: crate::background::SharedBackgroundStore,
     memory: SharedMemory,
     clock: SharedClock,
     builtin_tools: ToolRegistry,
@@ -448,6 +455,7 @@ impl AgentFactoryPieces {
         .with_hooks(HookChain::new())
         .with_clock(self.clock.clone())
         .with_thread_store(self.threads.clone())
+        .with_background_store(self.background.clone())
         .with_tool_call_store(self.tool_call_store.clone())
         .with_todos_store(self.todos_store.clone())
         .with_turn_metrics(
@@ -650,6 +658,7 @@ pub async fn build_server(
         providers: pieces.providers.clone(),
         sessions: pieces.sessions.clone(),
         threads: pieces.threads.clone(),
+        background: pieces.background.clone(),
         memory: pieces.memory.clone(),
         clock: pieces.clock.clone(),
         builtin_tools: pieces.builtin_tools.clone(),
@@ -693,6 +702,7 @@ pub async fn build_server(
     let reflection_scheduler = ReflectionScheduler::spawn(
         pieces.pool.clone(),
         pieces.queue.clone(),
+        pieces.background.clone(),
         pieces.clock.clone(),
         cancel.clone(),
     );

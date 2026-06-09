@@ -22,16 +22,16 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::agents::AgentId;
-use crate::auth::{OrgId, UserId};
+use crate::auth::{Caller, OrgId, UserId};
+use crate::background::{NewBackgroundMessage, SharedBackgroundStore};
 use crate::clock::SharedClock;
 use crate::provider::{AssistantContent, ChatMessage, UserContent};
 use crate::runtime::{
-    IdempotencyKey, NewPromptRequest, PromptRequestId, RequestKind, RequestKindPayload,
-    RequestStatus, SharedPromptQueue,
+    IdempotencyKey, NewTrigger, RequestKind, RequestKindPayload, RequestStatus, SharedPromptQueue,
 };
-use crate::session::SessionId;
+use crate::threads::{ThreadId, ThreadMessageId};
 use crate::tools::truncate_from_start;
-use crate::types::{Participant, Prompt};
+use crate::types::Prompt;
 
 use crate::scheduling::ScheduledTask;
 
@@ -51,12 +51,14 @@ impl ReflectionScheduler {
     pub fn spawn(
         pool: PgPool,
         queue: SharedPromptQueue,
+        background: SharedBackgroundStore,
         clock: SharedClock,
         parent: CancellationToken,
     ) -> Self {
         Self::spawn_with_cadence(
             pool,
             queue,
+            background,
             clock,
             Duration::from_secs(REFLECTION_SCHEDULER_POLL_SECS),
             Some(parent),
@@ -69,6 +71,7 @@ impl ReflectionScheduler {
     pub fn spawn_with_cadence(
         pool: PgPool,
         queue: SharedPromptQueue,
+        background: SharedBackgroundStore,
         clock: SharedClock,
         poll_interval: Duration,
         parent: Option<CancellationToken>,
@@ -76,6 +79,7 @@ impl ReflectionScheduler {
         let inner = Arc::new(SchedulerInner {
             pool,
             queue,
+            background,
             clock,
             idle_threshold: chrono::Duration::seconds(
                 i64::try_from(REFLECTION_IDLE_TIMEOUT_SECS)
@@ -99,6 +103,7 @@ impl ReflectionScheduler {
 struct SchedulerInner {
     pool: PgPool,
     queue: SharedPromptQueue,
+    background: SharedBackgroundStore,
     clock: SharedClock,
     idle_threshold: chrono::Duration,
     batch_limit: usize,
@@ -115,14 +120,14 @@ impl SchedulerInner {
                 warn!(
                     error = %e,
                     patom.agent.id = %c.agent_id,
-                    patom.session.id = %c.session_id,
+                    patom.thread.id = %c.thread_id,
                     "reflection_scheduler.enqueue.error",
                 );
             } else {
                 info!(
                     patom.agent.id = %c.agent_id,
-                    patom.session.id = %c.session_id,
-                    patom.reflection.up_to_turn_id = %c.last_turn_id,
+                    patom.thread.id = %c.thread_id,
+                    patom.reflection.up_to_message_id = %c.last_message_id,
                     "reflection_scheduler.enqueued",
                 );
             }
@@ -130,84 +135,60 @@ impl SchedulerInner {
         Ok(())
     }
 
-    /// Find `(agent, session)` pairs whose latest message is older than
-    /// `cutoff` and which have at least one message past the most recent
-    /// reflection checkpoint (or no checkpoint at all). Excludes pairs
-    /// that already have a pending/processing reflection so the scheduler
-    /// is idempotent across ticks. The previous checkpoint's `last_turn_id`
-    /// returns inline as `previous_cursor` so `enqueue_reflection` doesn't
-    /// need a second round-trip.
+    /// Find `(agent, thread)` pairs whose latest **posted** message is older
+    /// than `cutoff` and which have new activity past the most recent
+    /// `(agent, thread)` reflection checkpoint (or no checkpoint). Excludes
+    /// pairs with a pending/processing reflection (idempotent across ticks).
+    /// The checkpoint's `last_message_id` returns inline as `previous_cursor`,
+    /// and the thread creator's `user_id` as the principal the reflection runs
+    /// under (agent-created threads with a NULL creator are skipped).
     #[allow(clippy::type_complexity)]
     async fn find_candidates(
         &self,
         cutoff: DateTime<Utc>,
     ) -> Result<Vec<ReflectionCandidate>, sqlx::Error> {
-        // Privileged tx — the scheduler scans across every tenant's
-        // agent sessions; RLS on `sessions` / `reflection_checkpoints`
-        // / `session_messages` would otherwise hide every row.
+        // Privileged tx — the scheduler scans every tenant's agent
+        // participations; RLS would otherwise hide every row.
         let mut tx = crate::auth::begin_privileged(&self.pool).await?;
         let rows: Vec<(
             AgentId,
-            SessionId,
-            PromptRequestId,
+            ThreadId,
+            ThreadMessageId,
             DateTime<Utc>,
-            Option<PromptRequestId>,
+            Option<ThreadMessageId>,
             OrgId,
             UserId,
         )> = sqlx::query_as(
-            // The `seed.kind = $6` filter on the session's root prompt_request
-            // keeps the scheduler off its own off-DAG reflection sessions —
-            // otherwise the scheduler reflects on its previous reflection
-            // output, indefinitely, once per idle window. `seed.kind IS NULL`
-            // covers test fixtures that mint a session with a synthetic
-            // root_request_id; production always inserts the root row.
-            //
-            // `s.org_id` / `s.created_by_user_id` are carried out so the
-            // enqueue path can mint the reflection's off-DAG `(agent,
-            // system)` session pinned to the same tenant — the trigger
-            // on `sessions` would reject a cross-org child otherwise.
-            "WITH latest_per_session AS (
-                 SELECT m.session_id,
+            "WITH latest_per_thread AS (
+                 SELECT m.thread_id,
                         MAX(m.seq) AS latest_seq,
                         MAX(m.created_at) AS latest_at
-                 FROM session_messages m
-                 GROUP BY m.session_id
-             ),
-             agent_sessions AS (
-                 SELECT s.id, ca.agent_id, s.root_request_id,
-                        s.org_id, s.created_by_user_id
-                 FROM sessions s
-                 JOIN colleagues ca ON ca.id = s.participant_a_colleague_id
-                 WHERE ca.kind = 'agent'
-                 UNION ALL
-                 SELECT s.id, cb.agent_id, s.root_request_id,
-                        s.org_id, s.created_by_user_id
-                 FROM sessions s
-                 JOIN colleagues cb ON cb.id = s.participant_b_colleague_id
-                 WHERE cb.kind = 'agent'
+                 FROM thread_messages m
+                 WHERE m.kind = 'posted'
+                 GROUP BY m.thread_id
              )
-             SELECT a.agent_id,
-                    a.id AS session_id,
-                    sm.request_id AS last_turn_id,
+             SELECT ats.agent_id,
+                    ats.thread_id,
+                    lm.id AS last_message_id,
                     l.latest_at,
-                    rc.last_turn_id AS previous_cursor,
-                    a.org_id,
-                    a.created_by_user_id
-             FROM agent_sessions a
-             JOIN latest_per_session l ON l.session_id = a.id
-             JOIN session_messages sm
-                 ON sm.session_id = a.id AND sm.seq = l.latest_seq
+                    rc.last_message_id AS previous_cursor,
+                    t.org_id,
+                    cc.user_id AS created_by_user_id
+             FROM agent_thread_state ats
+             JOIN latest_per_thread l ON l.thread_id = ats.thread_id
+             JOIN thread_messages lm
+                 ON lm.thread_id = ats.thread_id AND lm.seq = l.latest_seq
+             JOIN threads t ON t.id = ats.thread_id
+             JOIN colleagues cc ON cc.id = t.created_by_colleague_id
              LEFT JOIN reflection_checkpoints rc
-                 ON rc.agent_id = a.agent_id AND rc.session_id = a.id
-             LEFT JOIN prompt_requests seed
-                 ON seed.id = a.root_request_id
+                 ON rc.agent_id = ats.agent_id AND rc.thread_id = ats.thread_id
              WHERE l.latest_at <= $1
+               AND cc.user_id IS NOT NULL
                AND (rc.created_at IS NULL OR rc.created_at < l.latest_at)
-               AND (seed.kind IS NULL OR seed.kind = $6)
                AND NOT EXISTS (
                    SELECT 1 FROM prompt_requests pr
                    WHERE pr.kind = $3
-                     AND pr.kind_payload->'data'->>'session_id' = a.id::text
+                     AND pr.kind_payload->'data'->>'thread_id' = ats.thread_id::text
                      AND pr.status IN ($4, $5)
                )
              ORDER BY l.latest_at ASC
@@ -218,41 +199,47 @@ impl SchedulerInner {
         .bind(RequestKind::Reflection)
         .bind(RequestStatus::Pending)
         .bind(RequestStatus::Processing)
-        .bind(RequestKind::Normal)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
+        // §5/§6: the `LIMIT $2` bounds the batch; assert it held so a query
+        // change that drops the LIMIT trips here rather than flooding a tick.
+        assert!(
+            rows.len() <= self.batch_limit,
+            "invariant: find_candidates respects batch_limit ({} > {})",
+            rows.len(),
+            self.batch_limit,
+        );
 
         Ok(rows
             .into_iter()
             .map(
                 |(
                     agent_id,
-                    session_id,
-                    last_turn_id,
+                    thread_id,
+                    last_message_id,
                     latest_at,
                     previous_cursor,
                     org_id,
                     created_by_user_id,
-                )| {
-                    ReflectionCandidate {
-                        agent_id,
-                        session_id,
-                        last_turn_id,
-                        latest_at,
-                        previous_cursor,
-                        org_id,
-                        created_by_user_id,
-                    }
+                )| ReflectionCandidate {
+                    agent_id,
+                    thread_id,
+                    last_message_id,
+                    latest_at,
+                    previous_cursor,
+                    org_id,
+                    created_by_user_id,
                 },
             )
             .collect())
     }
 
-    /// Enqueue a single reflection job. The idempotency key derives from
-    /// `(agent, session, last_turn_id)` so a candidate that survives across
-    /// two ticks (because the previous enqueue is still pending) maps back
-    /// to the same row.
+    /// Enqueue a single reflection job as a **background turn** (off the chat
+    /// feed). Seeds the background turn with the reflection prompt built from
+    /// the frozen thread slice, then enqueues a background trigger the worker
+    /// claims. Idempotency `reflect-{agent}-{thread}-{up_to}` so a candidate
+    /// surviving across ticks maps back to the same row.
     async fn enqueue_reflection(&self, c: &ReflectionCandidate) -> Result<(), EnqueueError> {
         let agent_colleague =
             crate::colleagues::resolve_agent_colleague(&self.pool, c.org_id, c.agent_id)
@@ -262,84 +249,98 @@ impl SchedulerInner {
                         "resolve agent colleague: {e}"
                     )))
                 })?;
-        let viewer = Participant::agent(agent_colleague, c.agent_id);
         let key = IdempotencyKey::try_from(format!(
-            "reflect-{agent}-{session}-{turn}",
+            "reflect-{agent}-{thread}-{msg}",
             agent = c.agent_id,
-            session = c.session_id,
-            turn = c.last_turn_id,
+            thread = c.thread_id,
+            msg = c.last_message_id,
         ))
         .expect("invariant: reflection idempotency key fits the cap");
 
         let slice = self
-            .fetch_slice(c.session_id, c.agent_id, c.previous_cursor, c.last_turn_id)
+            .fetch_slice(
+                c.thread_id,
+                c.agent_id,
+                c.previous_cursor,
+                c.last_message_id,
+            )
             .await?;
-        let content = build_reflection_prompt(&slice);
+        let prompt = build_reflection_prompt(&slice);
 
-        // `parent_session: None` keeps the reflection session off the
-        // conversation DAG so its trace cannot leak back into the parent.
-        let req = NewPromptRequest {
-            session: None,
-            sender: viewer,
-            receiver_agent_id: c.agent_id,
-            parent_session: None,
-            content,
-            idempotency_key: key,
-            org_id: c.org_id,
-            created_by_user_id: c.created_by_user_id,
-            kind_payload: RequestKindPayload::Reflection {
-                session_id: c.session_id,
-                up_to_turn_id: c.last_turn_id,
-            },
-        };
-        let outcome = self.queue.enqueue(req).await?;
+        // The reflection's private LLM exchange lives in `background_turns`,
+        // never the chat feed. Seed the turn with the prompt (System sender);
+        // the worker's background path reads it at run time.
+        let caller = Caller::new(c.created_by_user_id, c.org_id);
+        let turn = self.background.create_turn(&caller, c.agent_id).await?;
+        self.background
+            .append(
+                &caller,
+                turn,
+                NewBackgroundMessage {
+                    sender: None,
+                    body: ChatMessage::User(vec![UserContent::Text(prompt.as_str().to_string())]),
+                    request_id: None,
+                },
+            )
+            .await?;
+
+        let request_id = self
+            .queue
+            .enqueue_trigger(NewTrigger {
+                org_id: c.org_id,
+                acting_user_id: c.created_by_user_id,
+                thread_id: None,
+                state_id: None,
+                background_turn_id: Some(turn),
+                sender_colleague_id: agent_colleague,
+                receiver_agent_id: c.agent_id,
+                root_request_id: None,
+                trigger_message_id: None,
+                idempotency_key: key,
+                kind_payload: RequestKindPayload::Reflection {
+                    thread_id: c.thread_id,
+                    up_to_message_id: c.last_message_id,
+                },
+            })
+            .await?;
         debug!(
-            patom.request.id = %outcome.request_id(),
+            patom.request.id = %request_id,
+            patom.background.turn.id = %turn,
             "reflection_scheduler.enqueued.row",
         );
         Ok(())
     }
 
-    /// Fetch viewer-mapped messages in the conversation session whose `seq`
-    /// is in `(previous_cursor, up_to]`. Returns rows in seq-ascending
-    /// order. When `previous_cursor` is `None` (first reflection), the
-    /// lower bound is treated as -1 — every row up to and including
-    /// `up_to`'s seq is returned.
+    /// Fetch viewer-mapped **posted** messages in the conversation thread whose
+    /// `seq` is in `(previous_cursor, up_to]`. Returns rows in seq-ascending
+    /// order. When `previous_cursor` is `None` (first reflection), the lower
+    /// bound is treated as -1 — every posted row up to `up_to` is returned.
     async fn fetch_slice(
         &self,
-        conversation: SessionId,
+        thread: ThreadId,
         agent: AgentId,
-        previous_cursor: Option<PromptRequestId>,
-        up_to: PromptRequestId,
+        previous_cursor: Option<ThreadMessageId>,
+        up_to: ThreadMessageId,
     ) -> Result<Vec<ChatMessage>, EnqueueError> {
         let viewer_agent_id = agent.as_uuid();
-        // Privileged tx: `session_messages` is RLS-forced; the
-        // scheduler scans tenant-wide.
         let mut tx = crate::auth::begin_privileged(&self.pool).await?;
         let rows: Vec<(Option<uuid::Uuid>, serde_json::Value)> = sqlx::query_as(
             "WITH bounds AS (
                  SELECT
-                     COALESCE(
-                         (SELECT MAX(seq) FROM session_messages
-                          WHERE session_id = $1 AND request_id = $2),
-                         -1
-                     ) AS low,
-                     COALESCE(
-                         (SELECT MAX(seq) FROM session_messages
-                          WHERE session_id = $1 AND request_id = $3),
-                         -1
-                     ) AS high
+                     COALESCE((SELECT seq FROM thread_messages WHERE id = $2), -1) AS low,
+                     COALESCE((SELECT seq FROM thread_messages WHERE id = $3), -1) AS high
              )
              SELECT sc.agent_id, m.body
-             FROM session_messages m
+             FROM thread_messages m
              JOIN bounds ON TRUE
              LEFT JOIN colleagues sc ON sc.id = m.sender_colleague_id
-             WHERE m.session_id = $1
+             WHERE m.thread_id = $1
+               AND m.kind = 'posted'
                AND m.seq > bounds.low
                AND m.seq <= bounds.high
              ORDER BY m.seq ASC",
         )
-        .bind(conversation)
+        .bind(thread)
         .bind(previous_cursor)
         .bind(up_to)
         .fetch_all(&mut *tx)
@@ -364,10 +365,12 @@ impl SchedulerInner {
 enum EnqueueError {
     #[error("postgres: {0}")]
     Db(#[from] sqlx::Error),
-    #[error("decode session_messages body: {0}")]
+    #[error("decode thread_messages body: {0}")]
     Decode(#[from] serde_json::Error),
     #[error(transparent)]
     Queue(#[from] crate::runtime::PromptError),
+    #[error("background store: {0}")]
+    Background(#[from] crate::background::BackgroundError),
 }
 
 /// Build the reflection-turn user prompt from the captured slice. The
@@ -488,22 +491,20 @@ fn map_for_viewer(stored: ChatMessage, is_self: bool) -> ChatMessage {
 #[derive(Debug, Clone)]
 struct ReflectionCandidate {
     agent_id: AgentId,
-    session_id: SessionId,
-    /// Latest message at scheduler time — the upper end of the slice.
-    last_turn_id: PromptRequestId,
+    thread_id: ThreadId,
+    /// Latest posted message at scheduler time — the frozen upper end of the slice.
+    last_message_id: ThreadMessageId,
     /// Latest message timestamp; used only by the SQL ordering and surfaced
     /// in tracing, not read by the enqueue path.
     #[allow(dead_code)]
     latest_at: DateTime<Utc>,
     /// Lower end of the slice from the existing checkpoint, joined inline
     /// by `find_candidates`. `None` on the first reflection.
-    previous_cursor: Option<PromptRequestId>,
-    /// Owning org of the conversation session; the reflection's off-DAG
-    /// `(agent, system)` session inherits it.
+    previous_cursor: Option<ThreadMessageId>,
+    /// Owning org of the conversation thread; the background turn inherits it.
     org_id: OrgId,
-    /// User the conversation session is attributed to. The reflection
-    /// runs against the same principal so RLS-bound reads inside the
-    /// worker turn see the right scope.
+    /// Thread creator's user — the principal the reflection runs under so
+    /// RLS-bound reads inside the worker turn see the right scope.
     created_by_user_id: UserId,
 }
 

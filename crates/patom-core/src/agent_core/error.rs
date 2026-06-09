@@ -19,6 +19,9 @@ pub enum AgentError {
     #[error("thread: {0}")]
     Thread(#[from] ThreadError),
 
+    #[error("background: {0}")]
+    Background(#[from] crate::background::BackgroundError),
+
     #[error("memory: {0}")]
     Memory(#[from] MemoryError),
 

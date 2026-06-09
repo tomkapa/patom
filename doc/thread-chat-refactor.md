@@ -1,9 +1,17 @@
 # Thread-chat refactor — plan + handoff
 
-> **Status (handoff):** on branch `feat/thread-chat-refactor`, all work **uncommitted**.
-> Phases **P0–P3 cores are done and verified green** against local Postgres; the dev DB is
-> migrated to `63`. The remaining cluster (P4–P11) is described below with the gaps discovered
-> while building P0–P3. Read §6 (Progress) and §7 (Discovered gaps) first when resuming.
+> **Status (handoff, updated through P8):** branch `feat/thread-chat-refactor`, dev DB migrated to `63`.
+>
+> **Done + verified green: P0–P8** (each has a green opening test against local Postgres; lib + tests
+> `clippy -D warnings` + fmt clean). **Commits:** `b436a83` (P4+P5), `f21bfd4` (P6), `58189b9` (P7).
+> **P8 is complete and green but UNCOMMITTED in the working tree** — when resuming, review/commit it first
+> (suggested: `feat(threads): P8 reflection rehomed onto background cognition`), then continue at **P9**.
+>
+> **Remaining: P9 → P10 → P11.** Start at **§8 "Resume here"** for the P9 plan, then §6 (per-phase
+> progress), §6a (carried-forward deferred TODOs — read before P9/P10/P11), and §7 (discovered gaps).
+>
+> **Expected redness:** the legacy `session/`-keyed paths still *compile* but their tests are **red**
+> (P0 dropped `sessions`/`session_messages`); they are deleted in **P11**. Don't "fix" them mid-stream.
 
 ---
 
@@ -203,7 +211,91 @@ retype to `state_id` in **P11** when the old `run_turn` caller (which passes a r
 `sessions`/`session_messages` — its rewrite onto `list_threads` + the flat-feed wire format is **P10**
 (G1/G2). `RequestStatusView.session` keeps the bridged claim_key until the P10 status/stream re-key.
 
+**P8 core ✅** — reflection rehomed onto background cognition (off the chat feed).
+- New `background/` module: `BackgroundStore` + `PgBackgroundStore` (`create_turn`/`append`/`context`),
+  `BackgroundTurnId` newtype, `NewBackgroundMessage`, `BackgroundError`. Messages in `background_turn_messages`
+  (per-turn `MAX(seq)+1`). `pub mod background` in `lib.rs`.
+- `RequestKindPayload::Reflection` re-keyed `{session_id, up_to_turn_id}` → `{thread_id, up_to_message_id}`
+  (frozen slice). `NewTrigger.background_turn_id` typed `Option<BackgroundTurnId>`.
+- Reflection scheduler rewritten to the thread model: `find_candidates` scans `agent_thread_state` +
+  `thread_messages` (posted) + `reflection_checkpoints (agent_id, thread_id)`; `fetch_slice` reads the posted
+  thread feed; `enqueue_reflection` creates a background turn, seeds the reflection prompt into it, and
+  `enqueue_trigger`s a background trigger (no chat session).
+- Agent `reply_background` + worker background branch (`run_background`): the P6 worker now *runs*
+  `Reflection`/`Resolution` instead of rejecting them — reads the seeded prompt from `background.context`,
+  replies into the background store, no ping-pong, no thread rows → `mark_turn_done`.
+- Test `tests/reflection_pipeline.rs::reflection_writes_no_thread_message_rows` (worker-driven; reflection adds
+  zero `thread_messages`, records the exchange in the background turn) + `tests/background_store.rs`. lib+tests
+  clippy `-D warnings` + fmt clean.
+**Remaining in P8 / deferred:**
+- **Reflection checkpoint write** post-turn (advance `reflection_checkpoints (agent_id, thread_id)` to
+  `up_to_message_id` on success) — without it the scheduler re-enqueues each idle window once the prior
+  reflection is `Done`. Needs a checkpoint writer reachable from the worker (the P6 worker dropped its `pool`).
+- **Resolution rehome**: the worker background branch handles `Resolution` kind, but the **librarian** still
+  enqueues resolutions via the old session `enqueue` path (runtime-red) — rehome it to seed a background turn +
+  `enqueue_trigger`, and port the no-action contradiction close as the resolution post-turn.
+- **`ClaimKey` enum** (note 7): the worker discriminates chat vs background by `claim.kind` +
+  `BackgroundTurnId::from(claim_key)` rather than a typed sum — fold into a `ClaimKey` enum if desired.
+- `turn_metrics`/`tool_calls` recorder retype stays **P11** (still `INSERT session_id`).
+
+A `/simplify` pass ran on P4–P8 code (per phase). Notable applied fixes: `tokio::join!` for the two
+independent reads in `build_thread_request` (P4); extracted `deliver_to_human`/`deliver_to_agent` from
+`send_message::handle` for §4 (P5); `PromptQueue` turn-finalise methods collapsed to call `finalise_turn`
+directly (P6); `threads/limits.rs` + `ThreadSummary`→`ThreadListItem` rename (P7); worker background
+reply-discard cleanup + `find_candidates` batch-limit assertion (P8). Skipped (with reasons): unifying the
+thread/background turn loops (§4 — only 2 impls, they diverge on ping-pong/store/mapping); a context
+row-LIMIT (append volume is already bounded by the `max_turns` loop).
+
+## 6a. Carried-forward deferred TODOs (read before P9/P10/P11)
+
+Cross-phase loose ends, with the phase that should close each. None block the green opening tests; they
+are the difference between "opening test passes" and "feature is production-correct".
+
+**Bleed into P9 (or do as P8 follow-ups — they're cognition-adjacent):**
+- **Reflection checkpoint write.** After a successful background reflection the worker must advance
+  `reflection_checkpoints (agent_id, thread_id).last_message_id = up_to_message_id` (from the
+  `Reflection` payload). Without it the scheduler re-enqueues the same reflection every idle window once
+  the prior one is `Done`. The P6 worker dropped its `pool`, so this needs a checkpoint writer reachable
+  from the worker (a small store method, or re-thread `pool`/a writer into the worker's background branch).
+- **Resolution rehome.** The worker background branch *runs* `Resolution` kind, but the **librarian**
+  (`memory/librarian.rs`) still enqueues resolutions via the old session `enqueue` path (runtime-red).
+  Rehome it like the reflection scheduler: seed a `background_turns` turn with the resolution prompt +
+  `enqueue_trigger` a background trigger; port the no-action contradiction close as the resolution
+  post-turn (old logic in git history pre-`f21bfd4`: `close_no_action_if_unresolved`).
+
+**P10 (HTTP/Slack/stream re-key) — see note 10:**
+- `http/routes/threads.rs` still queries dropped `sessions`/`session_messages`; rewrite onto
+  `ThreadStore::list_threads` + a flat-feed read (per-author label+avatar, expose `kind`).
+- SSE / `pg_thread_stream` / worker quiescence re-key from `root_request_id` to `thread_id`
+  (terminal = "no live lease on any `(thread, *)`"); `ResponseChunk::AgentMessage.to_session` → `thread_id`.
+- `RequestStatusView.session` currently holds the bridged `COALESCE(state_id, background_turn_id)` claim_key
+  (a `SessionId`-typed bridge) — retype/rename it here when the status view is reworked.
+- The P5 human-delivery SSE notify was dropped (posting to the feed is the durable delivery); re-add on the
+  thread-keyed stream.
+- `get_session` / `POST /prompts` @tag routing (note 12): a timeline @tag auto-creates a thread rooted at
+  the channel message; pin + test.
+
+**P11 (sweep + gates):**
+- Retype `turn_metrics`/`tool_calls` recorders `session_id` → `state_id` (migration 63 renamed the columns;
+  the recorders still `INSERT session_id` → runtime-broken, best-effort §6). Do it **with** the old
+  `run_turn` deletion (the old caller passes a real `SessionId`).
+- Delete the old `session/` module + old queue methods (`enqueue`/`claim_next_session`/pair `mark_*`) +
+  `Participant::canonical_pair`/`canonical_cmp` + the inherent/trait `enqueue_trigger`/`claim_next_turn`
+  duplication (collapse the `Self::`-delegation in `pg_queue.rs` to single defs).
+- Wire `todos` into the thread path; re-pair `tool_use`/`tool_result` at context-build (note 13).
+- Web FE (`web/src/...` + `web/mock-backend.ts`); all gates (`cargo fmt --all -- --check`,
+  `clippy --all-targets -- -D warnings`, `check --all-targets`, `nextest`, `deny`/`audit`).
+
 ## 7. Discovered gaps / handoff notes (read before resuming)
+
+> **Status as of P8:** notes 1, 3, 5, 8, 9, 11 are durable facts (still true). **Note 4** (`seed_prompt_request`
+> broken) — still broken but the new-path tests never call it; they `enqueue_trigger` directly. **Note 6**
+> (recorder retype) — confirmed deferred to **P11** (with old `run_turn` deletion). **Note 7** (`ClaimKey`) —
+> `BackgroundTurnId` is now a real newtype + `NewTrigger.background_turn_id: Option<BackgroundTurnId>`; the
+> typed `ClaimKey` sum is still deferred (worker discriminates by `kind`). **Note 12** (@tag routing) → **P10**.
+> **Note 13** (tool_use/result re-pair) → **P11**. **Note 14** (idempotency) — applied (send_message uses
+> `tag:{thread}:{agent}:{message}`; reflection uses `reflect-{agent}-{thread}-{msg}`). **Notes 2, 10, 15** below
+> are still open (2 = parity trigger, P11; 10 = stream re-key, P10; 15 = scheduled-target membership, P9).
 
 These are facts learned while building P0–P3 that aren't obvious from the plan:
 
@@ -256,37 +348,31 @@ These are facts learned while building P0–P3 that aren't obvious from the plan
 15. **Scheduled-target membership (R9):** a scheduled agent's tagged user must be a channel member
     (send_message human-gate), else the post rejects.
 
-## 8. Remaining phases — condensed pointers (full detail in the approved plan)
+## 8. Remaining phases — Resume here
 
-- **P4 agent loop** (`agent_core/{core,turn}.rs`): `reply(claim_key, thread_id, viewer)` drops the
-  `prompts` arg (read-at-run); `build_chat_request` → `threads.context_for_agent` (prepend the
-  thread's root channel-message); append assistant/reasoning/tool rows to `thread_messages`; delete
-  `snapshot`/`parent_history_for_viewer` calls. Needs a mock-LLM harness to drive a turn end-to-end.
-- **P5 `send_message`** (`tools/system/send_message.rs`): receiver agent(always)/human(channel-member
-  gated, no auto-add)/empty; always post `kind='posted'` (the egress); agent → `resolve_participation`
-  + `bump_dag_budget` + `enqueue_trigger` (root inherited); delete the pair side-session +
-  `context_summary`.
-- **P6 worker** (`runtime/worker.rs`): switch claim from `claim_next_session` → `claim_next_turn`;
-  consume `ClaimedTurn` (`trigger_ids`, `thread_id`, `acting_user_id`); keep `run_with_pingpong_guard`
-  verbatim (egress = posted row; nudge = `system_note`); add `mark_done`/release for the claim_key
-  path; RLS principal `Caller::new(claim.acting_user_id, claim.org_id)`.
-- **P7 RLS:** member-scoping in the query layer (channel_members + not archived; DM = channel-less +
-  participant); remove the single-user pin / DM-ownership predicate; agents org-global.
-- **P8 reflection/resolution:** rehome onto `background_turns`/`background_turn_messages` (no chat-feed
-  rows); `find_candidates` scans `agent_thread_state` + `thread_messages`; `RequestKindPayload::
-  Reflection{thread_id, up_to_message_id}` (frozen slice, NOT read-at-run); checkpoint
-  `(agent_id, thread_id)`; build the **background claim path** + introduce **`ClaimKey`/
-  `BackgroundTurnId`** here (note 7).
-- **P9 scheduling:** `scheduled_tasks.channel_id`; `ScheduledTaskScheduler.fire` → `create_thread`
-  in the channel + seed an owner-private `system_note` instruction + `resolve_participation` + mint
-  DAG (acting_user=owner) + `enqueue_trigger` (Normal). Tool/route gain `channel_id`.
-- **P10 HTTP + Slack + stream:** rewrite G1/G2 (flat feed, per-author label+avatar for everyone,
-  expose `kind`, drop pair `receiver`); G3 stream re-key to `thread_id` (note 10); `slack_threads`
-  bind to `thread_id`; `POST /prompts` @tag routing; `get_session` → read thread tail.
-- **P11 web FE + sweep:** `web/src/{types/api,lib/api,stores/threadStore,hooks/useThreadStream,
-  pages/ChatView,lib/demo}.ts` + `web/mock-backend.ts`; **delete the old `session/` module + old
-  queue methods + pair tests + `canonical_pair`**; all gates green (fmt, clippy `-D warnings`,
-  check, nextest, deny/audit).
+**P0–P8 are done (§6).** Remaining: **P9 → P10 → P11**. Each opens with a failing test (CLAUDE.md §3).
+Read §6a (carried-forward TODOs) before starting — some P8 follow-ups (reflection checkpoint, resolution
+rehome) are cognition-adjacent and may be cleanest to close alongside P9.
+
+- **P9 scheduling** (opening test `fire_creates_thread_and_agent_posts_summary_tagging_owner`):
+  `scheduled_tasks.channel_id` (column added in migration 63 — already there). `ScheduledTaskScheduler.fire`
+  → `ThreadStore::create_thread` in the task's channel + seed an owner-private `system_note` instruction
+  into the thread (the agent reads it read-at-run) + `resolve_participation` + mint a DAG (acting_user =
+  task owner) + `enqueue_trigger` (Normal chat trigger). The scheduled tool/route gain `channel_id`.
+  Idempotency keeps `sched-{task_id}-{fire_ts}` (note 14). The tagged user must be a channel member
+  (send_message human-gate; note 15). **Pattern to mirror:** the reflection scheduler's
+  `enqueue_reflection` (P8) is the closest analogue — but P9 seeds a **thread** + a Normal chat trigger
+  (read-at-run), not a background turn. Files: `src/scheduling/*`, `src/http/routes/scheduling.rs`,
+  `tools/system/scheduling/*` (these scheduling tools still read `ctx.session_id` — rehome to
+  `ctx.thread_id`/`state_id` or the task's channel).
+- **P10 HTTP + Slack + stream** (opening tests `g2_canonical_feed_seq_order_multi_party`; stream-by-thread):
+  rewrite G1/G2 (flat feed, per-author label+avatar for everyone, expose `kind`, drop pair `receiver`);
+  G3 stream re-key to `thread_id` (note 10); `slack_threads` bind to `thread_id`; `POST /prompts` @tag
+  routing (note 12); `get_session` → read thread tail. **See §6a "P10" for the full checklist** (threads
+  route rewrite onto `list_threads`, `RequestStatusView.session` retype, re-add human-delivery SSE notify).
+- **P11 web FE + sweep:** **see §6a "P11"** — recorder retype, delete old `session/` module + old queue
+  methods + pair tests + `canonical_pair` + the `Self::`-delegation collapse, `todos` wiring,
+  `tool_use`/`tool_result` re-pair (note 13), web FE + `web/mock-backend.ts`, all gates green.
 
 ## 9. Verification / how to run
 
@@ -300,11 +386,19 @@ These are facts learned while building P0–P3 that aren't obvious from the plan
 ## 10. Key files
 
 - Schema: `crates/patom-core/migrations/00000000000063_thread_feed.{up,down}.sql`
-- New store: `crates/patom-core/src/threads/{mod,error,traits,pg_store}.rs`
-- Queue: `crates/patom-core/src/runtime/{queue,pg_queue,dag}.rs`
-- To rewrite next: `crates/patom-core/src/agent_core/{core,turn}.rs`,
-  `crates/patom-core/src/runtime/worker.rs`, `crates/patom-core/src/tools/system/send_message.rs`
-- Memory/scheduling/slack/http for later phases: `src/memory/*`, `src/scheduling/*`, `src/slack/*`,
-  `src/http/routes/{threads,prompts,scheduling}.rs`, `src/runtime/{response,pg_thread_stream}.rs`
-- Tests landed: `crates/patom-core/tests/{pg_thread_store,pg_turn_queue,turn_dag_mint}.rs`
-- To fix: `crates/patom-core/tests/common/pg.rs` (`seed_prompt_request`, note 4)
+- Thread store (P1): `src/threads/{mod,error,traits,pg_store,limits}.rs`
+- Background store (P8): `src/background/{mod,error,traits,pg_store}.rs`
+- Queue (P2/P6): `src/runtime/{queue,pg_queue,dag}.rs` (`NewTrigger`/`ClaimedTurn`/`TurnReceipt`,
+  `enqueue_trigger`/`claim_next_turn`/`mark_turn_*`/`heartbeat_turn`/`release_turn`)
+- Agent loop (P4/P8): `src/agent_core/{builder,core,turn,error,outcome}.rs` (`reply_in_thread`,
+  `reply_background`); memory (P4): `src/memory/{traits,static,agent,loader}.rs`
+- Worker (P6/P8): `src/runtime/worker.rs` (`claim_next_turn` loop, ping-pong guard, `run_background`)
+- send_message (P5): `src/tools/system/send_message.rs`
+- Reflection scheduler (P8): `src/memory/reflection_scheduler.rs`
+- Composition root: `src/app.rs` (`Collaborators` + `AgentFactoryPieces` wire threads/background stores)
+- **Next-phase targets:** P9 → `src/scheduling/*`, `src/http/routes/scheduling.rs`,
+  `tools/system/scheduling/*`; P10 → `src/http/routes/{threads,prompts}.rs`, `src/slack/*`,
+  `src/runtime/{response,pg_thread_stream}.rs`; P11 → `src/session/*` (delete), `web/*`.
+- New-path tests landed: `tests/{pg_thread_store,pg_turn_queue,turn_dag_mint,agent_thread_loop,
+  agent_thread_send_message,worker_thread_turn,threads_membership,background_store,reflection_pipeline}.rs`
+- Still broken/unused: `tests/common/pg.rs::seed_prompt_request` (note 4 — new tests avoid it).

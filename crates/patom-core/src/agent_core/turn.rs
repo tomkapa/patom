@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::auth::Caller;
+use crate::background::{BackgroundTurnId, NewBackgroundMessage};
 use crate::hook::{ToolContext, TurnContext};
 use crate::provider::{
     ChatMessage, ChatRequest, ChatResponse, StopReason, ToolCall, ToolCallId, ToolResult,
@@ -433,6 +434,187 @@ impl Agent {
         span.record("patom.history.count", messages.len());
         span.record("patom.system_prompt.bytes", system.len());
 
+        let tools = self.tools().specs_for(kind_payload.kind());
+        Ok(ChatRequest {
+            model: self.model(),
+            system,
+            messages,
+            tools,
+            max_output_tokens: self.max_output_tokens(),
+        })
+    }
+
+    /// Run one background-cognition turn: build the request from the turn's
+    /// private log, call the provider, append the agent's exchange back to the
+    /// background store. No chat-feed rows, no ping-pong (cognition may end
+    /// without `send_message`). Returns `Some(text)` on a final answer.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn run_background_turn(
+        &self,
+        ctx: TurnContext,
+        turn: BackgroundTurnId,
+        viewer: Participant,
+        request_id: PromptRequestId,
+        caller: Caller,
+        kind_payload: &RequestKindPayload,
+        send_message_calls: &mut usize,
+        cancel: &CancellationToken,
+        observer: Option<&SharedTurnObserver>,
+    ) -> Result<Option<String>, AgentError> {
+        self.hooks().before_turn(ctx).await?.into_result()?;
+        self.budget_gate(caller.org_id).await?;
+        let started_at = self.clock().now_utc();
+        let started_mono = Instant::now();
+        let request = self
+            .build_background_request(turn, viewer, caller, kind_payload)
+            .await?;
+        let response = self
+            .call_provider(request, self.provider_timeout(), cancel)
+            .await?;
+        let duration = started_mono.elapsed();
+        self.record_turn_metrics(
+            request_id,
+            ctx.session_id,
+            caller.org_id,
+            kind_payload.kind(),
+            started_at,
+            duration,
+            &response,
+        )
+        .await;
+        self.budget_settle(caller.org_id, &response).await;
+        self.hooks()
+            .after_turn(ctx, &response)
+            .await?
+            .into_result()?;
+
+        for block in &response.content {
+            log::assistant_block(ctx.turn_index.get(), block);
+        }
+        if let Some(obs) = observer {
+            for block in &response.content {
+                obs.on_assistant(block).await;
+            }
+        }
+
+        // §6: the background path only ever runs for an agent viewer.
+        let _agent_id = viewer.agent_id().ok_or_else(|| {
+            SessionError::Backend("run_background_turn requires an agent viewer".to_string())
+        })?;
+        // The assistant turn → the turn's private log (never the chat feed).
+        self.append_background(
+            &caller,
+            turn,
+            viewer.colleague_id(),
+            ChatMessage::Assistant(response.content.clone()),
+            request_id,
+        )
+        .await?;
+
+        let tool_calls = response.tool_calls();
+        tracing::Span::current().record("patom.tool_calls.count", tool_calls.len());
+        if tool_calls.is_empty() {
+            let text = response.text();
+            if text.is_empty() {
+                return Err(AgentError::EmptyReply);
+            }
+            return Ok(Some(text));
+        }
+        if tool_calls.len() > MAX_TOOL_CALLS_PER_TURN {
+            return Err(AgentError::TooManyToolCalls {
+                max: MAX_TOOL_CALLS_PER_TURN,
+            });
+        }
+
+        // Cognition tools (memory write/update/forget/validate, contradiction
+        // close) run with thread/state unset; `session_id` carries the turn id
+        // bridged for the legacy-typed contexts.
+        let tool_ctx = ToolCallContext {
+            session_id: ctx.session_id,
+            thread_id: None,
+            state_id: None,
+            viewer,
+            root_request_id: request_id,
+            request_id,
+            kind_payload: kind_payload.clone(),
+            acting_user_id: caller.user_id,
+            org_id: caller.org_id,
+        };
+        for call in &tool_calls {
+            if call.name.as_str() == send_message_tool_name() {
+                *send_message_calls += 1;
+            }
+        }
+        let results = self
+            .run_tools(
+                ctx,
+                &tool_calls,
+                self.tools(),
+                kind_payload.kind(),
+                &tool_ctx,
+                cancel,
+                observer,
+            )
+            .await?;
+        self.append_background(
+            &caller,
+            turn,
+            None,
+            ChatMessage::User(results.into_iter().map(UserContent::ToolResult).collect()),
+            request_id,
+        )
+        .await?;
+        Ok(None)
+    }
+
+    /// Append one row to a background turn's private log (assistant turn or tool
+    /// results). Thin wrapper so [`Self::run_background_turn`] stays terse.
+    async fn append_background(
+        &self,
+        caller: &Caller,
+        turn: BackgroundTurnId,
+        sender: Option<crate::colleagues::ColleagueId>,
+        body: ChatMessage,
+        request_id: PromptRequestId,
+    ) -> Result<(), AgentError> {
+        self.background()
+            .append(
+                caller,
+                turn,
+                NewBackgroundMessage {
+                    sender,
+                    body,
+                    request_id: Some(request_id),
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Assemble a background turn's provider request: the turn's private log
+    /// (read-at-run) + the kind-specific system prompt + tool specs.
+    #[tracing::instrument(
+        skip_all,
+        name = "background.context.build",
+        fields(patom.background.turn.id = %turn, patom.history.count = tracing::field::Empty),
+    )]
+    async fn build_background_request(
+        &self,
+        turn: BackgroundTurnId,
+        viewer: Participant,
+        caller: Caller,
+        kind_payload: &RequestKindPayload,
+    ) -> Result<ChatRequest, AgentError> {
+        let messages = self.background().context(&caller, turn).await?;
+        assert!(
+            !messages.is_empty(),
+            "background turn must have a seeded prompt to read"
+        );
+        tracing::Span::current().record("patom.history.count", messages.len());
+        let system = self
+            .memory()
+            .system_prompt_for_thread(viewer, kind_payload)
+            .await?;
         let tools = self.tools().specs_for(kind_payload.kind());
         Ok(ChatRequest {
             model: self.model(),

@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId};
+use crate::background::BackgroundTurnId;
 use crate::colleagues::ColleagueId;
 use crate::session::SessionId;
 use crate::threads::{AgentThreadId, ThreadId, ThreadMessageId};
@@ -476,7 +477,7 @@ pub struct NewTrigger {
     pub acting_user_id: UserId,
     pub thread_id: Option<ThreadId>,
     pub state_id: Option<AgentThreadId>,
-    pub background_turn_id: Option<Uuid>,
+    pub background_turn_id: Option<BackgroundTurnId>,
     pub sender_colleague_id: ColleagueId,
     pub receiver_agent_id: AgentId,
     /// `None` => this trigger is a fresh DAG root (a human @tag or a scheduled
