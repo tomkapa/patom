@@ -462,7 +462,7 @@ function AgentReplyCard({
             <WireMcpRequestCard
               key={`wire:${req.catalog_id}`}
               entry={req}
-              sessionId={null}
+              threadId={thread?.thread_id ?? null}
               agentId={bubble.agent_id ?? null}
             />
           ))}

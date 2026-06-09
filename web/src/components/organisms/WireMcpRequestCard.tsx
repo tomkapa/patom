@@ -37,7 +37,7 @@ function safeHttpUrl(raw: string | undefined): string | null {
 export function WireMcpRequestCard({
   entry,
   callbackUrl,
-  sessionId,
+  threadId,
   agentId,
 }: {
   entry: McpWireRequest;
@@ -45,10 +45,10 @@ export function WireMcpRequestCard({
    *  Defaults to the current location. */
   callbackUrl?: (serverId: string) => string;
   /** Resume context passed to `POST /mcp-servers/{id}/oauth/start` so
-   *  the callback's universal auto-continue knows which session +
-   *  agent to inject the synthetic prompt into. Both must be present
+   *  the callback's universal auto-continue knows which thread +
+   *  agent to append the synthetic prompt into. Both must be present
    *  or both absent; the BE returns 400 otherwise. */
-  sessionId?: string | null;
+  threadId?: string | null;
   agentId?: string | null;
 }) {
   const { t } = useT();
@@ -83,7 +83,7 @@ export function WireMcpRequestCard({
         // are present matches the BE's both-or-neither validation; in
         // the rare path where one is missing (e.g. catalog-page manual
         // wiring) the callback simply skips auto-continue.
-        const hasResumeCtx = !!sessionId && !!agentId;
+        const hasResumeCtx = !!threadId && !!agentId;
         const res = await startOAuth.mutateAsync({
           id: server.id,
           input: {
@@ -91,7 +91,7 @@ export function WireMcpRequestCard({
               ? callbackUrl(server.id)
               : window.location.pathname,
             ...(hasResumeCtx
-              ? { session_id: sessionId, agent_id: agentId }
+              ? { thread_id: threadId, agent_id: agentId }
               : {}),
           },
         });
