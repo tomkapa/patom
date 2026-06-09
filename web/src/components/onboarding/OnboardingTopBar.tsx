@@ -107,7 +107,7 @@ export function OnboardingTopBar({
           signed-in user's email. */}
       {onCancel ? (
         <Button
-          variant="danger"
+          variant="secondary"
           loading={cancelling}
           onClick={onCancel}
           data-testid="onboarding-cancel"
