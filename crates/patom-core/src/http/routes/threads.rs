@@ -2,12 +2,14 @@
 //!
 //! - `GET /threads`                          — channel / DM thread index (G1)
 //! - `GET /threads/{thread_id}/messages`     — canonical flat feed (G2)
-//! - `GET /threads/{root}/stream`            — live SSE (G3)
+//! - `GET /threads/{thread_id}/stream`       — live SSE (G3)
 //!
-//! G1/G2 read the thread model via [`crate::threads::ThreadStore`]
-//! (`list_threads` / `feed`). G3 is still keyed on the DAG `root_request_id`
-//! pending the `root → thread_id` stream re-key (doc/thread-chat-refactor.md
-//! §6a/note 10), so its path id is a `root_request_id` for now.
+//! All three read the thread model via [`crate::threads::ThreadStore`]
+//! (`list_threads` / `feed` / `visible_to`). G3 subscribes the per-thread
+//! fan-in ([`crate::runtime::PgThreadStream`]) keyed by `thread_id`: every chunk
+//! published on any `prompt_requests` row in the thread (across the many DAGs a
+//! thread hosts) is forwarded. The stream is continuous — a `Done`/`Error`
+//! chunk is a per-turn marker, not a close.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -26,10 +28,9 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::agents::AgentId;
-use crate::auth::{AuthError, Caller, Principal, UserId, UserProfileLite};
+use crate::auth::{Caller, Principal, UserId, UserProfileLite};
 use crate::channels::ChannelId;
 use crate::runtime::{PromptRequestId, ResponseChunk, ThreadStreamEvent, ThreadStreamItem};
-use crate::session::SessionId;
 use crate::threads::{DEFAULT_THREAD_FEED, MAX_THREAD_FEED, PgThreadStore, ThreadId, ThreadStore};
 use crate::types::{MessageSender, Participant};
 
@@ -229,65 +230,52 @@ fn feed_message_to_wire(
 async fn stream_thread(
     State(state): State<AppState>,
     principal: Principal,
-    Path(root): Path<Uuid>,
+    Path(id): Path<Uuid>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, HttpError> {
-    let root = PromptRequestId::from(root);
-    // Authorisation gate: only subscribe if the caller can see a session
-    // in this DAG *in their active org*. RLS isolates by membership (any
-    // org), so `org_id = $2` pins the gate to the active workspace — a
-    // multi-org caller must not stream a DAG from a non-active org. A miss
-    // returns None and we 404 cleanly without subscribing to the broadcast.
-    {
-        let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
-        let visible: Option<(SessionId,)> = sqlx::query_as(
-            "SELECT id FROM sessions WHERE root_request_id = $1 AND org_id = $2 LIMIT 1",
-        )
-        .bind(root)
-        .bind(principal.active_org_id)
-        .fetch_optional(&mut *tx)
+    let thread = ThreadId::from(id);
+    // Authorisation gate: only subscribe if the caller can see this thread in
+    // their active org (channel membership, or DM ownership; active-org pin in
+    // the store). RLS isolates by membership (any org), so a multi-org caller
+    // must not stream a thread from a non-active org. An invisible / missing
+    // thread returns `false` and we 404 cleanly without subscribing.
+    let caller = Caller::new(principal.user_id, principal.active_org_id);
+    let store = PgThreadStore::new(state.pool.clone(), state.clock.clone());
+    if !store
+        .visible_to(&caller, thread)
         .await
-        .map_err(AuthError::from)?;
-        tx.commit().await.map_err(AuthError::from)?;
-        if visible.is_none() {
-            return Err(HttpError::NotFound);
-        }
+        .map_err(thread_store_error)?
+    {
+        return Err(HttpError::NotFound);
     }
-    let inner = state.thread_stream.subscribe(root);
+    let inner = state.thread_stream.subscribe(thread);
 
     // Per-connection monotonic cursor for the SSE `id:` header. Lossy on
     // process restart by design (G3 in `doc/backend_plan.md`); FE refetches
     // G2 and dedupes by `(request_id, chunk_seq)`.
     let mut cursor: u64 = 0;
 
-    // `scan` forwards the terminal chunk emitted on DAG quiescence (worker's
-    // `maybe_emit_quiescence` publishes `Done` on the root) and ends the
-    // stream on the next call, so the FE sees the close signal.
-    let stream = inner
-        .scan(false, |closed, res| {
-            let stop = *closed;
-            if matches!(&res, Ok(ThreadStreamEvent::Item(item)) if item.chunk.is_terminal()) {
-                *closed = true;
+    // The thread feed is continuous — a `Done`/`Error` chunk is a per-turn
+    // marker (one DAG of many the thread hosts), NOT a stream close. So we do
+    // NOT close the SSE on a terminal chunk; we forward every event and the
+    // connection lives until the client disconnects.
+    let stream = inner.map(move |res| {
+        let event = match res {
+            Ok(ThreadStreamEvent::Item(item)) => item_to_sse(cursor, &item),
+            Ok(ThreadStreamEvent::Stalled) => synthetic_to_sse(cursor, &ResponseChunk::Stalled),
+            Err(e) => {
+                warn!(error = %e, "thread.stream.error");
+                synthetic_to_sse(
+                    cursor,
+                    &ResponseChunk::Error {
+                        reason: e.to_string(),
+                        code: "stream".to_owned(),
+                    },
+                )
             }
-            std::future::ready(if stop { None } else { Some(res) })
-        })
-        .map(move |res| {
-            let event = match res {
-                Ok(ThreadStreamEvent::Item(item)) => item_to_sse(cursor, &item),
-                Ok(ThreadStreamEvent::Stalled) => synthetic_to_sse(cursor, &ResponseChunk::Stalled),
-                Err(e) => {
-                    warn!(error = %e, "thread.stream.error");
-                    synthetic_to_sse(
-                        cursor,
-                        &ResponseChunk::Error {
-                            reason: e.to_string(),
-                            code: "stream".to_owned(),
-                        },
-                    )
-                }
-            };
-            cursor = cursor.saturating_add(1);
-            Ok::<_, Infallible>(event)
-        });
+        };
+        cursor = cursor.saturating_add(1);
+        Ok::<_, Infallible>(event)
+    });
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(SSE_KEEPALIVE_INTERVAL)))
 }

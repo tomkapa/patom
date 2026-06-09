@@ -4,9 +4,9 @@
 //! Five families:
 //!
 //! * **Communication** — [`SendMessageTool`] (the only delivery mechanism
-//!   for messages between participants) and [`GetSessionTool`]
-//!   (cross-session read scoped to the caller's DAG). Both consume
-//!   [`super::ToolCallContext`].
+//!   for messages between participants). Consumes [`super::ToolCallContext`].
+//!   (There is no cross-session read tool — the agent reads its full thread
+//!   at run time, so a separate lookup is unnecessary.)
 //! * **Memory** — [`MemoryWriteTool`], [`MemoryUpdateTool`],
 //!   [`MemoryForgetTool`], [`MemoryValidateTool`], [`RecallTool`]. The
 //!   four journal-writing tools share a per-turn cap via
@@ -25,7 +25,6 @@
 //! tools enter through the MCP registry instead of this module.
 
 mod create_agent;
-mod get_session;
 mod memory;
 mod request_user_wire_mcp;
 mod scheduling;
@@ -37,7 +36,6 @@ mod web_fetch;
 mod web_search;
 
 pub use create_agent::CreateAgentTool;
-pub use get_session::GetSessionTool;
 pub use memory::{
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
     RecallTool,

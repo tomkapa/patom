@@ -58,11 +58,11 @@ use crate::scheduling::{
 };
 use crate::session::{PgSessionStore, SharedSessionStore};
 use crate::tools::system::{
-    CancelScheduledTaskTool, CreateAgentTool, GetSessionTool, ListScheduledTasksTool,
-    MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
-    PgSessionTodoStore, RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchAgentsTool,
-    SearchToolsTool, SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool,
-    WebFetchTool, WebSearchTool,
+    CancelScheduledTaskTool, CreateAgentTool, ListScheduledTasksTool, MemoryForgetTool,
+    MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool, PgSessionTodoStore,
+    RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchAgentsTool, SearchToolsTool,
+    SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool, WebFetchTool,
+    WebSearchTool,
 };
 use crate::tools::{ToolBox, ToolRegistry};
 
@@ -335,7 +335,6 @@ impl Collaborators {
         let builtin_tools = build_builtin_tools(BuiltinToolDeps {
             http,
             settings,
-            sessions: sessions.clone(),
             threads: threads.clone(),
             queue: queue.clone(),
             dag: dag.clone(),
@@ -474,7 +473,6 @@ impl AgentFactoryPieces {
 struct BuiltinToolDeps<'a> {
     http: Client,
     settings: &'a Settings,
-    sessions: SharedSessionStore,
     threads: crate::threads::SharedThreadStore,
     queue: SharedPromptQueue,
     dag: SharedDagBudget,
@@ -515,7 +513,6 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.colleagues.clone(),
             deps.sink.clone(),
         )))
-        .with(Arc::new(GetSessionTool::new(deps.sessions.clone())))
         .with(Arc::new(MemoryWriteTool::new(deps.memory_tools.clone())))
         .with(Arc::new(MemoryUpdateTool::new(deps.memory_tools.clone())))
         .with(Arc::new(MemoryForgetTool::new(deps.memory_tools.clone())))
@@ -804,7 +801,6 @@ pub async fn build_server(
                     workspaces: workspaces.clone(),
                     agents: pieces.agents.clone(),
                     poster: poster.clone(),
-                    threads: threads_store.clone(),
                     signing_secret: cfg.signing_secret.clone(),
                     connect_url_base: Arc::from(settings.auth.oauth_redirect_base.as_str()),
                     clock: pieces.clock.clone(),
@@ -816,13 +812,14 @@ pub async fn build_server(
                 BridgeDeps {
                     queue: pieces.queue.clone(),
                     agents: pieces.agents.clone(),
-                    sessions: pieces.sessions.clone(),
+                    thread_store: pieces.threads.clone(),
                     colleagues: pieces.colleagues.clone(),
                     workspaces: workspaces.clone(),
                     identities: identities.clone(),
                     threads: threads_store.clone(),
                     poster: poster.clone(),
                     stream_pump: pump_handle.clone(),
+                    pool: pieces.pool.clone(),
                     http: slack_http.clone(),
                 },
                 cancel.clone(),

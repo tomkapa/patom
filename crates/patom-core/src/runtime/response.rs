@@ -15,7 +15,7 @@ use crate::agents::AgentId;
 use crate::auth::UserId;
 use crate::mcp::{McpAuthKind, McpCatalogId};
 use crate::provider::{ToolCall, ToolResult};
-use crate::session::SessionId;
+use crate::threads::ThreadId;
 
 use super::error::ResponseError;
 use super::types::{ChunkSeq, FailureReason, PromptRequestId};
@@ -42,21 +42,18 @@ pub enum ResponseChunk {
     /// Tool finished. `output` is the bytes the tool returned (already capped by the
     /// agent at `TOOL_RESULT_MAX_BYTES`); `is_error` distinguishes failure from success.
     ToolResult(ToolResult),
-    /// An agent's outbound message addressed to the human end of the DAG.
+    /// An agent's outbound message posted to a thread feed.
     ///
-    /// Published on the root request's stream by the `send_message` tool when
-    /// the receiver is `Participant::Human`. Multiple agent-to-human messages
-    /// in one DAG appear as multiple `AgentMessage` chunks on the same SSE
-    /// stream. Non-terminal — the `Done` chunk fires only on DAG quiescence.
-    /// `from` lets clients render which agent authored each message.
-    /// `to_session` is the `(from, human)` session the message belongs to —
-    /// distinct from the request's session whenever the agent published from
-    /// inside a sibling agent↔agent turn. Per-session delivery surfaces
-    /// (e.g. the Slack stream pump) route by this field; legacy consumers
-    /// (web UI) ignore it.
+    /// Published by the `send_message` tool on every posted egress row so live
+    /// consumers (the Slack stream pump, the web SSE) see the message without
+    /// refetching the G2 feed. Non-terminal — the `Done` chunk fires only on
+    /// DAG quiescence. `from` lets clients render which agent authored each
+    /// message. `to_thread` is the thread the message landed in; delivery
+    /// surfaces route by the publishing request's `thread_id` (carried on the
+    /// NOTIFY), so `to_thread` is informational and equals that thread.
     AgentMessage {
         from: AgentId,
-        to_session: SessionId,
+        to_thread: ThreadId,
         content: String,
     },
     /// Interactive prompt: the agent is asking the user to wire an MCP

@@ -1,12 +1,10 @@
-//! Integration tests for `POST /prompts`.
+//! Integration tests for `POST /prompts` in the thread-feed model.
 //!
-//! Specifically guards the receiver-resolution rule: when the request
-//! carries a `session_id`, the receiver agent must be derived from the
-//! session's existing agent participant — never from the caller-supplied
-//! `agent_id` and never from the seeded default. The previous behavior
-//! defaulted to `agents.default_id()`, which produced
-//! "agent X is not a participant of session Y" once the worker tried to
-//! load history with the wrong viewer (the bug that motivated this test).
+//! `POST /prompts` is the @tag entry point: it creates a thread (or continues
+//! one), appends the human's posted row addressing the agent, and enqueues a
+//! trigger. Receiver resolution: an explicit `agent_id` wins; a continuation
+//! without one routes to the thread's current agent (DM continuity); a fresh
+//! root falls back to the seeded default.
 
 #![allow(clippy::expect_used)]
 
@@ -17,12 +15,10 @@ use patom::clock::{SharedClock, SystemClock};
 use patom::http::{AppState, router};
 use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
 use patom::runtime::{
-    IdempotencyKey, NewPromptRequest, PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream,
-    SharedDagBudget, SharedLeaseManager, SharedPromptQueue, SharedResponseSink,
-    SharedResponseSource, SharedThreadStream,
+    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
+    SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream,
 };
 use patom::session::{PgSessionStore, SharedSessionStore};
-use patom::types::Prompt;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -34,7 +30,6 @@ use common::pg::{Seed, seed_tenant};
 struct PromptsHarness {
     seed: Seed,
     pool: PgPool,
-    queue: SharedPromptQueue,
     agents: SharedAgentStore,
     state: AppState,
     /// `Cookie:` header value carrying a valid JWT for the seeded test
@@ -144,7 +139,6 @@ impl PromptsHarness {
         Self {
             seed,
             pool,
-            queue,
             agents,
             state,
             auth_cookie: seeded.cookie_header(),
@@ -202,46 +196,43 @@ async fn post_json(
     (status, json)
 }
 
-/// Regression: posting a follow-up to an existing session must enqueue
-/// against the session's agent participant, not the system default.
-/// Previously the route blindly fell back to `agents.default_id()`, the
-/// worker rejected the prompt with
-/// `agent X is not a participant of session Y`, and the run errored out.
+/// Receiver resolution across a root + continuation. An explicit `agent_id`
+/// is honored on a root; a continuation in the same thread with no `agent_id`
+/// stays with that agent (DM continuity, via `last_agent`).
 #[sqlx::test]
-async fn followup_with_session_id_routes_to_session_agent(pool: PgPool) {
+async fn root_honors_agent_id_then_continuation_keeps_it(pool: PgPool) {
     let h = PromptsHarness::new(pool.clone()).await;
 
-    // The session is bound to a non-default agent — exactly the DM scenario
-    // that exposed the bug ("when I reply thread in thread detail in direct
-    // message"). The default agent is the seeded one; `translator` is what
-    // the user is talking to.
+    // `translator` is a non-default agent the user @tags in a fresh DM.
     let translator = h.create_agent("translator").await;
 
-    // Open the session with a Human → translator root prompt.
-    let root = h
-        .queue
-        .enqueue(NewPromptRequest {
-            session: None,
-            sender: common::pg::human_participant(&pool, h.seed.org_id, h.seed.user_id).await,
-            receiver_agent_id: translator,
-            parent_session: None,
-            content: Prompt::try_from("hi").expect("prompt"),
-            idempotency_key: IdempotencyKey::try_from("k-root").expect("key"),
-            org_id: h.seed.org_id,
-            created_by_user_id: h.seed.user_id,
-            kind_payload: patom::runtime::RequestKindPayload::Normal {},
-        })
-        .await
-        .expect("enqueue root");
-    let session_id = root.session();
-
-    // Follow-up: no `agent_id`. Pre-fix, this defaulted to the seeded
-    // `test-default` agent — wrong receiver, wrong-participant error.
     let (status, body) = post_json(
         h.state.clone(),
         "/api/prompts",
         serde_json::json!({
-            "session_id": session_id.as_uuid(),
+            "agent_id": translator.as_uuid(),
+            "content": "hi translator",
+            "idempotency_key": Uuid::new_v4().to_string(),
+        }),
+        &h.auth_cookie,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::ACCEPTED);
+    let thread_id = body["thread_id"].as_str().expect("thread_id").to_owned();
+    assert_receiver_agent(
+        &h.pool,
+        body["request_id"].as_str().expect("rid"),
+        translator,
+    )
+    .await;
+
+    // Continuation in the SAME thread, no `agent_id` → stays with translator
+    // (the thread's current agent), not the seeded default.
+    let (status, body) = post_json(
+        h.state.clone(),
+        "/api/prompts",
+        serde_json::json!({
+            "thread_id": thread_id,
             "content": "follow-up",
             "idempotency_key": Uuid::new_v4().to_string(),
         }),
@@ -249,56 +240,39 @@ async fn followup_with_session_id_routes_to_session_agent(pool: PgPool) {
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::ACCEPTED);
-    let request_id_str = body["request_id"].as_str().expect("request_id");
-
-    // Confirm the persisted row has receiver = translator, NOT the default.
-    let row: (Uuid,) =
-        sqlx::query_as("SELECT rc.agent_id FROM prompt_requests pr JOIN colleagues rc ON rc.id = pr.receiver_colleague_id WHERE pr.id = $1::uuid")
-            .bind(request_id_str)
-            .fetch_one(&h.pool)
-            .await
-            .expect("fetch new row");
     assert_eq!(
-        row.0,
-        translator.as_uuid(),
-        "follow-up should route to the session's translator, not the seeded default {}",
-        h.seed.agent_id.as_uuid(),
+        body["thread_id"].as_str(),
+        Some(thread_id.as_str()),
+        "continuation reuses the thread",
     );
-
-    // Sanity: a follow-up that *also* names a different agent_id is still
-    // routed to the session's participant — the route must not honour a
-    // mismatched override.
-    let (status, body) = post_json(
-        h.state.clone(),
-        "/api/prompts",
-        serde_json::json!({
-            "session_id": session_id.as_uuid(),
-            "agent_id": h.seed.agent_id.as_uuid(),
-            "content": "follow-up 2",
-            "idempotency_key": Uuid::new_v4().to_string(),
-        }),
-        &h.auth_cookie,
+    assert_receiver_agent(
+        &h.pool,
+        body["request_id"].as_str().expect("rid"),
+        translator,
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::ACCEPTED);
-    let request_id_str = body["request_id"].as_str().expect("request_id");
-    let row: (Uuid,) =
-        sqlx::query_as("SELECT rc.agent_id FROM prompt_requests pr JOIN colleagues rc ON rc.id = pr.receiver_colleague_id WHERE pr.id = $1::uuid")
-            .bind(request_id_str)
-            .fetch_one(&h.pool)
-            .await
-            .expect("fetch new row");
+}
+
+/// Confirm the persisted trigger's receiver colleague resolves to `agent`.
+async fn assert_receiver_agent(pool: &PgPool, request_id: &str, agent: patom::agents::AgentId) {
+    let row: (Uuid,) = sqlx::query_as(
+        "SELECT rc.agent_id FROM prompt_requests pr \
+         JOIN colleagues rc ON rc.id = pr.receiver_colleague_id WHERE pr.id = $1::uuid",
+    )
+    .bind(request_id)
+    .fetch_one(pool)
+    .await
+    .expect("fetch row");
     assert_eq!(
         row.0,
-        translator.as_uuid(),
-        "client-supplied agent_id must be ignored when session_id is set",
+        agent.as_uuid(),
+        "trigger routed to the expected agent"
     );
 }
 
-/// New session with no `agent_id` falls back to the seeded default — the
-/// only path the legacy behavior is still correct on.
+/// New root with no `agent_id` falls back to the seeded default agent.
 #[sqlx::test]
-async fn new_session_without_agent_id_uses_default(pool: PgPool) {
+async fn new_root_without_agent_id_uses_default(pool: PgPool) {
     let h = PromptsHarness::new(pool.clone()).await;
 
     let (status, body) = post_json(

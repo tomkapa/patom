@@ -293,13 +293,19 @@ async fn handle_view_submission(state: State<AppState>, view: ViewSubmission) ->
     let deps = super::bridge::BridgeDeps {
         queue: state.queue.clone(),
         agents: state.agents.clone(),
-        sessions: state.sessions.clone(),
+        // No `AppState.threads` field — build the thread store inline from the
+        // pool/clock seam (note 18), matching the HTTP thread routes.
+        thread_store: std::sync::Arc::new(crate::threads::PgThreadStore::new(
+            state.pool.clone(),
+            state.clock.clone(),
+        )),
         colleagues: state.colleagues.clone(),
         workspaces: slack.workspaces.clone(),
         identities: slack.identities.clone(),
         threads: slack.threads.clone(),
         poster: slack.poster.clone(),
         stream_pump: slack.stream_pump.clone(),
+        pool: state.pool.clone(),
         http: slack.http.clone(),
     };
     if let Err(e) = enqueue_from_slash(&deps, submit).await {

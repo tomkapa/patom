@@ -182,6 +182,9 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         Arc::new(PgSlackIdentityStore::new(pool.clone(), clock.clone()));
     let slack_threads: SharedSlackThreadStore =
         Arc::new(PgSlackThreadStore::new(pool.clone(), clock.clone()));
+    let thread_store: patom::threads::SharedThreadStore = Arc::new(
+        patom::threads::PgThreadStore::new(pool.clone(), clock.clone()),
+    );
 
     let principal =
         common::auth::principal_for_default_org(h.default_user_id, h.default_org_id, &jwt)
@@ -224,7 +227,6 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
             workspaces: workspaces.clone(),
             agents: agents.clone(),
             poster: poster.clone(),
-            threads: slack_threads.clone(),
             signing_secret: signing_secret.clone(),
             connect_url_base: Arc::from("https://patom.example"),
             clock: clock.clone(),
@@ -235,13 +237,14 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         BridgeDeps {
             queue: queue.clone(),
             agents: agents.clone(),
-            sessions: sessions.clone(),
+            thread_store: thread_store.clone(),
             colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             workspaces: workspaces.clone(),
             identities: identities.clone(),
             threads: slack_threads.clone(),
             poster: poster.clone(),
             stream_pump: pump.clone(),
+            pool: pool.clone(),
             http: http.clone(),
         },
         slack_cancel.clone(),

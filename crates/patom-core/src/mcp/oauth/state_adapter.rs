@@ -28,22 +28,22 @@ use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId};
 use crate::clock::SharedClock;
 use crate::mcp::McpServerId;
-use crate::session::SessionId;
+use crate::threads::ThreadId;
 
 use super::errors::OAuthError;
 
 /// Channel-agnostic resume context for the OAuth callback.
 ///
-/// When populated on a [`PatomPendingCtx`], the callback enqueues a
-/// synthetic continuation prompt ("I've connected <name>. Please
-/// continue.") into `session_id` so the agent loop can resume without
-/// the user typing anything. Set by any channel that drives the start
+/// When populated on a [`PatomPendingCtx`], the callback appends a synthetic
+/// continuation prompt ("I've connected <name>. Please continue.") into
+/// `thread_id`'s feed and enqueues a trigger so the agent loop can resume
+/// without the user typing anything. Set by any channel that drives the start
 /// flow on behalf of an in-flight conversation (web UI, Slack adapter,
 /// future Lark / Teams). Absent for manual "wire from the catalog
 /// page" flows where there is no live conversation to resume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResumeCtx {
-    pub session_id: SessionId,
+    pub thread_id: ThreadId,
     pub agent_id: AgentId,
 }
 
@@ -130,7 +130,7 @@ impl PgMcpOAuthPendingStore {
             async |tx| {
                 Ok(sqlx::query_as::<_, PendingCtxRow>(
                     "SELECT server_id, user_id, org_id, redirect_to, expires_at, \
-                            session_id, agent_id, \
+                            thread_id, agent_id, \
                             slack_team_id, slack_channel_id, slack_thread_ts \
                        FROM mcp_oauth_pending \
                       WHERE state = $1 AND expires_at > $2",
@@ -195,7 +195,7 @@ impl StateStore for PatomStateStore {
             sqlx::query(
                 "INSERT INTO mcp_oauth_pending \
                  (state, server_id, user_id, org_id, pkce_verifier, redirect_to, \
-                  created_at, expires_at, session_id, agent_id, \
+                  created_at, expires_at, thread_id, agent_id, \
                   slack_team_id, slack_channel_id, slack_thread_ts) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
             )
@@ -207,7 +207,7 @@ impl StateStore for PatomStateStore {
             .bind(ctx.redirect_to.as_deref())
             .bind(now)
             .bind(ctx.expires_at)
-            .bind(ctx.resume_ctx.map(|r| r.session_id))
+            .bind(ctx.resume_ctx.map(|r| r.thread_id))
             .bind(ctx.resume_ctx.map(|r| r.agent_id))
             .bind(ctx.slack_ctx.as_ref().map(|s| s.team_id.as_str()))
             .bind(ctx.slack_ctx.as_ref().map(|s| s.channel_id.as_str()))
@@ -274,7 +274,7 @@ struct PendingCtxRow {
     org_id: OrgId,
     redirect_to: Option<String>,
     expires_at: chrono::DateTime<chrono::Utc>,
-    session_id: Option<SessionId>,
+    thread_id: Option<ThreadId>,
     agent_id: Option<AgentId>,
     slack_team_id: Option<String>,
     slack_channel_id: Option<String>,
@@ -292,9 +292,9 @@ impl PendingCtxRow {
     /// `Misconfigured` error instead so the callback handler can
     /// surface a clean redirect.
     fn into_ctx(self) -> Result<PatomPendingCtx, OAuthError> {
-        let resume_ctx = match (self.session_id, self.agent_id) {
-            (Some(session_id), Some(agent_id)) => Some(ResumeCtx {
-                session_id,
+        let resume_ctx = match (self.thread_id, self.agent_id) {
+            (Some(thread_id), Some(agent_id)) => Some(ResumeCtx {
+                thread_id,
                 agent_id,
             }),
             (None, None) => None,

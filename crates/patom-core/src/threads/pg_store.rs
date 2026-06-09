@@ -345,6 +345,58 @@ impl ThreadStore for PgThreadStore {
             .ok_or(ThreadError::NotFound(thread))
     }
 
+    #[tracing::instrument(skip_all, name = "thread.last_agent", fields(patom.thread.id = %thread))]
+    async fn last_agent(&self, thread: ThreadId) -> Result<Option<AgentId>, ThreadError> {
+        // Privileged point lookup — the Slack bridge is workspace-keyed infra
+        // routing a reply to "the agent this thread is with". Most-recent
+        // participation wins when a thread has gained more than one agent.
+        let row: Option<(AgentId,)> =
+            run_privileged::<Option<(AgentId,)>, ThreadError>(&self.pool, async |tx| {
+                Ok(sqlx::query_as(
+                    "SELECT agent_id FROM agent_thread_state \
+                     WHERE thread_id = $1 ORDER BY created_at DESC LIMIT 1",
+                )
+                .bind(thread)
+                .fetch_optional(&mut **tx)
+                .await?)
+            })
+            .await?;
+        Ok(row.map(|(agent,)| agent))
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.visible_to", fields(patom.thread.id = %thread, patom.user.id = %caller.user_id))]
+    async fn visible_to(&self, caller: &Caller, thread: ThreadId) -> Result<bool, ThreadError> {
+        // Same visibility predicate as `feed`/`list_threads`, collapsed to an
+        // existence test and run under the caller (RLS-scoped). A missing /
+        // cross-org / non-member thread yields `false`, not an error.
+        let org = caller.org_id;
+        let user = caller.user_id;
+        let row: (bool,) =
+            run_as_user::<(bool,), ThreadError>(&self.pool, user, async |tx| {
+                Ok(sqlx::query_as(
+                    "SELECT EXISTS( \
+                         SELECT 1 FROM threads t \
+                         WHERE t.id = $1 AND t.org_id = $2 \
+                           AND (CASE WHEN t.channel_id IS NULL THEN \
+                                    EXISTS (SELECT 1 FROM colleagues cb \
+                                            WHERE cb.id = t.created_by_colleague_id AND cb.user_id = $3) \
+                                ELSE \
+                                    EXISTS (SELECT 1 FROM channel_members cm \
+                                            WHERE cm.channel_id = t.channel_id AND cm.user_id = $3) \
+                                    AND EXISTS (SELECT 1 FROM channels c \
+                                                WHERE c.id = t.channel_id AND c.archived_at IS NULL) \
+                                END))",
+                )
+                .bind(thread)
+                .bind(org)
+                .bind(user)
+                .fetch_one(&mut **tx)
+                .await?)
+            })
+            .await?;
+        Ok(row.0)
+    }
+
     #[tracing::instrument(skip_all, name = "thread.context_for_agent", fields(patom.thread.id = %thread, patom.agent.id = %agent, patom.history.count = tracing::field::Empty))]
     async fn context_for_agent(
         &self,

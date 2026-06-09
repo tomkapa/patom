@@ -269,16 +269,20 @@ impl PgResponseHub {
     }
 }
 
-/// One round-trip: read parent's `(org_id, root_request_id)`, bump the
+/// One round-trip: read parent's `(org_id, thread_id)`, bump the
 /// per-request seq counter (the streams upsert also pins the `closed`
 /// flag), insert the chunk row denormalised on the same `org_id`, and
-/// `pg_notify` the DAG thread stream — all as one CTE chain. The first
+/// `pg_notify` the thread stream — all as one CTE chain. The first
 /// publish lands at seq 0 (post-bump `next_seq` is 1, so `next_seq - 1`
 /// matches `ChunkSeq::ZERO` and the SSE `Last-Event-ID` contract). If
 /// `req` resolves to zero rows (synthetic test id), the chain yields
 /// zero rows and the caller surfaces the original error.
+///
+/// `thread_id` is NULL on a background-turn trigger (cognition has no
+/// SSE subscriber); the NOTIFY emits JSON `null` and the listener skips
+/// it ([`super::pg_thread_stream`]).
 const PUBLISH_CTE_SQL: &str = "WITH req AS (
-     SELECT id AS request_id, org_id, root_request_id, session_id
+     SELECT id AS request_id, org_id, thread_id
      FROM prompt_requests WHERE id = $1
  ), bumped AS (
      INSERT INTO prompt_response_streams (request_id, org_id, next_seq, closed)
@@ -296,8 +300,7 @@ const PUBLISH_CTE_SQL: &str = "WITH req AS (
  ), notify AS (
      SELECT pg_notify($6, json_build_object(
          'request_id', req.request_id,
-         'root_request_id', req.root_request_id,
-         'session_id', req.session_id,
+         'thread_id', req.thread_id,
          'chunk_seq', chunk_ins.seq
      )::text) AS _n
      FROM req, chunk_ins

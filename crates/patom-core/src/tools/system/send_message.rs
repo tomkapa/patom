@@ -172,14 +172,16 @@ impl SendMessageTool {
         }
     }
 
-    /// Up-front input validation. Returns `(content, receiver)` — `None` receiver
-    /// is a valid untagged post. Resolves the wire-side receiver to a typed
-    /// [`Participant`] and rejects self / System targets.
+    /// Up-front input validation. Returns `(content, receiver, viewer_agent_id)`
+    /// — `None` receiver is a valid untagged post; `viewer_agent_id` is the
+    /// authoring agent (the caller must be an agent), reused as the egress
+    /// `from`. Resolves the wire-side receiver to a typed [`Participant`] and
+    /// rejects self / System targets.
     async fn validate(
         &self,
         input: SendMessageInput,
         ctx: &ToolCallContext,
-    ) -> Result<(Prompt, Option<Participant>), ToolError> {
+    ) -> Result<(Prompt, Option<Participant>, AgentId), ToolError> {
         let content = Prompt::try_from(input.content).map_err(|e| {
             set_outcome("invalid_input");
             ToolError::InvalidInput(e.to_string())
@@ -192,7 +194,7 @@ impl SendMessageTool {
         })?;
 
         let Some(raw) = input.receiver else {
-            return Ok((content, None));
+            return Ok((content, None, viewer_agent_id));
         };
         let receiver = self.resolve_receiver(viewer_agent_id, raw, ctx).await?;
 
@@ -206,7 +208,7 @@ impl SendMessageTool {
             set_outcome("invalid_input");
             return Err(ToolError::InvalidInput(ERR_SYSTEM_RECEIVER.into()));
         }
-        Ok((content, Some(receiver)))
+        Ok((content, Some(receiver), viewer_agent_id))
     }
 
     /// Resolve the wire-side receiver into a [`Participant`].
@@ -304,7 +306,8 @@ impl SendMessageTool {
         input: SendMessageInput,
         ctx: &ToolCallContext,
     ) -> Result<SendMessageOutput, ToolError> {
-        let (content, receiver) = self.validate(input, ctx).await?;
+        // `from` is the authoring agent, validated + returned by `validate`.
+        let (content, receiver, from) = self.validate(input, ctx).await?;
         // The egress posts to the thread the claim is running in.
         let thread = ctx.thread_id.ok_or_else(|| {
             set_outcome("invalid_input");
@@ -316,8 +319,16 @@ impl SendMessageTool {
 
         match receiver {
             None => {
-                self.post(&caller, thread, sender, None, &content, ctx.request_id)
-                    .await?;
+                self.post(
+                    &caller,
+                    thread,
+                    from,
+                    sender,
+                    None,
+                    &content,
+                    ctx.request_id,
+                )
+                .await?;
                 set_outcome("posted_untagged");
                 Ok(self.posted(thread, None))
             }
@@ -329,6 +340,7 @@ impl SendMessageTool {
                     &caller,
                     ctx,
                     thread,
+                    from,
                     sender,
                     colleague_id,
                     user_id,
@@ -344,6 +356,7 @@ impl SendMessageTool {
                     &caller,
                     ctx,
                     thread,
+                    from,
                     sender,
                     colleague_id,
                     agent_id,
@@ -365,6 +378,7 @@ impl SendMessageTool {
         caller: &Caller,
         ctx: &ToolCallContext,
         thread: ThreadId,
+        from: AgentId,
         sender: Option<ColleagueId>,
         colleague_id: ColleagueId,
         user_id: crate::auth::UserId,
@@ -388,6 +402,7 @@ impl SendMessageTool {
         self.post(
             caller,
             thread,
+            from,
             sender,
             Some(colleague_id),
             content,
@@ -408,6 +423,7 @@ impl SendMessageTool {
         caller: &Caller,
         ctx: &ToolCallContext,
         thread: ThreadId,
+        from: AgentId,
         sender: Option<ColleagueId>,
         colleague_id: ColleagueId,
         agent_id: AgentId,
@@ -417,6 +433,7 @@ impl SendMessageTool {
             self.post(
                 caller,
                 thread,
+                from,
                 sender,
                 Some(colleague_id),
                 content,
@@ -443,17 +460,24 @@ impl SendMessageTool {
         Ok(self.posted(thread, Some(request_id)))
     }
 
-    /// Append the posted egress row to the thread feed. Returns its surface id.
+    /// Append the posted egress row to the thread feed, then publish an
+    /// [`ResponseChunk::AgentMessage`] on the current request so live consumers
+    /// (the Slack stream pump, the web SSE) see it without refetching G2. The
+    /// publish is best-effort — the durable delivery is the feed row; a closed
+    /// or absent stream is benign. Returns the row's surface id.
+    #[allow(clippy::too_many_arguments)]
     async fn post(
         &self,
         caller: &Caller,
         thread: ThreadId,
+        from: AgentId,
         sender: Option<ColleagueId>,
         receiver: Option<ColleagueId>,
         content: &Prompt,
         request_id: PromptRequestId,
     ) -> Result<ThreadMessageId, ToolError> {
-        self.threads
+        let id = self
+            .threads
             .append(
                 caller,
                 thread,
@@ -470,7 +494,20 @@ impl SendMessageTool {
             .map_err(|e| {
                 set_outcome("post_failed");
                 ToolError::Backend(format!("send_message: post failed: {e}"))
-            })
+            })?;
+        let _ = self
+            .sink
+            .publish_for_user(
+                caller.user_id,
+                request_id,
+                ResponseChunk::AgentMessage {
+                    from,
+                    to_thread: thread,
+                    content: content.as_str().to_owned(),
+                },
+            )
+            .await;
+        Ok(id)
     }
 
     /// Build the success output for a posted message.

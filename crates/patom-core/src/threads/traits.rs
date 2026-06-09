@@ -191,6 +191,20 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
     /// are already participating in to inherit it onto a scheduled task.
     async fn channel_of(&self, thread: ThreadId) -> Result<Option<ChannelId>, ThreadError>;
 
+    /// The most-recently-joined agent participating in `thread`, or `None` if
+    /// no agent has participation yet. Privileged point lookup used by the Slack
+    /// inbound bridge to route a plain (un-@-tagged) thread reply to the agent
+    /// the conversation is with — a Slack thread maps to one Patom thread.
+    async fn last_agent(&self, thread: ThreadId) -> Result<Option<AgentId>, ThreadError>;
+
+    /// Whether `caller` may see `thread` — the SSE-subscription gate (G3). Same
+    /// member-or-DM-owner + not-archived + active-org-pin predicate as `feed` /
+    /// `list_threads`, run RLS-scoped under the caller. Returns `false` (not an
+    /// error) for a thread that is cross-org, in a channel the caller isn't a
+    /// member of, or simply missing — so the route 404s without leaking
+    /// existence.
+    async fn visible_to(&self, caller: &Caller, thread: ThreadId) -> Result<bool, ThreadError>;
+
     /// Build `agent`'s LLM context for `thread`: every `posted` row (from
     /// anyone) plus `agent`'s own private artifacts, in `seq` order, mapped to
     /// `viewer`'s perspective (own utterances → Assistant, others → User).
