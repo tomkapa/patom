@@ -12,16 +12,19 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::agents::AgentId;
-use crate::auth::{Caller, run_as_user, run_privileged};
+use crate::auth::{Caller, UserId, run_as_user, run_privileged};
 use crate::channels::ChannelId;
 use crate::clock::SharedClock;
-use crate::colleagues::ColleagueId;
+use crate::colleagues::{ColleagueId, ColleagueKind};
 use crate::provider::{AssistantContent, ChatMessage, UserContent};
+use crate::runtime::PromptRequestId;
+use crate::types::{MessageSender, Participant};
 
 use super::error::ThreadError;
-use super::limits::MAX_THREAD_LIST;
+use super::limits::{MAX_THREAD_FEED, MAX_THREAD_LIST};
 use super::traits::{
-    AgentThreadId, MessageKind, NewMessage, ThreadId, ThreadListItem, ThreadMessageId, ThreadStore,
+    AgentThreadId, FeedMessage, MessageKind, NewMessage, ThreadId, ThreadListItem, ThreadMessageId,
+    ThreadStore,
 };
 
 /// Postgres-backed [`ThreadStore`].
@@ -53,6 +56,35 @@ const CONTEXT_SQL: &str = "SELECT m.kind, m.sender_colleague_id, m.body \
      FROM thread_messages m \
      WHERE m.thread_id = $1 AND (m.kind = 'posted' OR m.owner_agent_id = $2) \
      ORDER BY m.seq ASC";
+
+/// G2 flat-feed read. Both participant sides joined to `colleagues` for their
+/// satellite columns (kind / user_id / agent_id) so the HTTP boundary decodes a
+/// `Participant`/`MessageSender` and enriches a human name/avatar. The
+/// visibility gate mirrors `list_threads` (channel membership, or DM ownership)
+/// and pins the active org (`$2`). Pages backward on the `seq` keyset
+/// (`$4`); ordered DESC for the LIMIT then reversed to ascending by the caller.
+const FEED_SQL: &str = "SELECT m.seq, m.kind, \
+        m.sender_colleague_id, sc.kind, sc.user_id, sc.agent_id, \
+        m.owner_agent_id, \
+        m.receiver_colleague_id, rc.kind, rc.user_id, rc.agent_id, \
+        m.body, m.request_id, m.created_at \
+     FROM thread_messages m \
+     JOIN threads t ON t.id = m.thread_id \
+     LEFT JOIN colleagues sc ON sc.id = m.sender_colleague_id \
+     LEFT JOIN colleagues rc ON rc.id = m.receiver_colleague_id \
+     WHERE m.thread_id = $1 AND t.org_id = $2 \
+       AND (CASE WHEN t.channel_id IS NULL THEN \
+                EXISTS (SELECT 1 FROM colleagues cb \
+                        WHERE cb.id = t.created_by_colleague_id AND cb.user_id = $3) \
+            ELSE \
+                EXISTS (SELECT 1 FROM channel_members cm \
+                        WHERE cm.channel_id = t.channel_id AND cm.user_id = $3) \
+                AND EXISTS (SELECT 1 FROM channels c \
+                            WHERE c.id = t.channel_id AND c.archived_at IS NULL) \
+            END) \
+       AND ($4::bigint IS NULL OR m.seq < $4) \
+     ORDER BY m.seq DESC \
+     LIMIT $5";
 
 #[async_trait]
 impl ThreadStore for PgThreadStore {
@@ -258,6 +290,61 @@ impl ThreadStore for PgThreadStore {
         row.map(|(ok,)| ok).ok_or(ThreadError::NotFound(thread))
     }
 
+    #[tracing::instrument(skip_all, name = "thread.feed", fields(patom.thread.id = %thread, patom.feed.count = tracing::field::Empty))]
+    async fn feed(
+        &self,
+        caller: &Caller,
+        thread: ThreadId,
+        before_seq: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<FeedMessage>, ThreadError> {
+        let cap = i64::from(limit.clamp(1, u32::try_from(MAX_THREAD_FEED).unwrap_or(u32::MAX)));
+        let org = caller.org_id;
+        let user = caller.user_id;
+        let mut rows: Vec<FeedRow> =
+            run_as_user::<Vec<FeedRow>, ThreadError>(&self.pool, user, async |tx| {
+                Ok(sqlx::query_as(FEED_SQL)
+                    .bind(thread)
+                    .bind(org)
+                    .bind(user)
+                    .bind(before_seq)
+                    .bind(cap)
+                    .fetch_all(&mut **tx)
+                    .await?)
+            })
+            .await?;
+        // §5: the LIMIT bounds the batch; assert it held so a query change that
+        // drops the LIMIT trips here rather than shipping an unbounded page.
+        assert!(
+            i64::try_from(rows.len()).unwrap_or(i64::MAX) <= cap,
+            "invariant: feed respects its LIMIT"
+        );
+        // Query is DESC for the keyset LIMIT; the feed is displayed oldest→newest.
+        rows.reverse();
+        tracing::Span::current().record("patom.feed.count", rows.len());
+        rows.into_iter().map(feed_row_to_message).collect()
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.channel_of", fields(patom.thread.id = %thread))]
+    async fn channel_of(&self, thread: ThreadId) -> Result<Option<ChannelId>, ThreadError> {
+        // Privileged point lookup — the caller is an agent (org-global) reading
+        // the location of a thread it is participating in. Distinguish a DM
+        // thread (`channel_id IS NULL`) from a missing thread via `Option` on
+        // the row itself.
+        let row: Option<(Option<ChannelId>,)> =
+            run_privileged::<Option<(Option<ChannelId>,)>, ThreadError>(&self.pool, async |tx| {
+                Ok(
+                    sqlx::query_as("SELECT channel_id FROM threads WHERE id = $1")
+                        .bind(thread)
+                        .fetch_optional(&mut **tx)
+                        .await?,
+                )
+            })
+            .await?;
+        row.map(|(channel,)| channel)
+            .ok_or(ThreadError::NotFound(thread))
+    }
+
     #[tracing::instrument(skip_all, name = "thread.context_for_agent", fields(patom.thread.id = %thread, patom.agent.id = %agent, patom.history.count = tracing::field::Empty))]
     async fn context_for_agent(
         &self,
@@ -284,6 +371,88 @@ impl ThreadStore for PgThreadStore {
         }
         Ok(out)
     }
+}
+
+/// One [`FEED_SQL`] row: seq, kind, the sender's colleague satellites, the
+/// owner agent, the receiver's colleague satellites, body, request id, ts.
+#[allow(clippy::type_complexity)]
+type FeedRow = (
+    i64,
+    MessageKind,
+    Option<ColleagueId>,
+    Option<ColleagueKind>,
+    Option<UserId>,
+    Option<AgentId>,
+    Option<AgentId>,
+    Option<ColleagueId>,
+    Option<ColleagueKind>,
+    Option<UserId>,
+    Option<AgentId>,
+    serde_json::Value,
+    Option<PromptRequestId>,
+    DateTime<Utc>,
+);
+
+/// Decode one [`FeedRow`] into the public [`FeedMessage`], parsing both
+/// participant sides once through the canonical `Participant::try_from` (§1)
+/// rather than carrying raw columns to the boundary. A NULL sender colleague
+/// decodes to [`Participant::System`] → [`MessageSender::System`]; a NULL
+/// receiver colleague means the row addresses no one (`None`).
+fn feed_row_to_message(row: FeedRow) -> Result<FeedMessage, ThreadError> {
+    let (
+        seq,
+        kind,
+        sender_colleague,
+        sender_kind,
+        sender_user,
+        sender_agent,
+        owner_agent_id,
+        receiver_colleague,
+        receiver_kind,
+        receiver_user,
+        receiver_agent,
+        body,
+        request_id,
+        created_at,
+    ) = row;
+    let sender = MessageSender::from(decode_participant(
+        sender_colleague,
+        sender_kind,
+        sender_user,
+        sender_agent,
+    )?);
+    let receiver = match receiver_colleague {
+        Some(_) => Some(decode_participant(
+            receiver_colleague,
+            receiver_kind,
+            receiver_user,
+            receiver_agent,
+        )?),
+        None => None,
+    };
+    Ok(FeedMessage {
+        seq,
+        kind,
+        sender,
+        owner_agent_id,
+        receiver,
+        body,
+        request_id,
+        created_at,
+    })
+}
+
+/// Parse a colleague LEFT JOIN's satellite columns into the typed
+/// [`Participant`] via the one canonical decode (`types::participant`). A
+/// malformed shape is a schema/code disagreement, surfaced as `Backend`.
+fn decode_participant(
+    colleague: Option<ColleagueId>,
+    kind: Option<ColleagueKind>,
+    user_id: Option<UserId>,
+    agent_id: Option<AgentId>,
+) -> Result<Participant, ThreadError> {
+    Participant::try_from((colleague, kind, user_id, agent_id))
+        .map_err(|e| ThreadError::Backend(format!("decode feed participant: {e}")))
 }
 
 /// Map one feed row to `viewer`'s perspective.

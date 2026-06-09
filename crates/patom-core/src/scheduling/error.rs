@@ -5,6 +5,7 @@ use thiserror::Error;
 
 use crate::agents::{AgentId, AgentStoreError};
 use crate::runtime::PromptError;
+use crate::threads::ThreadError;
 use crate::types::ParseError;
 
 use super::types::ScheduledTaskId;
@@ -38,6 +39,11 @@ pub enum ScheduledTaskError {
     /// from store-side ones.
     #[error("queue enqueue: {0}")]
     Queue(#[from] PromptError),
+
+    /// A thread-store operation on the fire path failed (create the thread,
+    /// resolve the agent's participation, or seed the instruction row).
+    #[error("thread store: {0}")]
+    Thread(#[from] ThreadError),
 
     #[error("schedule decode: {0}")]
     Decode(#[from] serde_json::Error),

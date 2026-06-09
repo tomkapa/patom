@@ -541,19 +541,16 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
         )))
         .with(Arc::new(ScheduleTaskTool::new(
             deps.scheduled_tasks.clone(),
-            deps.agents.clone(),
-            deps.sessions.clone(),
+            deps.threads.clone(),
             deps.default_tz,
             deps.clock,
         )))
         .with(Arc::new(ListScheduledTasksTool::new(
             deps.scheduled_tasks.clone(),
-            deps.sessions.clone(),
             deps.pool.clone(),
         )))
         .with(Arc::new(CancelScheduledTaskTool::new(
             deps.scheduled_tasks,
-            deps.sessions.clone(),
             deps.pool.clone(),
         )))
         .build())
@@ -723,6 +720,7 @@ pub async fn build_server(
     let scheduling_scheduler = ScheduledTaskScheduler::spawn(
         pieces.scheduled_tasks.clone(),
         pieces.queue.clone(),
+        pieces.threads.clone(),
         pieces.colleagues.clone(),
         pieces.clock.clone(),
         cancel.clone(),

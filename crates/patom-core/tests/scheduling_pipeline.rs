@@ -8,6 +8,10 @@
 //!
 //! A second test exercises the `Recurring` advance: after one fire the
 //! task's `next_run_at` is moved forward and the row stays `Active`.
+//!
+//! The end-to-end "fire → thread → agent posts" path (the third trigger
+//! source) lives in `tests/scheduling_thread_fire.rs`; these tests focus on
+//! the scheduler's enqueue/advance bookkeeping without a worker.
 
 #![allow(clippy::expect_used)]
 
@@ -16,16 +20,18 @@ use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use chrono_tz::Asia::Bangkok;
+use patom::auth::Caller;
 use patom::clock::{SharedClock, SystemClock};
+use patom::colleagues::resolve_user_colleague;
 use patom::runtime::{
-    IdempotencyKey, NewPromptRequest, PgPromptQueue, RequestKind, RequestStatus, SharedPromptQueue,
+    NewTrigger, PgPromptQueue, RequestKind, RequestKindPayload, RequestStatus, SharedPromptQueue,
 };
 use patom::scheduling::{
     NewScheduledTask, PgScheduledTaskStore, ScheduleSpec, ScheduledPrompt, ScheduledTaskId,
     ScheduledTaskName, ScheduledTaskScheduler, ScheduledTaskState, SharedScheduledTaskStore,
     TimeOfDay, Timezone, Weekdays,
 };
-use patom::types::Prompt;
+use patom::threads::{PgThreadStore, SharedThreadStore};
 use sqlx::PgPool;
 
 mod common;
@@ -35,18 +41,12 @@ struct Fixture {
     pool: PgPool,
     store: SharedScheduledTaskStore,
     queue: SharedPromptQueue,
+    threads: SharedThreadStore,
     colleagues: patom::colleagues::SharedColleagueStore,
     clock: SharedClock,
     default_agent_id: patom::agents::AgentId,
     default_org_id: patom::auth::OrgId,
     default_user_id: patom::auth::UserId,
-    default_user_colleague_id: patom::colleagues::ColleagueId,
-}
-
-impl Fixture {
-    fn default_human_participant(&self) -> patom::types::Participant {
-        patom::types::Participant::human(self.default_user_colleague_id, self.default_user_id)
-    }
 }
 
 async fn fresh(pool: PgPool) -> Fixture {
@@ -55,22 +55,19 @@ async fn fresh(pool: PgPool) -> Fixture {
     let store: SharedScheduledTaskStore =
         Arc::new(PgScheduledTaskStore::new(pool.clone(), clock.clone()));
     let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
+    let threads: SharedThreadStore = Arc::new(PgThreadStore::new(pool.clone(), clock.clone()));
     let colleagues: patom::colleagues::SharedColleagueStore =
         Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
-    let default_user_colleague_id =
-        patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id)
-            .await
-            .expect("user colleague");
     Fixture {
         pool,
         store,
         queue,
+        threads,
         colleagues,
         clock,
         default_agent_id: seed.agent_id,
         default_org_id: seed.org_id,
         default_user_id: seed.user_id,
-        default_user_colleague_id,
     }
 }
 
@@ -96,6 +93,7 @@ async fn scheduler_fires_due_once_task_and_marks_done(pool: PgPool) {
         owner_agent_id: f.default_agent_id,
         org_id: f.default_org_id,
         created_by_user_id: f.default_user_id,
+        channel_id: None,
         name: ScheduledTaskName::try_from("draft tomorrow's brief").expect("name"),
         prompt: ScheduledPrompt::try_from("Draft tomorrow's morning brief.").expect("prompt"),
         schedule: ScheduleSpec::Once {
@@ -113,6 +111,7 @@ async fn scheduler_fires_due_once_task_and_marks_done(pool: PgPool) {
     let scheduler = ScheduledTaskScheduler::spawn_with_cadence(
         f.store.clone(),
         f.queue.clone(),
+        f.threads.clone(),
         f.colleagues.clone(),
         f.clock.clone(),
         Duration::from_millis(50),
@@ -183,6 +182,7 @@ async fn scheduler_advances_recurring_task_after_fire(pool: PgPool) {
         owner_agent_id: f.default_agent_id,
         org_id: f.default_org_id,
         created_by_user_id: f.default_user_id,
+        channel_id: None,
         name: ScheduledTaskName::try_from("morning email").expect("name"),
         prompt: ScheduledPrompt::try_from("Summarize new email.").expect("prompt"),
         schedule: ScheduleSpec::Recurring {
@@ -197,6 +197,7 @@ async fn scheduler_advances_recurring_task_after_fire(pool: PgPool) {
     let scheduler = ScheduledTaskScheduler::spawn_with_cadence(
         f.store.clone(),
         f.queue.clone(),
+        f.threads.clone(),
         f.colleagues.clone(),
         f.clock.clone(),
         Duration::from_millis(50),
@@ -243,60 +244,48 @@ async fn scheduler_advances_recurring_task_after_fire(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn scheduler_idempotent_on_repeated_ticks_for_same_fire(pool: PgPool) {
-    // A Recurring task that hasn't been advanced yet is still due on the
-    // next tick. The queue's idempotency dedup
-    // (`sched-{task_id}-{fire_ts}`) means repeated enqueues of the same
-    // fire-instant collapse to one row. Verify by claiming twice in a
-    // row before the scheduler had time to update next_run_at.
+async fn scheduler_fire_idempotent_on_same_fire_instant(pool: PgPool) {
+    // The sched key `sched-{task_id}-{fire_ts}` dedups repeated fires of the
+    // same instant (e.g. two scheduler nodes racing a tick before either has
+    // advanced the cursor): the second `enqueue_trigger` collapses onto the
+    // first row via the `(org_id, idempotency_key)` ON CONFLICT.
     let f = fresh(pool).await;
+    let caller = Caller::new(f.default_user_id, f.default_org_id);
+    let human = resolve_user_colleague(&f.pool, f.default_org_id, f.default_user_id)
+        .await
+        .expect("human colleague");
+    let thread = f
+        .threads
+        .create_thread(&caller, None, None, human)
+        .await
+        .expect("thread");
+    let state = f
+        .threads
+        .resolve_participation(&caller, thread, f.default_agent_id)
+        .await
+        .expect("participation");
 
-    let due_at = Utc::now() - ChronoDuration::seconds(30);
-    let payload = NewScheduledTask {
-        owner_agent_id: f.default_agent_id,
+    let task_id = ScheduledTaskId::new();
+    let fire_ts = 1_700_000_000i64;
+    let trigger = || NewTrigger {
         org_id: f.default_org_id,
-        created_by_user_id: f.default_user_id,
-        name: ScheduledTaskName::try_from("idempotent").expect("name"),
-        prompt: ScheduledPrompt::try_from("body").expect("prompt"),
-        schedule: ScheduleSpec::Recurring {
-            weekdays: Weekdays::ALL,
-            time: TimeOfDay::try_new(5, 0).expect("HH:MM"),
-            tz: Timezone::from_tz(Bangkok),
-        },
-        next_run_at: Some(due_at),
+        acting_user_id: f.default_user_id,
+        thread_id: Some(thread),
+        state_id: Some(state),
+        background_turn_id: None,
+        sender_colleague_id: human,
+        receiver_agent_id: f.default_agent_id,
+        root_request_id: None,
+        trigger_message_id: None,
+        idempotency_key: patom::runtime::IdempotencyKey::try_from(format!(
+            "sched-{task_id}-{fire_ts}"
+        ))
+        .expect("key"),
+        kind_payload: RequestKindPayload::Normal {},
     };
-    let task_id = f.store.create(payload).await.expect("create").id;
-
-    // Manually run two claim-and-fire rounds with the same fire_at —
-    // the second should hit `EnqueueOutcome::Existing` and dedup.
-    let due = f.store.claim_due(due_at, 10).await.expect("claim 1");
-    assert_eq!(due.len(), 1);
-    let task = &due[0];
-    let fire_at = task.next_run_at.expect("populated");
-
-    let key_str = format!("sched-{task_id}-{}", fire_at.timestamp());
-    let key1 = IdempotencyKey::try_from(key_str.clone()).expect("key1");
-    let key2 = IdempotencyKey::try_from(key_str).expect("key2");
-
-    let make_req = |k: IdempotencyKey| {
-        NewPromptRequest::normal(
-            None,
-            f.default_human_participant(),
-            f.default_agent_id,
-            None,
-            Prompt::try_from(task.prompt.as_str().to_string()).expect("p"),
-            k,
-            f.default_org_id,
-            f.default_user_id,
-        )
-    };
-    let first = f.queue.enqueue(make_req(key1)).await.expect("first");
-    let second = f.queue.enqueue(make_req(key2)).await.expect("second");
-    assert_eq!(
-        first.request_id(),
-        second.request_id(),
-        "same idempotency key collapses to one row",
-    );
+    let first = f.queue.enqueue_trigger(trigger()).await.expect("first");
+    let second = f.queue.enqueue_trigger(trigger()).await.expect("second");
+    assert_eq!(first, second, "same sched key collapses to one trigger row");
 
     // Exactly one prompt_requests row for this task's idempotency prefix.
     let (count,): (i64,) =

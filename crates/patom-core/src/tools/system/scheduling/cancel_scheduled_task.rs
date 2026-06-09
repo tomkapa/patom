@@ -10,7 +10,6 @@ use tracing::{info, warn};
 
 use crate::auth::begin_as_user;
 use crate::scheduling::{ScheduledTaskError, ScheduledTaskId, SharedScheduledTaskStore};
-use crate::session::SharedSessionStore;
 use crate::tools::{Tool, ToolCallContext, ToolError};
 use crate::types::ToolName;
 
@@ -37,7 +36,6 @@ pub struct CancelScheduledTaskTool {
     description: &'static str,
     input_schema: Arc<Value>,
     store: SharedScheduledTaskStore,
-    sessions: SharedSessionStore,
     pool: PgPool,
 }
 
@@ -50,11 +48,7 @@ impl std::fmt::Debug for CancelScheduledTaskTool {
 
 impl CancelScheduledTaskTool {
     #[must_use]
-    pub fn new(
-        store: SharedScheduledTaskStore,
-        sessions: SharedSessionStore,
-        pool: PgPool,
-    ) -> Self {
+    pub fn new(store: SharedScheduledTaskStore, pool: PgPool) -> Self {
         let name =
             ToolName::try_from(TOOL_NAME).expect("invariant: cancel_scheduled_task valid name");
         let input_schema = Arc::new(json!({
@@ -70,7 +64,6 @@ impl CancelScheduledTaskTool {
             description: TOOL_DESCRIPTION,
             input_schema,
             store,
-            sessions,
             pool,
         }
     }
@@ -102,17 +95,12 @@ impl Tool for CancelScheduledTaskTool {
         // Tenant-side gate: a privileged store would happily let a
         // misrouted call delete a row in another org if the caller
         // somehow guessed both `(task_id, owner_agent_id)`. Open a
-        // `begin_as_user` tx pinned to the session's principal and
-        // confirm the row is visible under RLS before delegating to
-        // the privileged-tx store; cross-tenant calls see zero rows
-        // here and fold into `NotFound` exactly like the cross-owner
-        // case.
-        let tenancy = self.sessions.tenancy(ctx.session_id).await.map_err(|e| {
-            warn!(error = %e, patom.session.id = %ctx.session_id,
-                "cancel_scheduled_task.session_lookup_failed");
-            ToolError::Backend(format!("cancel_scheduled_task: session lookup: {e}"))
-        })?;
-        let mut tx = begin_as_user(&self.pool, tenancy.created_by_user_id)
+        // `begin_as_user` tx pinned to the acting principal (the human at
+        // the DAG root, off the tool-call context) and confirm the row is
+        // visible under RLS before delegating to the privileged-tx store;
+        // cross-tenant calls see zero rows here and fold into `NotFound`
+        // exactly like the cross-owner case.
+        let mut tx = begin_as_user(&self.pool, ctx.acting_user_id)
             .await
             .map_err(|e| {
                 warn!(error = %e, "cancel_scheduled_task.begin_as_user_failed");

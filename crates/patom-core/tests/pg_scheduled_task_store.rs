@@ -98,6 +98,7 @@ fn new_task(t: &Tenancy, name: &str, schedule: ScheduleSpec) -> NewScheduledTask
         owner_agent_id: t.owner,
         org_id: t.org_id,
         created_by_user_id: t.user_id,
+        channel_id: None,
         name: ScheduledTaskName::try_from(name).expect("valid name"),
         prompt: ScheduledPrompt::try_from("Summarize new email since last check.")
             .expect("valid prompt"),
@@ -373,6 +374,7 @@ async fn insert_with_next_run(
         owner_agent_id: t.owner,
         org_id: t.org_id,
         created_by_user_id: t.user_id,
+        channel_id: None,
         name: ScheduledTaskName::try_from(name).expect("valid"),
         prompt: ScheduledPrompt::try_from("body").expect("valid"),
         // Recurring with a single weekday so the row is reusable across fires

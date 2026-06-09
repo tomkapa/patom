@@ -1,14 +1,23 @@
-//! Background scheduler for the scheduling subsystem.
+//! Background scheduler for the scheduling subsystem (the third trigger
+//! source, doc/thread-chat-refactor.md §2/§8).
 //!
-//! Polls the `scheduled_tasks` table on a fixed cadence; for each
-//! row with `state='active'` and `next_run_at <= now()` it enqueues a
-//! `prompt_requests` row addressed to the owning agent and advances
-//! the task's cursor via [`ScheduledTaskStore::record_fired`].
+//! Polls the `scheduled_tasks` table on a fixed cadence; for each row with
+//! `state='active'` and `next_run_at <= now()` the scheduler *initiates a
+//! thread* in the task's target channel and wakes the owning agent in it:
 //!
-//! The fired prompt looks like a normal human-initiated turn from the
-//! worker pool's point of view — `sender = Participant::Human`,
-//! `parent_session: None`, `kind_payload: Normal`. No new queue kind,
-//! no special worker dispatch.
+//! 1. create a thread in `channel_id` (or a DM when `None`), owned by the
+//!    task's human;
+//! 2. resolve the agent's `(thread, agent)` participation;
+//! 3. seed the task prompt as an owner-private `system_note` the agent reads
+//!    read-at-run;
+//! 4. enqueue a `Normal` chat trigger (`root_request_id = None` ⇒ fresh DAG
+//!    budget), addressed agent-side, sender = the task's human;
+//! 5. advance the task's cursor via [`ScheduledTaskStore::record_fired`].
+//!
+//! The trigger looks like a normal human-initiated chat turn to the worker
+//! pool — no new queue kind, no special worker dispatch. Idempotency stays
+//! `sched-{task_id}-{fire_ts}`; the agent's eventual `send_message` to the
+//! task's human is gated by channel membership like any other delivery.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,9 +26,11 @@ use chrono::{DateTime, Utc};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::auth::Caller;
 use crate::clock::SharedClock;
-use crate::runtime::{IdempotencyKey, NewPromptRequest, SharedPromptQueue};
-use crate::types::{Participant, Prompt};
+use crate::provider::{ChatMessage, UserContent};
+use crate::runtime::{IdempotencyKey, NewTrigger, RequestKindPayload, SharedPromptQueue};
+use crate::threads::{MessageKind, NewMessage, SharedThreadStore};
 
 use super::error::ScheduledTaskError;
 use super::limits::{
@@ -45,6 +56,7 @@ impl ScheduledTaskScheduler {
     pub fn spawn(
         store: SharedScheduledTaskStore,
         queue: SharedPromptQueue,
+        threads: SharedThreadStore,
         colleagues: crate::colleagues::SharedColleagueStore,
         clock: SharedClock,
         parent: CancellationToken,
@@ -52,6 +64,7 @@ impl ScheduledTaskScheduler {
         Self::spawn_with_cadence(
             store,
             queue,
+            threads,
             colleagues,
             clock,
             scheduled_task_poll_interval(),
@@ -65,6 +78,7 @@ impl ScheduledTaskScheduler {
     pub fn spawn_with_cadence(
         store: SharedScheduledTaskStore,
         queue: SharedPromptQueue,
+        threads: SharedThreadStore,
         colleagues: crate::colleagues::SharedColleagueStore,
         clock: SharedClock,
         poll_interval: Duration,
@@ -73,6 +87,7 @@ impl ScheduledTaskScheduler {
         let inner = Arc::new(SchedulerInner {
             store,
             queue,
+            threads,
             colleagues,
             clock,
             batch_limit: SCHEDULED_TASK_BATCH_LIMIT,
@@ -93,6 +108,7 @@ impl ScheduledTaskScheduler {
 struct SchedulerInner {
     store: SharedScheduledTaskStore,
     queue: SharedPromptQueue,
+    threads: SharedThreadStore,
     colleagues: crate::colleagues::SharedColleagueStore,
     clock: SharedClock,
     batch_limit: usize,
@@ -134,16 +150,11 @@ impl SchedulerInner {
         now: DateTime<Utc>,
     ) -> Result<(), ScheduledTaskError> {
         let fire_at = task.next_run_at.unwrap_or(now);
-        let prompt = Prompt::try_from(task.prompt.as_str().to_string())?;
-        let key = IdempotencyKey::try_from(format!("sched-{}-{}", task.id, fire_at.timestamp()))?;
-        // Tenancy flows directly off the row — migration 19 added
-        // `org_id` + `created_by_user_id` to `scheduled_tasks`, so the
-        // scheduler no longer needs to JOIN through `agents` /
-        // `org_members` at fire-time.
         // §5 — bound the directory read so a stuck lookup can't wedge the
         // firing loop. Timeout and inner error both surface as Backend; the
-        // row keeps its cursor and the next poll retries.
-        let human_colleague = tokio::time::timeout(
+        // row keeps its cursor and the next poll retries. Tenancy flows off the
+        // row (`org_id`/`created_by_user_id`); the human owns the new thread.
+        let human = tokio::time::timeout(
             COLLEAGUE_RESOLVE_TIMEOUT,
             self.colleagues
                 .resolve_user(task.org_id, task.created_by_user_id),
@@ -151,22 +162,32 @@ impl SchedulerInner {
         .await
         .map_err(|_| ScheduledTaskError::Backend("resolve human colleague: timeout".to_string()))?
         .map_err(|e| ScheduledTaskError::Backend(format!("resolve human colleague: {e}")))?;
-        let req = NewPromptRequest::normal(
-            None,
-            Participant::human(human_colleague, task.created_by_user_id),
-            task.owner_agent_id,
-            None,
-            prompt,
-            key,
-            task.org_id,
-            task.created_by_user_id,
-        );
-        let outcome = self.queue.enqueue(req).await?;
-        let request_id = outcome.request_id();
 
-        // Compute next fire from the materialised schedule against `now`,
-        // not the stored cursor — keeps the cadence anchored to wall time
-        // rather than amplifying scheduler skew across firings.
+        // Initiate the thread + agent participation + seed instruction, then
+        // wake the agent with a fresh-DAG `Normal` chat trigger.
+        let caller = Caller::new(task.created_by_user_id, task.org_id);
+        let (thread, state, seed) = self.initiate_thread(task, &caller, human).await?;
+        let key = IdempotencyKey::try_from(format!("sched-{}-{}", task.id, fire_at.timestamp()))?;
+        let request_id = self
+            .queue
+            .enqueue_trigger(NewTrigger {
+                org_id: task.org_id,
+                acting_user_id: task.created_by_user_id,
+                thread_id: Some(thread),
+                state_id: Some(state),
+                background_turn_id: None,
+                sender_colleague_id: human,
+                receiver_agent_id: task.owner_agent_id,
+                root_request_id: None,
+                trigger_message_id: Some(seed),
+                idempotency_key: key,
+                kind_payload: RequestKindPayload::Normal {},
+            })
+            .await?;
+
+        // Advance the cursor from the materialised schedule against `now`, not
+        // the stored cursor — keeps cadence anchored to wall time rather than
+        // amplifying scheduler skew across firings.
         let next = task.schedule.next_after(now);
         self.store
             .record_fired(task.id, request_id, fire_at, next)
@@ -176,11 +197,56 @@ impl SchedulerInner {
         info!(
             patom.scheduled_task.id = %task.id,
             patom.agent.id = %task.owner_agent_id,
+            patom.thread.id = %thread,
             patom.scheduled_task.fire_at = %fire_at,
             patom.request.id = %request_id,
             patom.scheduled_task.next_run_at = %next_str,
             "scheduling.fired",
         );
         Ok(())
+    }
+
+    /// Create the thread in the task's channel (DM when `None`), resolve the
+    /// agent's participation, and seed the task prompt as an owner-private
+    /// `system_note`. Returns `(thread, state, seed_message)`.
+    async fn initiate_thread(
+        &self,
+        task: &ScheduledTaskRecord,
+        caller: &Caller,
+        human: crate::colleagues::ColleagueId,
+    ) -> Result<
+        (
+            crate::threads::ThreadId,
+            crate::threads::AgentThreadId,
+            crate::threads::ThreadMessageId,
+        ),
+        ScheduledTaskError,
+    > {
+        let thread = self
+            .threads
+            .create_thread(caller, task.channel_id, None, human)
+            .await?;
+        // Once the thread exists, the participation row (`agent_thread_state`)
+        // and the seed message (`thread_messages`) are independent — disjoint
+        // tables, no ordering dep — so overlap them to save a round-trip.
+        let (state, seed) = tokio::try_join!(
+            self.threads
+                .resolve_participation(caller, thread, task.owner_agent_id),
+            self.threads.append(
+                caller,
+                thread,
+                NewMessage {
+                    kind: MessageKind::SystemNote,
+                    sender: None,
+                    owner_agent_id: Some(task.owner_agent_id),
+                    receiver: None,
+                    body: ChatMessage::User(vec![UserContent::Text(
+                        task.prompt.as_str().to_string(),
+                    )]),
+                    request_id: None,
+                },
+            )
+        )?;
+        Ok((thread, state, seed))
     }
 }

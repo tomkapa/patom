@@ -1,13 +1,19 @@
 # Thread-chat refactor — plan + handoff
 
-> **Status (handoff, updated through P8):** branch `feat/thread-chat-refactor`, dev DB migrated to `63`.
+> **Status (handoff, updated through P9):** branch `feat/thread-chat-refactor`, dev DB migrated to `63`.
 >
-> **Done + verified green: P0–P8** (each has a green opening test against local Postgres; lib + tests
+> **Done + verified green: P0–P9** (each has a green opening test against local Postgres; lib + tests
 > `clippy -D warnings` + fmt clean). **Commits:** `b436a83` (P4+P5), `f21bfd4` (P6), `58189b9` (P7),
-> `dbadc23` (P8). Working tree is clean.
+> `dbadc23` (P8). **P9 + the P10 G2 feed core are in the working tree, verified green, not yet committed.**
 >
-> **Remaining: P9 → P10 → P11.** Start at **§8 "Resume here"** for the P9 plan, then §6 (per-phase
-> progress), §6a (carried-forward deferred TODOs — read before P9/P10/P11), and §7 (discovered gaps).
+> **Remaining: P10 (route/stream/slack rehome) → P11.** P10's canonical-feed read (`ThreadStore::feed`,
+> G2) has landed green; what's left of P10 is wiring it into the routes + the `root_request_id → thread_id`
+> stream re-key. Start at **§8 "Resume here"**, then §6 (per-phase progress incl. the "P10 in progress"
+> block), §6a (carried-forward deferred TODOs), and §7 (discovered gaps).
+>
+> **Working tree at this checkpoint compiles + is `clippy`/`fmt` clean; no previously-green test was
+> broken** (the legacy `session/`-keyed routes/tests remain runtime-red exactly as P0 left them, pending
+> their P10 rewrite + P11 deletion).
 >
 > **Expected redness:** the legacy `session/`-keyed paths still *compile* but their tests are **red**
 > (P0 dropped `sessions`/`session_messages`); they are deleted in **P11**. Don't "fix" them mid-stream.
@@ -245,7 +251,67 @@ reply-discard cleanup + `find_candidates` batch-limit assertion (P8). Skipped (w
 thread/background turn loops (§4 — only 2 impls, they diverge on ping-pong/store/mapping); a context
 row-LIMIT (append volume is already bounded by the `max_turns` loop).
 
-## 6a. Carried-forward deferred TODOs (read before P9/P10/P11)
+**P9 core ✅** — scheduling is the third trigger source (thread model).
+- `scheduled_tasks.channel_id` plumbed through `NewScheduledTask` / `ScheduledTaskRecord` /
+  `PgScheduledTaskStore` (SELECT/INSERT/row map). `ScheduledTaskError` gains `Thread(#[from] ThreadError)`.
+- `ScheduledTaskScheduler.fire` rewritten: resolve the task's human colleague → `create_thread` in
+  `task.channel_id` (DM when `None`, created-by = the human) → `resolve_participation` → seed the task
+  prompt as an **owner-private `system_note`** (the agent reads it read-at-run) → `enqueue_trigger`
+  (`Normal`, `root_request_id = None` ⇒ fresh DAG, sender = human, receiver = agent,
+  `trigger_message_id` = the seed) → `record_fired`. `spawn`/`spawn_with_cadence` gain `threads`.
+  Old `queue.enqueue`/`NewPromptRequest::normal` path dropped from the scheduler (one less runtime-red caller).
+- `ThreadStore::channel_of(thread)` added (privileged point lookup) so the tool can inherit the current
+  thread's channel.
+- Scheduling tools rehomed off the dropped `sessions`: `schedule_task` now sources org/user from
+  `ctx.org_id`/`ctx.acting_user_id` and `channel_id` from `channel_of(ctx.thread_id)` (drops the
+  `sessions` + `agents` deps, adds `threads`); `list`/`cancel` use `ctx.acting_user_id` for the
+  `begin_as_user` gate instead of `sessions.tenancy(ctx.session_id)` (drop `sessions` dep). `app.rs`
+  wiring updated for all three + the scheduler spawn.
+- Test `tests/scheduling_thread_fire.rs::fire_creates_thread_and_agent_posts_summary_tagging_owner`
+  (worker-driven: fire → thread in `#general` → agent `send_message`s a summary tagging the owner, gated
+  by membership). `scheduling_pipeline.rs` adapted to the new model (its two scheduler-driven tests, red
+  since P0, are green again; the old-path idempotency test replaced with an `enqueue_trigger` `sched-` key
+  dedup test). `auth_scheduled_tasks` / `pg_scheduled_task_store` / `scheduling_routes` updated for the new
+  `channel_id` field + spawn signature. lib + tests `clippy -D warnings` + fmt clean.
+**Remaining in P9 / deferred:**
+- **Concurrent double-fire** of the same instant on multiple scheduler nodes creates a thread *before* the
+  idempotent `enqueue_trigger` dedups the trigger — leaving an orphan thread on the loser. Single-node
+  (current) firing advances `next_run_at` via `record_fired` before the next tick, so it doesn't occur; the
+  trigger itself is still deduped by the `sched-{task}-{fire}` key. Tighten (check idempotency before
+  thread create, or unique-key the fire-thread) if multi-node scheduling lands.
+- The scheduling **HTTP route** is read/cancel-only and lists explicit columns, so it neither needs nor
+  surfaces `channel_id`; a future "show target channel" is a FE concern (P11).
+
+**P10 in progress** — the canonical-feed data path (G2) landed; the route/stream/slack rehome remains.
+- **Done + green:** `ThreadStore::feed(caller, thread, before_seq, limit)` + `FeedMessage`/`FeedParticipant`
+  (`src/threads/{traits,pg_store}.rs`) — the flat multi-party feed read (posted ∪ everyone's private
+  artifacts, `kind` exposed, both participant sides resolved to colleague satellites, membership-gated +
+  active-org-pinned, `seq` keyset paging via `MAX_THREAD_FEED`/`DEFAULT_THREAD_FEED`). Opening test
+  `tests/threads_feed.rs::g2_canonical_feed_seq_order_multi_party` green; lib + tests `clippy -D warnings`
+  + fmt clean. This is the G2 read the HTTP route will sit on.
+- **G1 + G2 routes ✅ (working tree, compile + `clippy -D warnings` + fmt clean):**
+  `http/routes/threads.rs` `list_threads` rewritten onto `ThreadStore::list_threads` (drops the
+  `THREAD_LIST_SQL` sessions CTE; wire shape now `{thread_id, channel_id, last_activity_at}` — preview /
+  reply-count are FE follow-ups), and `thread_messages` rewritten onto `ThreadStore::feed` keyed by
+  `{thread_id}` (drops `THREAD_HISTORY_SQL`/`HistoryRow`; wire shape now exposes `kind` + `owner_agent_id`
+  + an optional any-party `sender`, per-author name/avatar enrichment preserved). The store is built
+  inline from `state.pool`/`state.clock` (no `AppState` field ripple — matches the `AppState.pool` seam).
+  `before_seq` keyset cursor. The existing `threads_routes.rs` G1/G2 tests are now runtime-red on the old
+  shape (they assert `root_request_id` rows) — rewrite them onto the feed alongside G3.
+- **Still to do in P10** (the stream + slack re-key is one atomic chunk — `ThreadStreamItem.session_id` /
+  `AgentMessage.to_session` are read by the 1200-line session-coupled `slack/stream_pump.rs`, so the
+  re-key and the slack rehome must land together or the tree won't compile):
+  - **G3 stream re-key** (note 10 — the biggest coupling; also un-breaks publish, whose NOTIFY `req` CTE
+    still selects the dropped `session_id`): `prompt_requests` already has `thread_id`;
+    re-key the NOTIFY payload (`pg_response`), the `PgThreadStream` slot key + `subscribe`, the route's
+    `{id}` path, and the worker quiescence terminal from `root_request_id` → `thread_id`
+    (`ResponseChunk::AgentMessage.to_session` → a `thread_id`). `ThreadStreamItem.session_id` → thread.
+  - **prompts / get_session / slack**: `POST /prompts` @tag routing auto-creates a thread rooted at the
+    channel message (note 12); `get_session` → read the thread tail; `slack_threads` bind to `thread_id`;
+    re-add the P5 human-delivery SSE notify on the thread-keyed stream.
+  - Rewrite the now-runtime-red HTTP/slack tests (`threads_routes.rs`, `slack_e2e.rs`) onto the thread feed.
+
+## 6a. Carried-forward deferred TODOs (read before P10/P11)
 
 Cross-phase loose ends, with the phase that should close each. None block the green opening tests; they
 are the difference between "opening test passes" and "feature is production-correct".
@@ -349,21 +415,13 @@ These are facts learned while building P0–P3 that aren't obvious from the plan
 
 ## 8. Remaining phases — Resume here
 
-**P0–P8 are done (§6).** Remaining: **P9 → P10 → P11**. Each opens with a failing test (CLAUDE.md §3).
-Read §6a (carried-forward TODOs) before starting — some P8 follow-ups (reflection checkpoint, resolution
-rehome) are cognition-adjacent and may be cleanest to close alongside P9.
+**P0–P9 are done (§6).** Remaining: **P10 → P11**. Each opens with a failing test (CLAUDE.md §3).
+Read §6a (carried-forward TODOs) before starting — the P8 follow-ups (reflection checkpoint write,
+resolution rehome) are still open and cognition-adjacent; close them alongside P10/P11.
 
-- **P9 scheduling** (opening test `fire_creates_thread_and_agent_posts_summary_tagging_owner`):
-  `scheduled_tasks.channel_id` (column added in migration 63 — already there). `ScheduledTaskScheduler.fire`
-  → `ThreadStore::create_thread` in the task's channel + seed an owner-private `system_note` instruction
-  into the thread (the agent reads it read-at-run) + `resolve_participation` + mint a DAG (acting_user =
-  task owner) + `enqueue_trigger` (Normal chat trigger). The scheduled tool/route gain `channel_id`.
-  Idempotency keeps `sched-{task_id}-{fire_ts}` (note 14). The tagged user must be a channel member
-  (send_message human-gate; note 15). **Pattern to mirror:** the reflection scheduler's
-  `enqueue_reflection` (P8) is the closest analogue — but P9 seeds a **thread** + a Normal chat trigger
-  (read-at-run), not a background turn. Files: `src/scheduling/*`, `src/http/routes/scheduling.rs`,
-  `tools/system/scheduling/*` (these scheduling tools still read `ctx.session_id` — rehome to
-  `ctx.thread_id`/`state_id` or the task's channel).
+- **P9 scheduling ✅ (§6)** — opening test `fire_creates_thread_and_agent_posts_summary_tagging_owner`
+  green; the scheduler now initiates a thread + seeds an owner-private instruction + `enqueue_trigger`s a
+  `Normal` chat trigger; scheduling tools rehomed off `sessions`. Not yet committed (working tree).
 - **P10 HTTP + Slack + stream** (opening tests `g2_canonical_feed_seq_order_multi_party`; stream-by-thread):
   rewrite G1/G2 (flat feed, per-author label+avatar for everyone, expose `kind`, drop pair `receiver`);
   G3 stream re-key to `thread_id` (note 10); `slack_threads` bind to `thread_id`; `POST /prompts` @tag

@@ -6,16 +6,16 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
-use crate::agents::SharedAgentStore;
+use crate::channels::ChannelId;
 use crate::clock::SharedClock;
 use crate::scheduling::{
     DefaultTimezone, MAX_ONESHOT_HORIZON_DAYS, NewScheduledTask, SCHEDULED_TASK_NAME_MAX_LEN,
     ScheduleSpec, ScheduledPrompt, ScheduledTaskError, ScheduledTaskId, ScheduledTaskName,
     SharedScheduledTaskStore,
 };
-use crate::session::SharedSessionStore;
+use crate::threads::SharedThreadStore;
 use crate::tools::{Tool, ToolCallContext, ToolError};
 use crate::types::{PROMPT_MAX_BYTES, ToolName};
 
@@ -75,8 +75,7 @@ pub struct ScheduleTaskTool {
     description: &'static str,
     input_schema: Arc<Value>,
     store: SharedScheduledTaskStore,
-    agents: SharedAgentStore,
-    sessions: SharedSessionStore,
+    threads: SharedThreadStore,
     default_tz: DefaultTimezone,
     clock: SharedClock,
 }
@@ -91,8 +90,7 @@ impl ScheduleTaskTool {
     #[must_use]
     pub fn new(
         store: SharedScheduledTaskStore,
-        agents: SharedAgentStore,
-        sessions: SharedSessionStore,
+        threads: SharedThreadStore,
         default_tz: DefaultTimezone,
         clock: SharedClock,
     ) -> Self {
@@ -157,8 +155,7 @@ impl ScheduleTaskTool {
             description: TOOL_DESCRIPTION,
             input_schema,
             store,
-            agents,
-            sessions,
+            threads,
             default_tz,
             clock,
         }
@@ -196,44 +193,26 @@ impl ScheduleTaskTool {
             ToolError::InvalidInput("schedule_task: schedule produces no future fire time".into())
         })?;
 
-        // Tenancy: `org_id` is the calling agent's org (every agent has
-        // a NOT NULL `agents.org_id` — single source of truth for which
-        // tenant the scheduled task belongs to). `created_by_user_id`
-        // is the human at the DAG root of this session, fetched via
-        // `SessionStore::tenancy` so a retried fire resolves the same
-        // principal even if the agent loop has churned through several
-        // sessions in the interim.
-        let agent_record = self.agents.read(owner).await.map_err(|e| {
-            set_outcome(TaskOutcome::BackendError);
-            error!(error = ?e, patom.agent.id = %owner, "schedule_task.agent_lookup_failed");
-            ToolError::Backend(format!("schedule_task: agent lookup: {e}"))
-        })?;
-        let session_tenancy = self.sessions.tenancy(ctx.session_id).await.map_err(|e| {
-            set_outcome(TaskOutcome::BackendError);
-            error!(error = ?e, patom.session.id = %ctx.session_id,
-                "schedule_task.session_lookup_failed");
-            ToolError::Backend(format!("schedule_task: session lookup: {e}"))
-        })?;
-
+        // Tenancy comes straight off the tool-call context (thread model):
+        // `ctx.org_id` is the calling agent's org and `ctx.acting_user_id` is
+        // the human at the DAG root — the same principal the fire-tx will later
+        // assume, so the task auths and executes under one identity. The fired
+        // thread targets the channel of the thread this call ran in (note 15:
+        // the agent's eventual delivery to that human is membership-gated).
+        let channel_id = self.target_channel(ctx).await?;
         let payload = NewScheduledTask {
             owner_agent_id: owner,
-            org_id: agent_record.org_id,
-            created_by_user_id: session_tenancy.created_by_user_id,
+            org_id: ctx.org_id,
+            created_by_user_id: ctx.acting_user_id,
+            channel_id,
             name,
             prompt,
             schedule,
             next_run_at: Some(next_run_at),
         };
-        // Authorise + persist as the session-derived principal (the
-        // human at the DAG root). `ctx.acting_user_id` and
-        // `session_tenancy.created_by_user_id` agree under normal
-        // worker dispatch, but if the call ever arrives via a path
-        // where they diverge the row must commit under the same
-        // principal that the fire-tx will later assume — otherwise the
-        // task auths under one user and executes under another.
         let row = match self
             .store
-            .create_for_user(session_tenancy.created_by_user_id, payload)
+            .create_for_user(ctx.acting_user_id, payload)
             .await
         {
             Ok(row) => row,
@@ -265,6 +244,20 @@ impl ScheduleTaskTool {
             task_id: row.id,
             name: row.name,
             next_run_at,
+        })
+    }
+
+    /// The channel the fired thread should live in: the channel of the thread
+    /// this call ran in. `None` (no thread context, e.g. a background turn) ⇒ a
+    /// DM thread private to the task owner at fire time.
+    async fn target_channel(&self, ctx: &ToolCallContext) -> Result<Option<ChannelId>, ToolError> {
+        let Some(thread) = ctx.thread_id else {
+            return Ok(None);
+        };
+        self.threads.channel_of(thread).await.map_err(|e| {
+            set_outcome(TaskOutcome::BackendError);
+            warn!(error = %e, patom.thread.id = %thread, "schedule_task.channel_lookup_failed");
+            ToolError::Backend(format!("schedule_task: resolve channel: {e}"))
         })
     }
 

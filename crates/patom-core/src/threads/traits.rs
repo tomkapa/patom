@@ -22,6 +22,7 @@ use crate::channels::ChannelId;
 use crate::colleagues::ColleagueId;
 use crate::provider::ChatMessage;
 use crate::runtime::PromptRequestId;
+use crate::types::{MessageSender, Participant};
 
 use super::error::ThreadError;
 
@@ -34,6 +35,29 @@ pub struct ThreadListItem {
     pub thread_id: ThreadId,
     pub channel_id: Option<ChannelId>,
     pub last_activity_at: DateTime<Utc>,
+}
+
+/// One row of the canonical flat thread feed (the G2 read).
+///
+/// Unlike [`ThreadStore::context_for_agent`] (an agent's viewer-mapped *LLM*
+/// context), this is the display feed: every row in `seq` order with its `kind`
+/// exposed (posted chat ∪ everyone's reasoning / tool_use / tool_result /
+/// system_note — agent thinking is shown to all for transparency, §2). The FE
+/// renders private artifacts differently from posted chat. Both participant
+/// sides are decoded once in the store via the canonical `Participant::try_from`
+/// (§1): `sender` is [`MessageSender::System`] on a System row; `receiver` is
+/// `None` when the row addresses no one. `owner_agent_id` is set on every
+/// non-`Posted` row.
+#[derive(Debug, Clone)]
+pub struct FeedMessage {
+    pub seq: i64,
+    pub kind: MessageKind,
+    pub sender: MessageSender,
+    pub owner_agent_id: Option<AgentId>,
+    pub receiver: Option<Participant>,
+    pub body: serde_json::Value,
+    pub request_id: Option<PromptRequestId>,
+    pub created_at: DateTime<Utc>,
 }
 
 crate::uuid_newtype! {
@@ -145,6 +169,27 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
         thread: ThreadId,
         user_id: UserId,
     ) -> Result<bool, ThreadError>;
+
+    /// The canonical flat feed for `thread` in `seq` order — the G2 read. Every
+    /// row (posted chat ∪ everyone's private artifacts) with its `kind` exposed
+    /// and both participant sides resolved to colleague satellites for the HTTP
+    /// boundary. Runs RLS-scoped under `caller` so a thread the caller can't see
+    /// (cross-org, or a channel they're not in) yields an empty page rather than
+    /// a leak. `before_seq = Some` pages backwards (rows with `seq < before_seq`);
+    /// `LIMIT MAX_THREAD_FEED`.
+    async fn feed(
+        &self,
+        caller: &Caller,
+        thread: ThreadId,
+        before_seq: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<FeedMessage>, ThreadError>;
+
+    /// The channel a thread belongs to, or `None` for a DM thread. Returns
+    /// [`ThreadError::NotFound`] if the thread is missing. Privileged read —
+    /// callers (the `schedule_task` tool) need the location of a thread they
+    /// are already participating in to inherit it onto a scheduled task.
+    async fn channel_of(&self, thread: ThreadId) -> Result<Option<ChannelId>, ThreadError>;
 
     /// Build `agent`'s LLM context for `thread`: every `posted` row (from
     /// anyone) plus `agent`'s own private artifacts, in `seq` order, mapped to

@@ -157,6 +157,7 @@ impl Harness {
                 owner_agent_id: self.seed.agent_id,
                 org_id: self.seed.org_id,
                 created_by_user_id: self.seed.user_id,
+                channel_id: None,
                 name: ScheduledTaskName::try_from(name).expect("valid name"),
                 prompt: ScheduledPrompt::try_from("do the thing").expect("valid prompt"),
                 schedule,
