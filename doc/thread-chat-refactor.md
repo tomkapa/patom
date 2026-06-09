@@ -3,9 +3,8 @@
 > **Status (handoff, updated through P8):** branch `feat/thread-chat-refactor`, dev DB migrated to `63`.
 >
 > **Done + verified green: P0–P8** (each has a green opening test against local Postgres; lib + tests
-> `clippy -D warnings` + fmt clean). **Commits:** `b436a83` (P4+P5), `f21bfd4` (P6), `58189b9` (P7).
-> **P8 is complete and green but UNCOMMITTED in the working tree** — when resuming, review/commit it first
-> (suggested: `feat(threads): P8 reflection rehomed onto background cognition`), then continue at **P9**.
+> `clippy -D warnings` + fmt clean). **Commits:** `b436a83` (P4+P5), `f21bfd4` (P6), `58189b9` (P7),
+> `dbadc23` (P8). Working tree is clean.
 >
 > **Remaining: P9 → P10 → P11.** Start at **§8 "Resume here"** for the P9 plan, then §6 (per-phase
 > progress), §6a (carried-forward deferred TODOs — read before P9/P10/P11), and §7 (discovered gaps).
