@@ -252,6 +252,19 @@ const me = {
         return orgState.onboarded;
       },
     },
+    // An abandoned half-created workspace (onboarded: false) — the
+    // creator left the wizard after step 1. The OrgSwitcher must filter
+    // this out so it doesn't show as a confusing "duplicate"; only the
+    // completed workspace above is switchable.
+    {
+      id: "00000000-0000-7000-8000-0000000000bb",
+      name: "Alex Lui",
+      slug: "alex-lui-2",
+      role: "owner" as const,
+      default_language: "en" as "en" | "vi",
+      avatar_url: null as string | null,
+      onboarded: false,
+    },
   ],
   active_org_id: ORG_ID,
   role: "owner" as const,

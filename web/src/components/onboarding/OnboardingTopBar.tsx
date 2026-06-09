@@ -1,5 +1,6 @@
 import { Check, X } from "lucide-react";
 import { useAuthStore } from "../../stores/authStore";
+import { Button } from "../atoms/Button";
 
 export type StepKey = "name" | "team" | "invite";
 
@@ -48,31 +49,18 @@ export function OnboardingTopBar({
       className="flex h-[60px] w-full items-center justify-between border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-primary)] px-8"
       data-onboarding-topbar
     >
-      {/* Left: Cancel button (when cancellable) else the brand mark. */}
-      {onCancel ? (
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={cancelling}
-          className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[var(--color-fg-muted)] transition-colors hover:text-[var(--color-rose)] disabled:cursor-not-allowed disabled:opacity-50"
-          data-testid="onboarding-cancel"
+      {/* Left: brand mark */}
+      <div className="flex items-center gap-2.5">
+        <span
+          aria-hidden="true"
+          className="inline-flex h-7 w-7 items-center justify-center bg-[var(--color-moss)] font-[var(--font-display)] text-[15px] font-bold text-white"
         >
-          <X className="h-4 w-4" strokeWidth={2} />
-          {cancelling ? "Cancelling…" : "Cancel"}
-        </button>
-      ) : (
-        <div className="flex items-center gap-2.5">
-          <span
-            aria-hidden="true"
-            className="inline-flex h-7 w-7 items-center justify-center bg-[var(--color-moss)] font-[var(--font-display)] text-[15px] font-bold text-white"
-          >
-            P
-          </span>
-          <span className="font-[var(--font-display)] text-[16px] font-bold text-[var(--color-moss-deep)]">
-            Patom
-          </span>
-        </div>
-      )}
+          P
+        </span>
+        <span className="font-[var(--font-display)] text-[16px] font-bold text-[var(--color-moss-deep)]">
+          Patom
+        </span>
+      </div>
 
       {/* Center: stepper */}
       <ol className="flex items-center gap-2.5" aria-label="Onboarding steps">
@@ -115,10 +103,23 @@ export function OnboardingTopBar({
         })}
       </ol>
 
-      {/* Right: user email */}
-      <div className="font-[var(--font-mono)] text-[12px] text-[var(--color-fg-muted)]">
-        {email}
-      </div>
+      {/* Right: Cancel button while a flow is in progress, else the
+          signed-in user's email. */}
+      {onCancel ? (
+        <Button
+          variant="danger"
+          loading={cancelling}
+          onClick={onCancel}
+          data-testid="onboarding-cancel"
+        >
+          <X className="h-3.5 w-3.5" strokeWidth={2} />
+          Cancel
+        </Button>
+      ) : (
+        <div className="font-[var(--font-mono)] text-[12px] text-[var(--color-fg-muted)]">
+          {email}
+        </div>
+      )}
     </header>
   );
 }

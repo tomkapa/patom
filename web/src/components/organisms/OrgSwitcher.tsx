@@ -64,8 +64,15 @@ export function OrgSwitcher() {
     >
       {({ close }) => (
         <ul role="listbox" aria-label={t("orgswitcher.aria.list")}>
-          {me.orgs.map((org) => {
-            const isActive = org.id === me.active_org_id;
+          {/* Only completed workspaces are switchable. An un-onboarded org
+              is a half-created workspace (the creator left the wizard
+              before finishing) — listing it shows a confusing "duplicate"
+              and switching into it bounces the user back to onboarding.
+              The active org is always kept so its checkmark never vanishes. */}
+          {me.orgs
+            .filter((org) => org.onboarded || org.id === me.active_org_id)
+            .map((org) => {
+              const isActive = org.id === me.active_org_id;
             const onPick = () => {
               if (switchOrg.isPending) return;
               if (isActive) {
