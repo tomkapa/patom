@@ -1,33 +1,38 @@
 # Thread-chat refactor — plan + handoff
 
-> **Status (handoff, updated through the P10 rehome):** branch `feat/thread-chat-refactor`, dev DB migrated
-> to `64`.
+> **Status (handoff, updated through P11):** branch `feat/thread-chat-refactor`, dev DB migrated to `64`.
 >
-> **Done + verified green: P0–P10 (the full stream + slack + prompts rehome).** Migration `64` applied
-> (round-trips). The lib is `clippy --lib -D warnings` + `fmt` clean; the whole workspace **compiles**
-> (`cargo test --no-run`), and the rehome + e2e tests pass against local Postgres:
-> `thread_stream_by_thread` (opening test — publish-on-request reaches a subscriber on its thread),
-> `threads_routes` (G1/G2/G3 on the new wire), `prompts_routes` (@tag root + continuation continuity),
-> `threads_feed`, `slack_e2e` (signed app_mention → bridge → worker → pump → Slack post, end-to-end), plus
-> the P0–P9 new-path suite (no regressions). **Not yet committed** — working tree carries the rehome.
+> **Done + verified green: P0–P11.** Commits this effort: `d077e6e` (P10 rehome — stream + slack + prompts
+> onto `thread_id`), `26a7bfb` (P11 — delete the `session/` module + retype recorders onto `state_id`),
+> `078a1e0` (P11 — advance reflection checkpoint on success). Lib `clippy --lib -D warnings` + `fmt` clean;
+> `cargo check --all-targets` clean; the full `cargo test -p patom-core` suite green.
 >
-> **What the rehome landed (uncommitted):** migration `64` (`slack_threads` + `mcp_oauth_pending` re-keyed
-> onto `thread_id`); `ResponseChunk::AgentMessage{to_thread}`; `pg_response` PUBLISH_CTE now reads/notifies
-> `thread_id` (fixes note 16 — publish was runtime-broken); `PgThreadStream` keyed by `thread_id`
-> (`NotifyPayload`/slot table/`subscribe`/`ThreadStreamItem`); G3 route on `thread_id` + `ThreadStore::
-> visible_to` gate (continuous SSE, no close-on-terminal); `POST /prompts` + the MCP-OAuth resume rehomed
-> onto create-thread/append/`enqueue_trigger` (idempotent pre-check; `ResumeCtx.thread_id`,
-> `mcp_oauth_pending.thread_id`); slack `thread_map`/`bridge`/`stream_pump`/`connect_link` rehomed
-> (one Patom thread ↔ one Slack thread; pump simplified — no per-session mint); `send_message` re-publishes
-> an `AgentMessage` egress chunk (the SSE/Slack notify); `get_session` **deleted** (read-at-run subsumes it);
-> `ThreadStore` gained `visible_to` + `last_agent`.
+> **P10 rehome (`d077e6e`):** migration `64` (`slack_threads` + `mcp_oauth_pending` → `thread_id`);
+> `ResponseChunk::AgentMessage{to_thread}`; `pg_response` PUBLISH_CTE reads/notifies `thread_id` (fixed the
+> runtime-broken publish); `PgThreadStream` keyed by `thread_id`; G3 route on `thread_id` + `ThreadStore::
+> visible_to`; `POST /prompts` + MCP-OAuth resume on create-thread/append/`enqueue_trigger`; slack
+> `thread_map`/`bridge`/`stream_pump`/`connect_link` (one Patom thread ↔ one Slack thread); `send_message`
+> re-publishes an `AgentMessage` egress chunk; `get_session` deleted; `ThreadStore` gained `visible_to` +
+> `last_agent`.
 >
-> **Remaining: P11 (the dead-code sweep + recorder retype + cognition follow-ups) + the web FE.** This is
-> still a large, mostly-independent effort — see §6a/§8. The legacy `session/`-keyed tests
-> (`pg_session_store`, `session_resolve`, `quiescence`, `runtime_pipeline`, `turns_routes`, `pg_response_hub`)
-> remain **runtime-red exactly as P0 left them** (they compile against the still-present `session/` module);
-> they are deleted/rewritten in P11. `RequestStatusView.session` is still a bridged `SessionId` (compiles;
-> retype in P11). Don't "fix" the red session tests piecemeal — they go away with the module.
+> **P11 (`26a7bfb` + `078a1e0`):** deleted `src/session/` entirely + the legacy agent pair path
+> (`reply`/`resume`/`run_loop`/`counterpart`/`run_turn`) + the old queue surface (`enqueue`/
+> `claim_next_session`/`mark_done`/`mark_failed`/`LeaseManager`/`ClaimedSession`/`LeaseToken`/
+> `NewPromptRequest`/`EnqueueOutcome`); introduced the `ClaimKey` newtype as the polymorphic turn scope
+> (memory + hook contexts), retyped the `turn_metrics`/`tool_calls`/`session_todos` recorders + todos onto
+> `state_id: AgentThreadId` (they FK `agent_thread_state`, so chat-only — skipped on the background path);
+> wired the per-thread `<todos>` block into the thread context; rehomed the librarian **resolution** enqueue
+> onto background turns; `RequestStatusView.session → claim_key`; `turns.rs` off the dropped tables; deleted
+> ~17 pair-model / dropped-table test files. **Reflection checkpoint write** (`078a1e0`): the worker advances
+> `reflection_checkpoints (agent, thread).last_message_id` on success so the scheduler stops re-enqueuing
+> each idle window.
+>
+> **Remaining (deferred hardening + FE):** (1) the **web FE** rehome onto the new G1/G2/G3 wire +
+> `mock-backend.ts` — in progress in this effort. (2) **tool_use/tool_result re-pair** at context-build
+> (note 13) — a concurrent-interleaving edge case; `context_for_agent` does not yet reorder a tool_use/
+> tool_result pair that a peer's posted row split by `seq`. (3) the **prompt_requests org-parity trigger**
+> (note 2) — defense-in-depth only (RLS already gates org membership; the child tables already have parity
+> triggers). Both (2) and (3) are documented deferrals, not blockers.
 
 ---
 
