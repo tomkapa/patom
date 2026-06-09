@@ -345,6 +345,38 @@ impl ThreadStore for PgThreadStore {
             .ok_or(ThreadError::NotFound(thread))
     }
 
+    #[tracing::instrument(skip_all, name = "thread.advance_reflection_checkpoint", fields(patom.thread.id = %thread, patom.agent.id = %agent))]
+    async fn advance_reflection_checkpoint(
+        &self,
+        org_id: crate::auth::OrgId,
+        agent: AgentId,
+        thread: ThreadId,
+        up_to_message_id: ThreadMessageId,
+    ) -> Result<(), ThreadError> {
+        let now = self.now();
+        // Privileged upsert — worker-side cognition has no per-request principal.
+        // The `(agent_id, thread_id)` PK makes this idempotent; advancing
+        // `last_message_id` is what stops the scheduler re-enqueuing each tick.
+        run_privileged::<(), ThreadError>(&self.pool, async |tx| {
+            sqlx::query(
+                "INSERT INTO reflection_checkpoints \
+                   (agent_id, thread_id, last_message_id, org_id, created_at) \
+                 VALUES ($1, $2, $3, $4, $5) \
+                 ON CONFLICT (agent_id, thread_id) \
+                 DO UPDATE SET last_message_id = EXCLUDED.last_message_id",
+            )
+            .bind(agent)
+            .bind(thread)
+            .bind(up_to_message_id)
+            .bind(org_id)
+            .bind(now)
+            .execute(&mut **tx)
+            .await?;
+            Ok(())
+        })
+        .await
+    }
+
     #[tracing::instrument(skip_all, name = "thread.last_agent", fields(patom.thread.id = %thread))]
     async fn last_agent(&self, thread: ThreadId) -> Result<Option<AgentId>, ThreadError> {
         // Privileged point lookup — the Slack bridge is workspace-keyed infra

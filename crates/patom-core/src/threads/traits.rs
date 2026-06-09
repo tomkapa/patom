@@ -191,6 +191,20 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
     /// are already participating in to inherit it onto a scheduled task.
     async fn channel_of(&self, thread: ThreadId) -> Result<Option<ChannelId>, ThreadError>;
 
+    /// Advance the reflection checkpoint for `(agent, thread)` to
+    /// `up_to_message_id` after a successful background reflection. Upsert on
+    /// the `(agent_id, thread_id)` PK so the next reflection picks up strictly
+    /// after this message; without it the scheduler re-enqueues the same idle
+    /// window every tick. Privileged write — the worker's background path holds
+    /// no per-request principal (reflection is org-global cognition).
+    async fn advance_reflection_checkpoint(
+        &self,
+        org_id: crate::auth::OrgId,
+        agent: AgentId,
+        thread: ThreadId,
+        up_to_message_id: ThreadMessageId,
+    ) -> Result<(), ThreadError>;
+
     /// The most-recently-joined agent participating in `thread`, or `None` if
     /// no agent has participation yet. Privileged point lookup used by the Slack
     /// inbound bridge to route a plain (un-@-tagged) thread reply to the agent

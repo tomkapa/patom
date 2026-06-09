@@ -225,4 +225,20 @@ async fn reflection_writes_no_thread_message_rows(pool: PgPool) {
         bg_rows >= 2,
         "the reflection exchange is recorded in the background turn, got {bg_rows}"
     );
+
+    // The checkpoint advanced to the frozen slice's `up_to_message_id`, so the
+    // scheduler won't re-enqueue this idle window next tick.
+    let checkpoint: Option<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT last_message_id FROM reflection_checkpoints WHERE agent_id = $1 AND thread_id = $2",
+    )
+    .bind(seed.agent_id)
+    .bind(thread)
+    .fetch_optional(&pool)
+    .await
+    .expect("read reflection checkpoint");
+    assert_eq!(
+        checkpoint.map(|(id,)| id),
+        Some(convo_msg.as_uuid()),
+        "successful reflection advances the checkpoint to up_to_message_id",
+    );
 }

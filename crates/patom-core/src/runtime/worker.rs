@@ -324,8 +324,8 @@ impl Worker {
     /// Run a background-cognition turn (reflection / resolution). No ping-pong
     /// guard — the turn may legitimately end without `send_message` — and the
     /// exchange lands in the background store, never the chat feed. On success
-    /// the trigger is marked done; the reflection checkpoint / resolution close
-    /// post-turn is a P8 follow-up.
+    /// the trigger is marked done and, for a reflection, the checkpoint is
+    /// advanced so the scheduler does not re-enqueue the same idle window.
     async fn run_background(
         &self,
         agent: &Agent,
@@ -356,6 +356,7 @@ impl Worker {
                     patom.request.kind = claim.kind.as_str(),
                     "worker.background.ok",
                 );
+                self.advance_reflection_checkpoint(claim).await;
                 if let Err(e) = self.queue.mark_turn_done(receipt).await {
                     warn!(error = %e, "worker.background.mark_turn_done.error");
                 }
@@ -366,6 +367,33 @@ impl Worker {
                 warn!(patom.state.id = %claim.claim_key, "worker.background.timeout");
                 self.finalise(receipt, FailureReason::Timeout).await;
             }
+        }
+    }
+
+    /// On a successful reflection, advance `reflection_checkpoints (agent,
+    /// thread)` to the frozen slice's `up_to_message_id` so the scheduler picks
+    /// up strictly after it. No-op for resolution (no checkpoint). Best-effort:
+    /// a checkpoint-write failure only means a duplicate reflection next tick,
+    /// never a lost turn — log and move on.
+    async fn advance_reflection_checkpoint(&self, claim: &ClaimedTurn) {
+        let RequestKindPayload::Reflection {
+            thread_id,
+            up_to_message_id,
+        } = &claim.kind_payload
+        else {
+            return;
+        };
+        if let Err(e) = self
+            .threads
+            .advance_reflection_checkpoint(
+                claim.org_id,
+                claim.receiver_agent_id,
+                *thread_id,
+                *up_to_message_id,
+            )
+            .await
+        {
+            warn!(error = %e, patom.thread.id = %thread_id, "worker.reflection.checkpoint.error");
         }
     }
 
