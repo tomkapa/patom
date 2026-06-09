@@ -14,6 +14,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::agents::AgentId;
 use crate::auth::{Caller, UserId};
@@ -23,6 +24,17 @@ use crate::provider::ChatMessage;
 use crate::runtime::PromptRequestId;
 
 use super::error::ThreadError;
+
+/// A thread's listing row — the membership-scoped feed index (P7).
+///
+/// Carries just the fields a channel/DM list needs; the per-thread message feed
+/// is read separately via [`ThreadStore::context_for_agent`] / the HTTP feed read.
+#[derive(Debug, Clone)]
+pub struct ThreadListItem {
+    pub thread_id: ThreadId,
+    pub channel_id: Option<ChannelId>,
+    pub last_activity_at: DateTime<Utc>,
+}
 
 crate::uuid_newtype! {
     /// Opaque thread identifier (`threads.id`).
@@ -106,6 +118,19 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
         thread: ThreadId,
         message: NewMessage,
     ) -> Result<ThreadMessageId, ThreadError>;
+
+    /// List the threads `caller` may see, scoped by **membership**, not by who
+    /// created them (P7). `channel_id = Some` ⇒ that channel's threads, gated on
+    /// the caller being a `channel_members` row and the channel not archived.
+    /// `channel_id = None` ⇒ the caller's DMs (`threads.channel_id IS NULL`,
+    /// created by the caller). Org-pinned (`caller.org_id`) so a multi-org
+    /// member's other workspaces never leak in (RLS gates membership, not the
+    /// active org). Ordered newest-activity first.
+    async fn list_threads(
+        &self,
+        caller: &Caller,
+        channel_id: Option<ChannelId>,
+    ) -> Result<Vec<ThreadListItem>, ThreadError>;
 
     /// Whether `user_id` may receive a posted message in `thread` — the
     /// `send_message` human gate (no auto-add).

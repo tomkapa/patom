@@ -190,6 +190,19 @@ SSE delivery is best-effort on trigger ids (full stream re-key to `thread_id` is
 `turn_metrics`/`tool_calls` recorders still `INSERT session_id` (broken since migration 63, best-effort §6) —
 retype to `state_id` in **P11** when the old `run_turn` caller (which passes a real `SessionId`) is deleted.
 
+**P7 core ✅** — membership-scoped thread reads (the query layer).
+- `ThreadStore::list_threads(caller, channel_id)` + `ThreadSummary` (`thread_id`/`channel_id`/
+  `last_activity_at`). Channel view: gated on `channel_members` + channel not archived, so **every member**
+  sees the channel's threads regardless of who created them (not the single-creator/active-user pin). DM view
+  (`channel_id = None`): the caller's own channel-less threads. **Org-pinned** (`caller.org_id` in the WHERE)
+  so a multi-org member's other workspaces never leak (RLS gates membership, not the active org). `LIMIT
+  MAX_THREAD_LIST` (§5). Runs `run_as_user(caller.user_id)`.
+- Test `tests/threads_membership.rs::channel_feed_scoped_to_membership_not_active_user` (member B sees
+  creator A's thread; non-member C sees none). lib+tests clippy `-D warnings` + fmt clean.
+**Remaining in P7 / deferred:** the threads HTTP route (`http/routes/threads.rs`) still queries the dropped
+`sessions`/`session_messages` — its rewrite onto `list_threads` + the flat-feed wire format is **P10**
+(G1/G2). `RequestStatusView.session` keeps the bridged claim_key until the P10 status/stream re-key.
+
 ## 7. Discovered gaps / handoff notes (read before resuming)
 
 These are facts learned while building P0–P3 that aren't obvious from the plan:

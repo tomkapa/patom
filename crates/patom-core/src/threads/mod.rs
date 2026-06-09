@@ -5,12 +5,14 @@
 //! `(thread_id, agent_id)` participation ([`AgentThreadId`]).
 
 mod error;
+mod limits;
 mod pg_store;
 mod traits;
 
 pub use error::ThreadError;
+pub use limits::MAX_THREAD_LIST;
 pub use pg_store::PgThreadStore;
 pub use traits::{
-    AgentThreadId, MessageKind, NewMessage, SharedThreadStore, ThreadId, ThreadMessageId,
-    ThreadStore,
+    AgentThreadId, MessageKind, NewMessage, SharedThreadStore, ThreadId, ThreadListItem,
+    ThreadMessageId, ThreadStore,
 };

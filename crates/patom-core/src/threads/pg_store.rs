@@ -19,8 +19,9 @@ use crate::colleagues::ColleagueId;
 use crate::provider::{AssistantContent, ChatMessage, UserContent};
 
 use super::error::ThreadError;
+use super::limits::MAX_THREAD_LIST;
 use super::traits::{
-    AgentThreadId, MessageKind, NewMessage, ThreadId, ThreadMessageId, ThreadStore,
+    AgentThreadId, MessageKind, NewMessage, ThreadId, ThreadListItem, ThreadMessageId, ThreadStore,
 };
 
 /// Postgres-backed [`ThreadStore`].
@@ -171,6 +172,60 @@ impl ThreadStore for PgThreadStore {
         // The `seq` row confirms the insert fired (thread exists); we return the
         // surface id we minted, which callers thread into reply-roots / triggers.
         row.map(|(_seq,)| id).ok_or(ThreadError::NotFound(thread))
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.list_threads", fields(patom.org.id = %caller.org_id, patom.channel.id = ?channel_id, patom.thread.count = tracing::field::Empty))]
+    async fn list_threads(
+        &self,
+        caller: &Caller,
+        channel_id: Option<ChannelId>,
+    ) -> Result<Vec<ThreadListItem>, ThreadError> {
+        type Row = (ThreadId, Option<ChannelId>, DateTime<Utc>);
+        let org = caller.org_id;
+        let user = caller.user_id;
+        // Channel view: gated on the caller's membership + channel not archived
+        // (visible to every member, not just the creator — P7). DM view: the
+        // caller's own channel-less threads. Org-pinned so a multi-org member's
+        // other workspaces never leak in (RLS gates membership, not active org).
+        let rows: Vec<Row> =
+            run_as_user::<Vec<Row>, ThreadError>(&self.pool, user, async |tx| match channel_id {
+                Some(channel) => Ok(sqlx::query_as(
+                    "SELECT t.id, t.channel_id, t.last_activity_at FROM threads t \
+                     WHERE t.org_id = $1 AND t.channel_id = $2 \
+                       AND EXISTS (SELECT 1 FROM channel_members cm \
+                                   WHERE cm.channel_id = t.channel_id AND cm.user_id = $3) \
+                       AND EXISTS (SELECT 1 FROM channels c \
+                                   WHERE c.id = t.channel_id AND c.archived_at IS NULL) \
+                     ORDER BY t.last_activity_at DESC LIMIT $4",
+                )
+                .bind(org)
+                .bind(channel)
+                .bind(user)
+                .bind(MAX_THREAD_LIST)
+                .fetch_all(&mut **tx)
+                .await?),
+                None => Ok(sqlx::query_as(
+                    "SELECT t.id, t.channel_id, t.last_activity_at FROM threads t \
+                     JOIN colleagues cb ON cb.id = t.created_by_colleague_id \
+                     WHERE t.org_id = $1 AND t.channel_id IS NULL AND cb.user_id = $2 \
+                     ORDER BY t.last_activity_at DESC LIMIT $3",
+                )
+                .bind(org)
+                .bind(user)
+                .bind(MAX_THREAD_LIST)
+                .fetch_all(&mut **tx)
+                .await?),
+            })
+            .await?;
+        tracing::Span::current().record("patom.thread.count", rows.len());
+        Ok(rows
+            .into_iter()
+            .map(|(thread_id, channel_id, last_activity_at)| ThreadListItem {
+                thread_id,
+                channel_id,
+                last_activity_at,
+            })
+            .collect())
     }
 
     #[tracing::instrument(skip_all, name = "thread.is_channel_member", fields(patom.thread.id = %thread, patom.user.id = %user_id))]
