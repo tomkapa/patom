@@ -108,6 +108,14 @@ pub struct AppState {
     /// and the org table is empty, the OAuth callback routes the very
     /// first login through the audited, count-guarded bootstrap path.
     pub bootstrap_admin: bool,
+    /// Cloud (SaaS) build flag, derived from `cfg!(feature = "cloud")` at
+    /// the composition root — a BUILD-MODE signal, not a runtime env var.
+    /// Gates self-service workspace creation (`POST /me/orgs`) and the
+    /// org-less onboarding flow (the OAuth callback mints an org-less
+    /// session instead of auto-creating a personal org). `false` on the
+    /// OSS / self-host build, which keeps today's auto-create-at-login
+    /// behavior. Orthogonal to [`Self::bootstrap_admin`].
+    pub cloud: bool,
     /// Identity-table store.
     ///
     /// Used by the OAuth callback to upsert users + personal org, and

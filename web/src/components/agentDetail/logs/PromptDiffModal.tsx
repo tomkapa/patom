@@ -578,7 +578,7 @@ export function PromptDiffModal({
             {formatError(restore.error)}
           </span>
         ) : null}
-        <Button variant="ghost" size="sm" onClick={onClose}>
+        <Button variant="secondary" size="sm" onClick={onClose}>
           {t("agent.detail.logs.diff.cancel")}
         </Button>
         <Button

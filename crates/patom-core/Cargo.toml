@@ -90,6 +90,14 @@ anyhow.workspace = true
 # in `[dev-dependencies]`); never enabled in `cargo build --release`.
 test-catalog = []
 
+# Cloud (SaaS) build distinction. Off by default → the OSS / self-host
+# binary. Enabled transitively by `patom-server`'s `cloud` feature. Core
+# branches on this at the composition root (`AppState.cloud =
+# cfg!(feature = "cloud")`) so cloud-only behavior — self-service
+# workspace creation, org-less onboarding — is keyed on BUILD MODE rather
+# than a runtime env flag.
+cloud = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 patom-core = { workspace = true, features = ["test-catalog"] }

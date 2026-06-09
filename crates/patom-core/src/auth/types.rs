@@ -531,14 +531,30 @@ pub struct OrgMembership {
     pub onboarded: bool,
 }
 
-/// What every authed HTTP request hands to its handler. Built by the
-/// [`crate::http::auth_layer`] middleware from the JWT cookie + a DB
-/// membership lookup.
+/// What every authed **org-scoped** HTTP request hands to its handler.
+///
+/// Built by the [`crate::http::auth_layer::require_principal`] middleware
+/// from the JWT cookie + a DB membership lookup. An org-less token
+/// (`JwtClaims.org == None`) never produces a `Principal` — those routes
+/// 401 before the handler runs.
 #[derive(Debug, Clone)]
 pub struct Principal {
     pub user_id: UserId,
     pub active_org_id: OrgId,
     pub role: Role,
+}
+
+/// What an **onboarding-tier** request hands to its handler.
+///
+/// Built by the [`crate::http::auth_layer::require_user`] middleware from
+/// the JWT cookie alone — no membership lookup, so it succeeds for both
+/// org-ful and org-less sessions. `active_org` is `None` for a freshly
+/// authenticated cloud user who has not yet created a workspace. Used by
+/// `GET /me` and `POST /me/orgs`.
+#[derive(Debug, Clone)]
+pub struct UserSession {
+    pub user_id: UserId,
+    pub active_org: Option<OrgId>,
 }
 
 /// Editable display name for an organization.

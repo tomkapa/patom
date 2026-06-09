@@ -191,7 +191,7 @@ export function InviteModal({
           </span>
         }
       >
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="secondary" onClick={onClose}>
           {t("settings.invite.cancel")}
         </Button>
         <Button

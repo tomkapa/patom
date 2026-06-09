@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Brain, X } from "lucide-react";
+import { Brain } from "lucide-react";
 import { Modal } from "../../molecules/Modal";
 import { Select, type SelectOption } from "../../molecules/Select";
 import { Switch } from "../../atoms/Switch";
@@ -95,7 +95,7 @@ export function AddOperatorNoteModal({
       width={480}
       ariaLabel={t("agent.detail.memory.modal.title")}
     >
-      <div className="flex items-start justify-between gap-3 border-b border-[var(--color-line)] px-6 py-5">
+      <div className="flex items-start gap-3 border-b border-[var(--color-line)] px-6 py-5">
         <div className="flex flex-col gap-0.5">
           <h2 className="font-[var(--font-display)] text-[20px] font-bold text-[var(--color-ink)]">
             {t("agent.detail.memory.modal.title")}
@@ -104,14 +104,6 @@ export function AddOperatorNoteModal({
             {t("agent.detail.memory.modal.subtitle")}
           </p>
         </div>
-        <button
-          type="button"
-          aria-label={t("agent.detail.memory.modal.cancel")}
-          onClick={close}
-          className="shrink-0 border border-[var(--color-line)] p-1.5 text-[var(--color-muted-foreground)] hover:text-[var(--color-ink)]"
-        >
-          <X className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
       </div>
 
       <div className="flex flex-col gap-5 p-6">
@@ -190,7 +182,7 @@ export function AddOperatorNoteModal({
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t border-[var(--color-line)] bg-[var(--color-paper-2)] px-6 py-4">
-        <Button variant="ghost" size="md" onClick={close}>
+        <Button variant="secondary" size="md" onClick={close}>
           {t("agent.detail.memory.modal.cancel")}
         </Button>
         <Button

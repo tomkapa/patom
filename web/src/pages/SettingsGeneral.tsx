@@ -18,6 +18,7 @@ import { ImageUploader } from "../components/molecules/ImageUploader";
 import { Monogram } from "../components/atoms/Monogram";
 import {
   ORG_KEY,
+  useDeleteOrg,
   useLeaveOrg,
   useOrg,
   useUpdateOrg,
@@ -40,6 +41,7 @@ export function SettingsGeneral() {
   const orgQuery = useOrg();
   const updateOrg = useUpdateOrg();
   const leaveOrg = useLeaveOrg();
+  const deleteOrg = useDeleteOrg();
   const org = orgQuery.data;
 
   const [name, setName] = useState("");
@@ -354,7 +356,7 @@ export function SettingsGeneral() {
           {t("settings.general.danger.leave.confirm", { name: org.name })}
         </div>
         <ModalFooter>
-          <Button variant="ghost" onClick={() => setLeaveOpen(false)}>
+          <Button variant="secondary" onClick={() => setLeaveOpen(false)}>
             {t("settings.general.cancel")}
           </Button>
           <button
@@ -414,7 +416,7 @@ export function SettingsGeneral() {
         </div>
         <ModalFooter>
           <Button
-            variant="ghost"
+            variant="secondary"
             onClick={() => {
               setDeleteOpen(false);
               setDeleteInput("");
@@ -424,7 +426,24 @@ export function SettingsGeneral() {
           </Button>
           <button
             type="button"
-            disabled={deleteInput !== org.slug}
+            disabled={deleteInput !== org.slug || deleteOrg.isPending}
+            onClick={async () => {
+              try {
+                await deleteOrg.mutateAsync();
+                setDeleteOpen(false);
+                setDeleteInput("");
+                // The session is re-minted server-side (into a remaining
+                // org, or org-less). Route to `/`; `OnboardingGate` then
+                // steers an org-less user into onboarding.
+                nav("/", { replace: true });
+              } catch (e) {
+                if (e instanceof ApiError) {
+                  setServerError(e.body || e.message);
+                }
+                setDeleteOpen(false);
+                setDeleteInput("");
+              }
+            }}
             className="inline-flex h-[34px] cursor-pointer items-center justify-center gap-1.5 border border-[var(--color-rose)] bg-[var(--color-rose)] px-3 font-[var(--font-mono)] text-[12px] uppercase tracking-[0.06em] text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t("settings.general.danger.delete.cta")}

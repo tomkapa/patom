@@ -32,7 +32,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::{MakeSpan, TraceLayer};
 
-use super::auth_layer::require_principal;
+use super::auth_layer::{require_principal, require_user};
 use super::csrf::{require_csrf, require_trusted_origin};
 use super::limits::REQUEST_BODY_LIMIT_BYTES;
 use super::state::AppState;
@@ -167,6 +167,22 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             require_principal,
         ));
+
+    // Onboarding tier — same CSRF + origin guards as `private`, but a
+    // lighter `require_user` auth that accepts an org-less session (a
+    // cloud user who hasn't created a workspace yet). `GET /me` and
+    // `POST /me/orgs` live here. Merged into the `/api` nest below; its
+    // route_layers wrap only its own routes.
+    let onboarding = Router::new()
+        .merge(me::onboarding_router())
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_trusted_origin,
+        ))
+        .route_layer(middleware::from_fn(require_csrf))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_user));
+
+    let private = private.merge(onboarding);
 
     // CORS sits OUTERMOST relative to the auth/CSRF route layers: a
     // preflight `OPTIONS` carries no session cookie and no CSRF header,

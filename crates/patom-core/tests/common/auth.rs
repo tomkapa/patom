@@ -186,7 +186,7 @@ pub async fn seed_principal(pool: &PgPool, jwt: &JwtSigner) -> SeededPrincipal {
     .await
     .expect("seed org member");
 
-    let cookie_value = jwt.mint(user_id, org_id).expect("mint test jwt");
+    let cookie_value = jwt.mint(user_id, Some(org_id)).expect("mint test jwt");
     SeededPrincipal {
         user_id,
         org_id,
@@ -211,7 +211,7 @@ pub fn principal_for_default_org(
     org_id: OrgId,
     jwt: &JwtSigner,
 ) -> SeededPrincipal {
-    let cookie_value = jwt.mint(user_id, org_id).expect("mint test jwt");
+    let cookie_value = jwt.mint(user_id, Some(org_id)).expect("mint test jwt");
     SeededPrincipal {
         user_id,
         org_id,

@@ -29,7 +29,9 @@ use cookie::time::Duration as CookieDuration;
 use serde::Deserialize;
 use tracing::info;
 
-use crate::auth::{CookieDomain, Language, LocaleHint, OAuthStateRow, limits::COOKIE_NAME};
+use crate::auth::{
+    CookieDomain, Language, LocaleHint, OAuthStateRow, OrgId, UserId, limits::COOKIE_NAME,
+};
 
 use super::super::csrf::{build_csrf_cookie, mint_csrf_token};
 use super::super::error::HttpError;
@@ -150,27 +152,15 @@ async fn callback(
     )
     .await?;
 
-    let token = state.jwt.mint(upserted.user.id, active_org)?;
+    let jar = remint_session(&state, jar, upserted.user.id, active_org)?;
     info!(
         event = "auth.login.success",
         patom.user.id = %upserted.user.id,
-        patom.org.id = %active_org,
+        // `None` → org-less onboarding session (cloud first login). The
+        // empty-string fallback keeps the field low-cardinality + present.
+        patom.org.id = active_org.map(|o| o.to_string()).unwrap_or_default(),
         patom.user.new = upserted.is_new_user,
     );
-
-    let session_cookie = build_session_cookie(
-        token,
-        state.cookie_secure(),
-        state.jwt.ttl_secs(),
-        state.cookie_domain(),
-    );
-    let csrf_cookie = build_csrf_cookie(
-        mint_csrf_token(),
-        state.cookie_secure(),
-        state.jwt.ttl_secs(),
-        state.cookie_domain(),
-    );
-    let jar = jar.add(session_cookie).add(csrf_cookie);
     let dest = consumed.redirect_to.unwrap_or_else(|| "/".to_owned());
     // axum-extra: tupling a CookieJar with a Redirect produces a
     // response that carries both `Set-Cookie` and `Location` headers.
@@ -178,9 +168,12 @@ async fn callback(
 }
 
 /// Pick (or establish) the org a freshly-authenticated user lands in.
+/// `Ok(None)` is an **org-less** landing — a cloud first-login with no
+/// pending invite, who must create a workspace through onboarding before
+/// they have an active org.
 ///
 /// - Already a member → their first org.
-/// - Cloud (`PATOM_BOOTSTRAP_ADMIN` unset) → self-service personal org.
+/// - Cloud build (`state.cloud`) with no invite → `None` (no auto-create).
 /// - Self-host (`PATOM_BOOTSTRAP_ADMIN` set, invite-only): the
 ///   genuinely-first login (empty org table) bootstraps the initial org
 ///   as owner; a later login joins whatever org it was invited to;
@@ -191,10 +184,10 @@ async fn resolve_active_org(
     profile_locale: Option<&LocaleHint>,
     detected_locale: Option<&LocaleHint>,
     now: DateTime<Utc>,
-) -> Result<crate::auth::OrgId, HttpError> {
+) -> Result<Option<crate::auth::OrgId>, HttpError> {
     let orgs = state.users.list_user_orgs(user.id).await?;
     if let Some(first) = orgs.first() {
-        return Ok(first.org_id);
+        return Ok(Some(first.org_id));
     }
     let display = user
         .display_name
@@ -224,7 +217,7 @@ async fn resolve_active_org(
             .await?
         {
             seed_default_agent(state, new_org.id, language).await?;
-            return Ok(new_org.id);
+            return Ok(Some(new_org.id));
         }
         // Otherwise the admin must have invited this email; consume the
         // invite and join that existing org (which already has its
@@ -234,40 +227,48 @@ async fn resolve_active_org(
             .join_pending_invites(user.id, &user.email, now)
             .await?
         {
-            return Ok(org_id);
+            return Ok(Some(org_id));
         }
         return Err(HttpError::Forbidden(
             "no organization — ask your workspace admin for an invite",
         ));
     }
 
-    // Cloud self-service. An email-matched pending invite wins so an
-    // invited newcomer who arrives via the sign-in redirect lands in the
-    // inviting org instead of a throwaway personal one (the token-accept
-    // endpoint covers already-logged-in users). Only reached when the
-    // user has no orgs yet, so there is no active org to surprise-switch.
+    // An email-matched pending invite wins so an invited newcomer who
+    // arrives via the sign-in redirect lands in the inviting org instead
+    // of a throwaway personal one (the token-accept endpoint covers
+    // already-logged-in users). Applies to both build modes; only reached
+    // when the user has no orgs yet, so there is no active org to
+    // surprise-switch.
     if let Some(org_id) = state
         .orgs
         .join_pending_invites(user.id, &user.email, now)
         .await?
     {
-        return Ok(org_id);
+        return Ok(Some(org_id));
     }
     // `None` also covers the race where a concurrent callback for the same
     // user claimed the invite between its SELECT and UPDATE (see pg_store
     // `join_pending_invites`) — that winner already inserted the
-    // membership. Re-check before minting a duplicate personal org.
+    // membership. Re-check before deciding to org-less / auto-create.
     let orgs = state.users.list_user_orgs(user.id).await?;
     if let Some(first) = orgs.first() {
-        return Ok(first.org_id);
+        return Ok(Some(first.org_id));
     }
-    // Otherwise every new user gets a personal org.
+    // Cloud build: no auto-create. The user lands org-less and creates
+    // their workspace through onboarding (`POST /me/orgs`). Self-host
+    // (non-cloud, non-bootstrap) keeps today's behavior: a per-user
+    // personal org seeded with a default agent.
+    if state.cloud {
+        return Ok(None);
+    }
     let new_org = state
         .users
-        .create_personal_org(user.id, slug_seed, &display, language, now)
+        // `None` cap: the auto-created personal org is never capped.
+        .create_personal_org(user.id, slug_seed, &display, language, None, now)
         .await?;
     seed_default_agent(state, new_org.id, language).await?;
-    Ok(new_org.id)
+    Ok(Some(new_org.id))
 }
 
 /// Seed a freshly-minted org's default agent in `language` so the
@@ -275,7 +276,11 @@ async fn resolve_active_org(
 /// re-running for an existing org returns the existing default's id.
 /// `default_agent_seed` only fails on a registry-body invariant
 /// violation, which is a server bug → 500, not a 4xx.
-async fn seed_default_agent(
+///
+/// `pub(super)` so the self-service create handler (`me::create_org`)
+/// seeds the new workspace's default agent through the same path the
+/// OAuth callback uses — one copy of the seeding policy.
+pub(super) async fn seed_default_agent(
     state: &AppState,
     org_id: crate::auth::OrgId,
     language: Language,
@@ -289,6 +294,33 @@ async fn seed_default_agent(
     })?;
     crate::app::seed_default_agent_for_org(&state.agents, org_id, seed).await?;
     Ok(())
+}
+
+/// Mint a fresh session JWT for `(user, org)` and return the jar with the
+/// session + CSRF cookies set. `org = None` mints an org-less onboarding
+/// session. The single home for the cookie choreography shared by the
+/// OAuth callback, `switch_org`, `accept_invite`, `create_org`, and
+/// `delete_org` — change session-cookie semantics here, once.
+pub(super) fn remint_session(
+    state: &AppState,
+    jar: CookieJar,
+    user: UserId,
+    org: Option<OrgId>,
+) -> Result<CookieJar, HttpError> {
+    let token = state.jwt.mint(user, org)?;
+    let session_cookie = build_session_cookie(
+        token,
+        state.cookie_secure(),
+        state.jwt.ttl_secs(),
+        state.cookie_domain(),
+    );
+    let csrf_cookie = build_csrf_cookie(
+        mint_csrf_token(),
+        state.cookie_secure(),
+        state.jwt.ttl_secs(),
+        state.cookie_domain(),
+    );
+    Ok(jar.add(session_cookie).add(csrf_cookie))
 }
 
 pub(super) fn build_session_cookie(

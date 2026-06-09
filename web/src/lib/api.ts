@@ -125,6 +125,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ token }),
     }),
+  /** Create a new workspace (cloud only). The server makes the caller
+   *  Owner, seeds a default agent, and re-mints the session into the new
+   *  org — same `{ active_org_id, role }` shape as `switchOrg`, so the
+   *  caller just invalidates `/me` to land inside it. A 409 means the
+   *  per-user workspace cap was hit (`org.limit_reached`); 403 means the
+   *  deployment is self-host (creation disabled). */
+  createOrg: (name: string) =>
+    request<SwitchOrgResponse>("/me/orgs", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
 
   /** Owner/admin only — mutates the active org's `default_language`.
@@ -152,6 +163,15 @@ export const api = {
     request<OrgDetails>("/me/org", {
       method: "PATCH",
       body: JSON.stringify(patch),
+    }),
+  /** Permanently delete the active workspace (owner only, server-gated).
+   *  Cascades to every org-scoped record. The server re-mints the session
+   *  into the caller's first remaining org, or an org-less session when
+   *  none remain — returned as `active_org_id` so the caller can route
+   *  (another workspace → land there; `null` → onboarding / sign-in). */
+  deleteOrg: () =>
+    request<{ active_org_id: string | null }>("/me/org", {
+      method: "DELETE",
     }),
   /** Read the active workspace's spend budget: cap + warn threshold +
    *  current-period usage. Any member may read. */

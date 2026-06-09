@@ -199,6 +199,9 @@ impl IntoResponse for HttpError {
                 "email not verified by provider".into(),
             ),
             Self::Auth(AuthError::NotMember(_)) => (StatusCode::FORBIDDEN, self.to_string()),
+            Self::Auth(AuthError::OrgLimitReached { .. }) => {
+                (StatusCode::CONFLICT, "org.limit_reached".into())
+            }
             Self::Auth(AuthError::OAuthProvider(_)) => {
                 (StatusCode::BAD_GATEWAY, "oauth provider unavailable".into())
             }

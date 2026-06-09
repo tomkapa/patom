@@ -106,6 +106,17 @@ pub const DETECTED_LOCALE_MAX_LEN: usize = 32;
 /// Mirrors the migration 14 `organizations.name` CHECK (1..=200).
 pub const MAX_ORG_NAME_BYTES: usize = 200;
 
+/// Maximum number of workspaces (orgs) a single user may **own** via
+/// self-service creation (`POST /me/orgs`).
+///
+/// Each created workspace seeds a default agent, so an unbounded create
+/// path is a free-resource hole (CLAUDE.md §5). Ten is generous for any
+/// realistic person juggling distinct teams/clients while capping a
+/// runaway script. Counts owner rows only — being *invited* into many
+/// orgs is unbounded and not gated here. Raise deliberately if a real
+/// user hits it; deletion (`DELETE /me/org`) frees slots.
+pub const MAX_ORGS_PER_USER: i64 = 10;
+
 /// Maximum byte length of `PATOM_COOKIE_DOMAIN` (the shared cookie
 /// `Domain` attribute, e.g. `.patom.app`).
 ///

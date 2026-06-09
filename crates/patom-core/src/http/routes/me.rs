@@ -11,19 +11,22 @@ use cookie::time::Duration as CookieDuration;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{
-    AuthError, InviteToken, Language, OrgId, OrgMembership, OrganizationRule, Principal, Role,
-    User,
-    limits::{COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_TOKEN_MAX_LEN},
+    AuthError, InviteToken, Language, OrgId, OrgMembership, OrgName, OrganizationRule, Principal,
+    Role, User, UserSession,
+    limits::{COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_TOKEN_MAX_LEN, MAX_ORGS_PER_USER},
 };
 
 use super::super::csrf::{build_csrf_cookie, build_expired_csrf_cookie, mint_csrf_token};
+// `build_session_cookie` lives in the sibling `auth` route module; the
+// session re-mint helper (`remint_session`) is reached via `super::auth`.
 use super::super::error::HttpError;
 use super::super::state::AppState;
-use super::auth::build_session_cookie;
 
+/// Org-scoped `/me/*` routes — mounted under the private subtree
+/// (`require_principal`), so every handler here receives a [`Principal`]
+/// and an org-less session is 401'd before it arrives.
 pub(super) fn router() -> Router<AppState> {
     Router::new()
-        .route("/me", get(me))
         .route("/auth/logout", post(logout))
         .route("/auth/switch-org", post(switch_org))
         .route("/me/invites/accept", post(accept_invite))
@@ -31,12 +34,25 @@ pub(super) fn router() -> Router<AppState> {
         .route("/me/org/rule", patch(set_org_rule))
 }
 
+/// Onboarding-tier routes — mounted under `require_user`, so they accept
+/// both org-ful and org-less sessions. `GET /me` is the SPA bootstrap (it
+/// must answer for a brand-new cloud user with no workspace yet); `POST
+/// /me/orgs` creates the user's workspace.
+pub(super) fn onboarding_router() -> Router<AppState> {
+    Router::new()
+        .route("/me", get(me))
+        .route("/me/orgs", post(create_org))
+}
+
 #[derive(Debug, Serialize)]
 struct MeResponse {
     user: UserView,
     orgs: Vec<OrgView>,
-    active_org_id: OrgId,
-    role: Role,
+    /// `None` for an org-less session — a cloud user who hasn't created a
+    /// workspace yet. The FE routes them into the onboarding wizard.
+    active_org_id: Option<OrgId>,
+    /// The caller's role in `active_org_id`; `None` when org-less.
+    role: Option<Role>,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,15 +89,20 @@ struct OrgView {
 
 async fn me(
     State(state): State<AppState>,
-    principal: Principal,
+    session: UserSession,
     jar: CookieJar,
 ) -> Result<Response, HttpError> {
     let user = state
         .users
-        .read_user(principal.user_id)
+        .read_user(session.user_id)
         .await?
         .ok_or(AuthError::Unauthenticated)?;
-    let orgs = state.users.list_user_orgs(principal.user_id).await?;
+    let orgs = state.users.list_user_orgs(session.user_id).await?;
+    // Derive the active-org role from the membership list we already
+    // fetched — no extra query. Both stay `None` for an org-less session.
+    let role = session
+        .active_org
+        .and_then(|org| orgs.iter().find(|m| m.org_id == org).map(|m| m.role));
     // Only mint a CSRF cookie if the client doesn't already have a
     // valid one — /me is polled, and rotating the token every poll
     // defeats the SPA's cached value and bloats every response with a
@@ -105,8 +126,8 @@ async fn me(
     let body = Json(MeResponse {
         user: view_user(user),
         orgs: orgs.iter().map(view_org).collect(),
-        active_org_id: principal.active_org_id,
-        role: principal.role,
+        active_org_id: session.active_org,
+        role,
     });
     Ok((response_jar, body).into_response())
 }
@@ -131,6 +152,72 @@ fn view_org(m: &OrgMembership) -> OrgView {
         avatar_url: m.avatar_url.as_ref().map(|a| a.as_str().to_owned()),
         onboarded: m.onboarded,
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateOrgRequest {
+    /// Display name for the new workspace. Parsed through [`OrgName`] at
+    /// the boundary; the slug is derived from it inside the store.
+    name: String,
+}
+
+/// `POST /me/orgs` — self-service workspace creation. Creates the org
+/// (caller becomes Owner), seeds its default agent, and **switches the
+/// session into it** by re-minting the cookie — so both a first-time
+/// org-less user and an existing user "creating another workspace" land
+/// inside the fresh, not-yet-onboarded org and the FE wizard runs.
+///
+/// Cloud-only: gated on the build-mode `state.cloud` flag, not an env var.
+async fn create_org(
+    State(state): State<AppState>,
+    session: UserSession,
+    jar: CookieJar,
+    Json(req): Json<CreateOrgRequest>,
+) -> Result<Response, HttpError> {
+    // Build-mode gate: self-service creation ships only in the cloud
+    // binary. The self-host build keeps its bootstrap/auto-create model.
+    if !state.cloud {
+        return Err(HttpError::Forbidden(
+            "workspace creation is not available on this deployment",
+        ));
+    }
+    // Parse at the boundary (§1) before any write.
+    let name = OrgName::try_from(req.name)?;
+    let now = state.clock.now_utc();
+    // No locale context on this path; the user can change the workspace
+    // language later in Settings → General.
+    let language = Language::DEFAULT;
+    // Per-user cap (§5), enforced atomically inside the create transaction
+    // (advisory lock + count + insert) so concurrent creates can't both
+    // slip past it. Over the cap → 409 via `AuthError::OrgLimitReached`.
+    let new_org = state
+        .users
+        .create_personal_org(
+            session.user_id,
+            name.as_str(),
+            name.as_str(),
+            language,
+            Some(MAX_ORGS_PER_USER),
+            now,
+        )
+        .await?;
+    // Same seeding policy the OAuth callback uses (one copy).
+    super::auth::seed_default_agent(&state, new_org.id, language).await?;
+
+    // Re-mint the session into the new org so the next request operates
+    // there — mirrors `switch_org`.
+    let jar = super::auth::remint_session(&state, jar, session.user_id, Some(new_org.id))?;
+    tracing::info!(
+        event = "org.created",
+        patom.user.id = %session.user_id,
+        patom.org.id = %new_org.id,
+    );
+    Ok((
+        StatusCode::CREATED,
+        jar,
+        Json(serde_json::json!({ "active_org_id": new_org.id, "role": Role::Owner })),
+    )
+        .into_response())
 }
 
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
@@ -169,20 +256,7 @@ async fn switch_org(
         .membership(principal.user_id, req.org_id)
         .await?
         .ok_or(AuthError::NotMember(req.org_id))?;
-    let token = state.jwt.mint(principal.user_id, req.org_id)?;
-    let session_cookie = build_session_cookie(
-        token,
-        state.cookie_secure(),
-        state.jwt.ttl_secs(),
-        state.cookie_domain(),
-    );
-    let csrf_cookie = build_csrf_cookie(
-        mint_csrf_token(),
-        state.cookie_secure(),
-        state.jwt.ttl_secs(),
-        state.cookie_domain(),
-    );
-    let jar = jar.add(session_cookie).add(csrf_cookie);
+    let jar = super::auth::remint_session(&state, jar, principal.user_id, Some(req.org_id))?;
     Ok((
         jar,
         Json(serde_json::json!({ "active_org_id": req.org_id, "role": role })),
@@ -214,20 +288,7 @@ async fn accept_invite(
         .orgs
         .accept_invite(principal.user_id, &token, now)
         .await?;
-    let session = state.jwt.mint(principal.user_id, accepted.org_id)?;
-    let session_cookie = build_session_cookie(
-        session,
-        state.cookie_secure(),
-        state.jwt.ttl_secs(),
-        state.cookie_domain(),
-    );
-    let csrf_cookie = build_csrf_cookie(
-        mint_csrf_token(),
-        state.cookie_secure(),
-        state.jwt.ttl_secs(),
-        state.cookie_domain(),
-    );
-    let jar = jar.add(session_cookie).add(csrf_cookie);
+    let jar = super::auth::remint_session(&state, jar, principal.user_id, Some(accepted.org_id))?;
     Ok((
         jar,
         Json(serde_json::json!({

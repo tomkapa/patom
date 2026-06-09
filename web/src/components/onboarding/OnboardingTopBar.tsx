@@ -1,5 +1,6 @@
-import { Check } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { useAuthStore } from "../../stores/authStore";
+import { Button } from "../atoms/Button";
 
 export type StepKey = "name" | "team" | "invite";
 
@@ -30,9 +31,16 @@ function stepStatus(step: StepKey, current: StepKey, allDone: boolean): Status {
 export function OnboardingTopBar({
   current,
   allDone = false,
+  onCancel,
+  cancelling = false,
 }: {
   current: StepKey;
   allDone?: boolean;
+  /** When set, the left slot renders a Cancel button that abandons the
+   *  workspace-creation flow (see `Onboarding`). Omitted on the final
+   *  "done" screen, where there's nothing left to cancel. */
+  onCancel?: () => void;
+  cancelling?: boolean;
 }) {
   const email = useAuthStore((s) => s.me?.user.email ?? "");
 
@@ -95,10 +103,23 @@ export function OnboardingTopBar({
         })}
       </ol>
 
-      {/* Right: user email */}
-      <div className="font-[var(--font-mono)] text-[12px] text-[var(--color-fg-muted)]">
-        {email}
-      </div>
+      {/* Right: Cancel button while a flow is in progress, else the
+          signed-in user's email. */}
+      {onCancel ? (
+        <Button
+          variant="secondary"
+          loading={cancelling}
+          onClick={onCancel}
+          data-testid="onboarding-cancel"
+        >
+          <X className="h-3.5 w-3.5" strokeWidth={2} />
+          Cancel
+        </Button>
+      ) : (
+        <div className="font-[var(--font-mono)] text-[12px] text-[var(--color-fg-muted)]">
+          {email}
+        </div>
+      )}
     </header>
   );
 }

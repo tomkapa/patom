@@ -875,6 +875,10 @@ pub async fn build_server(
         jwt,
         oauth,
         bootstrap_admin: settings.auth.bootstrap_admin,
+        // Build-mode cloud signal (issue: self-service workspaces). Set
+        // from the `cloud` cargo feature at the composition root so
+        // cloud-only behavior keys on the binary build, not an env flag.
+        cloud: cfg!(feature = "cloud"),
         users: pieces.users,
         clock: pieces.clock.clone(),
         cookie_secure: settings.auth.cookie_secure,

@@ -1,23 +1,23 @@
 import { useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Building2 } from "lucide-react";
-import { api } from "../../lib/api";
-import { ME_QUERY_KEY } from "../../hooks/useMe";
+import { ApiError } from "../../lib/errors";
+import { useCreateOrg } from "../../hooks/useOrg";
 import { useAuthStore } from "../../stores/authStore";
 import { TitleWithMossPill } from "./OnboardingTopBar";
 
 const MIN = 1;
 const MAX = 200;
 
-/** Step 1 — pick the workspace name. The backend already auto-created
- *  a placeholder org on first sign-in, so submission is a PATCH /me/org
- *  with `{ name }`. The org's `onboarded` flag is NOT flipped here —
- *  that happens only at the final step. */
+/** Step 1 — name and **create** the workspace. Submission is a
+ *  `POST /me/orgs`, which creates the org (caller becomes Owner), seeds a
+ *  default agent, and switches the session into the fresh, not-yet-
+ *  onboarded org. Used for both first-time signup (org-less session) and
+ *  "create another workspace" (`/onboarding?new=1`). The `onboarded` flag
+ *  is flipped only at the final step. */
 export function StepCreateOrg({ onContinue }: { onContinue: () => void }) {
-  const seededName = useAuthStore(
-    (s) =>
-      s.me?.orgs.find((o) => o.id === s.me?.active_org_id)?.name ?? "",
-  );
+  // Seed the field from the user's display name as a friendly default —
+  // there is no pre-created org to read a name from anymore.
+  const seededName = useAuthStore((s) => s.me?.user.display_name ?? "");
   const [name, setName] = useState(seededName);
   const trimmed = name.trim();
   const valid = trimmed.length >= MIN && trimmed.length <= MAX;
@@ -26,22 +26,20 @@ export function StepCreateOrg({ onContinue }: { onContinue: () => void }) {
     [trimmed],
   );
 
-  const qc = useQueryClient();
-  const m = useMutation({
-    mutationFn: () => api.updateOrg({ name: trimmed }),
-    onSuccess: async () => {
-      // Update /me so the next step (and the gate) sees the new name.
-      await qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
-      onContinue();
-    },
-  });
+  const create = useCreateOrg();
+  const capReached =
+    create.error instanceof ApiError && create.error.status === 409;
+  const submit = () =>
+    // `useCreateOrg` already invalidates every query, so /me refetches
+    // under the new session before we advance to the next step.
+    create.mutate(trimmed, { onSuccess: () => onContinue() });
 
   return (
     <form
       className="flex w-[480px] flex-col bg-[var(--color-surface-primary)] shadow-[0_12px_40px_rgba(30,51,34,0.12)] ring-1 ring-[var(--color-moss-deep)]"
       onSubmit={(e) => {
         e.preventDefault();
-        if (valid && !m.isPending) m.mutate();
+        if (valid && !create.isPending) submit();
       }}
       data-step="create-org"
     >
@@ -91,12 +89,14 @@ export function StepCreateOrg({ onContinue }: { onContinue: () => void }) {
             data-testid="onboarding-workspace-name"
           />
         </div>
-        {m.isError && (
+        {create.isError && (
           <p
             className="mt-1 text-[12px] text-[var(--color-rose)]"
             role="alert"
           >
-            Couldn't save the name. Try again.
+            {capReached
+              ? "You've reached the maximum number of workspaces."
+              : "Couldn't create the workspace. Try again."}
           </p>
         )}
       </div>
@@ -105,11 +105,11 @@ export function StepCreateOrg({ onContinue }: { onContinue: () => void }) {
       <div className="flex flex-col px-10 pt-6 pb-7">
         <button
           type="submit"
-          disabled={!valid || m.isPending}
+          disabled={!valid || create.isPending}
           className="inline-flex w-full cursor-pointer items-center justify-center gap-2 bg-[var(--color-moss)] px-5 py-3.5 text-[15px] font-semibold text-white transition-colors hover:bg-[var(--color-moss-deep)] disabled:cursor-not-allowed disabled:opacity-50"
           data-testid="onboarding-continue"
         >
-          {m.isPending ? "Saving…" : "Continue"}
+          {create.isPending ? "Saving…" : "Continue"}
           <ArrowRight className="h-4 w-4" />
         </button>
       </div>

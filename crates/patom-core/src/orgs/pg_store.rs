@@ -525,6 +525,30 @@ SELECT status, COUNT(*)::bigint AS n FROM unified GROUP BY status
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(patom.org.id = %org_id))]
+    async fn delete_org(&self, org_id: OrgId) -> Result<(), OrgError> {
+        let mut tx = auth::begin_privileged(&self.pool).await?;
+        // One DELETE cascades to every `org_id` FK (all declared
+        // ON DELETE CASCADE): members, agents, channels, sessions,
+        // invites, budgets, MCP servers, Slack rows, … No manual teardown.
+        let rows = sqlx::query("DELETE FROM organizations WHERE id = $1")
+            .bind(org_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        // §6: assert what we expect AND what we don't — the PK is unique,
+        // so a successful delete touches exactly one row, never more.
+        assert!(
+            rows <= 1,
+            "organizations.id is unique; delete touched >1 row"
+        );
+        if rows == 0 {
+            return Err(OrgError::NotFound);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn join_pending_invites(
         &self,
         user_id: UserId,

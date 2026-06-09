@@ -189,6 +189,14 @@ const orgState = {
   onboarded: true,
 };
 
+// Org-less session simulation (a cloud user who hasn't created a
+// workspace yet, or who just deleted their last one). When true, `/me`
+// answers with `active_org_id: null` + an empty `orgs` list, which
+// `OnboardingGate` routes into the wizard. Toggled by `DELETE /me/org`
+// (sets true), `POST /me/orgs` (sets false), and the `?orgless=1` hook on
+// `/me`.
+let orgLess = false;
+
 // Mutable spend-budget state so GET/PUT /me/org/budget round-trips. Seeded
 // over the 80% warn threshold so the progress bar + warn chip are visible.
 const MONTH_START = (() => {
@@ -243,6 +251,19 @@ const me = {
       get onboarded() {
         return orgState.onboarded;
       },
+    },
+    // An abandoned half-created workspace (onboarded: false) — the
+    // creator left the wizard after step 1. The OrgSwitcher must filter
+    // this out so it doesn't show as a confusing "duplicate"; only the
+    // completed workspace above is switchable.
+    {
+      id: "00000000-0000-7000-8000-0000000000bb",
+      name: "Alex Lui",
+      slug: "alex-lui-2",
+      role: "owner" as const,
+      default_language: "en" as "en" | "vi",
+      avatar_url: null as string | null,
+      onboarded: false,
     },
   ],
   active_org_id: ORG_ID,
@@ -1186,6 +1207,27 @@ const server = Bun.serve({
       : url.pathname;
     const method = req.method.toUpperCase();
 
+    // Org-less guard: the real backend rejects every org-scoped route for
+    // a session with no active org (require_principal 401s an org-less
+    // token), so the mock must too — otherwise org-less mode would only
+    // affect /me and could mask onboarding/routing regressions. The create
+    // route (`POST /me/orgs`) is exempt: it's how a user leaves org-less
+    // state. `/me` (GET) is not org-scoped and is handled below.
+    const isOrgScopedPath =
+      path.startsWith("/me/org") ||
+      path.startsWith("/agents") ||
+      path.startsWith("/channels") ||
+      path.startsWith("/threads") ||
+      path.startsWith("/mcp-servers") ||
+      path.startsWith("/uploads");
+    if (
+      orgLess &&
+      isOrgScopedPath &&
+      !(path === "/me/orgs" && method === "POST")
+    ) {
+      return json({ error: "org.required" }, 403);
+    }
+
     if (path === "/me" && method === "GET") {
       // Preview hook: `?fresh=1` simulates a brand-new user whose org
       // still needs onboarding. Flips `orgState.onboarded` to false and
@@ -1201,6 +1243,13 @@ const server = Bun.serve({
         agentsById.set(RECRUITER_SEED.id, RECRUITER_SEED);
       } else if (fresh === "0") {
         orgState.onboarded = true;
+      }
+      // `?orgless=1` simulates a brand-new cloud user with no workspace.
+      const orgless = url.searchParams.get("orgless");
+      if (orgless === "1") orgLess = true;
+      else if (orgless === "0") orgLess = false;
+      if (orgLess) {
+        return json({ ...me, orgs: [], active_org_id: null, role: null });
       }
       return json(me);
     }
@@ -1757,6 +1806,14 @@ const server = Bun.serve({
       return json({ active_org_id: ORG_ID, role: "owner" });
     }
 
+    // Sign-out. The onboarding Cancel button hits this when the user has
+    // no workspace to fall back to. Reset the org-less flag so a later
+    // `?orgless=1` starts clean. 204 No Content like the real handler.
+    if (path === "/auth/logout" && method === "POST") {
+      orgLess = false;
+      return new Response(null, { status: 204 });
+    }
+
     // Token-redeem behind the `/i/{slug}/{token}` invite link. Mirrors
     // src/http/routes/me.rs::accept_invite. Special tokens drive the
     // error states for visual verification; anything else succeeds.
@@ -1783,6 +1840,32 @@ const server = Bun.serve({
         avatar_url: null,
         onboarded: orgState.onboarded,
       });
+    }
+    // src/http/routes/me.rs::create_org. Creates a workspace and switches
+    // the session into it (fresh, not-yet-onboarded). We mirror that by
+    // clearing org-less, resetting the org to un-onboarded with the given
+    // name, and resetting the agent roster — so the wizard runs from
+    // step 2. `name === "cap"` simulates the per-user cap (409).
+    if (path === "/me/orgs" && method === "POST") {
+      const body = (await req.json()) as { name?: string };
+      const trimmed = (body.name ?? "").trim();
+      if (!trimmed) return json({ error: "org_name is empty" }, 400);
+      if (trimmed.length > 200) return json({ error: "org_name too long" }, 400);
+      if (trimmed.toLowerCase() === "cap")
+        return json({ error: "org.limit_reached" }, 409);
+      orgLess = false;
+      orgState.name = trimmed;
+      orgState.onboarded = false;
+      agentsById.clear();
+      agentsById.set(RECRUITER_SEED.id, RECRUITER_SEED);
+      return json({ active_org_id: ORG_ID, role: "owner" }, 201);
+    }
+    // src/http/routes/org.rs::delete_org. Cascades server-side; here we
+    // just flip to an org-less session and report `active_org_id: null`
+    // (the seeded user has no other org to fall back to).
+    if (path === "/me/org" && method === "DELETE") {
+      orgLess = true;
+      return json({ active_org_id: null });
     }
     if (path === "/me/org" && method === "PATCH") {
       const body = (await req.json()) as {

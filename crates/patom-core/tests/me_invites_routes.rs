@@ -98,6 +98,7 @@ async fn build_state(pool: PgPool) -> (AppState, patom::mcp::McpRefresher) {
         jwt,
         oauth,
         bootstrap_admin: false,
+        cloud: false,
         users,
         clock: clock.clone(),
         cookie_secure: false,
@@ -146,7 +147,7 @@ async fn accept_invite_endpoint_joins_and_switches_active_org(pool: PgPool) {
         .expect("admin")
         .user;
     let inviting_org = users
-        .create_personal_org(admin.id, "corp", "Corp", Language::DEFAULT, now)
+        .create_personal_org(admin.id, "corp", "Corp", Language::DEFAULT, None, now)
         .await
         .expect("inviting org");
     let invitee_email = Email::try_from("teammate@corp.test").expect("email");

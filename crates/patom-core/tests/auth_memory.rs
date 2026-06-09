@@ -128,6 +128,7 @@ impl AuthMemoryHarness {
             jwt,
             oauth,
             bootstrap_admin: false,
+            cloud: false,
             users,
             clock: clock.clone(),
             cookie_secure: false,
