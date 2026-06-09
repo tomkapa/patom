@@ -9,11 +9,11 @@
 //!
 //! Two questions live behind one object-safe trait:
 //! - [`Entitlements::agent_limit`] — the agent-count quota that monetization
-//!   actually scales on. Wired into `POST /agents` via
-//!   [`require_agent_capacity`].
+//!   actually scales on. Resolved per-org and enforced in-transaction by the
+//!   agent store on every creation path (#131).
 //! - [`Entitlements::allows`] — a boolean [`Feature`] gate for capabilities a
 //!   plan may withhold. Inert today (no real features gated); the hook exists
-//!   so the first gate is an additive change.
+//!   so the first gate is an additive change, via [`require_feature`].
 
 mod error;
 mod types;
@@ -22,6 +22,8 @@ pub use error::LicenseError;
 pub use types::{AgentLimit, Feature};
 
 use std::sync::Arc;
+
+use async_trait::async_trait;
 
 use crate::auth::OrgId;
 
@@ -34,13 +36,18 @@ pub type SharedEntitlements = Arc<dyn Entitlements>;
 
 /// The entitlement policy seam. Object-safe by construction (`&self`, no
 /// generics, no `Self`-returning methods) so it can live behind a `dyn`.
+///
+/// Methods are `async` because the billing-backed `patom-cloud` impl (#131)
+/// resolves an org's tier from Postgres on each call; the OSS default answers
+/// from a constant and simply ignores the asynchrony.
+#[async_trait]
 pub trait Entitlements: std::fmt::Debug + Send + Sync + 'static {
     /// How many agents `org` may run. Drives the `POST /agents` gate.
-    fn agent_limit(&self, org: OrgId) -> AgentLimit;
+    async fn agent_limit(&self, org: OrgId) -> AgentLimit;
 
     /// Whether `org`'s plan licenses `feature`. `true` for everything under
     /// the OSS default.
-    fn allows(&self, org: OrgId, feature: Feature) -> bool;
+    async fn allows(&self, org: OrgId, feature: Feature) -> bool;
 }
 
 /// The permissive default: unlimited agents, every feature on.
@@ -53,37 +60,22 @@ pub trait Entitlements: std::fmt::Debug + Send + Sync + 'static {
 #[derive(Debug, Default)]
 pub struct UnlimitedEntitlements;
 
+#[async_trait]
 impl Entitlements for UnlimitedEntitlements {
-    fn agent_limit(&self, _org: OrgId) -> AgentLimit {
+    async fn agent_limit(&self, _org: OrgId) -> AgentLimit {
         AgentLimit::Unlimited
     }
 
-    fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
+    async fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
         true
     }
 }
 
-/// Gate: refuse a new agent when `org` is at its [`AgentLimit`].
-///
-/// `current` is the org's present agent count. Returns
-/// [`LicenseError::AgentLimitReached`] (→ 402) when the limit does not admit
-/// one more. Inert under [`UnlimitedEntitlements`] (always admits).
-///
-/// # Errors
-/// [`LicenseError::AgentLimitReached`] if `org` already holds its cap.
-pub fn require_agent_capacity(
-    ent: &dyn Entitlements,
-    org: OrgId,
-    current: u32,
-) -> Result<(), LicenseError> {
-    match ent.agent_limit(org) {
-        AgentLimit::Unlimited => Ok(()),
-        AgentLimit::Max(cap) if current < cap => Ok(()),
-        // Only a `Max` ceiling can deny, so the cap surfaced on the 402 is
-        // exactly the one that was hit.
-        AgentLimit::Max(cap) => Err(LicenseError::AgentLimitReached { limit: cap }),
-    }
-}
+// The agent-count gate is no longer a free pre-flight helper: enforcement
+// moved into `AgentStore` (issue #131), where the count-then-insert runs in one
+// transaction under a per-org advisory lock, so every creation path is covered
+// and the old count-then-insert TOCTOU is closed. `agent_limit` above is still
+// the seam that resolves the cap; the store consults it directly.
 
 /// Gate: refuse a [`Feature`] the org's plan does not license.
 ///
@@ -92,12 +84,12 @@ pub fn require_agent_capacity(
 ///
 /// # Errors
 /// [`LicenseError::FeatureNotLicensed`] if `ent` does not allow `feature`.
-pub fn require_feature(
+pub async fn require_feature(
     ent: &dyn Entitlements,
     org: OrgId,
     feature: Feature,
 ) -> Result<(), LicenseError> {
-    if ent.allows(org, feature) {
+    if ent.allows(org, feature).await {
         return Ok(());
     }
     Err(LicenseError::FeatureNotLicensed { feature })
@@ -106,8 +98,7 @@ pub fn require_feature(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentLimit, Entitlements, Feature, LicenseError, UnlimitedEntitlements,
-        require_agent_capacity, require_feature,
+        AgentLimit, Entitlements, Feature, LicenseError, UnlimitedEntitlements, require_feature,
     };
     use crate::auth::OrgId;
 
@@ -118,53 +109,42 @@ mod tests {
         max: u32,
     }
 
+    #[async_trait::async_trait]
     impl Entitlements for CappedEntitlements {
-        fn agent_limit(&self, _org: OrgId) -> AgentLimit {
+        async fn agent_limit(&self, _org: OrgId) -> AgentLimit {
             AgentLimit::Max(self.max)
         }
-        fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
+        async fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
             false
         }
     }
 
-    #[test]
-    fn default_grants_unlimited_agents() {
+    #[tokio::test]
+    async fn default_grants_unlimited_agents() {
         let ent = UnlimitedEntitlements;
-        assert_eq!(ent.agent_limit(OrgId::new()), AgentLimit::Unlimited);
+        assert_eq!(ent.agent_limit(OrgId::new()).await, AgentLimit::Unlimited);
     }
 
-    #[test]
-    fn default_allows_every_feature() {
+    #[tokio::test]
+    async fn default_allows_every_feature() {
         let ent = UnlimitedEntitlements;
-        assert!(ent.allows(OrgId::new(), Feature::Reserved));
+        assert!(ent.allows(OrgId::new(), Feature::Reserved).await);
     }
 
-    #[test]
-    fn default_capacity_gate_never_trips() {
-        let ent = UnlimitedEntitlements;
-        assert!(require_agent_capacity(&ent, OrgId::new(), 10_000).is_ok());
-    }
-
-    #[test]
-    fn capped_capacity_gate_denies_at_ceiling() {
-        let ent = CappedEntitlements { max: 1 };
-        let result = require_agent_capacity(&ent, OrgId::new(), 1);
-        assert!(matches!(
-            result,
-            Err(LicenseError::AgentLimitReached { limit: 1 })
-        ));
-    }
-
-    #[test]
-    fn capped_capacity_gate_admits_below_ceiling() {
+    #[tokio::test]
+    async fn capped_policy_reports_its_ceiling() {
+        // The agent-count *enforcement* now lives in `AgentStore` (tested end
+        // to end against Postgres in `tests/entitlements_gate.rs` and
+        // `tests/pg_agent_store.rs`); here we only assert the seam reports the
+        // ceiling a capped policy resolves to.
         let ent = CappedEntitlements { max: 3 };
-        assert!(require_agent_capacity(&ent, OrgId::new(), 2).is_ok());
+        assert_eq!(ent.agent_limit(OrgId::new()).await, AgentLimit::Max(3));
     }
 
-    #[test]
-    fn feature_gate_denies_under_restrictive_policy() {
+    #[tokio::test]
+    async fn feature_gate_denies_under_restrictive_policy() {
         let ent = CappedEntitlements { max: 0 };
-        let result = require_feature(&ent, OrgId::new(), Feature::Reserved);
+        let result = require_feature(&ent, OrgId::new(), Feature::Reserved).await;
         assert!(matches!(
             result,
             Err(LicenseError::FeatureNotLicensed {

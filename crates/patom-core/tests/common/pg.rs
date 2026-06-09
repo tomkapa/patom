@@ -21,6 +21,7 @@ use patom::agents::{
 };
 use patom::auth::{OrgId, UserId};
 use patom::clock::{SharedClock, SystemClock};
+use patom::entitlements::{SharedEntitlements, UnlimitedEntitlements};
 use patom::runtime::PromptRequestId;
 use patom::session::{SessionId, SessionStore};
 use patom::types::Participant;
@@ -111,18 +112,30 @@ pub async fn seed_tenant(pool: &PgPool) -> Seed {
 }
 
 /// Construct a `PgAgentStore` wired with the fake embedding provider used
-/// by every test path. Returns the concrete `Arc<PgAgentStore>`; callers
-/// that need the trait object can coerce with `as SharedAgentStore`.
+/// by every test path and the permissive [`UnlimitedEntitlements`] policy
+/// (no agent cap). Returns the concrete `Arc<PgAgentStore>`; callers that
+/// need the trait object can coerce with `as SharedAgentStore`.
 pub fn agent_store(pool: PgPool, clock: SharedClock) -> Arc<PgAgentStore> {
+    agent_store_with_entitlements(pool, clock, Arc::new(UnlimitedEntitlements))
+}
+
+/// Like [`agent_store`] but with an explicit entitlement policy, so tests can
+/// exercise the in-tx agent-cap gate (#131) with a capped impl.
+pub fn agent_store_with_entitlements(
+    pool: PgPool,
+    clock: SharedClock,
+    entitlements: SharedEntitlements,
+) -> Arc<PgAgentStore> {
     Arc::new(PgAgentStore::new(
         pool,
         clock,
         super::embedding::FakeEmbeddingProvider::shared(),
+        entitlements,
     ))
 }
 
 /// `SharedAgentStore`-typed handle for callers that want the trait object
-/// directly (most route / harness setups).
+/// directly (most route / harness setups). Permissive (no cap).
 pub fn shared_agent_store(pool: PgPool, clock: SharedClock) -> SharedAgentStore {
     agent_store(pool, clock)
 }

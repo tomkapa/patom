@@ -1,12 +1,3 @@
-// Lint conflict: `unreachable_pub` and `clippy::redundant_pub_crate` are
-// mutually exclusive for cross-module-reused items inside a `pub(crate)`
-// module. The struct is `pub(crate)` because the memory subsystem
-// (`memory::reflection_scheduler` / `memory::librarian`) reuses it; that
-// makes `pub` "unreachable" outside the crate but `redundant_pub_crate`
-// considers `pub(crate)` redundant inside a non-`pub` module. Choose
-// the lint that better describes intent and silence the other.
-#![allow(clippy::redundant_pub_crate)]
-
 //! Shared background-task scaffolding for the schedulers in this crate.
 //!
 //! [`ReflectionScheduler`](crate::memory::ReflectionScheduler),
@@ -31,7 +22,7 @@ use tracing::warn;
 /// Two cancellation paths fire together: the owned [`DropGuard`] cancels
 /// an internal child token on drop / explicit [`Self::shutdown`], and the
 /// optional parent token wires the loop into a process-wide Ctrl+C.
-pub(crate) struct ScheduledTask {
+pub struct ScheduledTask {
     shutdown: DropGuard,
     handle: JoinHandle<()>,
     label: &'static str,
@@ -49,7 +40,7 @@ impl ScheduledTask {
     /// Spawn `tick` to run every `interval`. `label` rides on the
     /// per-iteration warn log (`{label}.tick.error`) so a wedged scheduler
     /// is identifiable in tracing.
-    pub(crate) fn spawn<F, Fut, E>(
+    pub fn spawn<F, Fut, E>(
         label: &'static str,
         interval: Duration,
         parent: Option<CancellationToken>,
@@ -83,7 +74,7 @@ impl ScheduledTask {
     }
 
     /// Cancel and join. Idempotent.
-    pub(crate) async fn shutdown(self) {
+    pub async fn shutdown(self) {
         drop(self.shutdown);
         if let Err(e) = self.handle.await {
             warn!(error = %e, scheduler = self.label, "scheduled_task.join.error");

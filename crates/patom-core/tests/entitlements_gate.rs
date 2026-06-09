@@ -9,16 +9,23 @@
 //! The shipped OSS default ([`patom::entitlements::UnlimitedEntitlements`])
 //! never trips this gate; the cap here comes from a test-local restrictive
 //! [`Entitlements`] impl standing in for the future billing-backed cloud impl.
+//!
+//! This file also covers the **cloud route seam** (`router_with_cloud`, #131):
+//! a cloud-contributed public route mounts outside the cookie gate, and a
+//! cloud-contributed private route inherits `require_principal` exactly like
+//! every other `/api` route. The Lemon Squeezy routers ride this seam.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use patom::agents::{AgentDescription, AgentName, AgentSystemPrompt, AllowedMcpTools, NewAgent};
+use patom::agents::{
+    AgentDescription, AgentName, AgentSystemPrompt, AllowedMcpTools, NewAgent, SharedAgentStore,
+};
 use patom::auth::OrgId;
 use patom::clock::SystemClock;
 use patom::entitlements::{AgentLimit, Entitlements, Feature, SharedEntitlements};
-use patom::http::{AppState, router};
+use patom::http::{AppState, router, router_with_cloud};
 use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
 use patom::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
@@ -41,11 +48,12 @@ struct CappedTestEntitlements {
     max: u32,
 }
 
+#[async_trait::async_trait]
 impl Entitlements for CappedTestEntitlements {
-    fn agent_limit(&self, _org: OrgId) -> AgentLimit {
+    async fn agent_limit(&self, _org: OrgId) -> AgentLimit {
         AgentLimit::Max(self.max)
     }
-    fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
+    async fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
         false
     }
 }
@@ -73,7 +81,15 @@ impl Harness {
 
         let sessions: SharedSessionStore =
             Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
-        let agents = common::pg::shared_agent_store(pool.clone(), clock.clone());
+        // The cap is enforced in-tx by the agent store (#131), so the capped
+        // policy is wired into the *store*, not just `AppState`. Same `Arc`
+        // feeds both so the HTTP layer and the gate can never disagree.
+        let entitlements: SharedEntitlements = Arc::new(CappedTestEntitlements { max });
+        let agents: SharedAgentStore = common::pg::agent_store_with_entitlements(
+            pool.clone(),
+            clock.clone(),
+            entitlements.clone(),
+        );
         let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
         let mcp_store: SharedMcpServerStore =
@@ -101,8 +117,6 @@ impl Harness {
         // Fresh principal in its own (empty) org — the right baseline for the
         // capacity assertions below.
         let primary = seed_principal(pool, &jwt).await;
-
-        let entitlements: SharedEntitlements = Arc::new(CappedTestEntitlements { max });
 
         let state = AppState {
             queue,
@@ -240,5 +254,80 @@ async fn create_agent_below_cap_succeeds(pool: PgPool) {
         res.status(),
         axum::http::StatusCode::CREATED,
         "an org below its agent cap must be allowed to create",
+    );
+}
+
+// ── Cloud route seam (router_with_cloud, #131) ──────────────────────────────
+
+/// A cloud-contributed public route group (stands in for the Lemon Squeezy
+/// webhook): no cookie gate, authenticates itself in production via HMAC.
+fn probe_public() -> axum::Router<AppState> {
+    axum::Router::new().route("/__cloud/ping", axum::routing::get(|| async { "pong" }))
+}
+
+/// A cloud-contributed private route group (stands in for checkout): must end
+/// up behind `require_principal` once merged into the authenticated `/api`
+/// group.
+fn probe_private() -> axum::Router<AppState> {
+    axum::Router::new().route(
+        "/__cloud/whoami",
+        axum::routing::get(|| async { axum::http::StatusCode::OK }),
+    )
+}
+
+fn get(uri: &str) -> axum::http::Request<axum::body::Body> {
+    axum::http::Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(axum::body::Body::empty())
+        .expect("request")
+}
+
+#[sqlx::test]
+async fn cloud_public_route_mounts_without_auth(pool: PgPool) {
+    // Cap is irrelevant here; the probe routes don't create agents.
+    let h = Harness::new(&pool, 1).await;
+    let app = router_with_cloud(h.state.clone(), Some(probe_public()), None);
+
+    // Public group → reachable at the root with no cookie.
+    let res = app.oneshot(get("/__cloud/ping")).await.expect("response");
+    assert_eq!(
+        res.status(),
+        axum::http::StatusCode::OK,
+        "a cloud public route must mount outside the cookie gate",
+    );
+}
+
+#[sqlx::test]
+async fn cloud_private_route_inherits_auth(pool: PgPool) {
+    let h = Harness::new(&pool, 1).await;
+
+    // Without a session cookie the merged private route is refused by
+    // `require_principal` — proof it landed behind the auth route-layer.
+    let app = router_with_cloud(h.state.clone(), None, Some(probe_private()));
+    let res = app
+        .oneshot(get("/api/__cloud/whoami"))
+        .await
+        .expect("response");
+    assert_eq!(
+        res.status(),
+        axum::http::StatusCode::UNAUTHORIZED,
+        "a cloud private route must inherit require_principal",
+    );
+
+    // With a valid session cookie it passes the gate and the handler runs.
+    // (GET is CSRF-/origin-exempt, so the cookie alone suffices.)
+    let app = router_with_cloud(h.state.clone(), None, Some(probe_private()));
+    let req = axum::http::Request::builder()
+        .method("GET")
+        .uri("/api/__cloud/whoami")
+        .header("cookie", h.primary.cookie_header())
+        .body(axum::body::Body::empty())
+        .expect("request");
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(
+        res.status(),
+        axum::http::StatusCode::OK,
+        "an authenticated request reaches the cloud private handler",
     );
 }

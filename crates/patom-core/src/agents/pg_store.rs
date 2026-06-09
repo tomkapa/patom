@@ -20,6 +20,7 @@ use sqlx::types::Json;
 
 use crate::auth::{OrgId, UserId, run_as_user, run_privileged};
 use crate::clock::SharedClock;
+use crate::entitlements::{AgentLimit, SharedEntitlements};
 use crate::pg_vector;
 use crate::provider::{SharedEmbeddingProvider, embed_one};
 
@@ -44,6 +45,14 @@ const LIST_NAMES_MAX_ROWS: i64 = 512;
 /// avoid colliding with the MCP create lock.
 const AGENT_DEFAULT_SEED_LOCK_KEY: i64 = 0x6167_656E_745F_6473;
 
+/// Advisory-lock *class* for the per-org agent-cap gate (#131). The two-int
+/// form `pg_advisory_xact_lock(class, hashtext(org))` serialises concurrent
+/// creates within one org — so the count-then-insert is atomic — while letting
+/// different orgs proceed in parallel. The class keeps this lock namespace
+/// distinct from any other two-int advisory lock. Literal is `0x6167_6361`
+/// (= ASCII "agca", agent-cap). Released automatically on commit/rollback.
+const AGENT_CAP_LOCK_CLASS: i32 = 0x6167_6361;
+
 /// Single source of truth for the `agents` SELECT shape. Every read that
 /// hydrates an [`AgentRow`] uses this — `system_prompt` and
 /// `current_prompt_version_id` come from the latest row in
@@ -67,22 +76,38 @@ const AGENT_SELECT: &str = "a.id, a.org_id, a.name, apv.system_prompt, a.descrip
          LIMIT 1 \
     ) apv ON TRUE";
 
-/// Postgres-backed [`AgentStore`]. Holds a cheap clone of a [`PgPool`], a
-/// [`SharedClock`], and a [`SharedEmbeddingProvider`] for `description`
-/// embedding; safe to share across the runtime.
+/// Postgres-backed [`AgentStore`].
+///
+/// Holds a cheap clone of a [`PgPool`], a [`SharedClock`], a
+/// [`SharedEmbeddingProvider`] for `description` embedding, and the
+/// [`SharedEntitlements`] policy used to gate creation; safe to share across
+/// the runtime.
+///
+/// The entitlement handle lives on the store (not the caller) so the agent cap
+/// is enforced on *every* creation path — HTTP, the `create_agent` tool, and
+/// any future caller — by construction, and the count-then-insert runs under a
+/// single per-org advisory lock (no TOCTOU). `UnlimitedEntitlements` (the OSS
+/// default) short-circuits to no lock and no count.
 pub struct PgAgentStore {
     pool: PgPool,
     clock: SharedClock,
     embeddings: SharedEmbeddingProvider,
+    entitlements: SharedEntitlements,
 }
 
 impl PgAgentStore {
     #[must_use]
-    pub fn new(pool: PgPool, clock: SharedClock, embeddings: SharedEmbeddingProvider) -> Self {
+    pub fn new(
+        pool: PgPool,
+        clock: SharedClock,
+        embeddings: SharedEmbeddingProvider,
+        entitlements: SharedEntitlements,
+    ) -> Self {
         Self {
             pool,
             clock,
             embeddings,
+            entitlements,
         }
     }
 
@@ -190,8 +215,13 @@ impl AgentStore for PgAgentStore {
 
     async fn create(&self, payload: NewAgent) -> Result<AgentRecord, AgentStoreError> {
         let embedding = self.embed(payload.description.as_str()).await?;
+        // Resolve the org's cap before opening the tx (the cap value is
+        // policy, not a count — the authoritative count happens in-tx under
+        // the advisory lock). Keeps the cloud impl's subscription read off
+        // the agents transaction.
+        let limit = self.entitlements.agent_limit(payload.org_id).await;
         run_privileged(&self.pool, async |tx| {
-            create_in_tx(self, tx.tx_mut(), &embedding, payload).await
+            create_in_tx(self, tx.tx_mut(), &embedding, payload, limit).await
         })
         .await
     }
@@ -202,8 +232,9 @@ impl AgentStore for PgAgentStore {
         payload: NewAgent,
     ) -> Result<AgentRecord, AgentStoreError> {
         let embedding = self.embed(payload.description.as_str()).await?;
+        let limit = self.entitlements.agent_limit(payload.org_id).await;
         run_as_user(&self.pool, acting_user_id, async |tx| {
-            create_in_tx(self, tx.tx_mut(), &embedding, payload).await
+            create_in_tx(self, tx.tx_mut(), &embedding, payload, limit).await
         })
         .await
     }
@@ -529,9 +560,33 @@ async fn create_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     embedding: &[f32],
     payload: NewAgent,
+    limit: AgentLimit,
 ) -> Result<AgentRecord, AgentStoreError> {
     let embedding_literal = pg_vector::encode(embedding);
     let now = store.now();
+
+    // Entitlement gate (#131): enforce the org's agent cap atomically with the
+    // insert. The per-org advisory xact lock serialises concurrent creates in
+    // the same org so count-then-insert cannot race; it releases on
+    // commit/rollback. `Unlimited` (the OSS/self-host default) takes neither
+    // the lock nor the count — it pays nothing.
+    if let AgentLimit::Max(cap) = limit {
+        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+            .bind(AGENT_CAP_LOCK_CLASS)
+            .bind(payload.org_id.as_uuid().to_string())
+            .execute(&mut **tx)
+            .await?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM agents WHERE org_id = $1")
+            .bind(payload.org_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        // `count(*)` is non-negative; saturate the impossible overflow rather
+        // than panic — a larger value only makes the cap stricter.
+        let current = u32::try_from(count).unwrap_or(u32::MAX);
+        if current >= cap {
+            return Err(AgentStoreError::AgentLimitReached { limit: cap });
+        }
+    }
 
     // Promoting a new row to default first demotes the existing
     // default in the same org so the partial unique index

@@ -1,0 +1,41 @@
+//! Lemon Squeezy billing integration (issue #131).
+//!
+//! Lemon Squeezy is the Merchant of Record: it owns card handling and global
+//! tax, so Patom stores only ids + subscription status (PCI SAQ-A). This module
+//! holds the domain newtypes, the one boundary error type, and the
+//! subscription store; the webhook, checkout, client, and billing-backed
+//! entitlement impl build on top.
+
+pub mod checkout;
+pub mod client;
+pub mod config;
+pub mod deps;
+pub mod entitlements;
+pub mod error;
+pub mod lifecycle;
+pub mod limits;
+pub mod payload;
+pub mod pg_store;
+pub mod reconcile;
+pub mod store;
+pub mod types;
+pub mod verify;
+pub mod webhook;
+
+pub use checkout::{CHECKOUT_PATH, CheckoutRequest, CheckoutResponse, checkout_router};
+pub use client::{
+    CheckoutCreate, HttpLemonSqueezyClient, LsCheckoutClient, RemoteSubscription,
+    SharedCheckoutClient,
+};
+pub use config::LemonSqueezyConfig;
+pub use deps::CloudDeps;
+pub use entitlements::BillingEntitlements;
+pub use error::LemonSqueezyError;
+pub use pg_store::PgSubscriptionStore;
+pub use reconcile::{ReconcileDeps, reconcile_once};
+pub use store::{NewSubscription, SharedSubscriptionStore, SubscriptionRecord, SubscriptionStore};
+pub use types::{
+    LsCustomerId, LsEventId, LsOrderId, LsStoreId, LsSubscriptionId, LsVariantId, Plan,
+    SubscriptionId, SubscriptionStatus,
+};
+pub use webhook::{WEBHOOK_PATH, webhook_router};

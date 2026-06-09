@@ -4,8 +4,9 @@
 # is public under FSL, but this crate is compiled ONLY under `patom-server`'s
 # `cloud` feature, so the default OSS / self-host binary never links it.
 #
-# Currently an empty scaffold. The entitlement implementation lands in #134 and
-# the Lemon Squeezy billing payload in #131. See README.md for the boundary.
+# Houses the Lemon Squeezy billing payload (#131): the `cloud` schema +
+# migrations, the subscription store, the webhook + checkout routes, and the
+# billing-backed `Entitlements` impl. See README.md for the open-core boundary.
 [package]
 name = "patom-cloud"
 version.workspace = true
@@ -17,6 +18,43 @@ publish = false
 
 [dependencies]
 patom-core = { workspace = true }
+# Runtime sqlx for the `cloud` schema: its own embedded `Migrator`
+# (`cloud._sqlx_migrations`) plus the subscription store. Same pin/features as
+# the rest of the workspace.
+sqlx = { workspace = true }
+tracing = { workspace = true }
+# Newtype boilerplate (`uuid_newtype!` / `str_enum!`) emits sqlx + serde impls
+# over `::uuid` / `::serde`, and Lemon Squeezy ids/enums deserialize from JSON.
+uuid = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+# One `thiserror` error enum at the module boundary (CLAUDE.md §12).
+thiserror = { workspace = true }
+# Billing config is loaded through the same serde `config` boundary patom-core
+# uses (Environment source → struct), never `std::env::var` directly.
+config = { workspace = true }
+# Object-safe async `SubscriptionStore` / `Entitlements` impls.
+async-trait = { workspace = true }
+# Webhook + checkout routes merged into the core router as `Router<AppState>`.
+axum = { workspace = true }
+# Webhook X-Signature: HMAC-SHA256 over the raw body, constant-time compared.
+hmac = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+# Lemon Squeezy webhook / API payloads are JSON.
+serde_json = { workspace = true }
+# `tokio::time::timeout` bounds the webhook handler (CLAUDE.md §5).
+tokio = { workspace = true }
+# CancellationToken wires the reconciliation poll into process shutdown.
+tokio-util = { workspace = true }
+# REST client for checkout creation + reconciliation polling. Reuses the shared
+# `reqwest::Client` (passed in via CloudCtx); features match the workspace.
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+# `ServiceExt::oneshot` drives the router in handler tests.
+tower = { workspace = true }
 
 [lints]
 workspace = true

@@ -28,7 +28,7 @@
 mod error;
 mod limits;
 mod pg_store;
-pub(crate) mod scheduled_task;
+pub mod scheduled_task;
 mod scheduler;
 mod store;
 mod types;
@@ -40,7 +40,7 @@ pub use limits::{
     SCHEDULED_TASK_NAME_MAX_LEN, SCHEDULED_TASK_POLL_SECS,
 };
 pub use pg_store::PgScheduledTaskStore;
-pub(crate) use scheduled_task::ScheduledTask;
+pub use scheduled_task::ScheduledTask;
 pub use scheduler::ScheduledTaskScheduler;
 pub use store::{
     NewScheduledTask, ScheduledTaskStore, ScheduledTaskUpdate, SharedScheduledTaskStore,

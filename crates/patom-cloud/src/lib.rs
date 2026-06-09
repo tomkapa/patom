@@ -5,6 +5,14 @@
 //! `patom-server`'s `cloud` feature, so the default OSS / self-host binary
 //! never links any of it.
 //!
-//! It is an empty scaffold today; the entitlement implementation arrives in
-//! #134 and the billing payload in #131. See `README.md` for what belongs here
-//! versus in `patom-core`.
+//! Billing state lives in its own `cloud` Postgres schema with its own
+//! migration stream ([`run_migrations`]) — see `README.md` for what belongs
+//! here versus in `patom-core`.
+
+mod builder;
+pub mod lemon_squeezy;
+mod migrate;
+
+pub use builder::LemonSqueezyCloud;
+pub use lemon_squeezy::LemonSqueezyConfig;
+pub use migrate::run_migrations;

@@ -1,10 +1,14 @@
 //! One error type for the `entitlements` module boundary (CLAUDE.md §12).
 //!
-//! Both variants map to HTTP **402 Payment Required** — the caller's plan does
-//! not cover the action. The HTTP mapping itself lives once, next to every
-//! other status, in [`crate::http::HttpError`]'s `into_response` (this codebase
-//! has no per-module `IntoResponse`); a `From<LicenseError>` bridge funnels
-//! these through the `?` operator there.
+//! Maps to HTTP **402 Payment Required** — the caller's plan does not cover the
+//! action. The HTTP mapping itself lives once, next to every other status, in
+//! [`crate::http::HttpError`]'s `into_response` (this codebase has no
+//! per-module `IntoResponse`); a `From<LicenseError>` bridge funnels it through
+//! the `?` operator there.
+//!
+//! The agent-count cap is *not* a `LicenseError`: it's enforced in-tx by the
+//! agent store and surfaced as `AgentStoreError::AgentLimitReached` (#131).
+//! This type covers the boolean feature gate.
 
 use thiserror::Error;
 
@@ -17,9 +21,4 @@ pub enum LicenseError {
     /// first real gate.
     #[error("feature not licensed: {feature}")]
     FeatureNotLicensed { feature: Feature },
-
-    /// The org is at its agent ceiling. `limit` is the cap that was hit, for
-    /// the upgrade prompt the FE renders on the 402.
-    #[error("agent limit reached: {limit}")]
-    AgentLimitReached { limit: u32 },
 }

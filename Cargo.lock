@@ -2908,7 +2908,24 @@ checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 name = "patom-cloud"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "config",
+ "hmac 0.12.1",
  "patom-core",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

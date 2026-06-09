@@ -79,6 +79,7 @@ async fn seed_second_org(pool: &PgPool) -> (OrgId, UserId, patom::agents::AgentI
         pool.clone(),
         SystemClock::shared(),
         common::embedding::FakeEmbeddingProvider::shared(),
+        Arc::new(patom::entitlements::UnlimitedEntitlements),
     ));
     let agent_id = agents
         .seed_default(
