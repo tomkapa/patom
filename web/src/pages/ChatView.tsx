@@ -56,10 +56,12 @@ function isDemoMode(): boolean {
 export function ChatView() {
   const forcedDemo = isDemoMode();
   const [selectedRoot, setSelectedRoot] = useState<string | null>(
-    forcedDemo ? DEMO_THREADS[0]!.root_request_id : null,
+    forcedDemo ? DEMO_THREADS[0]!.thread_id : null,
   );
-  // When set, the channel feed is filtered to threads where this agent is
-  // the human's first recipient (`first_agent.id === selectedAgentId`).
+  // When set, the sidebar shows this agent's DM feed (the caller's
+  // channel-less threads). The thread-feed wire no longer carries a
+  // per-thread `first_agent`, so DM mode reads the channel-less feed
+  // wholesale rather than filtering by recipient agent.
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   // The selected channel (mutually exclusive with `selectedAgentId`: an agent
   // DM or a channel feed, never both). `null` until channels load; an effect
@@ -107,10 +109,6 @@ export function ChatView() {
   // `useThreads` requests the DM feed.
   const feedChannelId = selectedAgentId ? null : selectedChannelId;
   const threadsQ = useThreads(forcedDemo ? null : feedChannelId);
-  // The sidebar's per-agent badges count DM threads, which must NOT depend on
-  // the channel currently in view. Read the DM feed on its own; react-query
-  // dedupes it with `threadsQ` whenever we're already in DM mode.
-  const dmThreadsQ = useThreads(null);
   const submit = useSubmitPrompt();
   const me = useAuthStore((s) => s.me);
   const activeOrg = useActiveOrg();
@@ -125,8 +123,6 @@ export function ChatView() {
   const agents = isDemo ? DEMO_AGENTS : (agentsQ.data ?? []);
   const channels = isDemo ? DEMO_CHANNELS : (channelsQ.data ?? []);
   const threads = isDemo ? DEMO_THREADS : (threadsQ.data ?? []);
-  // DM threads drive the sidebar agent counts regardless of the active feed.
-  const dmThreads = isDemo ? DEMO_THREADS : (dmThreadsQ.data ?? []);
 
   // Default the channel selection to the first channel (#general) once the
   // list loads, unless the reader is already in a channel or an agent DM.
@@ -160,13 +156,10 @@ export function ChatView() {
     [agents],
   );
 
-  const visibleThreads = useMemo(
-    () =>
-      selectedAgentId
-        ? threads.filter((t) => t.first_agent.id === selectedAgentId)
-        : threads,
-    [threads, selectedAgentId],
-  );
+  // The thread-feed wire no longer carries a per-thread first recipient, so
+  // the agent-DM view shows the channel-less feed wholesale (the feed is
+  // already scoped to the caller's DMs when an agent is selected).
+  const visibleThreads = threads;
 
   const selectedAgent = useMemo(
     () =>
@@ -183,7 +176,7 @@ export function ChatView() {
   const channelName = selectedChannel?.name ?? "general";
 
   const selectedThread = useMemo(
-    () => threads.find((t) => t.root_request_id === selectedRoot) ?? null,
+    () => threads.find((t) => t.thread_id === selectedRoot) ?? null,
     [threads, selectedRoot],
   );
 
@@ -212,7 +205,7 @@ export function ChatView() {
         // (agent selected) leaves it unset so the BE files it as a DM.
         ...(selectedAgentId ? {} : { channel_id: selectedChannelId ?? undefined }),
       });
-      setSelectedRoot(res.request_id);
+      setSelectedRoot(res.thread_id);
     } catch (e) {
       if (handleBudgetExceeded(e)) return;
       throw e;
@@ -221,12 +214,17 @@ export function ChatView() {
 
   const onThreadReply = async (input: { content: string }) => {
     if (isDemo || !selectedThread) return;
-    const root = selectedThread.root_request_id;
+    const threadId = selectedThread.thread_id;
     // Auto-prefix the receiver's @handle so the optimistic bubble matches
-    // what the fold renders for the persisted row.
-    const text = prefixMention(input.content, selectedThread.first_agent.name);
+    // what the fold renders for the persisted row. The thread row no longer
+    // carries its first recipient, so prefix the DM agent when one is in
+    // view, else the workspace default agent.
+    const replyAgent = selectedAgent ?? defaultAgent;
+    const text = replyAgent
+      ? prefixMention(input.content, replyAgent.name)
+      : input.content;
     const idempotency_key = uuidv7();
-    addPending(root, {
+    addPending(threadId, {
       idempotency_key,
       text,
       ts: new Date().toISOString(),
@@ -235,14 +233,14 @@ export function ChatView() {
     try {
       const res = await submit.mutateAsync({
         content: text,
-        session_id: selectedThread.root_session_id,
+        thread_id: threadId,
         idempotency_key,
       });
       // Stamps the request_id so the persisted echo can dedupe this entry.
-      attachRequestId(root, idempotency_key, res.request_id);
+      attachRequestId(threadId, idempotency_key, res.request_id);
     } catch (e) {
       // Withdraw the optimistic bubble; the user can retry.
-      removePending(root, idempotency_key);
+      removePending(threadId, idempotency_key);
       if (handleBudgetExceeded(e)) return;
       throw e;
     }
@@ -266,7 +264,6 @@ export function ChatView() {
       sidebar={
         <Sidebar
           workspace={activeOrg?.name ?? "Patom"}
-          dmThreads={dmThreads}
           channels={channels}
           agents={agents}
           selectedChannelId={selectedAgentId ? null : selectedChannelId}
@@ -389,8 +386,8 @@ function buildDemoView(poster: Poster): {
     if (m.sender.kind === "agent") {
       return {
         kind: "agent",
-        key: `h:${m.session_id}:${m.seq}`,
-        request_id: `demo:${m.session_id}:${m.seq}`,
+        key: `h:${m.seq}`,
+        request_id: `demo:${m.seq}`,
         agent_id: m.sender.agent_id,
         agent_name: null,
         human_name: null,
@@ -406,8 +403,8 @@ function buildDemoView(poster: Poster): {
     }
     return {
       kind: "human",
-      key: `h:${m.session_id}:${m.seq}`,
-      request_id: `demo:${m.session_id}:${m.seq}`,
+      key: `h:${m.seq}`,
+      request_id: `demo:${m.seq}`,
       agent_id: null,
       agent_name: null,
       human_name: poster.name,

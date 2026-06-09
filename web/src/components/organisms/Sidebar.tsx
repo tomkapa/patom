@@ -1,15 +1,13 @@
-import { useMemo } from "react";
 import { Bot, ChevronDown, Hash, Plus, Search, Settings2 } from "lucide-react";
 import { Button } from "../atoms/Button";
 import { Kbd } from "../atoms/Kbd";
 import { Monogram } from "../atoms/Monogram";
 import { cn } from "../../lib/utils";
 import { useT } from "../../i18n";
-import type { Agent, Channel, ThreadSummary } from "../../types/api";
+import type { Agent, Channel } from "../../types/api";
 
 export function Sidebar({
   workspace = "Acme Robotics",
-  dmThreads,
   channels,
   agents,
   selectedChannelId,
@@ -20,9 +18,6 @@ export function Sidebar({
   onManageChannel,
 }: {
   workspace?: string;
-  /** The caller's direct-message threads — drives the per-agent badge counts.
-   *  Must be the DM feed, not the active channel's feed. */
-  dmThreads: ThreadSummary[];
   channels: Channel[];
   agents: Agent[];
   selectedChannelId: string | null;
@@ -33,13 +28,6 @@ export function Sidebar({
   onManageChannel: (channel: Channel) => void;
 }) {
   const { t } = useT();
-  const threadCountByAgent = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const t of dmThreads) {
-      m.set(t.first_agent.id, (m.get(t.first_agent.id) ?? 0) + 1);
-    }
-    return m;
-  }, [dmThreads]);
 
   return (
     <aside
@@ -118,37 +106,29 @@ export function Sidebar({
           action={<AddBtn label="New DM" />}
         />
         <div className="mb-2 flex flex-col gap-0.5">
-          {agents.map((a) => {
-            const count = threadCountByAgent.get(a.id) ?? 0;
-            return (
-              <SidebarRow
-                key={a.id}
-                icon={
-                  <Monogram
-                    name={a.name}
-                    id={a.id}
-                    size={20}
-                    tone="moss"
-                    avatarUrl={a.avatar_url}
-                  />
-                }
-                label={a.name}
-                trailing={
-                  <span className="inline-flex items-center gap-1.5">
-                    <Bot className="h-3.5 w-3.5 text-[var(--color-moss)]" />
-                    {count > 0 && (
-                      <span className="bg-[var(--color-paper-3)] px-1 font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
-                        {count}
-                      </span>
-                    )}
-                  </span>
-                }
-                active={selectedAgentId === a.id}
-                onClick={() => onSelectAgent(a.id)}
-                mono
-              />
-            );
-          })}
+          {agents.map((a) => (
+            <SidebarRow
+              key={a.id}
+              icon={
+                <Monogram
+                  name={a.name}
+                  id={a.id}
+                  size={20}
+                  tone="moss"
+                  avatarUrl={a.avatar_url}
+                />
+              }
+              label={a.name}
+              trailing={
+                <span className="inline-flex items-center gap-1.5">
+                  <Bot className="h-3.5 w-3.5 text-[var(--color-moss)]" />
+                </span>
+              }
+              active={selectedAgentId === a.id}
+              onClick={() => onSelectAgent(a.id)}
+              mono
+            />
+          ))}
           {agents.length === 0 && (
             <p className="px-2 py-1 font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
               {t("sidebar.empty_agents")}

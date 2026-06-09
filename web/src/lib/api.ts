@@ -410,15 +410,16 @@ export const api = {
       channelId ? `/threads?channel_id=${encodeURIComponent(channelId)}` : "/threads",
     ),
 
-  threadMessages: (rootId: string) =>
-    request<ThreadMessage[]>(`/threads/${rootId}/messages`),
+  threadMessages: (threadId: string) =>
+    request<ThreadMessage[]>(`/threads/${threadId}/messages`),
 
   submitPrompt: (input: {
-    session_id?: string;
+    /** Reply into an existing thread. Omit to start a new one. */
+    thread_id?: string;
     agent_id?: string;
     /** Post the new thread into this channel. Omit for a direct message.
-     *  Ignored by the BE when `session_id` is set (a reply inherits its
-     *  root's location). */
+     *  Ignored by the BE when `thread_id` is set (a reply inherits its
+     *  thread's location). */
     channel_id?: string;
     content: string;
     idempotency_key: string;

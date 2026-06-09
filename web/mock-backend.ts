@@ -510,6 +510,77 @@ alternative personas when requested. Always identify yourself as Atlas.`,
 
 const agentsById = new Map<string, AgentRow>(AGENTS.map((a) => [a.id, a]));
 
+// ─── Thread feed mock store (G1/G2/G3 + /prompts) ───────────────────
+// Mirrors the thread-feed wire shapes:
+//   GET  /threads?channel_id=<uuid>      → ThreadSummary[]
+//   GET  /threads/{id}/messages          → ThreadMessage[] (flat feed)
+//   GET  /threads/{id}/stream            → SSE of ThreadStreamEnvelope
+//   POST /prompts                        → SubmitPromptResponse
+// A POST creates (or appends to) a thread, records the human's `posted`
+// row, and simulates an agent reply: a few SSE chunks ending in an
+// `agent_message` + `done`, plus the persisted agent `posted` row so a
+// G2 refetch (driven by the FE's terminal-chunk invalidate) reconciles.
+
+type MockSender =
+  | { kind: "human"; colleague_id: string; user_id: string }
+  | { kind: "agent"; colleague_id: string; agent_id: string }
+  | { kind: "system" };
+
+type MockContentBlock =
+  | { kind: "text"; value: string }
+  | { kind: "reasoning"; value: string }
+  | { kind: "tool_call"; value: { id: string; name: string; input: unknown } }
+  | {
+      kind: "tool_result";
+      value: { call_id: string; output: string; is_error?: boolean };
+    };
+
+type MockBody =
+  | { role: string; content: string }
+  | { role: string; contents: MockContentBlock[] };
+
+type MockThreadMessage = {
+  seq: number;
+  kind: "posted" | "reasoning" | "tool_use" | "tool_result" | "system_note";
+  sender: MockSender;
+  owner_agent_id: string | null;
+  receiver: MockSender | null;
+  body: MockBody;
+  created_at: string;
+  request_id: string | null;
+  sender_display_name: string | null;
+  sender_avatar_url: string | null;
+};
+
+type MockThread = {
+  thread_id: string;
+  channel_id: string | null;
+  last_activity_at: string;
+  messages: MockThreadMessage[];
+  nextSeq: number;
+};
+
+const threadsById = new Map<string, MockThread>();
+// Live SSE subscribers per thread, so a /prompts reply can push chunks to
+// an already-open EventSource. Bounded by the number of open panels.
+const threadStreams = new Map<
+  string,
+  Set<(event: string, data: unknown) => void>
+>();
+
+const humanColleagueId = "cccccccc-0000-0000-0000-000000000001";
+
+function defaultAgentRow(): AgentRow {
+  for (const a of agentsById.values()) if (a.is_default) return a;
+  return [...agentsById.values()][0] ?? RECRUITER_SEED;
+}
+
+function agentColleagueId(agentId: string): string {
+  // Deterministic synthetic colleague id per agent — the FE treats it as
+  // opaque, so any stable value works.
+  return `dddddddd-0000-0000-0000-${agentId.slice(-12)}`;
+}
+
 // ─── Prompt versions mock store ─────────────────────────────────────
 // Mirrors `agent_prompt_versions` from migration 43 + doc/logs_metrics_tab.md
 // §4.1. We seed two versions for the default agent so the diff modal has
@@ -1218,6 +1289,7 @@ const server = Bun.serve({
       path.startsWith("/agents") ||
       path.startsWith("/channels") ||
       path.startsWith("/threads") ||
+      path.startsWith("/prompts") ||
       path.startsWith("/mcp-servers") ||
       path.startsWith("/uploads");
     if (
@@ -2131,6 +2203,218 @@ const server = Bun.serve({
       if (idx === -1) return empty(404);
       INVITES.splice(idx, 1);
       return empty(204);
+    }
+
+    // ─── Thread feed (G1/G2/G3) + /prompts ────────────────────────────
+    // GET /threads?channel_id=<uuid> (omit channel_id for the caller's DMs).
+    if (path === "/threads" && method === "GET") {
+      const channelId = url.searchParams.get("channel_id");
+      const rows = [...threadsById.values()]
+        .filter((t) =>
+          channelId ? t.channel_id === channelId : t.channel_id === null,
+        )
+        .sort((a, b) => (a.last_activity_at < b.last_activity_at ? 1 : -1))
+        .map((t) => ({
+          thread_id: t.thread_id,
+          channel_id: t.channel_id,
+          last_activity_at: t.last_activity_at,
+        }));
+      return json(rows);
+    }
+
+    // GET /threads/{id}/messages — flat G2 feed, optional ?before_seq=&limit=.
+    const threadMsgMatch = path.match(/^\/threads\/([^/]+)\/messages$/);
+    if (threadMsgMatch && method === "GET") {
+      const t = threadsById.get(threadMsgMatch[1]!);
+      if (!t) return json([]);
+      const beforeSeq = Number(url.searchParams.get("before_seq"));
+      const limit = Number(url.searchParams.get("limit"));
+      let rows = t.messages;
+      if (Number.isFinite(beforeSeq) && beforeSeq > 0) {
+        rows = rows.filter((m) => m.seq < beforeSeq);
+      }
+      if (Number.isFinite(limit) && limit > 0) {
+        rows = rows.slice(-Math.trunc(limit));
+      }
+      return json(rows);
+    }
+
+    // GET /threads/{id}/stream — continuous SSE. A `done`/`error` chunk is a
+    // per-turn marker, never a stream close; the connection lives until the
+    // client disconnects.
+    const threadStreamMatch = path.match(/^\/threads\/([^/]+)\/stream$/);
+    if (threadStreamMatch && method === "GET") {
+      const threadId = threadStreamMatch[1]!;
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          const subs = threadStreams.get(threadId) ?? new Set();
+          const push = (event: string, data: unknown) => {
+            try {
+              controller.enqueue(
+                encoder.encode(
+                  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+                ),
+              );
+            } catch {
+              // Controller closed — drop the subscriber on the next sweep.
+            }
+          };
+          subs.add(push);
+          threadStreams.set(threadId, subs);
+          // Initial comment frame so EventSource fires `open` promptly.
+          controller.enqueue(encoder.encode(": connected\n\n"));
+          req.signal.addEventListener("abort", () => {
+            subs.delete(push);
+            try {
+              controller.close();
+            } catch {
+              /* already closed */
+            }
+          });
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        },
+      });
+    }
+
+    // POST /prompts — { thread_id?, agent_id?, channel_id?, content,
+    // idempotency_key } → { request_id, thread_id, status }.
+    if (path === "/prompts" && method === "POST") {
+      const body = (await req.json()) as {
+        thread_id?: string;
+        agent_id?: string;
+        channel_id?: string;
+        content?: string;
+        idempotency_key?: string;
+      };
+      const content = (body.content ?? "").trim();
+      if (!content) return json({ error: "content is empty" }, 400);
+
+      const agent =
+        (body.agent_id ? agentsById.get(body.agent_id) : null) ??
+        defaultAgentRow();
+      const requestId = crypto.randomUUID();
+      const nowIso = new Date().toISOString();
+
+      // Resolve / create the thread.
+      let thread = body.thread_id
+        ? threadsById.get(body.thread_id)
+        : undefined;
+      if (!thread) {
+        const threadId = body.thread_id ?? crypto.randomUUID();
+        thread = {
+          thread_id: threadId,
+          channel_id: body.channel_id ?? null,
+          last_activity_at: nowIso,
+          messages: [],
+          nextSeq: 1,
+        };
+        threadsById.set(threadId, thread);
+      }
+      thread.last_activity_at = nowIso;
+
+      // Persist the human's posted row.
+      thread.messages.push({
+        seq: thread.nextSeq++,
+        kind: "posted",
+        sender: {
+          kind: "human",
+          colleague_id: humanColleagueId,
+          user_id: USER_ID,
+        },
+        owner_agent_id: null,
+        receiver: {
+          kind: "agent",
+          colleague_id: agentColleagueId(agent.id),
+          agent_id: agent.id,
+        },
+        body: { role: "user", content },
+        created_at: nowIso,
+        request_id: requestId,
+        sender_display_name: me.user.display_name,
+        sender_avatar_url: me.user.avatar_url,
+      });
+
+      // Simulate the agent's reply on the live stream, then persist it so a
+      // G2 refetch reconciles the live bubble into history.
+      const replyRequestId = crypto.randomUUID();
+      const replyText = `Got it — "${content.slice(0, 60)}". (mock reply from ${agent.name})`;
+      const subs = threadStreams.get(thread.thread_id);
+      const emit = (event: string, data: unknown) => {
+        for (const push of subs ?? []) push(event, data);
+      };
+      let chunkSeq = 0;
+      const envelope = (chunk: unknown) => ({
+        request_id: replyRequestId,
+        from_agent: agent.id,
+        chunk_seq: chunkSeq++,
+        chunk,
+      });
+      // Fire chunks on a short timer so EventSource subscribers (opened on
+      // thread switch) receive them after the POST resolves.
+      setTimeout(() => {
+        emit("reasoning", envelope({ kind: "reasoning", value: "Considering the request…" }));
+        emit(
+          "agent_message",
+          envelope({
+            kind: "agent_message",
+            from: agent.id,
+            to_thread: thread!.thread_id,
+            content: replyText,
+          }),
+        );
+        emit("done", envelope({ kind: "done", final_text: replyText }));
+        // Persist the agent's posted row for the G2 reconcile.
+        const replyNow = new Date().toISOString();
+        thread!.last_activity_at = replyNow;
+        thread!.messages.push({
+          seq: thread!.nextSeq++,
+          kind: "posted",
+          sender: {
+            kind: "agent",
+            colleague_id: agentColleagueId(agent.id),
+            agent_id: agent.id,
+          },
+          owner_agent_id: agent.id,
+          receiver: {
+            kind: "human",
+            colleague_id: humanColleagueId,
+            user_id: USER_ID,
+          },
+          // Agent posts persist as a `send_message` tool call (matching the
+          // real worker), so `foldHistory` renders them as reply bubbles.
+          body: {
+            role: "assistant",
+            contents: [
+              {
+                kind: "tool_call",
+                value: {
+                  id: crypto.randomUUID(),
+                  name: "send_message",
+                  input: { content: replyText, receiver: { kind: "human" } },
+                },
+              },
+            ],
+          },
+          created_at: replyNow,
+          request_id: replyRequestId,
+          sender_display_name: null,
+          sender_avatar_url: null,
+        });
+      }, 400);
+
+      return json({
+        request_id: requestId,
+        thread_id: thread.thread_id,
+        status: "processing",
+      });
     }
 
     // ─── Logs & Metrics turn drawer (slice 2) ─────────────────────────

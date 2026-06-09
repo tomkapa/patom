@@ -3,10 +3,10 @@ import { api } from "../lib/api";
 import { uuidv7 } from "../lib/utils";
 
 type Vars = {
-  session_id?: string;
+  thread_id?: string;
   agent_id?: string;
   /** Post a new thread into this channel. Omit for a direct message or a
-   *  reply (replies carry `session_id` and inherit their root's location). */
+   *  reply (replies carry `thread_id` and inherit their thread's location). */
   channel_id?: string;
   content: string;
   /** Caller-supplied so the optimistic bubble can be tagged with the same

@@ -96,16 +96,16 @@ export function foldHistory(
 ): FoldedHistory {
   const agentsById = new Map(agents.map((a) => [a.id, a]));
   const bubbles: Bubble[] = [];
-  // Per-(session, agent) accumulator — reasoning + non-send_message tool
-  // calls observed since this agent's last delivery in this session.
+  // Per-(thread, agent) accumulator — reasoning + non-send_message tool
+  // calls observed since this agent's last delivery in this thread.
   const pending = new Map<string, Pending>();
-  // Most recent agent bubble per (session, agent). Reasoning rows that land
+  // Most recent agent bubble per (thread, agent). Reasoning rows that land
   // *after* a delivery but before the next one are post-delivery reflection
   // — attach back to the bubble that just shipped.
   const lastBubble = new Map<string, Bubble>();
-  // Per-session tool index for tool_result lookups; system rows carry the
+  // Per-thread tool index for tool_result lookups; system rows carry the
   // results but not the original caller's identity.
-  const indexBySession = new Map<string, Map<string, ToolCallEntry>>();
+  const indexByThread = new Map<string, Map<string, ToolCallEntry>>();
   // send_message tool calls are conversation plumbing; their tool_results
   // are private and never decorate a bubble.
   const sendMessageCallIds = new Set<string>();
@@ -125,8 +125,12 @@ export function foldHistory(
     }
   }
 
-  const sessionAgentKey = (session: string, agent: string | null) =>
-    `${session}|${agent ?? ""}`;
+  // The G2 feed is a single thread, so rows no longer carry a per-row
+  // thread id — the dimension that used to be `session_id`. Group the fold
+  // by a fixed thread token plus the per-row agent so the accumulator and
+  // tool index keep their original (thread, agent) / per-thread shape.
+  const THREAD = "thread";
+  const threadAgentKey = (agent: string | null) => `${THREAD}|${agent ?? ""}`;
   const getPending = (k: string): Pending => {
     let p = pending.get(k);
     if (!p) {
@@ -135,11 +139,11 @@ export function foldHistory(
     }
     return p;
   };
-  const getIndex = (sid: string): Map<string, ToolCallEntry> => {
-    let i = indexBySession.get(sid);
+  const getIndex = (): Map<string, ToolCallEntry> => {
+    let i = indexByThread.get(THREAD);
     if (!i) {
       i = new Map();
-      indexBySession.set(sid, i);
+      indexByThread.set(THREAD, i);
     }
     return i;
   };
@@ -149,9 +153,9 @@ export function foldHistory(
 
     if (m.sender.kind === "agent") {
       const aid = m.sender.agent_id ?? null;
-      const k = sessionAgentKey(m.session_id, aid);
+      const k = threadAgentKey(aid);
       const p = getPending(k);
-      const idx = getIndex(m.session_id);
+      const idx = getIndex();
 
       const sendCalls = decoded.toolCalls.filter(
         (tc) => tc.name === SEND_MESSAGE,
@@ -195,8 +199,8 @@ export function foldHistory(
             const a = aid ? (agentsById.get(aid) ?? null) : null;
             const bubble: Bubble = {
               kind: "agent",
-              key: `h:${m.session_id}:${m.seq}:${tc.id}`,
-              request_id: m.request_id,
+              key: `h:${m.seq}:${tc.id}`,
+              request_id: m.request_id ?? `seq:${m.seq}`,
               agent_id: aid,
               agent_name: a?.name ?? null,
               human_name: null,
@@ -235,7 +239,7 @@ export function foldHistory(
       // Inline tool_results (rare — results normally arrive via a system row).
       attachResults(idx, decoded.toolResults, sendMessageCallIds);
     } else if (m.sender.kind === "system") {
-      const idx = indexBySession.get(m.session_id);
+      const idx = indexByThread.get(THREAD);
       if (idx) attachResults(idx, decoded.toolResults, sendMessageCallIds);
     } else if (m.sender.kind === "human") {
       // Resolve the *real* author from the wire — the backend stamps each
@@ -262,8 +266,8 @@ export function foldHistory(
         const recv = receiverFrom(m.receiver);
         bubbles.push({
           kind: "human",
-          key: `h:${m.session_id}:${m.seq}:user`,
-          request_id: m.request_id,
+          key: `h:${m.seq}:user`,
+          request_id: m.request_id ?? `seq:${m.seq}`,
           agent_id: null,
           agent_name: null,
           human_name: authorName,
@@ -325,7 +329,8 @@ function parseWireMcpOutput(output: string): McpWireRequest | null {
   };
 }
 
-function receiverFrom(p: Participant): ReceiverInput | null {
+function receiverFrom(p: Participant | null): ReceiverInput | null {
+  if (!p) return null;
   return p.kind === "agent" ? { kind: "agent", agent_id: p.agent_id } : null;
 }
 

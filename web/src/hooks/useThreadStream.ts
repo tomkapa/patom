@@ -21,31 +21,38 @@ const KINDS = {
 /**
  * Open a single SSE connection to G3 for the active thread. Chunks land in
  * `useThreadStore`, deduped by `(request_id, chunk_seq)` so reconnects and
- * G2 backfill never double-render. Terminal events (`done`, `error`,
- * `stalled`) invalidate G2 so the persisted history takes over from the
- * in-memory live bubbles. The view-side selector hides each live bubble the
- * moment its `request_id` lands in history (identity-based dedup), so there
- * is no flash between terminal-event time and the refetch.
+ * G2 backfill never double-render.
+ *
+ * The stream is CONTINUOUS: a `done` / `error` chunk is a per-turn marker,
+ * not a stream close. The thread hosts many turns, so we never tear the SSE
+ * connection down on a terminal chunk — we only invalidate G2 so the
+ * persisted history takes over from the in-memory live bubbles for that
+ * turn. The view-side selector hides each live bubble the moment its
+ * `request_id` lands in history (identity-based dedup), so there is no flash
+ * between terminal-event time and the refetch. The connection closes only on
+ * unmount / thread switch (the effect cleanup).
+ *
+ * `threadId` is the thread feed's stable id (was the root request id).
  */
-export function useThreadStream(rootId: string | null) {
+export function useThreadStream(threadId: string | null) {
   const setStatus = useThreadStore((s) => s.setStatus);
   const applyEnvelope = useThreadStore((s) => s.applyEnvelope);
   const qc = useQueryClient();
 
   useEffect(() => {
-    if (!rootId) return;
-    setStatus(rootId, "connecting");
+    if (!threadId) return;
+    setStatus(threadId, "connecting");
 
-    const url = `${API_PREFIX}/threads/${rootId}/stream`;
+    const url = `${API_PREFIX}/threads/${threadId}/stream`;
     const es = new EventSource(url, { withCredentials: true });
     let closed = false;
 
     es.onopen = () => {
-      if (!closed) setStatus(rootId, "open");
+      if (!closed) setStatus(threadId, "open");
     };
     es.onerror = () => {
       // Browsers auto-reconnect; reflect the gap in UI status.
-      if (!closed) setStatus(rootId, "stalled");
+      if (!closed) setStatus(threadId, "stalled");
     };
 
     const handle = (e: MessageEvent) => {
@@ -54,10 +61,10 @@ export function useThreadStream(rootId: string | null) {
       if (!e.data || e.data === "undefined") return;
       try {
         const env = JSON.parse(e.data) as ThreadStreamEnvelope;
-        applyEnvelope(rootId, env);
+        applyEnvelope(threadId, env);
         const k = env.chunk?.kind;
         if (k === "done" || k === "error" || k === "stalled") {
-          qc.invalidateQueries({ queryKey: ["threads", rootId, "messages"] });
+          qc.invalidateQueries({ queryKey: ["threads", threadId, "messages"] });
           qc.invalidateQueries({ queryKey: ["threads"] });
         }
       } catch (err) {
@@ -74,7 +81,7 @@ export function useThreadStream(rootId: string | null) {
       for (const k of kinds) es.removeEventListener(k, handle);
       es.removeEventListener("message", handle);
       es.close();
-      setStatus(rootId, "closed");
+      setStatus(threadId, "closed");
     };
-  }, [rootId, setStatus, applyEnvelope, qc]);
+  }, [threadId, setStatus, applyEnvelope, qc]);
 }

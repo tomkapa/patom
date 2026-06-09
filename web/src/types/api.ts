@@ -208,25 +208,17 @@ export type ModelEntry = {
 
 export type RequestStatus = "pending" | "processing" | "done" | "failed";
 
-/// The human who started a thread. Surfaced so the feed shows the real
-/// author, not the current viewer (multi-user workspaces).
-export type StarterRef = {
-  user_id: string;
-  colleague_id: string;
-  name: string;
-  avatar_url: string | null;
-};
-
+/** One row of `GET /api/threads`. The thread-feed wire is intentionally
+ *  thin: a thread is identified by `thread_id`, located by `channel_id`
+ *  (`null` for the caller's DMs), and ordered by `last_activity_at`. Any
+ *  title / preview / starter the UI wants is derived from the first
+ *  message of the G2 feed (`GET /api/threads/{thread_id}/messages`), not
+ *  carried on this row. Mirrors `src/http/routes/threads.rs`. */
 export type ThreadSummary = {
-  root_request_id: string;
-  root_session_id: string;
-  first_agent: AgentRef;
-  starter: StarterRef;
-  preview: string;
-  reply_count: number;
+  thread_id: string;
+  /** `null` for a direct-message thread (no channel). */
+  channel_id: string | null;
   last_activity_at: string;
-  status: RequestStatus;
-  created_at: string;
 };
 
 /** A channel — an org-scoped, member-gated space grouping thread roots.
@@ -246,12 +238,18 @@ export type ChannelMember = {
   added_at: string;
 };
 
-// Mirrors the backend `Participant` / `MessageSender` wire shape: the
-// human and agent ends carry their colleague id plus the satellite key.
+// Mirrors the backend `Participant` / `MessageSender` wire shape
+// (src/types/participant.rs, `#[serde(tag = "kind")]`): the human and
+// agent ends carry their colleague id plus the satellite key. `Participant`
+// is a thread's two-party end; `MessageSender` is wider — the worker injects
+// `system` rows (the ping-pong nudge), so a feed row's `sender` is a
+// `MessageSender`. The two share the same JSON envelope.
 export type Participant =
   | { kind: "human"; colleague_id: string; user_id: string }
   | { kind: "agent"; colleague_id: string; agent_id: string }
   | { kind: "system" };
+
+export type MessageSender = Participant;
 
 // Mirrors src/provider/chat.rs `ChatMessage` + UserContent / AssistantContent.
 // Wire shape is `{role, contents: [{kind, value}]}`; the demo fixtures tolerate
@@ -276,17 +274,34 @@ export type ChatMessageBody = {
   [k: string]: unknown;
 };
 
+/** Row kind in the G2 flat feed. `posted` is a chat message (human or
+ *  agent) that belongs in the conversation; the other four are agent
+ *  private artifacts the UI renders as collapsed "thinking" / tool meta
+ *  rather than top-level bubbles. Mirrors the backend feed `kind` column. */
+export type ThreadMessageKind =
+  | "posted"
+  | "reasoning"
+  | "tool_use"
+  | "tool_result"
+  | "system_note";
+
+/** One row of `GET /api/threads/{thread_id}/messages` (G2 flat feed). */
 export type ThreadMessage = {
-  session_id: string;
   seq: number;
-  sender: Participant;
-  receiver: Participant;
+  kind: ThreadMessageKind;
+  sender: MessageSender;
+  /** The agent that owns this row's private artifact (reasoning / tool
+   *  rows are scoped per agent). `null` for human-posted rows. */
+  owner_agent_id: string | null;
+  /** The addressed counterpart for a `posted` row; `null` for private
+   *  artifacts (reasoning / tool_use / tool_result / system_note). */
+  receiver: Participant | null;
   body: ChatMessageBody;
   created_at: string;
   /** The prompt request that produced this row. The thread panel uses it to
    *  reconcile optimistic / live / persisted bubbles by identity instead of
-   *  by text matching. */
-  request_id: string;
+   *  by text matching. `null` for rows not tied to a single request. */
+  request_id: string | null;
   /** Resolved display name of a human sender — the real author, so the FE
    *  renders them instead of the current viewer. `null` for agent/system
    *  rows (agents resolve via the roster; system rows are unlabelled). */
@@ -314,7 +329,7 @@ export type ResponseChunk =
   | { kind: "reasoning"; value: string }
   | { kind: "tool_call"; id: string; name: string; input: unknown }
   | { kind: "tool_result"; call_id: string; output: string; is_error?: boolean }
-  | { kind: "agent_message"; from: string; content: string }
+  | { kind: "agent_message"; from: string; to_thread: string; content: string }
   /** Interactive prompt: the agent is asking the user to wire an MCP
    *  integration from inside the chat. Rendered as a click-to-wire card
    *  (`WireMcpRequestCard`) inline with the agent's other turn output.
@@ -347,7 +362,7 @@ export type ThreadStreamEnvelope = {
 
 export type SubmitPromptResponse = {
   request_id: string;
-  session_id: string;
+  thread_id: string;
   status: RequestStatus;
 };
 
