@@ -1793,6 +1793,14 @@ const server = Bun.serve({
       return json({ active_org_id: ORG_ID, role: "owner" });
     }
 
+    // Sign-out. The onboarding Cancel button hits this when the user has
+    // no workspace to fall back to. Reset the org-less flag so a later
+    // `?orgless=1` starts clean. 204 No Content like the real handler.
+    if (path === "/auth/logout" && method === "POST") {
+      orgLess = false;
+      return new Response(null, { status: 204 });
+    }
+
     // Token-redeem behind the `/i/{slug}/{token}` invite link. Mirrors
     // src/http/routes/me.rs::accept_invite. Special tokens drive the
     // error states for visual verification; anything else succeeds.

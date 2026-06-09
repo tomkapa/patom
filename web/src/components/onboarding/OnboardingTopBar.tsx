@@ -1,4 +1,4 @@
-import { Check } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { useAuthStore } from "../../stores/authStore";
 
 export type StepKey = "name" | "team" | "invite";
@@ -30,9 +30,16 @@ function stepStatus(step: StepKey, current: StepKey, allDone: boolean): Status {
 export function OnboardingTopBar({
   current,
   allDone = false,
+  onCancel,
+  cancelling = false,
 }: {
   current: StepKey;
   allDone?: boolean;
+  /** When set, the left slot renders a Cancel button that abandons the
+   *  workspace-creation flow (see `Onboarding`). Omitted on the final
+   *  "done" screen, where there's nothing left to cancel. */
+  onCancel?: () => void;
+  cancelling?: boolean;
 }) {
   const email = useAuthStore((s) => s.me?.user.email ?? "");
 
@@ -41,18 +48,31 @@ export function OnboardingTopBar({
       className="flex h-[60px] w-full items-center justify-between border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-primary)] px-8"
       data-onboarding-topbar
     >
-      {/* Left: brand mark */}
-      <div className="flex items-center gap-2.5">
-        <span
-          aria-hidden="true"
-          className="inline-flex h-7 w-7 items-center justify-center bg-[var(--color-moss)] font-[var(--font-display)] text-[15px] font-bold text-white"
+      {/* Left: Cancel button (when cancellable) else the brand mark. */}
+      {onCancel ? (
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={cancelling}
+          className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[var(--color-fg-muted)] transition-colors hover:text-[var(--color-rose)] disabled:cursor-not-allowed disabled:opacity-50"
+          data-testid="onboarding-cancel"
         >
-          P
-        </span>
-        <span className="font-[var(--font-display)] text-[16px] font-bold text-[var(--color-moss-deep)]">
-          Patom
-        </span>
-      </div>
+          <X className="h-4 w-4" strokeWidth={2} />
+          {cancelling ? "Cancelling…" : "Cancel"}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2.5">
+          <span
+            aria-hidden="true"
+            className="inline-flex h-7 w-7 items-center justify-center bg-[var(--color-moss)] font-[var(--font-display)] text-[15px] font-bold text-white"
+          >
+            P
+          </span>
+          <span className="font-[var(--font-display)] text-[16px] font-bold text-[var(--color-moss-deep)]">
+            Patom
+          </span>
+        </div>
+      )}
 
       {/* Center: stepper */}
       <ol className="flex items-center gap-2.5" aria-label="Onboarding steps">

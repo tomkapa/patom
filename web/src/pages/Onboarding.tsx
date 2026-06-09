@@ -7,6 +7,9 @@ import { StepChooseTeam } from "../components/onboarding/StepChooseTeam";
 import { StepInvite } from "../components/onboarding/StepInvite";
 import { StepProvisioned } from "../components/onboarding/StepProvisioned";
 import { ME_QUERY_KEY } from "../hooks/useMe";
+import { useDeleteOrg } from "../hooks/useOrg";
+import { useLogout } from "../hooks/useLogout";
+import { useAuthStore } from "../stores/authStore";
 import { useLightModeOnly } from "../lib/theme";
 import type { PresetId } from "../data/teamPresets";
 import { findPreset } from "../data/teamPresets";
@@ -24,6 +27,10 @@ export function Onboarding() {
   const [presetId, setPresetId] = useState<PresetId | null>(null);
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const me = useAuthStore((s) => s.me);
+  const deleteOrg = useDeleteOrg();
+  const logout = useLogout();
+  const [cancelling, setCancelling] = useState(false);
   useLightModeOnly();
 
   // On the final ("done") screen the stepper paints every step as a
@@ -32,9 +39,45 @@ export function Onboarding() {
   // collapses to "invite".
   const stepperKey: StepKey = step === "done" ? "invite" : step;
 
+  // Abandon the workspace-creation flow. Step 1 (`POST /me/orgs`) already
+  // creates + switches into the new org, so the active org is the
+  // in-progress workspace once we're past it; tear that down. Three cases:
+  //   - in-progress org exists (active, un-onboarded) → delete it; land in
+  //     a remaining workspace, or sign out if it was the user's only one;
+  //   - "create another" abandoned before step 1 created anything (active
+  //     org already onboarded) → just return to the existing workspace;
+  //   - org-less first-timer, nothing created yet → sign out.
+  const onCancel = async () => {
+    if (cancelling) return;
+    setCancelling(true);
+    try {
+      const active = me?.orgs.find((o) => o.id === me.active_org_id) ?? null;
+      if (active && !active.onboarded) {
+        const { active_org_id } = await deleteOrg.mutateAsync();
+        if (active_org_id) {
+          navigate("/", { replace: true });
+        } else {
+          logout.mutate();
+        }
+      } else if (me?.active_org_id) {
+        navigate("/", { replace: true });
+      } else {
+        logout.mutate();
+      }
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   return (
     <div className="grid h-screen w-screen grid-rows-[60px_1fr] bg-[var(--color-surface-secondary)]">
-      <OnboardingTopBar current={stepperKey} allDone={step === "done"} />
+      <OnboardingTopBar
+        current={stepperKey}
+        allDone={step === "done"}
+        // No cancel on the success screen — the workspace is already live.
+        onCancel={step === "done" ? undefined : onCancel}
+        cancelling={cancelling}
+      />
       <main className="flex h-full w-full items-center justify-center py-10">
         {step === "name" && (
           <StepCreateOrg onContinue={() => setStep("team")} />
