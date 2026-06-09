@@ -27,12 +27,12 @@
 > `reflection_checkpoints (agent, thread).last_message_id` on success so the scheduler stops re-enqueuing
 > each idle window.
 >
-> **Remaining (deferred hardening + FE):** (1) the **web FE** rehome onto the new G1/G2/G3 wire +
-> `mock-backend.ts` — in progress in this effort. (2) **tool_use/tool_result re-pair** at context-build
-> (note 13) — a concurrent-interleaving edge case; `context_for_agent` does not yet reorder a tool_use/
-> tool_result pair that a peer's posted row split by `seq`. (3) the **prompt_requests org-parity trigger**
-> (note 2) — defense-in-depth only (RLS already gates org membership; the child tables already have parity
-> triggers). Both (2) and (3) are documented deferrals, not blockers.
+> **The refactor is complete.** Follow-on commits closed everything: the **web FE** rehome onto the new
+> G1/G2/G3 wire + `mock-backend.ts` (`5535c94`, `62b1285` — preview-verified), the **tool_use/tool_result
+> re-pair** at context-build (note 13 — `repair_tool_pairs` in `context_for_agent`, `75a8f4e`), and the
+> **prompt_requests org-parity trigger** (note 2 — migration `65`, `75a8f4e`). Dev DB at `65`. All gates
+> green: `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt --check`, the full
+> `cargo test -p patom-core` suite, and the FE `tsc`/`build`. `cargo deny`/`cargo audit` are CI-only.
 
 ---
 
