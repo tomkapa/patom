@@ -33,9 +33,9 @@ pub use pg_thread_stream::{
     ThreadStreamItem,
 };
 pub use queue::{
-    ClaimReceipt, ClaimedPrompt, ClaimedSession, EnqueueOutcome, LeaseManager, LeaseTiming,
-    LeaseToken, NewPromptRequest, PromptQueue, RequestStatusView, SharedLeaseManager,
-    SharedPromptQueue,
+    ClaimReceipt, ClaimedPrompt, ClaimedSession, ClaimedTurn, EnqueueOutcome, LeaseManager,
+    LeaseTiming, LeaseToken, NewPromptRequest, NewTrigger, PromptQueue, RequestStatusView,
+    SharedLeaseManager, SharedPromptQueue,
 };
 pub use response::{
     ResponseChunk, ResponseChunkEnvelope, ResponseSink, ResponseSource, SharedResponseSink,

@@ -15,6 +15,7 @@ use std::fmt;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId, run_as_user, run_privileged};
@@ -22,13 +23,14 @@ use crate::clock::SharedClock;
 use crate::colleagues::ColleagueId;
 use crate::observability::propagation;
 use crate::session::SessionId;
+use crate::threads::ThreadId;
 use crate::types::{Participant, Prompt};
 
 use super::error::PromptError;
 use super::limits::{MAX_ATTEMPTS, MAX_DAG_TURNS, MAX_PENDING_PER_SESSION};
 use super::queue::{
-    ClaimReceipt, ClaimedPrompt, ClaimedSession, EnqueueOutcome, LeaseManager, LeaseTiming,
-    LeaseToken, NewPromptRequest, PromptQueue, RequestStatusView,
+    ClaimReceipt, ClaimedPrompt, ClaimedSession, ClaimedTurn, EnqueueOutcome, LeaseManager,
+    LeaseTiming, LeaseToken, NewPromptRequest, NewTrigger, PromptQueue, RequestStatusView,
 };
 use super::types::{
     FailureReason, PromptRequestId, RequestKind, RequestKindPayload, RequestStatus, TurnSeq,
@@ -1068,5 +1070,297 @@ async fn resolve_agent_colleague(
         PromptError::Backend(format!(
             "no colleague mapped for agent {agent:?} in org {org:?}"
         ))
+    })
+}
+
+// ─── Thread-feed trigger path (P2) ───────────────────────────────────────────
+//
+// The claim-key path coexists with the session path until the dead-code sweep.
+// `claim_key = COALESCE(state_id, background_turn_id)` keys the lease + fence
+// seq, so coalesce / serialise / re-address-follow-up transfer verbatim from
+// `claim_next_session`, now per (thread, agent) instead of per session.
+
+impl PgPromptQueue {
+    /// Enqueue a thread-feed *trigger* (wake an agent for a turn). Idempotent on
+    /// `(org_id, idempotency_key)`; the message itself already lives in
+    /// `thread_messages`. Tenant-scoped on `acting_user_id`.
+    pub async fn enqueue_trigger(&self, trig: NewTrigger) -> Result<PromptRequestId, PromptError> {
+        let now = self.now();
+        let id = PromptRequestId::new();
+        // A root trigger (human @tag / scheduled fire) anchors the DAG on its own
+        // id and seeds a budget row; an inherited trigger reuses the chain's root.
+        let is_root_mint = trig.root_request_id.is_none();
+        let root_request_id = trig.root_request_id.unwrap_or(id);
+        let kind = trig.kind_payload.kind();
+        let payload = serde_json::to_value(&trig.kind_payload)
+            .expect("invariant: RequestKindPayload serialises infallibly via serde_json");
+        let traceparent = propagation::current_traceparent();
+        run_as_user::<PromptRequestId, PromptError>(&self.pool, trig.acting_user_id, async |tx| {
+            // Receivers are agents (the prompt_requests_receiver_agent trigger
+            // enforces it); resolve inside the same tenant tx.
+            let receiver_colleague =
+                resolve_agent_colleague(tx.tx_mut(), trig.org_id, trig.receiver_agent_id).await?;
+            let inserted: Option<(PromptRequestId,)> = sqlx::query_as(
+                "INSERT INTO prompt_requests
+                     (id, org_id, content, idempotency_key, status, attempts, turn_seq,
+                      cancellation_requested, failure_reason, sender_colleague_id,
+                      receiver_colleague_id, root_request_id, traceparent, kind, kind_payload,
+                      thread_id, state_id, background_turn_id, trigger_message_id, acting_user_id,
+                      created_at, updated_at)
+                 VALUES ($1, $2, NULL, $3, 'pending', 0, 0, FALSE, NULL, $4,
+                         $5, $6, $7, $8, $9,
+                         $10, $11, $12, $13, $14, $15, $15)
+                 ON CONFLICT (org_id, idempotency_key) DO NOTHING
+                 RETURNING id",
+            )
+            .bind(id)
+            .bind(trig.org_id)
+            .bind(trig.idempotency_key.as_str())
+            .bind(trig.sender_colleague_id)
+            .bind(receiver_colleague)
+            .bind(root_request_id)
+            .bind(traceparent)
+            .bind(kind)
+            .bind(&payload)
+            .bind(trig.thread_id)
+            .bind(trig.state_id)
+            .bind(trig.background_turn_id)
+            .bind(trig.trigger_message_id)
+            .bind(trig.acting_user_id)
+            .bind(now)
+            .fetch_optional(&mut **tx.tx_mut())
+            .await?;
+            if let Some((rid,)) = inserted {
+                // Seed the per-(human-tag/scheduled, agent) budget on a root mint.
+                if is_root_mint {
+                    let cap = i64::from(MAX_DAG_TURNS);
+                    sqlx::query(
+                        "INSERT INTO prompt_request_dags
+                             (root_request_id, org_id, turns_used, turns_cap, created_at)
+                         VALUES ($1, $2, 0, $3, $4)",
+                    )
+                    .bind(rid)
+                    .bind(trig.org_id)
+                    .bind(cap)
+                    .bind(now)
+                    .execute(&mut **tx.tx_mut())
+                    .await?;
+                }
+                return Ok(rid);
+            }
+            // Idempotent retry — return the existing row's id.
+            let (existing,): (PromptRequestId,) = sqlx::query_as(
+                "SELECT id FROM prompt_requests WHERE org_id = $1 AND idempotency_key = $2",
+            )
+            .bind(trig.org_id)
+            .bind(trig.idempotency_key.as_str())
+            .fetch_one(&mut **tx.tx_mut())
+            .await?;
+            Ok(existing)
+        })
+        .await
+    }
+
+    /// Claim the next pending trigger, coalescing every pending trigger for one
+    /// `claim_key` into a single [`ClaimedTurn`] and holding a per-`claim_key`
+    /// lease (serialise). The (thread, agent) analogue of
+    /// [`PromptQueue::claim_next_session`].
+    pub async fn claim_next_turn(
+        &self,
+        worker: WorkerId,
+    ) -> Result<Option<ClaimedTurn>, PromptError> {
+        let now = self.now();
+        let deadline = self.deadline(now);
+        let mut tx = crate::auth::begin_privileged(&self.pool).await?;
+        let Some((claim_key, org_id, acting_user_id)) = next_turn_candidate(&mut tx, now).await?
+        else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let lease_seq = bump_claim_seq(&mut tx, claim_key, org_id).await?;
+        if !try_take_claim_lease(&mut tx, claim_key, org_id, worker, lease_seq, deadline, now).await?
+        {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let drained = drain_turn_pending(&mut tx, claim_key, lease_seq, now).await?;
+        if drained.is_empty() {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        tx.commit().await?;
+        Ok(Some(build_claimed_turn(
+            claim_key,
+            org_id,
+            acting_user_id,
+            worker,
+            lease_seq,
+            drained,
+        )?))
+    }
+}
+
+/// One drained trigger row: `(id, kind, thread_id, receiver_colleague, agent_id, payload)`.
+type DrainedTrigger = (
+    PromptRequestId,
+    RequestKind,
+    Option<ThreadId>,
+    ColleagueId,
+    Option<AgentId>,
+    sqlx::types::Json<RequestKindPayload>,
+);
+
+/// Oldest pending trigger whose `claim_key` has no live lease.
+async fn next_turn_candidate(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    now: DateTime<Utc>,
+) -> Result<Option<(Uuid, OrgId, UserId)>, PromptError> {
+    let row: Option<(Uuid, OrgId, Option<UserId>)> = sqlx::query_as(
+        "SELECT COALESCE(pr.state_id, pr.background_turn_id) AS claim_key, pr.org_id, pr.acting_user_id
+         FROM prompt_requests pr
+         WHERE pr.status = $1
+           AND NOT EXISTS (
+               SELECT 1 FROM claim_leases l
+               WHERE l.claim_key = COALESCE(pr.state_id, pr.background_turn_id)
+                 AND l.leased_until > $2)
+         ORDER BY pr.created_at ASC
+         LIMIT 1",
+    )
+    .bind(RequestStatus::Pending)
+    .bind(now)
+    .fetch_optional(&mut **tx)
+    .await?;
+    match row {
+        Some((ck, org, Some(user))) => Ok(Some((ck, org, user))),
+        Some((_, _, None)) => Err(PromptError::Backend(
+            "trigger row missing acting_user_id — invariant violation".into(),
+        )),
+        None => Ok(None),
+    }
+}
+
+/// Bump the per-`claim_key` lease-fence seq (decoupled from the feed seq).
+async fn bump_claim_seq(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    claim_key: Uuid,
+    org_id: OrgId,
+) -> Result<TurnSeq, PromptError> {
+    let (seq,): (TurnSeq,) = sqlx::query_as(
+        "INSERT INTO claim_seq (claim_key, next_seq, org_id) VALUES ($1, 1, $2)
+         ON CONFLICT (claim_key) DO UPDATE SET next_seq = claim_seq.next_seq + 1
+         RETURNING next_seq",
+    )
+    .bind(claim_key)
+    .bind(org_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(seq)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn try_take_claim_lease(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    claim_key: Uuid,
+    org_id: OrgId,
+    worker: WorkerId,
+    lease_seq: TurnSeq,
+    deadline: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<bool, PromptError> {
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "INSERT INTO claim_leases (claim_key, org_id, worker_id, lease_seq, leased_until)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (claim_key) DO UPDATE
+             SET worker_id = EXCLUDED.worker_id,
+                 lease_seq = EXCLUDED.lease_seq,
+                 leased_until = EXCLUDED.leased_until
+             WHERE claim_leases.leased_until <= $6
+         RETURNING claim_key",
+    )
+    .bind(claim_key)
+    .bind(org_id)
+    .bind(worker)
+    .bind(lease_seq)
+    .bind(deadline)
+    .bind(now)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// Flip every pending trigger for `claim_key` to processing and return the batch.
+async fn drain_turn_pending(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    claim_key: Uuid,
+    lease_seq: TurnSeq,
+    now: DateTime<Utc>,
+) -> Result<Vec<DrainedTrigger>, PromptError> {
+    let drained = sqlx::query_as(
+        "UPDATE prompt_requests pr
+         SET status = $1, turn_seq = $2, attempts = attempts + 1, updated_at = $3
+         FROM colleagues rc
+         WHERE COALESCE(pr.state_id, pr.background_turn_id) = $4 AND pr.status = $5
+           AND rc.id = pr.receiver_colleague_id
+         RETURNING pr.id, pr.kind, pr.thread_id, pr.receiver_colleague_id, rc.agent_id, pr.kind_payload",
+    )
+    .bind(RequestStatus::Processing)
+    .bind(lease_seq)
+    .bind(now)
+    .bind(claim_key)
+    .bind(RequestStatus::Pending)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(drained)
+}
+
+/// Assemble a [`ClaimedTurn`], asserting the batch shares one receiver + kind.
+fn build_claimed_turn(
+    claim_key: Uuid,
+    org_id: OrgId,
+    acting_user_id: UserId,
+    worker: WorkerId,
+    lease_seq: TurnSeq,
+    drained: Vec<DrainedTrigger>,
+) -> Result<ClaimedTurn, PromptError> {
+    assert!(
+        !drained.is_empty(),
+        "invariant: caller checks `drained.is_empty()` before assembly"
+    );
+    let receiver_agent_id = drained[0].4.ok_or_else(|| {
+        PromptError::Backend(
+            "drained trigger receiver missing agent_id — receiver-is-agent trigger \
+             should make this unreachable"
+                .into(),
+        )
+    })?;
+    let kind = drained[0].1;
+    let thread_id = drained[0].2;
+    let receiver_colleague_id = drained[0].3;
+    let kind_payload = drained[0].5.0.clone();
+    for (_, k, _, _, rcv, _) in &drained[1..] {
+        if *rcv != Some(receiver_agent_id) {
+            return Err(PromptError::Backend(
+                "drained triggers for one claim_key must share receiver_agent_id".into(),
+            ));
+        }
+        if *k != kind {
+            return Err(PromptError::Backend(
+                "drained triggers for one claim_key must share kind".into(),
+            ));
+        }
+    }
+    let trigger_ids = drained.iter().map(|d| d.0).collect();
+    Ok(ClaimedTurn {
+        claim_key,
+        kind,
+        thread_id,
+        org_id,
+        acting_user_id,
+        receiver_agent_id,
+        receiver_colleague_id,
+        trigger_ids,
+        kind_payload,
+        worker,
+        lease_seq,
     })
 }

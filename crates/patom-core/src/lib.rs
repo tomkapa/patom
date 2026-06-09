@@ -31,6 +31,7 @@ pub mod runtime;
 pub mod scheduling;
 pub mod session;
 pub mod slack;
+pub mod threads;
 pub mod tools;
 pub mod types;
 

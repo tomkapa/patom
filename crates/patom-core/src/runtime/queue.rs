@@ -11,16 +11,20 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use uuid::Uuid;
+
 use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId};
+use crate::colleagues::ColleagueId;
 use crate::session::SessionId;
+use crate::threads::{AgentThreadId, ThreadId, ThreadMessageId};
 use crate::types::{Participant, Prompt};
 
 use super::error::{LeaseTimingError, PromptError};
 use super::limits::{LEASE_HEARTBEAT_INTERVAL, LEASE_TTL};
 use super::types::{
-    FailureReason, IdempotencyKey, PromptRequestId, RequestKindPayload, RequestStatus, TurnSeq,
-    WorkerId,
+    FailureReason, IdempotencyKey, PromptRequestId, RequestKind, RequestKindPayload, RequestStatus,
+    TurnSeq, WorkerId,
 };
 
 /// Co-validated lease timing.
@@ -424,3 +428,57 @@ pub type SharedPromptQueue = Arc<dyn PromptQueue>;
 
 /// Reference-counted lease-side handle held by workers.
 pub type SharedLeaseManager = Arc<dyn LeaseManager>;
+
+// ─── Thread-feed trigger model (P2+) ─────────────────────────────────────────
+//
+// In the thread-feed model a `prompt_requests` row is a *trigger* (wake agent X
+// for a turn), not the message — the message lives in `thread_messages`. The
+// claim/lease machinery is re-keyed onto a polymorphic `claim_key`:
+//   claim_key = state_id (chat turn) OR background_turn_id (cognition turn).
+// These types back the new enqueue/claim path on
+// [`super::pg_queue::PgPromptQueue`]; the old session-keyed path coexists until
+// the dead-code sweep.
+
+/// A wake-up trigger to enqueue. Exactly one of `state_id` / `background_turn_id`
+/// is `Some` (the `prompt_requests_claim_key_xor` CHECK enforces it). For a chat
+/// trigger, `thread_id` + `state_id` are set and `trigger_message_id` points at
+/// the feed message that caused the wake.
+#[derive(Debug, Clone)]
+pub struct NewTrigger {
+    pub org_id: OrgId,
+    /// Denormalised DAG-root human — drives the worker's RLS principal and
+    /// keeps the claim a single join (no `sessions` lookup).
+    pub acting_user_id: UserId,
+    pub thread_id: Option<ThreadId>,
+    pub state_id: Option<AgentThreadId>,
+    pub background_turn_id: Option<Uuid>,
+    pub sender_colleague_id: ColleagueId,
+    pub receiver_agent_id: AgentId,
+    /// `None` => this trigger is a fresh DAG root (a human @tag or a scheduled
+    /// fire): `enqueue_trigger` anchors the root on the new row's own id and
+    /// seeds a `prompt_request_dags` budget row (`turns_cap = MAX_DAG_TURNS`).
+    /// `Some(root)` => inherited along an agent→agent chain — no new budget.
+    pub root_request_id: Option<PromptRequestId>,
+    pub trigger_message_id: Option<ThreadMessageId>,
+    pub idempotency_key: IdempotencyKey,
+    pub kind_payload: RequestKindPayload,
+}
+
+/// A drained, leased batch of triggers for one `claim_key` — the thread-feed
+/// analogue of [`ClaimedSession`]. `trigger_ids` are the coalesced wake rows
+/// (one logical turn); the worker reads the thread feed at run time rather than
+/// from any per-row `content`.
+#[derive(Debug, Clone)]
+pub struct ClaimedTurn {
+    pub claim_key: Uuid,
+    pub kind: RequestKind,
+    pub thread_id: Option<ThreadId>,
+    pub org_id: OrgId,
+    pub acting_user_id: UserId,
+    pub receiver_agent_id: AgentId,
+    pub receiver_colleague_id: ColleagueId,
+    pub trigger_ids: Vec<PromptRequestId>,
+    pub kind_payload: RequestKindPayload,
+    pub worker: WorkerId,
+    pub lease_seq: TurnSeq,
+}
