@@ -24,18 +24,6 @@ pub enum AgentStoreError {
     #[error("agent name {0:?} is already taken")]
     NameTaken(AgentName),
 
-    /// `default_id()` was called before the init seeder ran. A correctly composed
-    /// `Server` always seeds before exposing the store, so this is a programmer
-    /// error in test setup or a misordered startup, not a runtime condition.
-    #[error("no default agent has been seeded")]
-    NoDefault,
-
-    /// Caller tried to delete the row currently flagged `is_default = TRUE`. The
-    /// HTTP layer and the worker both assume `default_id()` always resolves, so
-    /// removing the default is unsafe — promote another row first.
-    #[error("cannot delete the default agent")]
-    DefaultDeletionForbidden,
-
     /// Caller tried to delete a row referenced by at least one session. The FK
     /// `sessions.agent_id REFERENCES agents(id)` is `ON DELETE RESTRICT` so the
     /// session history of agents that ever existed is preserved.

@@ -59,7 +59,6 @@ export function StepChooseTeam({
             description: a.description,
             system_prompt: renderPrompt(a.system_prompt, workspaceName),
             model: a.model,
-            is_default: false,
             allowed_mcp_tools: {},
           });
         } catch (err) {

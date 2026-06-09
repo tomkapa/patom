@@ -131,11 +131,7 @@ impl IntoResponse for HttpError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "colleague directory error".into(),
             ),
-            Self::Agent(
-                AgentStoreError::DefaultDeletionForbidden
-                | AgentStoreError::InUse(_)
-                | AgentStoreError::NameTaken(_),
-            )
+            Self::Agent(AgentStoreError::InUse(_) | AgentStoreError::NameTaken(_))
             | Self::Mcp(McpError::CatalogIdTaken(_) | McpError::CatalogIdShadowsGlobal(_)) => {
                 (StatusCode::CONFLICT, self.to_string())
             }
@@ -143,10 +139,6 @@ impl IntoResponse for HttpError {
             | Self::Mcp(
                 McpError::Parse(_) | McpError::InvalidConfig(_) | McpError::CatalogIdUnknown(_),
             ) => (StatusCode::BAD_REQUEST, self.to_string()),
-            Self::Agent(AgentStoreError::NoDefault) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "default agent not seeded".into(),
-            ),
             Self::Agent(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "agent store error".into(),

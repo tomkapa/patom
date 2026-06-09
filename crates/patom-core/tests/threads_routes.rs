@@ -215,16 +215,21 @@ impl ThreadsHarness {
     }
 }
 
-/// A `POST /prompts` body: a DM (no channel) addressed to the seed agent.
-fn dm_prompt(content: &str, key: &str) -> serde_json::Value {
-    serde_json::json!({ "content": content, "idempotency_key": key })
+/// A `POST /prompts` body: a DM (no channel) with the seed agent as the
+/// counterpart.
+fn dm_prompt(agent: patom::agents::AgentId, content: &str, key: &str) -> serde_json::Value {
+    serde_json::json!({
+        "content": content,
+        "idempotency_key": key,
+        "counterpart": {"kind": "agent", "id": agent},
+    })
 }
 
 #[sqlx::test]
 async fn list_threads_returns_one_row_per_prompt_root(pool: PgPool) {
     let h = ThreadsHarness::new(pool).await;
-    let (_r1, t1) = h.submit(dm_prompt("first", "k-1")).await;
-    let (_r2, t2) = h.submit(dm_prompt("second", "k-2")).await;
+    let (_r1, t1) = h.submit(dm_prompt(h.seed.agent_id, "first", "k-1")).await;
+    let (_r2, t2) = h.submit(dm_prompt(h.seed.agent_id, "second", "k-2")).await;
 
     let json = h.get("/api/threads").await;
     let rows = json.as_array().expect("array");
@@ -246,7 +251,9 @@ async fn list_threads_returns_one_row_per_prompt_root(pool: PgPool) {
 #[sqlx::test]
 async fn thread_messages_carries_human_sender_identity(pool: PgPool) {
     let h = ThreadsHarness::new(pool).await;
-    let (_req, thread) = h.submit(dm_prompt("hello from the human", "k-1")).await;
+    let (_req, thread) = h
+        .submit(dm_prompt(h.seed.agent_id, "hello from the human", "k-1"))
+        .await;
 
     let json = h
         .get(&format!("/api/threads/{}/messages", thread.as_uuid()))
@@ -272,7 +279,7 @@ async fn thread_messages_carries_human_sender_identity(pool: PgPool) {
 #[sqlx::test]
 async fn notify_drives_thread_stream_subscriber_by_thread(pool: PgPool) {
     let h = ThreadsHarness::new(pool).await;
-    let (request_id, thread) = h.submit(dm_prompt("hi", "k-1")).await;
+    let (request_id, thread) = h.submit(dm_prompt(h.seed.agent_id, "hi", "k-1")).await;
 
     // Subscribe to the live fan-in for the thread BEFORE publishing so the slot
     // is attached and `handle_notification` doesn't drop the chunk.
@@ -303,4 +310,50 @@ async fn notify_drives_thread_stream_subscriber_by_thread(pool: PgPool) {
         }
         ThreadStreamEvent::Stalled => panic!("unexpected stalled event"),
     }
+}
+
+/// G1 rows carry the root posted message's summary + the posted reply count,
+/// so the Slack-style timeline renders without a per-thread G2 round-trip.
+#[sqlx::test]
+async fn g1_rows_carry_root_summary_and_reply_count(pool: PgPool) {
+    let h = ThreadsHarness::new(pool).await;
+    let (_r, thread) = h
+        .submit(dm_prompt(h.seed.agent_id, "the root question", "k-root"))
+        .await;
+    // One human reply into the same thread (posted row #2).
+    let _ = h
+        .submit(serde_json::json!({
+            "thread_id": thread.as_uuid(),
+            "content": "a follow-up",
+            "idempotency_key": "k-reply",
+        }))
+        .await;
+
+    let json = h.get("/api/threads").await;
+    let rows = json.as_array().expect("array");
+    let row = rows
+        .iter()
+        .find(|r| r["thread_id"].as_str() == Some(&thread.as_uuid().to_string()))
+        .expect("thread row");
+
+    let root = &row["root"];
+    assert!(
+        root.is_object(),
+        "row carries the root summary, got {row:?}"
+    );
+    assert_eq!(
+        root["snippet"].as_str(),
+        Some("the root question"),
+        "snippet is the root's text"
+    );
+    assert_eq!(root["sender"]["kind"].as_str(), Some("human"));
+    assert!(
+        root["sender_display_name"].as_str().is_some(),
+        "human root sender is profile-enriched"
+    );
+    assert_eq!(
+        row["reply_count"].as_i64(),
+        Some(1),
+        "one posted reply beyond the root"
+    );
 }

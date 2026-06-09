@@ -260,7 +260,6 @@ pub struct AgentRecord {
     /// the current row by construction.
     pub system_prompt: AgentSystemPrompt,
     pub description: AgentDescription,
-    pub is_default: bool,
     pub allowed_mcp_tools: AllowedMcpTools,
     /// Per-agent LLM model selection. `None` means "use the workspace default"
     /// (`Settings::model`); the [`crate::agents::ModelResolver`] is the single
@@ -444,7 +443,7 @@ impl TryFrom<BTreeMap<String, Option<Vec<String>>>> for AllowedMcpTools {
 /// none exists. Every field is a pre-validated newtype so the inserter cannot
 /// land malformed data.
 #[derive(Debug, Clone)]
-pub struct DefaultAgentSeed {
+pub struct AgentSeed {
     pub name: AgentName,
     pub system_prompt: AgentSystemPrompt,
     pub description: AgentDescription,

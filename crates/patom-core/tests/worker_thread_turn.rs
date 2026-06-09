@@ -76,7 +76,7 @@ async fn no_egress_nudges_then_fails(pool: PgPool) {
 
     // A thread with a human post tagging the agent (the context the turn reads).
     let thread = threads
-        .create_thread(&caller, None, None, human)
+        .create_thread(&caller, None, None, human, Some(agent_col))
         .await
         .expect("thread");
     threads
@@ -90,6 +90,7 @@ async fn no_egress_nudges_then_fails(pool: PgPool) {
                 receiver: Some(agent_col),
                 body: ChatMessage::User(vec![UserContent::Text("are you there?".into())]),
                 request_id: None,
+                idempotency_key: None,
             },
         )
         .await

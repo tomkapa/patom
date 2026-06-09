@@ -182,6 +182,23 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         patom::threads::PgThreadStore::new(pool.clone(), clock.clone()),
     );
 
+    // An un-named `@Patom` mention routes to the org's preset recruiter
+    // (there is no default agent). The harness seed is named `test-default`,
+    // so rename it to the preset name the bridge resolves.
+    agents
+        .update(
+            h.default_agent_id,
+            patom::agents::AgentUpdate {
+                name: Some(
+                    patom::agents::AgentName::try_from(patom::app::RECRUITER_AGENT_NAME)
+                        .expect("recruiter name"),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("rename seed agent to recruiter");
+
     let principal =
         common::auth::principal_for_default_org(h.default_user_id, h.default_org_id, &jwt)
             .as_principal();

@@ -488,6 +488,7 @@ impl SendMessageTool {
                     receiver,
                     body: outbound_chat_message(content.as_str()),
                     request_id: Some(request_id),
+                    idempotency_key: None,
                 },
             )
             .await

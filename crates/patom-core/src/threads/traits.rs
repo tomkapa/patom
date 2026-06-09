@@ -28,13 +28,42 @@ use super::error::ThreadError;
 
 /// A thread's listing row — the membership-scoped feed index (P7).
 ///
-/// Carries just the fields a channel/DM list needs; the per-thread message feed
-/// is read separately via [`ThreadStore::context_for_agent`] / the HTTP feed read.
+/// Carries the fields a Slack-style timeline needs without a per-thread G2
+/// round-trip: the root posted message's summary + how many posted replies
+/// hang under it. The full feed is still read via the HTTP feed read.
 #[derive(Debug, Clone)]
 pub struct ThreadListItem {
     pub thread_id: ThreadId,
     pub channel_id: Option<ChannelId>,
     pub last_activity_at: DateTime<Utc>,
+    /// First `posted` row of the thread — the timeline message this thread
+    /// renders as. `None` for a thread with no posted rows yet (e.g. a
+    /// scheduled seed whose agent hasn't replied).
+    pub root: Option<RootSummary>,
+    /// Posted rows beyond the root (Slack's "N replies"). Never negative.
+    pub reply_count: i64,
+}
+
+/// Summary of a thread's root posted message for the timeline view.
+#[derive(Debug, Clone)]
+pub struct RootSummary {
+    /// First text block of the root message, capped at
+    /// [`super::limits::ROOT_SNIPPET_MAX_CHARS`] in SQL (CLAUDE.md §5).
+    pub snippet: String,
+    pub sender: MessageSender,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Which feed `list_threads` reads (CLAUDE.md §1: a sum, not bool + Option).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadScope {
+    /// One channel's threads, gated on the caller's membership.
+    Channel(ChannelId),
+    /// The caller's direct messages. `counterpart = Some(c)` narrows to the
+    /// conversation between the caller and colleague `c` (both orientations:
+    /// threads the caller started with `c`, and threads `c` started with the
+    /// caller). `None` = every DM the caller can see.
+    Dms { counterpart: Option<ColleagueId> },
 }
 
 /// One row of the canonical flat thread feed (the G2 read).
@@ -57,6 +86,10 @@ pub struct FeedMessage {
     pub receiver: Option<Participant>,
     pub body: serde_json::Value,
     pub request_id: Option<PromptRequestId>,
+    /// Client dedupe key the posting submit carried (`NewMessage::
+    /// idempotency_key`). The FE reconciles its optimistic bubble against the
+    /// persisted echo by this key; `None` for agent-produced rows.
+    pub client_key: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -106,21 +139,35 @@ pub struct NewMessage {
     pub receiver: Option<ColleagueId>,
     pub body: ChatMessage,
     pub request_id: Option<PromptRequestId>,
+    /// Client-supplied dedupe key for human-posted rows (`POST /prompts`).
+    /// Unique per org when set; an append that collides returns the existing
+    /// row's id instead of inserting a duplicate — an untagged post creates no
+    /// trigger row, so this is its only retry guard. `None` for every
+    /// agent-produced row.
+    pub idempotency_key: Option<crate::runtime::IdempotencyKey>,
 }
 
 /// Storage trait for the thread feed. Implementations must be thread-safe.
 #[async_trait]
 pub trait ThreadStore: fmt::Debug + Send + Sync {
-    /// Create a thread. `channel_id = None` => a DM thread. `root_message_id`
-    /// is the channel-timeline message this reply-thread hangs under (None for
-    /// the channel's own timeline thread + DMs). Tenant-scoped: the row's
-    /// `org_id` comes from `caller` and is gated by the RLS WITH CHECK.
+    /// Create a thread. `channel_id = None` => a DM thread, which REQUIRES
+    /// `dm_counterpart` (the colleague — human or agent — the conversation is
+    /// with; both it and the creator can see the thread). A channel thread
+    /// must pass `dm_counterpart = None` (DB CHECK forbids both).
+    /// `root_message_id` is the channel-timeline message this reply-thread
+    /// hangs under (None for the channel's own timeline thread + DMs).
+    /// Tenant-scoped: the row's `org_id` comes from `caller` and is gated by
+    /// the RLS WITH CHECK.
+    ///
+    /// The counterpart bounds *human visibility only* — any agent can still be
+    /// invoked into the thread (agents are org-global).
     async fn create_thread(
         &self,
         caller: &Caller,
         channel_id: Option<ChannelId>,
         root_message_id: Option<ThreadMessageId>,
         created_by: ColleagueId,
+        dm_counterpart: Option<ColleagueId>,
     ) -> Result<ThreadId, ThreadError>;
 
     /// Resolve (or create) `agent`'s participation in `thread`. Idempotent on
@@ -144,31 +191,38 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
     ) -> Result<ThreadMessageId, ThreadError>;
 
     /// List the threads `caller` may see, scoped by **membership**, not by who
-    /// created them (P7). `channel_id = Some` ⇒ that channel's threads, gated on
-    /// the caller being a `channel_members` row and the channel not archived.
-    /// `channel_id = None` ⇒ the caller's DMs (`threads.channel_id IS NULL`,
-    /// created by the caller). Org-pinned (`caller.org_id`) so a multi-org
-    /// member's other workspaces never leak in (RLS gates membership, not the
-    /// active org). Ordered newest-activity first.
+    /// created them (P7). [`ThreadScope::Channel`] ⇒ that channel's threads,
+    /// gated on the caller being a `channel_members` row and the channel not
+    /// archived. [`ThreadScope::Dms`] ⇒ the caller's DMs — threads the caller
+    /// created *or* is the counterpart of. Org-pinned (`caller.org_id`) so a
+    /// multi-org member's other workspaces never leak in (RLS gates
+    /// membership, not the active org). Ordered newest-activity first.
     async fn list_threads(
         &self,
         caller: &Caller,
-        channel_id: Option<ChannelId>,
+        scope: ThreadScope,
     ) -> Result<Vec<ThreadListItem>, ThreadError>;
 
     /// Whether `user_id` may receive a posted message in `thread` — the
     /// `send_message` human gate (no auto-add).
     ///
     /// A channel thread requires the human to be in `channel_members`; a DM
-    /// thread (`channel_id IS NULL`) is private to its creator, so its human is
-    /// always reachable. Returns [`ThreadError::NotFound`] if the thread is
-    /// missing. Privileged read — agents are org-global and gate humans by
-    /// membership, not by the acting principal.
+    /// thread (`channel_id IS NULL`) is reachable only by its pair — the
+    /// creator or the counterpart. Returns [`ThreadError::NotFound`] if the
+    /// thread is missing. Privileged read — agents are org-global and gate
+    /// humans by membership, not by the acting principal.
     async fn is_channel_member(
         &self,
         thread: ThreadId,
         user_id: UserId,
     ) -> Result<bool, ThreadError>;
+
+    /// The DM counterpart colleague of `thread`, or `None` for a channel
+    /// thread / a legacy DM with no counterpart. Returns
+    /// [`ThreadError::NotFound`] if the thread is missing. Privileged point
+    /// lookup — `POST /prompts` routes an untagged DM message to the
+    /// counterpart agent, and that read happens before any append.
+    async fn dm_counterpart(&self, thread: ThreadId) -> Result<Option<ColleagueId>, ThreadError>;
 
     /// The canonical flat feed for `thread` in `seq` order — the G2 read. Every
     /// row (posted chat ∪ everyone's private artifacts) with its `kind` exposed

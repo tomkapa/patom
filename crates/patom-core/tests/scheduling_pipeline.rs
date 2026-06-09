@@ -22,7 +22,7 @@ use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use chrono_tz::Asia::Bangkok;
 use patom::auth::Caller;
 use patom::clock::{SharedClock, SystemClock};
-use patom::colleagues::resolve_user_colleague;
+use patom::colleagues::{resolve_agent_colleague, resolve_user_colleague};
 use patom::runtime::{
     NewTrigger, PgPromptQueue, RequestKind, RequestKindPayload, RequestStatus, SharedPromptQueue,
 };
@@ -256,7 +256,17 @@ async fn scheduler_fire_idempotent_on_same_fire_instant(pool: PgPool) {
         .expect("human colleague");
     let thread = f
         .threads
-        .create_thread(&caller, None, None, human)
+        .create_thread(
+            &caller,
+            None,
+            None,
+            human,
+            Some(
+                resolve_agent_colleague(&f.pool, f.default_org_id, f.default_agent_id)
+                    .await
+                    .expect("agent colleague"),
+            ),
+        )
         .await
         .expect("thread");
     let state = f

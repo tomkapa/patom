@@ -4,26 +4,32 @@ import { Kbd } from "../atoms/Kbd";
 import { Monogram } from "../atoms/Monogram";
 import { cn } from "../../lib/utils";
 import { useT } from "../../i18n";
-import type { Agent, Channel } from "../../types/api";
+import type { Channel, Mentionable } from "../../types/api";
+
+/** Stable key for a DM row (a colleague may share an id space with nothing). */
+export function dmKey(m: Mentionable): string {
+  return `${m.kind}:${m.id}`;
+}
 
 export function Sidebar({
   workspace = "Acme Robotics",
   channels,
-  agents,
+  dms,
   selectedChannelId,
-  selectedAgentId,
+  selectedDmKey,
   onSelectChannel,
-  onSelectAgent,
+  onSelectDm,
   onAddChannel,
   onManageChannel,
 }: {
   workspace?: string;
   channels: Channel[];
-  agents: Agent[];
+  /** Direct-message roster: every colleague — humans and agents alike. */
+  dms: Mentionable[];
   selectedChannelId: string | null;
-  selectedAgentId: string | null;
+  selectedDmKey: string | null;
   onSelectChannel: (id: string) => void;
-  onSelectAgent: (agentId: string) => void;
+  onSelectDm: (m: Mentionable) => void;
   onAddChannel: () => void;
   onManageChannel: (channel: Channel) => void;
 }) {
@@ -99,39 +105,38 @@ export function Sidebar({
           )}
         </div>
 
-        {/* DIRECT MESSAGES — agents list, opens agent-scoped feed on click. */}
-        <Section
-          title={t("sidebar.dms")}
-          expandable
-          action={<AddBtn label="New DM" />}
-        />
+        {/* DIRECT MESSAGES — every colleague, human or agent, opens a
+            1:1 conversation on click. */}
+        <Section title={t("sidebar.dms")} expandable />
         <div className="mb-2 flex flex-col gap-0.5">
-          {agents.map((a) => (
+          {dms.map((m) => (
             <SidebarRow
-              key={a.id}
+              key={dmKey(m)}
               icon={
                 <Monogram
-                  name={a.name}
-                  id={a.id}
+                  name={m.name}
+                  id={m.id}
                   size={20}
-                  tone="moss"
-                  avatarUrl={a.avatar_url}
+                  tone={m.kind === "agent" ? "moss" : "user"}
+                  avatarUrl={m.avatar_url}
                 />
               }
-              label={a.name}
+              label={m.name}
               trailing={
-                <span className="inline-flex items-center gap-1.5">
-                  <Bot className="h-3.5 w-3.5 text-[var(--color-moss)]" />
-                </span>
+                m.kind === "agent" ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Bot className="h-3.5 w-3.5 text-[var(--color-moss)]" />
+                  </span>
+                ) : null
               }
-              active={selectedAgentId === a.id}
-              onClick={() => onSelectAgent(a.id)}
+              active={selectedDmKey === dmKey(m)}
+              onClick={() => onSelectDm(m)}
               mono
             />
           ))}
-          {agents.length === 0 && (
+          {dms.length === 0 && (
             <p className="px-2 py-1 font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
-              {t("sidebar.empty_agents")}
+              {t("sidebar.empty_dms")}
             </p>
           )}
         </div>

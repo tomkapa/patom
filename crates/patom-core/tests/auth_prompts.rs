@@ -38,6 +38,8 @@ use common::pg::seed_tenant;
 struct AuthPromptsHarness {
     state: AppState,
     agents: SharedAgentStore,
+    /// The org's seeded preset agent — payloads use it as the DM counterpart.
+    agent_id: patom::agents::AgentId,
     primary: SeededPrincipal,
     #[allow(dead_code)]
     refresher: McpRefresher,
@@ -139,6 +141,7 @@ impl AuthPromptsHarness {
         Self {
             state,
             agents,
+            agent_id: seed.agent_id,
             primary,
             refresher,
         }
@@ -155,7 +158,6 @@ impl AuthPromptsHarness {
                 name: AgentName::try_from(name).expect("name"),
                 system_prompt: AgentSystemPrompt::try_from("scoped prompt").expect("prompt"),
                 description: AgentDescription::try_from(format!("agent {name}")).expect("desc"),
-                is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
                 avatar_url: None,
@@ -181,6 +183,7 @@ async fn unauthenticated_post_prompt_returns_401(pool: PgPool) {
                     serde_json::json!({
                         "content": "hi",
                         "idempotency_key": "k-1",
+                        "counterpart": {"kind": "agent", "id": h.agent_id},
                     })
                     .to_string(),
                 ))
@@ -207,6 +210,7 @@ async fn authenticated_post_prompt_returns_202_with_request_id(pool: PgPool) {
                     serde_json::json!({
                         "content": "hello patom",
                         "idempotency_key": "k-primary-1",
+                        "counterpart": {"kind": "agent", "id": h.agent_id},
                     })
                     .to_string(),
                 ))
@@ -261,6 +265,7 @@ async fn cross_org_cancel_returns_404_and_leaves_row_uncancelled(pool: PgPool) {
                     serde_json::json!({
                         "content": "primary prompt",
                         "idempotency_key": "k-primary-iso",
+                        "counterpart": {"kind": "agent", "id": h.agent_id},
                     })
                     .to_string(),
                 ))
@@ -354,6 +359,7 @@ async fn post_without_csrf_header_returns_403(pool: PgPool) {
                     serde_json::json!({
                         "content": "csrf check",
                         "idempotency_key": "k-csrf-missing",
+                        "counterpart": {"kind": "agent", "id": h.agent_id},
                     })
                     .to_string(),
                 ))
@@ -380,6 +386,7 @@ async fn post_with_mismatched_csrf_header_returns_403(pool: PgPool) {
                     serde_json::json!({
                         "content": "csrf check",
                         "idempotency_key": "k-csrf-mismatch",
+                        "counterpart": {"kind": "agent", "id": h.agent_id},
                     })
                     .to_string(),
                 ))
@@ -438,6 +445,7 @@ async fn post_with_cross_origin_header_returns_403(pool: PgPool) {
                     serde_json::json!({
                         "content": "cross-origin",
                         "idempotency_key": "k-origin-evil",
+                        "counterpart": {"kind": "agent", "id": h.agent_id},
                     })
                     .to_string(),
                 ))
@@ -466,6 +474,7 @@ async fn post_with_same_origin_header_passes(pool: PgPool) {
                     serde_json::json!({
                         "content": "same-origin",
                         "idempotency_key": "k-origin-same",
+                        "counterpart": {"kind": "agent", "id": h.agent_id},
                     })
                     .to_string(),
                 ))
@@ -496,6 +505,7 @@ async fn post_with_configured_spa_origin_passes(pool: PgPool) {
                     serde_json::json!({
                         "content": "spa-origin",
                         "idempotency_key": "k-origin-spa",
+                        "counterpart": {"kind": "agent", "id": h.agent_id},
                     })
                     .to_string(),
                 ))
@@ -525,6 +535,7 @@ async fn post_with_cross_origin_referer_returns_403(pool: PgPool) {
                     serde_json::json!({
                         "content": "cross-origin referer",
                         "idempotency_key": "k-referer-evil",
+                        "counterpart": {"kind": "agent", "id": h.agent_id},
                     })
                     .to_string(),
                 ))

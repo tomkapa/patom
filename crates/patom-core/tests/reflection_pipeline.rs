@@ -81,7 +81,7 @@ async fn reflection_writes_no_thread_message_rows(pool: PgPool) {
     // A conversation thread with one posted message — the slice the reflection
     // is "about" (its id is the frozen up_to_message_id).
     let thread = threads
-        .create_thread(&caller, None, None, human)
+        .create_thread(&caller, None, None, human, Some(agent_col))
         .await
         .expect("thread");
     let convo_msg = threads
@@ -95,6 +95,7 @@ async fn reflection_writes_no_thread_message_rows(pool: PgPool) {
                 receiver: Some(agent_col),
                 body: ChatMessage::User(vec![UserContent::Text("the meeting is at noon".into())]),
                 request_id: None,
+                idempotency_key: None,
             },
         )
         .await

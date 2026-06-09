@@ -3,7 +3,7 @@
 //! Exercises the tool through its public seam (`Tool::execute` with a wired
 //! `ToolCallContext`) against a real Postgres-backed `AgentStore` so the
 //! happy path, duplicate-name conflict, MCP allowlist passthrough, input
-//! validation, and `is_default` lockdown all land on the same code path the
+//! validation, and schema lockdown all land on the same code path the
 //! agent uses at runtime.
 
 #![allow(clippy::expect_used)]
@@ -85,7 +85,7 @@ fn valid_input(name: &str) -> Value {
 }
 
 #[sqlx::test]
-async fn happy_path_persists_record_with_is_default_false_and_empty_mcp(pool: PgPool) {
+async fn happy_path_persists_record_with_empty_mcp(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
 
@@ -106,7 +106,6 @@ async fn happy_path_persists_record_with_is_default_false_and_empty_mcp(pool: Pg
         .await
         .expect("read");
     assert_eq!(record.id.as_uuid(), parsed_id);
-    assert!(!record.is_default);
     assert_eq!(record.allowed_mcp_tools, AllowedMcpTools::empty());
     assert!(
         record
@@ -293,10 +292,4 @@ async fn is_default_is_rejected_by_schema(pool: PgPool) {
             .await
             .is_err()
     );
-    let default = f
-        .agents
-        .default_id_for(f.org_id)
-        .await
-        .expect("default present");
-    assert_eq!(default, f.viewer_agent_id);
 }

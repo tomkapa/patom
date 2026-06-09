@@ -182,6 +182,7 @@ impl Agent {
                     receiver: None,
                     body,
                     request_id: Some(request_id),
+                    idempotency_key: None,
                 },
             )
             .await?;

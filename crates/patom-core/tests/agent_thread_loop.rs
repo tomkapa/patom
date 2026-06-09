@@ -98,7 +98,7 @@ async fn context_is_read_at_run(pool: PgPool) {
         .expect("agent colleague");
 
     let thread = threads
-        .create_thread(&caller, None, None, human)
+        .create_thread(&caller, None, None, human, Some(agent_col))
         .await
         .expect("create thread");
     let state = threads
@@ -121,6 +121,7 @@ async fn context_is_read_at_run(pool: PgPool) {
                     "please remember the number 42".into(),
                 )]),
                 request_id: None,
+                idempotency_key: None,
             },
         )
         .await

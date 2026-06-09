@@ -13,8 +13,8 @@ use std::sync::Arc;
 use patom::auth::{Caller, OrgId, UserId};
 use patom::channels::ChannelId;
 use patom::clock::SystemClock;
-use patom::colleagues::{ColleagueId, resolve_user_colleague};
-use patom::threads::{PgThreadStore, SharedThreadStore};
+use patom::colleagues::{ColleagueId, resolve_agent_colleague, resolve_user_colleague};
+use patom::threads::{PgThreadStore, SharedThreadStore, ThreadScope};
 use sqlx::PgPool;
 
 mod common;
@@ -94,14 +94,14 @@ async fn channel_feed_scoped_to_membership_not_active_user(pool: PgPool) {
 
     let caller_a = Caller::new(user_a, seed.org_id);
     let thread = store
-        .create_thread(&caller_a, Some(channel), None, col_a)
+        .create_thread(&caller_a, Some(channel), None, col_a, None)
         .await
         .expect("A creates channel thread");
 
     // B is a member but NOT the creator — must still see A's thread.
     let caller_b = Caller::new(user_b, seed.org_id);
     let for_b = store
-        .list_threads(&caller_b, Some(channel))
+        .list_threads(&caller_b, ThreadScope::Channel(channel))
         .await
         .expect("list for B");
     assert!(
@@ -112,7 +112,7 @@ async fn channel_feed_scoped_to_membership_not_active_user(pool: PgPool) {
     // C is not a member — must see nothing in this channel.
     let caller_c = Caller::new(user_c, seed.org_id);
     let for_c = store
-        .list_threads(&caller_c, Some(channel))
+        .list_threads(&caller_c, ThreadScope::Channel(channel))
         .await
         .expect("list for C");
     assert!(
@@ -123,12 +123,15 @@ async fn channel_feed_scoped_to_membership_not_active_user(pool: PgPool) {
 
     // DM view (channel_id = None) is private to its participant: A's DM is
     // visible to A, not to B.
+    let agent_col = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
+        .await
+        .expect("agent colleague");
     let dm = store
-        .create_thread(&caller_a, None, None, col_a)
+        .create_thread(&caller_a, None, None, col_a, Some(agent_col))
         .await
         .expect("A creates DM");
     let a_dms = store
-        .list_threads(&caller_a, None)
+        .list_threads(&caller_a, ThreadScope::Dms { counterpart: None })
         .await
         .expect("list A's DMs");
     assert!(
@@ -136,11 +139,74 @@ async fn channel_feed_scoped_to_membership_not_active_user(pool: PgPool) {
         "the DM participant sees their own DM"
     );
     let b_dms = store
-        .list_threads(&caller_b, None)
+        .list_threads(&caller_b, ThreadScope::Dms { counterpart: None })
         .await
         .expect("list B's DMs");
     assert!(
         !b_dms.iter().any(|t| t.thread_id == dm),
         "a DM stays private — another user does not see it"
+    );
+}
+
+/// A human↔human DM is visible to BOTH ends of the pair — the creator and the
+/// counterpart — in both list and feed scoping, while a third org member sees
+/// nothing. (Pre-counterpart, a DM was creator-only and human↔human DMs were
+/// unrepresentable.)
+#[sqlx::test]
+async fn dm_counterpart_sees_thread_creator_and_back(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let clock = SystemClock::shared();
+    let store: SharedThreadStore = Arc::new(PgThreadStore::new(pool.clone(), clock));
+
+    let user_a = seed.user_id;
+    let col_a = resolve_user_colleague(&pool, seed.org_id, user_a)
+        .await
+        .expect("col a");
+    let (user_b, col_b) = seed_human(&pool, seed.org_id).await;
+    let (user_c, _col_c) = seed_human(&pool, seed.org_id).await;
+
+    let caller_a = Caller::new(user_a, seed.org_id);
+    let caller_b = Caller::new(user_b, seed.org_id);
+    let caller_c = Caller::new(user_c, seed.org_id);
+
+    // A starts a DM with B.
+    let dm = store
+        .create_thread(&caller_a, None, None, col_a, Some(col_b))
+        .await
+        .expect("A starts a DM with B");
+
+    // Both ends list it…
+    for (who, caller, counterpart) in [("A", &caller_a, col_b), ("B", &caller_b, col_a)] {
+        let dms = store
+            .list_threads(
+                caller,
+                ThreadScope::Dms {
+                    counterpart: Some(counterpart),
+                },
+            )
+            .await
+            .expect("list DMs");
+        assert!(
+            dms.iter().any(|t| t.thread_id == dm),
+            "{who} sees the pair's DM"
+        );
+        assert!(
+            store.visible_to(caller, dm).await.expect("visible_to"),
+            "{who} passes the visibility gate"
+        );
+    }
+
+    // …a third org member sees neither the listing nor the thread.
+    let c_dms = store
+        .list_threads(&caller_c, ThreadScope::Dms { counterpart: None })
+        .await
+        .expect("list C's DMs");
+    assert!(
+        c_dms.iter().all(|t| t.thread_id != dm),
+        "C must not list A↔B's DM"
+    );
+    assert!(
+        !store.visible_to(&caller_c, dm).await.expect("visible_to"),
+        "C must not pass the visibility gate"
     );
 }

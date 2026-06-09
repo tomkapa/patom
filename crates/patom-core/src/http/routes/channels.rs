@@ -240,10 +240,22 @@ async fn update_channel(
     Ok(Json(row.into_response(principal.user_id)?))
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
+struct MemberRow {
+    user_id: UserId,
+    added_at: DateTime<Utc>,
+}
+
+/// One channel-roster row, enriched with the member's profile so the FE can
+/// render humans in the mention list / DM sidebar without a second endpoint.
+/// Profile fields come from the privileged user read — the tenant tx can't
+/// touch `users` (migration 14).
+#[derive(Debug, Serialize)]
 struct MemberResponse {
     user_id: UserId,
     added_at: DateTime<Utc>,
+    display_name: Option<String>,
+    avatar_url: Option<String>,
 }
 
 async fn list_members(
@@ -259,7 +271,7 @@ async fn list_members(
     if !caller_is_member(&mut tx, id, principal.user_id, org).await? {
         return Err(HttpError::NotFound);
     }
-    let members = sqlx::query_as::<_, MemberResponse>(
+    let members = sqlx::query_as::<_, MemberRow>(
         "SELECT user_id, added_at FROM channel_members \
          WHERE channel_id = $1 AND org_id = $2 ORDER BY added_at ASC LIMIT $3",
     )
@@ -270,6 +282,22 @@ async fn list_members(
     .await
     .map_err(AuthError::from)?;
     tx.commit().await.map_err(AuthError::from)?;
+
+    // Profile enrichment, bounded by CHANNEL_LIST_FETCH_MAX (CLAUDE.md §5).
+    let ids: Vec<UserId> = members.iter().map(|m| m.user_id).collect();
+    let profiles = state.users.read_profiles(&ids).await?;
+    let members = members
+        .into_iter()
+        .map(|m| {
+            let profile = profiles.get(&m.user_id);
+            MemberResponse {
+                user_id: m.user_id,
+                added_at: m.added_at,
+                display_name: profile.map(|p| p.name.clone()),
+                avatar_url: profile.and_then(|p| p.avatar_url.clone()),
+            }
+        })
+        .collect();
     Ok(Json(members))
 }
 

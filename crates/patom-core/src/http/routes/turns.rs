@@ -128,9 +128,11 @@ struct TurnMetricsResponse {
     /// the recorder FK that replaced the legacy `session_id`.
     state_id: ClaimKey,
     /// Root prompt request of the human-rooted DAG this turn belongs to.
-    /// Used by the FE to map a turn id back to the chat thread it lives
-    /// in so links from the memory pane can deep-link the right panel.
     root_request_id: PromptRequestId,
+    /// Thread the turn ran in — what the memory pane deep-links into the
+    /// chat view (threads are keyed by `thread_id`, not request ids).
+    /// `None` for background-cognition turns (no thread).
+    thread_id: Option<crate::threads::ThreadId>,
     agent_id: AgentId,
     prompt_version_id: PromptVersionId,
     kind: RequestKind,
@@ -290,6 +292,7 @@ async fn fetch_turn_row(
 ) -> Result<TurnMetricsResponse, TurnDetailError> {
     let row = sqlx::query_as::<_, TurnMetricsResponse>(
         "SELECT tm.id, tm.request_id, tm.state_id, pr.root_request_id, \
+                pr.thread_id, \
                 tm.agent_id, tm.prompt_version_id, \
                 tm.kind, tm.model, tm.provider, \
                 tm.input_tokens, tm.output_tokens, \

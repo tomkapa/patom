@@ -60,6 +60,7 @@ fn posted(sender: ColleagueId, text: &str) -> NewMessage {
         receiver: None,
         body: ChatMessage::User(vec![UserContent::Text(text.into())]),
         request_id: None,
+        idempotency_key: None,
     }
 }
 
@@ -87,7 +88,7 @@ async fn g2_canonical_feed_seq_order_multi_party(pool: PgPool) {
             .expect("general channel");
     let general = ChannelId::from(general);
     let thread = threads
-        .create_thread(&caller, Some(general), None, human_a)
+        .create_thread(&caller, Some(general), None, human_a, None)
         .await
         .expect("thread");
 
@@ -110,6 +111,7 @@ async fn g2_canonical_feed_seq_order_multi_party(pool: PgPool) {
                     "let me check".into(),
                 )]),
                 request_id: None,
+                idempotency_key: None,
             },
         )
         .await

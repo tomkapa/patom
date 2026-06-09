@@ -91,7 +91,6 @@ impl AuthSchedHarness {
                 name: AgentName::try_from(name).expect("name"),
                 system_prompt: AgentSystemPrompt::try_from("scoped prompt").expect("prompt"),
                 description: AgentDescription::try_from(format!("agent {name}")).expect("desc"),
-                is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
                 avatar_url: None,

@@ -34,6 +34,7 @@ fn posted(
         receiver,
         body,
         request_id: None,
+        idempotency_key: None,
     }
 }
 
@@ -45,6 +46,7 @@ fn reasoning(sender: patom::colleagues::ColleagueId, owner: AgentId, text: &str)
         receiver: None,
         body: ChatMessage::Assistant(vec![AssistantContent::Reasoning(text.into())]),
         request_id: None,
+        idempotency_key: None,
     }
 }
 
@@ -81,6 +83,7 @@ fn tool_use(owner: AgentId, call_id: &str) -> NewMessage {
             input: serde_json::json!({ "q": "x" }),
         })]),
         request_id: None,
+        idempotency_key: None,
     }
 }
 
@@ -96,6 +99,7 @@ fn tool_result(owner: AgentId, call_id: &str) -> NewMessage {
             is_error: false,
         })]),
         request_id: None,
+        idempotency_key: None,
     }
 }
 
@@ -118,7 +122,7 @@ async fn context_repairs_tool_use_result_split_by_peer_post(pool: PgPool) {
         .expect("human colleague");
 
     let thread = store
-        .create_thread(&caller, None, None, col_h)
+        .create_thread(&caller, None, None, col_h, Some(col_a))
         .await
         .expect("create thread");
     store
@@ -183,8 +187,8 @@ async fn context_filters_private_rows_by_owner(pool: PgPool) {
     let agent_a = seed.agent_id;
     let agent_b = AgentId::new();
     sqlx::query(
-        "INSERT INTO agents (id, name, is_default, created_at, updated_at, description, org_id) \
-         VALUES ($1, $2, false, now(), now(), $3, $4)",
+        "INSERT INTO agents (id, name, created_at, updated_at, description, org_id) \
+         VALUES ($1, $2, now(), now(), $3, $4)",
     )
     .bind(agent_b)
     .bind("agent-b")
@@ -205,7 +209,7 @@ async fn context_filters_private_rows_by_owner(pool: PgPool) {
         .expect("human colleague");
 
     let thread = store
-        .create_thread(&caller, None, None, col_h)
+        .create_thread(&caller, None, None, col_h, Some(col_b))
         .await
         .expect("create thread");
     store

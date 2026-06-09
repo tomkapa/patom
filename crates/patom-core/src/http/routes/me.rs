@@ -202,7 +202,7 @@ async fn create_org(
         )
         .await?;
     // Same seeding policy the OAuth callback uses (one copy).
-    super::auth::seed_default_agent(&state, new_org.id, language).await?;
+    super::auth::seed_recruiter(&state, new_org.id, language).await?;
 
     // Re-mint the session into the new org so the next request operates
     // there — mirrors `switch_org`.

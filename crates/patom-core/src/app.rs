@@ -19,8 +19,8 @@ use tracing::{info, warn};
 use crate::agent_core::{Agent, AgentBuilder};
 use crate::agents::{
     AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL, AgentDescription, AgentFactory, AgentName,
-    AgentPromptCache, AgentStoreError, AgentSystemPrompt, CachedAgents, DefaultAgentSeed,
-    PgAgentStore, SharedAgentStore, SharedAgents,
+    AgentPromptCache, AgentSeed, AgentStoreError, AgentSystemPrompt, CachedAgents, PgAgentStore,
+    SharedAgentStore, SharedAgents,
 };
 use crate::assets::{S3AssetStore, SharedAssetStore};
 use crate::auth::{
@@ -77,18 +77,20 @@ const PG_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 // growing past 300 lines and made adding a second language a structural
 // edit; the registry makes "drop a sibling TOML" the entire process.
 
-/// Name of the seeded default agent for each new personal org.
+/// Name of the preset recruiter agent seeded into each new org.
 ///
 /// The role + description bodies for this seed live in the per-language
 /// prompt registry (`src/prompts/{en,vi}.toml`); only the agent's `name`
 /// is constant across languages so cross-language routing/messaging keeps
-/// working regardless of the org's chosen language.
-const DEFAULT_AGENT_NAME: &str = "recruiter";
+/// working regardless of the org's chosen language. Public because the
+/// Slack bridge routes an un-@-tagged `@Patom` mention to this preset
+/// (there is no "default agent" at runtime any more).
+pub const RECRUITER_AGENT_NAME: &str = "recruiter";
 
 // Note: every prompt body — the `<core>` family, the recruiter's role +
 // description in each supported language — lives in
 // `src/prompts/{internal,en,vi}.toml`, loaded once at startup into the
-// [`Prompts`] registry. `default_agent_seed` reads from the registry to
+// [`Prompts`] registry. `recruiter_seed` reads from the registry to
 // pick the right localized role + description per org.
 
 /// All the pieces a deployment needs to serve HTTP + run workers in-process.
@@ -172,7 +174,7 @@ impl Collaborators {
             build_embedding_provider(&settings.embedding);
 
         // Per-org default-agent seeding happens lazily on first sign-up
-        // (see `seed_default_agent_for_org` and `auth::callback`); the
+        // (see `seed_recruiter_for_org` and `auth::callback`); the
         // composition root no longer mints a global default because there
         // is no global org to own it.
         let agents_impl = Arc::new(PgAgentStore::new(
@@ -528,38 +530,35 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
         .build())
 }
 
-/// Seed material for the per-org default agent in `language`.
+/// Seed material for the per-org preset recruiter in `language`.
 ///
-/// Exposed so the OAuth callback (`auth::callback`) can mint the default
-/// agent inside the just-created personal org. The role + description
+/// Exposed so the OAuth callback (`auth::callback`) can mint the recruiter
+/// inside the just-created personal org. The role + description
 /// bodies are pulled from the per-language [`Prompts`] registry — the
 /// `recruiter` an `org_id` with `default_language='vi'` ends up with is
 /// the Vietnamese-translated seed. Fails only if the registry bodies
 /// suddenly violate a newtype invariant (a startup-time guarantee in
 /// practice since `Prompts::load` panics on malformed input).
-pub fn default_agent_seed(
-    prompts: &Prompts,
-    language: Language,
-) -> Result<DefaultAgentSeed, AppError> {
+pub fn recruiter_seed(prompts: &Prompts, language: Language) -> Result<AgentSeed, AppError> {
     let set = prompts.set(language);
-    Ok(DefaultAgentSeed {
-        name: AgentName::try_from(DEFAULT_AGENT_NAME)?,
+    Ok(AgentSeed {
+        name: AgentName::try_from(RECRUITER_AGENT_NAME)?,
         system_prompt: AgentSystemPrompt::try_from(set.default_agent_role.as_ref())?,
         description: AgentDescription::try_from(set.default_agent_description.as_ref())?,
     })
 }
 
-/// Seed the default agent for `org_id`.
+/// Seed the preset recruiter for `org_id`.
 ///
 /// Idempotent — a second call for the same org returns the existing
-/// default's id. Called from the OAuth callback on first sign-up so the
-/// cookie minted immediately resolves to a usable workspace.
-pub async fn seed_default_agent_for_org(
+/// recruiter's id. Called from org creation so the fresh workspace has a
+/// usable agent immediately.
+pub async fn seed_recruiter_for_org(
     agents: &SharedAgentStore,
     org_id: OrgId,
-    seed: DefaultAgentSeed,
+    seed: AgentSeed,
 ) -> Result<crate::agents::AgentId, AgentStoreError> {
-    agents.seed_default(org_id, seed).await
+    agents.seed_preset(org_id, seed).await
 }
 
 /// Build a fully-wired [`Agent`] without the HTTP/worker stack.

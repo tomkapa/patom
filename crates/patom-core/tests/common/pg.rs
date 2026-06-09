@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use patom::agents::{
-    AgentDescription, AgentId, AgentName, AgentSystemPrompt, DefaultAgentSeed, PgAgentStore,
+    AgentDescription, AgentId, AgentName, AgentSeed, AgentSystemPrompt, PgAgentStore,
     SharedAgentStore,
 };
 use patom::auth::{OrgId, UserId};
@@ -90,9 +90,9 @@ pub async fn seed_tenant(pool: &PgPool) -> Seed {
     // org.
     let agents = agent_store(pool.clone(), SystemClock::shared());
     let agent_id = agents
-        .seed_default(
+        .seed_preset(
             org_id,
-            DefaultAgentSeed {
+            AgentSeed {
                 name: AgentName::try_from("test-default").expect("valid name"),
                 system_prompt: AgentSystemPrompt::try_from("test default prompt")
                     .expect("valid prompt"),

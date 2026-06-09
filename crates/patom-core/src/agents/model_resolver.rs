@@ -110,7 +110,6 @@ mod tests {
             name: AgentName::try_from("r").expect("ok"),
             system_prompt: AgentSystemPrompt::try_from("p").expect("ok"),
             description: AgentDescription::try_from("d").expect("ok"),
-            is_default: false,
             allowed_mcp_tools: AllowedMcpTools::empty(),
             model,
             avatar_url: None,

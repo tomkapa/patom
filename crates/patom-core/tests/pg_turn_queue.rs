@@ -8,7 +8,7 @@ mod common;
 use patom::agents::AgentId;
 use patom::auth::{Caller, OrgId, UserId};
 use patom::clock::SystemClock;
-use patom::colleagues::{ColleagueId, resolve_user_colleague};
+use patom::colleagues::{ColleagueId, resolve_agent_colleague, resolve_user_colleague};
 use patom::runtime::{
     IdempotencyKey, NewTrigger, PgPromptQueue, PromptQueue, PromptRequestId, RequestKindPayload,
     WorkerId,
@@ -59,8 +59,11 @@ async fn claim_coalesces_pending_for_one_agent(pool: PgPool) {
         .await
         .expect("human colleague");
 
+    let counterpart = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
+        .await
+        .expect("agent colleague");
     let thread = store
-        .create_thread(&caller, None, None, human)
+        .create_thread(&caller, None, None, human, Some(counterpart))
         .await
         .expect("thread");
     let state_a = store
@@ -122,8 +125,8 @@ async fn claim_serializes_per_thread_agent(pool: PgPool) {
     let agent_a = seed.agent_id;
     let agent_b = AgentId::new();
     sqlx::query(
-        "INSERT INTO agents (id, name, is_default, created_at, updated_at, description, org_id) \
-         VALUES ($1, 'agent-b', false, now(), now(), 'Agent B', $2)",
+        "INSERT INTO agents (id, name, created_at, updated_at, description, org_id) \
+         VALUES ($1, 'agent-b', now(), now(), 'Agent B', $2)",
     )
     .bind(agent_b)
     .bind(seed.org_id)
@@ -131,8 +134,11 @@ async fn claim_serializes_per_thread_agent(pool: PgPool) {
     .await
     .expect("insert agent b");
 
+    let counterpart = resolve_agent_colleague(&pool, seed.org_id, agent_a)
+        .await
+        .expect("agent colleague");
     let thread = store
-        .create_thread(&caller, None, None, human)
+        .create_thread(&caller, None, None, human, Some(counterpart))
         .await
         .expect("thread");
     let state_a = store

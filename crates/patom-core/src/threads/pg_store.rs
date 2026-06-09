@@ -21,10 +21,10 @@ use crate::runtime::PromptRequestId;
 use crate::types::{MessageSender, Participant};
 
 use super::error::ThreadError;
-use super::limits::{MAX_THREAD_FEED, MAX_THREAD_LIST};
+use super::limits::{MAX_THREAD_FEED, MAX_THREAD_LIST, ROOT_SNIPPET_MAX_CHARS};
 use super::traits::{
-    AgentThreadId, FeedMessage, MessageKind, NewMessage, ThreadId, ThreadListItem, ThreadMessageId,
-    ThreadStore,
+    AgentThreadId, FeedMessage, MessageKind, NewMessage, RootSummary, ThreadId, ThreadListItem,
+    ThreadMessageId, ThreadScope, ThreadStore,
 };
 
 /// Postgres-backed [`ThreadStore`].
@@ -57,26 +57,47 @@ const CONTEXT_SQL: &str = "SELECT m.kind, m.sender_colleague_id, m.body \
      WHERE m.thread_id = $1 AND (m.kind = 'posted' OR m.owner_agent_id = $2) \
      ORDER BY m.seq ASC";
 
+/// The DM-visibility predicate: a channel-less thread is visible to its
+/// creator OR its counterpart. This is a **tenant-isolation** rule, repeated
+/// across `FEED_SQL` / `visible_to` / `is_channel_member` / `LIST_WHERE_DM`
+/// (each binds the user at a different `$N`). One source of truth so a future
+/// change (e.g. a third DM participant) can't silently diverge between the
+/// read paths. `concat!` over string literals only — §10-safe (no caller
+/// input ever reaches the SQL text).
+macro_rules! dm_visible_to {
+    ($u:literal) => {
+        concat!(
+            "EXISTS (SELECT 1 FROM colleagues cb \
+                     WHERE cb.id = t.created_by_colleague_id AND cb.user_id = ",
+            $u,
+            ") OR EXISTS (SELECT 1 FROM colleagues cp \
+                          WHERE cp.id = t.dm_counterpart_colleague_id AND cp.user_id = ",
+            $u,
+            ")"
+        )
+    };
+}
+
 /// G2 flat-feed read. Both participant sides joined to `colleagues` for their
 /// satellite columns (kind / user_id / agent_id) so the HTTP boundary decodes a
 /// `Participant`/`MessageSender` and enriches a human name/avatar. The
 /// visibility gate mirrors `list_threads` (channel membership, or DM ownership)
 /// and pins the active org (`$2`). Pages backward on the `seq` keyset
 /// (`$4`); ordered DESC for the LIMIT then reversed to ascending by the caller.
-const FEED_SQL: &str = "SELECT m.seq, m.kind, \
+const FEED_SQL: &str = concat!(
+    "SELECT m.seq, m.kind, \
         m.sender_colleague_id, sc.kind, sc.user_id, sc.agent_id, \
         m.owner_agent_id, \
         m.receiver_colleague_id, rc.kind, rc.user_id, rc.agent_id, \
-        m.body, m.request_id, m.created_at \
+        m.body, m.request_id, m.idempotency_key, m.created_at \
      FROM thread_messages m \
      JOIN threads t ON t.id = m.thread_id \
      LEFT JOIN colleagues sc ON sc.id = m.sender_colleague_id \
      LEFT JOIN colleagues rc ON rc.id = m.receiver_colleague_id \
      WHERE m.thread_id = $1 AND t.org_id = $2 \
-       AND (CASE WHEN t.channel_id IS NULL THEN \
-                EXISTS (SELECT 1 FROM colleagues cb \
-                        WHERE cb.id = t.created_by_colleague_id AND cb.user_id = $3) \
-            ELSE \
+       AND (CASE WHEN t.channel_id IS NULL THEN ",
+    dm_visible_to!("$3"),
+    "       ELSE \
                 EXISTS (SELECT 1 FROM channel_members cm \
                         WHERE cm.channel_id = t.channel_id AND cm.user_id = $3) \
                 AND EXISTS (SELECT 1 FROM channels c \
@@ -84,7 +105,59 @@ const FEED_SQL: &str = "SELECT m.seq, m.kind, \
             END) \
        AND ($4::bigint IS NULL OR m.seq < $4) \
      ORDER BY m.seq DESC \
-     LIMIT $5";
+     LIMIT $5"
+);
+
+/// `list_threads` page with the timeline enrichment: the root posted row's
+/// snippet + sender satellites (LATERAL, first `posted` by `seq`) and the
+/// posted-row count. The snippet is capped in SQL (`LEFT`, $-bound to
+/// [`ROOT_SNIPPET_MAX_CHARS`]) so an oversized body never crosses the wire.
+/// `{where}` is one of the two scope predicates below — assembled by
+/// `format!` from `const` fragments only, never from caller input (§10).
+macro_rules! list_sql {
+    ($where:expr) => {
+        format!(
+            "SELECT t.id, t.channel_id, t.last_activity_at, \
+                    r.snippet, r.sc_id, r.sc_kind, r.sc_user, r.sc_agent, r.created_at, \
+                    COALESCE(pc.posted_count, 0) \
+             FROM threads t \
+             LEFT JOIN LATERAL ( \
+                 SELECT LEFT(m.body->'contents'->0->>'value', $4) AS snippet, \
+                        m.sender_colleague_id AS sc_id, sc.kind AS sc_kind, \
+                        sc.user_id AS sc_user, sc.agent_id AS sc_agent, \
+                        m.created_at \
+                 FROM thread_messages m \
+                 LEFT JOIN colleagues sc ON sc.id = m.sender_colleague_id \
+                 WHERE m.thread_id = t.id AND m.kind = 'posted' \
+                 ORDER BY m.seq ASC LIMIT 1 \
+             ) r ON TRUE \
+             LEFT JOIN LATERAL ( \
+                 SELECT COUNT(*) AS posted_count FROM thread_messages m \
+                 WHERE m.thread_id = t.id AND m.kind = 'posted' \
+             ) pc ON TRUE \
+             WHERE t.org_id = $1 AND {} \
+             ORDER BY t.last_activity_at DESC LIMIT $3",
+            $where
+        )
+    };
+}
+
+/// Channel scope: member-gated + not archived. `$2` = channel, `$5` unused.
+const LIST_WHERE_CHANNEL: &str = "t.channel_id = $2 \
+       AND EXISTS (SELECT 1 FROM channel_members cm \
+                   WHERE cm.channel_id = t.channel_id AND cm.user_id = $5) \
+       AND EXISTS (SELECT 1 FROM channels c \
+                   WHERE c.id = t.channel_id AND c.archived_at IS NULL)";
+
+/// DM scope: the caller is the creator or the counterpart; `$2` optionally
+/// narrows to the pair with one colleague (either orientation).
+const LIST_WHERE_DM: &str = concat!(
+    "t.channel_id IS NULL AND (",
+    dm_visible_to!("$5"),
+    ") AND ($2::uuid IS NULL \
+            OR t.dm_counterpart_colleague_id = $2 \
+            OR t.created_by_colleague_id = $2)"
+);
 
 #[async_trait]
 impl ThreadStore for PgThreadStore {
@@ -95,21 +168,33 @@ impl ThreadStore for PgThreadStore {
         channel_id: Option<ChannelId>,
         root_message_id: Option<ThreadMessageId>,
         created_by: ColleagueId,
+        dm_counterpart: Option<ColleagueId>,
     ) -> Result<ThreadId, ThreadError> {
+        // The DB CHECK forbids both-set; the missing half (a DM must name its
+        // counterpart) is this code-side invariant — see migration 66.
+        assert!(
+            channel_id.is_none() || dm_counterpart.is_none(),
+            "invariant: a channel thread carries no DM counterpart"
+        );
+        assert!(
+            channel_id.is_some() || dm_counterpart.is_some(),
+            "invariant: a DM thread names its counterpart"
+        );
         let now = self.now();
         let id = ThreadId::new();
         run_as_user(&self.pool, caller.user_id, async |tx| {
             sqlx::query(
                 "INSERT INTO threads \
                    (id, org_id, channel_id, root_message_id, created_by_colleague_id, \
-                    created_at, last_activity_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $6)",
+                    dm_counterpart_colleague_id, created_at, last_activity_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)",
             )
             .bind(id)
             .bind(caller.org_id)
             .bind(channel_id)
             .bind(root_message_id)
             .bind(created_by)
+            .bind(dm_counterpart)
             .bind(now)
             .execute(&mut **tx)
             .await?;
@@ -162,11 +247,19 @@ impl ThreadStore for PgThreadStore {
         let body = serde_json::to_value(&message.body)
             .map_err(|e| ThreadError::Backend(format!("serialize message: {e}")))?;
         let id = ThreadMessageId::new();
+        let idem = message
+            .idempotency_key
+            .as_ref()
+            .map(crate::runtime::IdempotencyKey::as_str);
         // One round trip: bump the per-thread seq, insert the row at that seq,
         // and bump last_activity_at — all gated on the thread existing (`t`).
+        // A duplicate `idempotency_key` (concurrent retry of the same submit)
+        // hits `ON CONFLICT DO NOTHING`; the fallback SELECT below returns the
+        // winner's row so retries converge on one message. The bumped-but-
+        // unused seq leaves a hole, which the ordering tolerates.
         let row: Option<(i64,)> =
             run_as_user::<Option<(i64,)>, ThreadError>(&self.pool, caller.user_id, async |tx| {
-                Ok(sqlx::query_as(
+                let inserted: Option<(i64,)> = sqlx::query_as(
                     "WITH t AS (SELECT org_id FROM threads WHERE id = $1), \
                  seqx AS ( \
                      INSERT INTO thread_seq (thread_id, next_seq, org_id) \
@@ -177,9 +270,12 @@ impl ThreadStore for PgThreadStore {
                  ins AS ( \
                      INSERT INTO thread_messages \
                          (id, thread_id, seq, kind, sender_colleague_id, owner_agent_id, \
-                          receiver_colleague_id, body, request_id, org_id, created_at) \
-                     SELECT $2, $1, seqx.next_seq, $3, $4, $5, $6, $7, $8, t.org_id, $9 \
+                          receiver_colleague_id, body, request_id, org_id, created_at, \
+                          idempotency_key) \
+                     SELECT $2, $1, seqx.next_seq, $3, $4, $5, $6, $7, $8, t.org_id, $9, $10 \
                      FROM seqx, t \
+                     ON CONFLICT (org_id, idempotency_key) WHERE idempotency_key IS NOT NULL \
+                         DO NOTHING \
                      RETURNING seq \
                  ), \
                  upd AS ( \
@@ -194,70 +290,83 @@ impl ThreadStore for PgThreadStore {
                 .bind(message.sender)
                 .bind(message.owner_agent_id)
                 .bind(message.receiver)
-                .bind(body)
+                .bind(&body)
                 .bind(message.request_id)
                 .bind(now)
+                .bind(idem)
                 .fetch_optional(&mut **tx)
-                .await?)
+                .await?;
+                Ok(inserted)
             })
             .await?;
-        // The `seq` row confirms the insert fired (thread exists); we return the
-        // surface id we minted, which callers thread into reply-roots / triggers.
-        row.map(|(_seq,)| id).ok_or(ThreadError::NotFound(thread))
+        if let Some((_seq,)) = row {
+            // The `seq` row confirms the insert fired (thread exists); return
+            // the surface id we minted, which callers thread into
+            // reply-roots / triggers.
+            return Ok(id);
+        }
+        // No insert: either the thread is missing, or an idempotent retry lost
+        // the (org, idempotency_key) race — return the winner's row id.
+        if let Some(key) = idem {
+            let existing: Option<(ThreadMessageId,)> =
+                run_as_user::<Option<(ThreadMessageId,)>, ThreadError>(
+                    &self.pool,
+                    caller.user_id,
+                    async |tx| {
+                        Ok(sqlx::query_as(
+                        "SELECT id FROM thread_messages WHERE org_id = $1 AND idempotency_key = $2",
+                    )
+                    .bind(caller.org_id)
+                    .bind(key)
+                    .fetch_optional(&mut **tx)
+                    .await?)
+                    },
+                )
+                .await?;
+            if let Some((existing_id,)) = existing {
+                return Ok(existing_id);
+            }
+        }
+        Err(ThreadError::NotFound(thread))
     }
 
-    #[tracing::instrument(skip_all, name = "thread.list_threads", fields(patom.org.id = %caller.org_id, patom.channel.id = ?channel_id, patom.thread.count = tracing::field::Empty))]
+    #[tracing::instrument(skip_all, name = "thread.list_threads", fields(patom.org.id = %caller.org_id, patom.thread.scope = ?scope, patom.thread.count = tracing::field::Empty))]
     async fn list_threads(
         &self,
         caller: &Caller,
-        channel_id: Option<ChannelId>,
+        scope: ThreadScope,
     ) -> Result<Vec<ThreadListItem>, ThreadError> {
-        type Row = (ThreadId, Option<ChannelId>, DateTime<Utc>);
         let org = caller.org_id;
         let user = caller.user_id;
         // Channel view: gated on the caller's membership + channel not archived
         // (visible to every member, not just the creator — P7). DM view: the
-        // caller's own channel-less threads. Org-pinned so a multi-org member's
-        // other workspaces never leak in (RLS gates membership, not active org).
-        let rows: Vec<Row> =
-            run_as_user::<Vec<Row>, ThreadError>(&self.pool, user, async |tx| match channel_id {
-                Some(channel) => Ok(sqlx::query_as(
-                    "SELECT t.id, t.channel_id, t.last_activity_at FROM threads t \
-                     WHERE t.org_id = $1 AND t.channel_id = $2 \
-                       AND EXISTS (SELECT 1 FROM channel_members cm \
-                                   WHERE cm.channel_id = t.channel_id AND cm.user_id = $3) \
-                       AND EXISTS (SELECT 1 FROM channels c \
-                                   WHERE c.id = t.channel_id AND c.archived_at IS NULL) \
-                     ORDER BY t.last_activity_at DESC LIMIT $4",
-                )
-                .bind(org)
-                .bind(channel)
-                .bind(user)
-                .bind(MAX_THREAD_LIST)
-                .fetch_all(&mut **tx)
-                .await?),
-                None => Ok(sqlx::query_as(
-                    "SELECT t.id, t.channel_id, t.last_activity_at FROM threads t \
-                     JOIN colleagues cb ON cb.id = t.created_by_colleague_id \
-                     WHERE t.org_id = $1 AND t.channel_id IS NULL AND cb.user_id = $2 \
-                     ORDER BY t.last_activity_at DESC LIMIT $3",
-                )
-                .bind(org)
-                .bind(user)
-                .bind(MAX_THREAD_LIST)
-                .fetch_all(&mut **tx)
-                .await?),
+        // caller's channel-less threads — created by them OR addressed to them
+        // (the counterpart), optionally narrowed to one pair. Org-pinned so a
+        // multi-org member's other workspaces never leak in (RLS gates
+        // membership, not active org).
+        let (sql, scope_id) = match scope {
+            ThreadScope::Channel(channel) => {
+                (list_sql!(LIST_WHERE_CHANNEL), Some(channel.as_uuid()))
+            }
+            ThreadScope::Dms { counterpart } => (
+                list_sql!(LIST_WHERE_DM),
+                counterpart.map(ColleagueId::as_uuid),
+            ),
+        };
+        let rows: Vec<ListRow> =
+            run_as_user::<Vec<ListRow>, ThreadError>(&self.pool, user, async |tx| {
+                Ok(sqlx::query_as(&sql)
+                    .bind(org)
+                    .bind(scope_id)
+                    .bind(MAX_THREAD_LIST)
+                    .bind(ROOT_SNIPPET_MAX_CHARS)
+                    .bind(user)
+                    .fetch_all(&mut **tx)
+                    .await?)
             })
             .await?;
         tracing::Span::current().record("patom.thread.count", rows.len());
-        Ok(rows
-            .into_iter()
-            .map(|(thread_id, channel_id, last_activity_at)| ThreadListItem {
-                thread_id,
-                channel_id,
-                last_activity_at,
-            })
-            .collect())
+        rows.into_iter().map(list_row_to_item).collect()
     }
 
     #[tracing::instrument(skip_all, name = "thread.is_channel_member", fields(patom.thread.id = %thread, patom.user.id = %user_id))]
@@ -267,20 +376,21 @@ impl ThreadStore for PgThreadStore {
         user_id: crate::auth::UserId,
     ) -> Result<bool, ThreadError> {
         // One round trip: resolve the thread's channel and, for a channel
-        // thread, test membership; a DM thread (NULL channel) is always
-        // reachable by its human. Privileged — the agent is org-global and the
-        // (channel, user) pair is fully qualified, so no cross-org leak.
+        // thread, test membership; a DM thread (NULL channel) is reachable
+        // only by its pair — creator or counterpart. Privileged — the agent is
+        // org-global and the (channel, user) pair is fully qualified, so no
+        // cross-org leak.
         let row: Option<(bool,)> =
             run_privileged::<Option<(bool,)>, ThreadError>(&self.pool, async |tx| {
-                Ok(sqlx::query_as(
-                    "SELECT CASE \
-                         WHEN t.channel_id IS NULL THEN true \
-                         ELSE EXISTS ( \
+                Ok(sqlx::query_as(concat!(
+                    "SELECT CASE WHEN t.channel_id IS NULL THEN ",
+                    dm_visible_to!("$2"),
+                    " ELSE EXISTS ( \
                              SELECT 1 FROM channel_members m \
                              WHERE m.channel_id = t.channel_id AND m.user_id = $2 \
                          ) END \
-                     FROM threads t WHERE t.id = $1",
-                )
+                     FROM threads t WHERE t.id = $1"
+                ))
                 .bind(thread)
                 .bind(user_id)
                 .fetch_optional(&mut **tx)
@@ -323,6 +433,25 @@ impl ThreadStore for PgThreadStore {
         rows.reverse();
         tracing::Span::current().record("patom.feed.count", rows.len());
         rows.into_iter().map(feed_row_to_message).collect()
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.dm_counterpart", fields(patom.thread.id = %thread))]
+    async fn dm_counterpart(&self, thread: ThreadId) -> Result<Option<ColleagueId>, ThreadError> {
+        // Privileged point lookup — `POST /prompts` resolves the implicit DM
+        // receiver before any tenant write. `None` covers both a channel
+        // thread and a legacy/degraded DM.
+        let row: Option<(Option<ColleagueId>,)> =
+            run_privileged::<Option<(Option<ColleagueId>,)>, ThreadError>(&self.pool, async |tx| {
+                Ok(
+                    sqlx::query_as("SELECT dm_counterpart_colleague_id FROM threads WHERE id = $1")
+                        .bind(thread)
+                        .fetch_optional(&mut **tx)
+                        .await?,
+                )
+            })
+            .await?;
+        row.map(|(counterpart,)| counterpart)
+            .ok_or(ThreadError::NotFound(thread))
     }
 
     #[tracing::instrument(skip_all, name = "thread.channel_of", fields(patom.thread.id = %thread))]
@@ -405,20 +534,19 @@ impl ThreadStore for PgThreadStore {
         let user = caller.user_id;
         let row: (bool,) =
             run_as_user::<(bool,), ThreadError>(&self.pool, user, async |tx| {
-                Ok(sqlx::query_as(
+                Ok(sqlx::query_as(concat!(
                     "SELECT EXISTS( \
                          SELECT 1 FROM threads t \
                          WHERE t.id = $1 AND t.org_id = $2 \
-                           AND (CASE WHEN t.channel_id IS NULL THEN \
-                                    EXISTS (SELECT 1 FROM colleagues cb \
-                                            WHERE cb.id = t.created_by_colleague_id AND cb.user_id = $3) \
-                                ELSE \
+                           AND (CASE WHEN t.channel_id IS NULL THEN ",
+                    dm_visible_to!("$3"),
+                    "       ELSE \
                                     EXISTS (SELECT 1 FROM channel_members cm \
                                             WHERE cm.channel_id = t.channel_id AND cm.user_id = $3) \
                                     AND EXISTS (SELECT 1 FROM channels c \
                                                 WHERE c.id = t.channel_id AND c.archived_at IS NULL) \
-                                END))",
-                )
+                                END))"
+                ))
                 .bind(thread)
                 .bind(org)
                 .bind(user)
@@ -495,7 +623,8 @@ fn repair_tool_pairs(rows: Vec<(MessageKind, ChatMessage)>) -> Vec<ChatMessage> 
 }
 
 /// One [`FEED_SQL`] row: seq, kind, the sender's colleague satellites, the
-/// owner agent, the receiver's colleague satellites, body, request id, ts.
+/// owner agent, the receiver's colleague satellites, body, request id, the
+/// client idempotency key, ts.
 #[allow(clippy::type_complexity)]
 type FeedRow = (
     i64,
@@ -511,8 +640,65 @@ type FeedRow = (
     Option<AgentId>,
     serde_json::Value,
     Option<PromptRequestId>,
+    Option<String>,
     DateTime<Utc>,
 );
+
+/// One `list_sql!` row: thread identity + the root posted row's snippet and
+/// sender satellites (all NULL when the thread has no posted row yet) + the
+/// posted-row count.
+#[allow(clippy::type_complexity)]
+type ListRow = (
+    ThreadId,
+    Option<ChannelId>,
+    DateTime<Utc>,
+    Option<String>,
+    Option<ColleagueId>,
+    Option<ColleagueKind>,
+    Option<UserId>,
+    Option<AgentId>,
+    Option<DateTime<Utc>>,
+    i64,
+);
+
+/// Decode one [`ListRow`] into the public [`ThreadListItem`]. The root exists
+/// iff the LATERAL matched a posted row (detected on its `created_at`); a
+/// posted row whose body has no leading text block degrades to an empty
+/// snippet rather than an error.
+fn list_row_to_item(row: ListRow) -> Result<ThreadListItem, ThreadError> {
+    let (
+        thread_id,
+        channel_id,
+        last_activity_at,
+        snippet,
+        sender_colleague,
+        sender_kind,
+        sender_user,
+        sender_agent,
+        root_created_at,
+        posted_count,
+    ) = row;
+    let root = match root_created_at {
+        Some(created_at) => Some(RootSummary {
+            snippet: snippet.unwrap_or_default(),
+            sender: MessageSender::from(decode_participant(
+                sender_colleague,
+                sender_kind,
+                sender_user,
+                sender_agent,
+            )?),
+            created_at,
+        }),
+        None => None,
+    };
+    Ok(ThreadListItem {
+        thread_id,
+        channel_id,
+        last_activity_at,
+        root,
+        reply_count: (posted_count - 1).max(0),
+    })
+}
 
 /// Decode one [`FeedRow`] into the public [`FeedMessage`], parsing both
 /// participant sides once through the canonical `Participant::try_from` (§1)
@@ -534,6 +720,7 @@ fn feed_row_to_message(row: FeedRow) -> Result<FeedMessage, ThreadError> {
         receiver_agent,
         body,
         request_id,
+        client_key,
         created_at,
     ) = row;
     let sender = MessageSender::from(decode_participant(
@@ -559,6 +746,7 @@ fn feed_row_to_message(row: FeedRow) -> Result<FeedMessage, ThreadError> {
         receiver,
         body,
         request_id,
+        client_key,
         created_at,
     })
 }

@@ -227,7 +227,7 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
     let (thread_id, agent_id) = match (existing, event.source) {
         (Some(mapping), InboundSource::AppMention) => (
             mapping.thread_id,
-            resolve_mention_or_default(deps, &event, &workspace.bot_user_id, org_id).await?,
+            resolve_mention_or_recruiter(deps, &event, &workspace.bot_user_id, org_id).await?,
         ),
         (Some(mapping), InboundSource::ThreadMessage) => {
             // Plain reply in a bound thread — route to the agent the
@@ -251,12 +251,24 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
         }
         (None, InboundSource::AppMention) => {
             let agent =
-                resolve_mention_or_default(deps, &event, &workspace.bot_user_id, org_id).await?;
-            // New Slack-originated conversation → a fresh Patom DM thread,
-            // created by the linked human, bound to this Slack thread.
+                resolve_mention_or_recruiter(deps, &event, &workspace.bot_user_id, org_id).await?;
+            // New Slack-originated conversation → a fresh Patom DM thread
+            // between the linked human and the mentioned agent (the DM
+            // counterpart), bound to this Slack thread.
+            let agent_counterpart = deps
+                .colleagues
+                .resolve_agent(org_id, agent)
+                .await
+                .map_err(|e| SlackError::Internal(format!("resolve agent colleague: {e}")))?;
             let thread = deps
                 .thread_store
-                .create_thread(&caller, None, None, human_colleague)
+                .create_thread(
+                    &caller,
+                    None,
+                    None,
+                    human_colleague,
+                    Some(agent_counterpart),
+                )
                 .await
                 .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
             deps.threads
@@ -350,6 +362,7 @@ async fn submit_to_thread(
                 receiver: Some(agent_colleague),
                 body: ChatMessage::User(vec![UserContent::Text(submit.prompt.as_str().to_owned())]),
                 request_id: None,
+                idempotency_key: None,
             },
         )
         .await
@@ -442,9 +455,12 @@ async fn resolve_user_id(
     Ok(linked.user_id)
 }
 
-/// Resolve `@AgentName` (if any) against the org. Falls back to the
-/// org's default agent on miss.
-async fn resolve_mention_or_default(
+/// Resolve `@AgentName` (if any) against the org. Falls back to the org's
+/// preset recruiter on miss — there is no "default agent" at runtime; the
+/// recruiter is simply the agent every workspace is seeded with. If the
+/// operator renamed or deleted it, the mention fails loudly with
+/// `NameNotFound` and the webhook handler logs + drops.
+async fn resolve_mention_or_recruiter(
     deps: &BridgeDeps,
     event: &InboundEvent,
     bot: &SlackUserId,
@@ -459,13 +475,19 @@ async fn resolve_mention_or_default(
             Err(crate::agents::AgentStoreError::NameNotFound(_)) => {
                 warn!(
                     patom.agent.name = %name_raw,
-                    event = "slack.bridge.agent_not_found_falling_back_to_default",
+                    event = "slack.bridge.agent_not_found_falling_back_to_recruiter",
                 );
             }
             Err(e) => return Err(e.into()),
         }
     }
-    Ok(deps.agents.default_id_for(org_id).await?)
+    let recruiter = AgentName::try_from(crate::app::RECRUITER_AGENT_NAME)
+        .expect("invariant: recruiter preset name is a valid AgentName");
+    Ok(deps
+        .agents
+        .read_by_name_for_org(org_id, &recruiter)
+        .await?
+        .id)
 }
 
 /// Strip the bot mention from the text and return the user's
@@ -571,11 +593,23 @@ pub async fn enqueue_from_slash(
     .await?;
     let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
 
-    // A slash command starts a fresh conversation → new Patom DM thread,
-    // created by the linked human, bound to the mirror's Slack thread.
+    // A slash command starts a fresh conversation → new Patom DM thread
+    // between the linked human and the chosen agent, bound to the mirror's
+    // Slack thread.
+    let agent_counterpart = deps
+        .colleagues
+        .resolve_agent(org_id, agent.id)
+        .await
+        .map_err(|e| SlackError::Internal(format!("resolve agent colleague: {e}")))?;
     let thread_id = deps
         .thread_store
-        .create_thread(&caller, None, None, human_colleague)
+        .create_thread(
+            &caller,
+            None,
+            None,
+            human_colleague,
+            Some(agent_counterpart),
+        )
         .await
         .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
     deps.threads

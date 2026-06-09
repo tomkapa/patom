@@ -158,7 +158,6 @@ export type Agent = {
   /** Free-form system prompt. Present on every read; only the agent-detail
    *  page uses it today. */
   system_prompt?: string;
-  is_default: boolean;
   /** Per-server tool allowlist. Keys are MCP server ids the agent may
    *  reach; the value is `null` (= every tool from that server) or an
    *  array of remote tool names (= only those tools). A server id that
@@ -191,7 +190,6 @@ export type UpdateAgentRequest = {
   name?: string;
   system_prompt?: string;
   description?: string;
-  is_default?: boolean;
   allowed_mcp_tools?: Record<string, string[] | null>;
   model?: string | null;
   /** Tri-state, mirroring `model`: omitted = leave untouched, `null` =
@@ -208,17 +206,31 @@ export type ModelEntry = {
 
 export type RequestStatus = "pending" | "processing" | "done" | "failed";
 
-/** One row of `GET /api/threads`. The thread-feed wire is intentionally
- *  thin: a thread is identified by `thread_id`, located by `channel_id`
- *  (`null` for the caller's DMs), and ordered by `last_activity_at`. Any
- *  title / preview / starter the UI wants is derived from the first
- *  message of the G2 feed (`GET /api/threads/{thread_id}/messages`), not
- *  carried on this row. Mirrors `src/http/routes/threads.rs`. */
+/** Root-message summary on a G1 row — what the Slack-style timeline
+ *  renders without a per-thread G2 round-trip. */
+export type ThreadRootSummary = {
+  /** First text block of the root posted message, capped server-side. */
+  snippet: string;
+  sender: MessageSender;
+  created_at: string;
+  /** Resolved display name of a *human* root sender; `null` for agent /
+   *  system senders (agents resolve via the roster). */
+  sender_display_name: string | null;
+  sender_avatar_url: string | null;
+};
+
+/** One row of `GET /api/threads`. Carries the thread identity, location,
+ *  last activity, plus the root posted message's summary and the posted
+ *  reply count so the timeline renders Slack-style without N feed
+ *  fetches. Mirrors `src/http/routes/threads.rs`. */
 export type ThreadSummary = {
   thread_id: string;
   /** `null` for a direct-message thread (no channel). */
   channel_id: string | null;
   last_activity_at: string;
+  /** `null` for a thread with no posted rows yet. */
+  root: ThreadRootSummary | null;
+  reply_count: number;
 };
 
 /** A channel — an org-scoped, member-gated space grouping thread roots.
@@ -236,6 +248,27 @@ export type Channel = {
 export type ChannelMember = {
   user_id: string;
   added_at: string;
+  /** Profile-enriched server-side so the mention roster / DM sidebar can
+   *  render humans without a second endpoint. */
+  display_name: string | null;
+  avatar_url: string | null;
+};
+
+/** One @-taggable participant — human or agent, treated identically by the
+ *  composer/mention machinery. `id` is the satellite id (`users.id` /
+ *  `agents.id`) the tags wire expects. */
+export type Mentionable = {
+  kind: "human" | "agent";
+  id: string;
+  name: string;
+  avatar_url: string | null;
+};
+
+/** One wire-side tag for `POST /prompts` — `{kind, id}` with the satellite
+ *  id. Mirrors `src/http/routes/prompts.rs::TagRefWire`. */
+export type TagRef = {
+  kind: "human" | "agent";
+  id: string;
 };
 
 // Mirrors the backend `Participant` / `MessageSender` wire shape
@@ -302,6 +335,9 @@ export type ThreadMessage = {
    *  reconcile optimistic / live / persisted bubbles by identity instead of
    *  by text matching. `null` for rows not tied to a single request. */
   request_id: string | null;
+  /** Client dedupe key the posting submit carried — the optimistic bubble
+   *  reconciles against this. `null` for agent-produced rows. */
+  client_key: string | null;
   /** Resolved display name of a human sender — the real author, so the FE
    *  renders them instead of the current viewer. `null` for agent/system
    *  rows (agents resolve via the roster; system rows are unlabelled). */
@@ -361,9 +397,13 @@ export type ThreadStreamEnvelope = {
 };
 
 export type SubmitPromptResponse = {
-  request_id: string;
+  /** First enqueued trigger; `null` for a plain (untagged) post. */
+  request_id: string | null;
   thread_id: string;
-  status: RequestStatus;
+  /** `null` when no agent was triggered. */
+  status: RequestStatus | null;
+  /** Agents this message woke — drives the per-agent "thinking…". */
+  triggered_agent_ids: string[];
 };
 
 // ─── MCP server wire shapes ─────────────────────────────────────────────
@@ -763,9 +803,11 @@ export type TurnMetrics = {
   id: string;
   request_id: string;
   session_id: string;
-  /** Root prompt request of the human-rooted DAG this turn belongs to.
-   *  The memory pane uses it to deep-link back into the chat view. */
+  /** Root prompt request of the human-rooted DAG this turn belongs to. */
   root_request_id: string;
+  /** Thread the turn ran in — what the memory pane deep-links into the
+   *  chat view. `null` for background-cognition turns. */
+  thread_id: string | null;
   agent_id: string;
   prompt_version_id: string;
   /** "normal" | "reflection" | "resolution" — mirrors the

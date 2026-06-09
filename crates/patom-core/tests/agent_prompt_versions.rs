@@ -149,7 +149,6 @@ impl Harness {
                 system_prompt: AgentSystemPrompt::try_from(prompt).expect("valid prompt"),
                 description: AgentDescription::try_from(format!("desc for {name}"))
                     .expect("valid desc"),
-                is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
                 avatar_url: None,

@@ -30,8 +30,11 @@ use uuid::Uuid;
 use crate::agents::AgentId;
 use crate::auth::{Caller, Principal, UserId, UserProfileLite};
 use crate::channels::ChannelId;
+use crate::colleagues::ColleagueId;
 use crate::runtime::{PromptRequestId, ResponseChunk, ThreadStreamEvent, ThreadStreamItem};
-use crate::threads::{DEFAULT_THREAD_FEED, MAX_THREAD_FEED, PgThreadStore, ThreadId, ThreadStore};
+use crate::threads::{
+    DEFAULT_THREAD_FEED, MAX_THREAD_FEED, PgThreadStore, ThreadId, ThreadScope, ThreadStore,
+};
 use crate::types::{MessageSender, Participant};
 
 use super::super::error::HttpError;
@@ -51,22 +54,47 @@ pub(super) fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 struct ListThreadsQuery {
     /// Feed selector. `Some(id)` returns that channel's threads (member-gated);
-    /// omitted returns the caller's direct-message threads (`channel_id IS NULL`,
-    /// created by the caller). Member-scoping + active-org pin live in
+    /// omitted returns the caller's direct messages — threads they created or
+    /// are the counterpart of. Member-scoping + active-org pin live in
     /// [`ThreadStore::list_threads`].
     #[serde(default)]
     channel_id: Option<Uuid>,
+    /// DM narrowing: only the conversation with this colleague (both
+    /// orientations), addressed by satellite id like the tags wire —
+    /// `counterpart_kind` ∈ {"agent","human"} + `counterpart_id` (an
+    /// `agents.id` / `users.id`). Ignored when `channel_id` is set.
+    #[serde(default)]
+    counterpart_kind: Option<String>,
+    #[serde(default)]
+    counterpart_id: Option<Uuid>,
 }
 
-/// One row of the channel / DM thread index (G1). The thread feed is read
-/// separately via `GET /threads/{id}/messages` (G2); a thread is no longer
-/// "rooted" on a single human↔agent pair, so the row carries just the thread
-/// identity + its location + last activity. Preview / unread are FE follow-ups.
+/// Root-message summary on a G1 row — what the Slack-style timeline renders
+/// without a per-thread G2 round-trip.
+#[derive(Debug, Serialize)]
+struct ThreadRootSummary {
+    /// First text block of the root posted message, SQL-capped.
+    snippet: String,
+    sender: MessageSender,
+    created_at: DateTime<Utc>,
+    /// Resolved display name of a *human* root sender (privileged user read);
+    /// `None` for agent / system senders.
+    sender_display_name: Option<String>,
+    sender_avatar_url: Option<String>,
+}
+
+/// One row of the channel / DM thread index (G1). Carries the thread
+/// identity, location, and last activity, plus the root posted message's
+/// summary and the posted reply count so the timeline renders Slack-style
+/// without N feed fetches.
 #[derive(Debug, Serialize)]
 struct ThreadSummary {
     thread_id: ThreadId,
     channel_id: Option<ChannelId>,
     last_activity_at: DateTime<Utc>,
+    /// `null` for a thread with no posted rows yet.
+    root: Option<ThreadRootSummary>,
+    reply_count: i64,
 }
 
 #[tracing::instrument(skip_all, name = "thread.list", fields(patom.thread.list.size = tracing::field::Empty))]
@@ -79,22 +107,86 @@ async fn list_threads(
     // the RLS-bound query (P7). A fresh `PgThreadStore` is a pair of `Arc`
     // clones — the route's `pool`/`clock` are the inline seam (§ AppState.pool).
     let caller = Caller::new(principal.user_id, principal.active_org_id);
-    let channel = q.channel_id.map(ChannelId::from);
+    let scope = match q.channel_id {
+        Some(channel) => ThreadScope::Channel(ChannelId::from(channel)),
+        None => ThreadScope::Dms {
+            counterpart: resolve_counterpart_filter(&state, &principal, &q).await?,
+        },
+    };
     let store = PgThreadStore::new(state.pool.clone(), state.clock.clone());
     let items = store
-        .list_threads(&caller, channel)
+        .list_threads(&caller, scope)
         .await
         .map_err(thread_store_error)?;
     tracing::Span::current().record("patom.thread.list.size", items.len());
+
+    // Enrich human root senders with name + avatar via the privileged store —
+    // the RLS read can't touch `users` (migration 14). Bounded by the list
+    // LIMIT (CLAUDE.md §5).
+    let sender_ids: Vec<UserId> = items
+        .iter()
+        .filter_map(|i| i.root.as_ref().and_then(|r| r.sender.user_id()))
+        .collect();
+    let profiles = state.users.read_profiles(&sender_ids).await?;
+
     let summaries = items
         .into_iter()
-        .map(|i| ThreadSummary {
-            thread_id: i.thread_id,
-            channel_id: i.channel_id,
-            last_activity_at: i.last_activity_at,
+        .map(|i| {
+            let root = i.root.map(|r| {
+                let (sender_display_name, sender_avatar_url) =
+                    r.sender.user_id().map_or((None, None), |uid| {
+                        resolve_profile(&profiles, uid).map_or((None, None), |(n, a)| (Some(n), a))
+                    });
+                ThreadRootSummary {
+                    snippet: r.snippet,
+                    sender: r.sender,
+                    created_at: r.created_at,
+                    sender_display_name,
+                    sender_avatar_url,
+                }
+            });
+            ThreadSummary {
+                thread_id: i.thread_id,
+                channel_id: i.channel_id,
+                last_activity_at: i.last_activity_at,
+                root,
+                reply_count: i.reply_count,
+            }
         })
         .collect();
     Ok(Json(summaries))
+}
+
+/// Resolve the DM-narrowing query params to a colleague id. The wire speaks
+/// satellite ids (the same `{kind, id}` pair the tags wire uses); colleague
+/// resolution stays server-side. An unknown satellite is a stale-roster 400.
+async fn resolve_counterpart_filter(
+    state: &AppState,
+    principal: &Principal,
+    q: &ListThreadsQuery,
+) -> Result<Option<ColleagueId>, HttpError> {
+    let (Some(kind), Some(id)) = (q.counterpart_kind.as_deref(), q.counterpart_id) else {
+        return Ok(None);
+    };
+    let org = principal.active_org_id;
+    let colleague = match kind {
+        "agent" => state
+            .colleagues
+            .resolve_agent(org, crate::agents::AgentId::from(id))
+            .await
+            .map_err(|_| HttpError::BadRequest(format!("unknown counterpart agent {id}")))?,
+        "human" => state
+            .colleagues
+            .resolve_user(org, UserId::from(id))
+            .await
+            .map_err(|_| HttpError::BadRequest(format!("unknown counterpart human {id}")))?,
+        other => {
+            return Err(HttpError::BadRequest(format!(
+                "counterpart_kind must be \"agent\" or \"human\", got {other:?}"
+            )));
+        }
+    };
+    Ok(Some(colleague))
 }
 
 /// Look up a sender's resolved display name + avatar. `None` when the user
@@ -148,6 +240,9 @@ struct ThreadMessage {
     created_at: DateTime<Utc>,
     /// The producing turn for agent rows; `None` for plain human posts.
     request_id: Option<PromptRequestId>,
+    /// Client dedupe key the posting submit carried — the FE reconciles its
+    /// optimistic bubble against this. `None` for agent-produced rows.
+    client_key: Option<String>,
     /// Resolved display name of a *human* sender, enriched from the
     /// privileged user store (the tenant tx can't read `users`). `None`
     /// for agent / system rows.
@@ -220,6 +315,7 @@ fn feed_message_to_wire(
         body: m.body,
         created_at: m.created_at,
         request_id: m.request_id,
+        client_key: m.client_key,
         sender_display_name,
         sender_avatar_url,
     }

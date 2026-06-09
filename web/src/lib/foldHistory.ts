@@ -5,8 +5,8 @@
 
 import { decodeBody } from "./chatBody";
 import type {
-  Agent,
   McpWireRequest,
+  Mentionable,
   ThreadMessage,
   ToolCallEntry,
   Participant,
@@ -16,7 +16,7 @@ const SEND_MESSAGE = "send_message";
 const WIRE_MCP_TOOL_NAME = "request_user_wire_mcp";
 
 type ReceiverInput =
-  | { kind: "human" }
+  | { kind: "human"; user_id: string }
   | { kind: "agent"; agent_id: string };
 
 type SendMessageInput = {
@@ -36,6 +36,10 @@ export type Bubble = {
   /** Identity for cross-phase dedup. Persisted, streaming, and optimistic
    *  bubbles that share a request_id refer to the same logical message. */
   request_id: string;
+  /** The posting submit's idempotency key, echoed on persisted human rows.
+   *  The optimistic bubble for the same submit carries the same key, so the
+   *  view hides it the moment the echo lands. `null` for agent rows. */
+  client_key: string | null;
   agent_id: string | null;
   /** Resolved at fold time so the renderer doesn't need to look up agents. */
   agent_name: string | null;
@@ -91,10 +95,15 @@ export type Poster = {
 
 export function foldHistory(
   history: ThreadMessage[],
-  agents: Agent[],
+  roster: Mentionable[],
   poster: Poster,
 ): FoldedHistory {
-  const agentsById = new Map(agents.map((a) => [a.id, a]));
+  const agentsById = new Map(
+    roster.filter((m) => m.kind === "agent").map((m) => [m.id, m]),
+  );
+  const humansById = new Map(
+    roster.filter((m) => m.kind === "human").map((m) => [m.id, m]),
+  );
   const bubbles: Bubble[] = [];
   // Per-(thread, agent) accumulator — reasoning + non-send_message tool
   // calls observed since this agent's last delivery in this thread.
@@ -201,13 +210,14 @@ export function foldHistory(
               kind: "agent",
               key: `h:${m.seq}:${tc.id}`,
               request_id: m.request_id ?? `seq:${m.seq}`,
+              client_key: null,
               agent_id: aid,
               agent_name: a?.name ?? null,
               human_name: null,
               human_id: null,
               human_avatar_url: null,
               ts: m.created_at,
-              text: prefixWithReceiver(input.content ?? "", recv, agentsById),
+              text: prefixWithReceiver(input.content ?? "", recv, agentsById, humansById),
               reasoning,
               tool_calls: tools,
               wire_requests: [],
@@ -260,21 +270,27 @@ export function foldHistory(
           id: authorId,
           avatar_url: authorAvatar,
           ts: m.created_at,
-          text: prefixWithReceiver(decoded.text, receiverFrom(m.receiver), agentsById),
+          text: prefixWithReceiver(
+            decoded.text,
+            receiverFrom(m.receiver),
+            agentsById,
+            humansById,
+          ),
         };
       } else if (decoded.text) {
         const recv = receiverFrom(m.receiver);
         bubbles.push({
           kind: "human",
           key: `h:${m.seq}:user`,
-          request_id: m.request_id ?? `seq:${m.seq}`,
+          request_id: m.request_id ?? m.client_key ?? `seq:${m.seq}`,
+          client_key: m.client_key,
           agent_id: null,
           agent_name: null,
           human_name: authorName,
           human_id: authorId,
           human_avatar_url: authorAvatar,
           ts: m.created_at,
-          text: prefixWithReceiver(decoded.text, recv, agentsById),
+          text: prefixWithReceiver(decoded.text, recv, agentsById, humansById),
           reasoning: "",
           tool_calls: [],
           wire_requests: [],
@@ -331,7 +347,9 @@ function parseWireMcpOutput(output: string): McpWireRequest | null {
 
 function receiverFrom(p: Participant | null): ReceiverInput | null {
   if (!p) return null;
-  return p.kind === "agent" ? { kind: "agent", agent_id: p.agent_id } : null;
+  if (p.kind === "agent") return { kind: "agent", agent_id: p.agent_id };
+  if (p.kind === "human") return { kind: "human", user_id: p.user_id };
+  return null;
 }
 
 function attachResults(
@@ -352,10 +370,14 @@ function attachResults(
 function prefixWithReceiver(
   content: string,
   receiver: ReceiverInput | null,
-  agentsById: ReadonlyMap<string, Agent>,
+  agentsById: ReadonlyMap<string, Mentionable>,
+  humansById: ReadonlyMap<string, Mentionable>,
 ): string {
-  if (!receiver || receiver.kind === "human") return content;
-  const name = agentsById.get(receiver.agent_id)?.name;
+  if (!receiver) return content;
+  const name =
+    receiver.kind === "agent"
+      ? agentsById.get(receiver.agent_id)?.name
+      : humansById.get(receiver.user_id)?.name;
   if (!name || content.startsWith(`@${name}`)) return content;
   return `@${name} ${content}`;
 }

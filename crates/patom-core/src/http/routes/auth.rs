@@ -216,7 +216,7 @@ async fn resolve_active_org(
             .bootstrap_initial_org_as_owner(user.id, slug_seed, &display, language, now)
             .await?
         {
-            seed_default_agent(state, new_org.id, language).await?;
+            seed_recruiter(state, new_org.id, language).await?;
             return Ok(Some(new_org.id));
         }
         // Otherwise the admin must have invited this email; consume the
@@ -267,32 +267,32 @@ async fn resolve_active_org(
         // `None` cap: the auto-created personal org is never capped.
         .create_personal_org(user.id, slug_seed, &display, language, None, now)
         .await?;
-    seed_default_agent(state, new_org.id, language).await?;
+    seed_recruiter(state, new_org.id, language).await?;
     Ok(Some(new_org.id))
 }
 
 /// Seed a freshly-minted org's default agent in `language` so the
 /// session cookie we mint resolves to a usable workspace. Idempotent —
-/// re-running for an existing org returns the existing default's id.
-/// `default_agent_seed` only fails on a registry-body invariant
+/// re-running for an existing org returns the existing recruiter's id.
+/// `recruiter_seed` only fails on a registry-body invariant
 /// violation, which is a server bug → 500, not a 4xx.
 ///
 /// `pub(super)` so the self-service create handler (`me::create_org`)
-/// seeds the new workspace's default agent through the same path the
+/// seeds the new workspace's recruiter through the same path the
 /// OAuth callback uses — one copy of the seeding policy.
-pub(super) async fn seed_default_agent(
+pub(super) async fn seed_recruiter(
     state: &AppState,
     org_id: crate::auth::OrgId,
     language: Language,
 ) -> Result<(), HttpError> {
-    let seed = crate::app::default_agent_seed(&state.prompts, language).map_err(|e| {
+    let seed = crate::app::recruiter_seed(&state.prompts, language).map_err(|e| {
         tracing::error!(
-            event = "auth.callback.default_agent_seed_build_failed",
+            event = "auth.callback.recruiter_seed_build_failed",
             error = ?e,
         );
         HttpError::Internal
     })?;
-    crate::app::seed_default_agent_for_org(&state.agents, org_id, seed).await?;
+    crate::app::seed_recruiter_for_org(&state.agents, org_id, seed).await?;
     Ok(())
 }
 

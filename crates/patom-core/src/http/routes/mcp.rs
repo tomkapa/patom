@@ -1486,12 +1486,13 @@ async fn do_auto_continue(
             user_id: pending.user_id,
             org_id: pending.org_id,
             thread_id: Some(resume.thread_id),
-            agent_id: Some(resume.agent_id),
+            tags: vec![super::prompts::TagTarget::Agent(resume.agent_id)],
             content,
             idempotency_key,
             // OAuth-resume continues an existing thread, so it's never a new
-            // channel root.
+            // channel root / DM root.
             channel_id: None,
+            counterpart: None,
         },
     )
     .await

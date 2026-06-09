@@ -222,9 +222,22 @@ impl SchedulerInner {
         ),
         ScheduledTaskError,
     > {
+        // A channel task posts into its channel; a channel-less task is a DM
+        // between the owner human and the task's agent (the DM counterpart).
+        let counterpart = match task.channel_id {
+            Some(_) => None,
+            None => Some(
+                self.colleagues
+                    .resolve_agent(task.org_id, task.owner_agent_id)
+                    .await
+                    .map_err(|e| {
+                        ScheduledTaskError::Backend(format!("resolve agent colleague: {e}"))
+                    })?,
+            ),
+        };
         let thread = self
             .threads
-            .create_thread(caller, task.channel_id, None, human)
+            .create_thread(caller, task.channel_id, None, human, counterpart)
             .await?;
         // Once the thread exists, the participation row (`agent_thread_state`)
         // and the seed message (`thread_messages`) are independent — disjoint
@@ -244,6 +257,7 @@ impl SchedulerInner {
                         task.prompt.as_str().to_string(),
                     )]),
                     request_id: None,
+                    idempotency_key: None,
                 },
             )
         )?;

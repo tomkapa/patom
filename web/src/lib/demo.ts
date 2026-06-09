@@ -2,17 +2,21 @@
 // content. Lets the UI render the canonical "agent-ops" channel state from
 // the design reference even on a fresh database.
 
-import type {
-  Agent,
-  ThreadMessage,
-  ThreadSummary,
-} from "../types/api";
+import type { Mentionable, ThreadMessage, ThreadSummary } from "../types/api";
 
-export const DEMO_AGENTS: Agent[] = [
-  { id: "a-orion", name: "orion-research-v3", is_default: true },
-  { id: "a-helios", name: "helios-deploy", is_default: false },
-  { id: "a-atlas", name: "atlas-weather", is_default: false },
-  { id: "a-vega", name: "vega-incident-bot", is_default: false },
+export const DEMO_AGENTS: Mentionable[] = [
+  { kind: "agent", id: "a-orion", name: "orion-research-v3", avatar_url: null },
+  { kind: "agent", id: "a-helios", name: "helios-deploy", avatar_url: null },
+  { kind: "agent", id: "a-atlas", name: "atlas-weather", avatar_url: null },
+  { kind: "agent", id: "a-vega", name: "vega-incident-bot", avatar_url: null },
+];
+
+/** Composer/mention roster in demo mode: the demo humans + the agents —
+ *  one flat list, exactly like the live wire. */
+export const DEMO_ROSTER: Mentionable[] = [
+  { kind: "human", id: "user", name: "Tom Tran", avatar_url: null },
+  { kind: "human", id: "maya", name: "Maya Chen", avatar_url: null },
+  ...DEMO_AGENTS,
 ];
 
 const NOW = new Date();
@@ -28,21 +32,42 @@ const TOM = {
   avatar_url: null,
 };
 
+const demoRoot = (snippet: string, mins: number) => ({
+  snippet,
+  sender: {
+    kind: "human" as const,
+    colleague_id: TOM.colleague_id,
+    user_id: TOM.user_id,
+  },
+  created_at: ago(mins),
+  sender_display_name: TOM.name,
+  sender_avatar_url: TOM.avatar_url,
+});
+
 export const DEMO_THREADS: ThreadSummary[] = [
   {
     thread_id: "00000000-0000-0000-0000-000000000001",
     channel_id: null,
     last_activity_at: ago(0.2),
+    root: demoRoot(
+      "@orion how's the weather today in Tokyo? I'm flying in tomorrow.",
+      15,
+    ),
+    reply_count: 3,
   },
   {
     thread_id: "00000000-0000-0000-0000-000000000002",
     channel_id: null,
     last_activity_at: ago(8),
+    root: demoRoot("can someone summarize the standup notes?", 60),
+    reply_count: 1,
   },
   {
     thread_id: "00000000-0000-0000-0000-000000000003",
     channel_id: null,
     last_activity_at: ago(38),
+    root: demoRoot("kicking off the tokyo offsite plan 🎌", 240),
+    reply_count: 0,
   },
 ];
 
@@ -62,6 +87,7 @@ export const DEMO_HISTORY: ThreadMessage[] = [
     },
     created_at: ago(15),
     request_id: DEMO_REQ(1),
+    client_key: null,
     sender_display_name: TOM.name,
     sender_avatar_url: TOM.avatar_url,
   },
@@ -77,6 +103,7 @@ export const DEMO_HISTORY: ThreadMessage[] = [
     },
     created_at: ago(13),
     request_id: DEMO_REQ(2),
+    client_key: null,
     sender_display_name: TOM.name,
     sender_avatar_url: TOM.avatar_url,
   },
@@ -95,6 +122,7 @@ export const DEMO_REPLIES: ThreadMessage[] = [
     },
     created_at: ago(14.5),
     request_id: DEMO_REQ(11),
+    client_key: null,
     sender_display_name: null,
     sender_avatar_url: null,
   },
@@ -111,6 +139,7 @@ export const DEMO_REPLIES: ThreadMessage[] = [
     },
     created_at: ago(14.4),
     request_id: DEMO_REQ(12),
+    client_key: null,
     sender_display_name: null,
     sender_avatar_url: null,
   },
@@ -127,6 +156,7 @@ export const DEMO_REPLIES: ThreadMessage[] = [
     },
     created_at: ago(14.3),
     request_id: DEMO_REQ(13),
+    client_key: null,
     sender_display_name: null,
     sender_avatar_url: null,
   },

@@ -21,11 +21,7 @@ import { MentionInput } from "../molecules/MentionInput";
 import { clockTime, formatMs } from "../../lib/time";
 import { cn, insertAtCaret } from "../../lib/utils";
 import { useResizableWidth } from "../../hooks/useResizableWidth";
-import type {
-  Agent,
-  ThreadSummary,
-  ToolCallEntry,
-} from "../../types/api";
+import type { Mentionable, ThreadSummary, ToolCallEntry } from "../../types/api";
 import type { Bubble, RootMessage } from "../../lib/foldHistory";
 import { DEMO_REPLY_META } from "../../lib/demo";
 import { renderMentions } from "../../lib/mentions";
@@ -44,7 +40,7 @@ const THREAD_PANEL_MAX_FRACTION = 0.5;
 export function ThreadPanel({
   channel,
   thread,
-  agents,
+  roster,
   bubbles,
   rootMessage,
   showThinking,
@@ -57,7 +53,8 @@ export function ThreadPanel({
 }: {
   channel: string;
   thread: ThreadSummary | null;
-  agents: Agent[];
+  /** Everyone taggable / name-resolvable in this thread's context. */
+  roster: Mentionable[];
   bubbles: Bubble[];
   rootMessage?: RootMessage;
   /** When inline (≥ lg), allow drag-to-resize from the left edge. In the
@@ -210,7 +207,7 @@ export function ThreadPanel({
                 </span>
               </div>
               <p className="mt-0.5 text-[13.5px] leading-[1.5] text-[var(--color-ink)]">
-                {renderMentions(rootMessage.text, agents.map((a) => a.name))}
+                {renderMentions(rootMessage.text, roster.map((m) => m.name))}
               </p>
             </div>
           </article>
@@ -235,12 +232,12 @@ export function ThreadPanel({
           {bubbles.map((b) => {
             const focused = highlightId === b.request_id;
             return b.kind === "human" ? (
-              <HumanReplyCard key={b.key} bubble={b} agents={agents} focused={focused} />
+              <HumanReplyCard key={b.key} bubble={b} roster={roster} focused={focused} />
             ) : (
               <AgentReplyCard
                 key={b.key}
                 bubble={b}
-                agents={agents}
+                roster={roster}
                 thread={thread}
                 focused={focused}
               />
@@ -267,9 +264,8 @@ export function ThreadPanel({
           <MentionInput
             value={reply}
             onChange={setReply}
-            agents={agents}
-            mode="thread"
-            placeholder="Reply… (use @ to mention an agent)"
+            roster={roster}
+            placeholder="Reply… (@ to mention anyone)"
             onSubmit={sendReply}
             disabled={!thread || pending}
             textRef={replyRef}
@@ -309,15 +305,15 @@ export function ThreadPanel({
 
 function HumanReplyCard({
   bubble,
-  agents,
+  roster,
   focused,
 }: {
   bubble: Bubble;
-  agents: Agent[];
+  roster: Mentionable[];
   focused?: boolean;
 }) {
   const name = bubble.human_name ?? "you";
-  const agentNames = agents.map((a) => a.name);
+  const rosterNames = roster.map((m) => m.name);
   return (
     <article
       data-request-id={bubble.request_id}
@@ -343,7 +339,7 @@ function HumanReplyCard({
           </span>
         </header>
         <p className="mt-0.5 text-[13.5px] leading-[1.5] text-[var(--color-ink)]">
-          {renderMentions(bubble.text, agentNames)}
+          {renderMentions(bubble.text, rosterNames)}
         </p>
       </div>
     </article>
@@ -380,12 +376,12 @@ function FailureBanner({ bubble }: { bubble: Bubble }) {
 
 function AgentReplyCard({
   bubble,
-  agents,
+  roster,
   thread,
   focused,
 }: {
   bubble: Bubble;
-  agents: Agent[];
+  roster: Mentionable[];
   /** Thread context — passed to each wire-MCP card so the OAuth start
    *  flow can populate `resume_ctx` for the server-side auto-continue. */
   thread: ThreadSummary | null;
@@ -414,7 +410,8 @@ function AgentReplyCard({
   const [open, setOpen] = useState(meta?.expanded ?? false);
   const isLive = bubble.phase !== "persisted";
   const agent = bubble.agent_id
-    ? (agents.find((a) => a.id === bubble.agent_id) ?? null)
+    ? (roster.find((m) => m.kind === "agent" && m.id === bubble.agent_id) ??
+      null)
     : null;
   const agentName = agent?.name ?? bubble.agent_name ?? "agent";
   const agentMonogramId = agent?.id ?? bubble.agent_id ?? "agent";
@@ -433,7 +430,7 @@ function AgentReplyCard({
           id={agentMonogramId}
           size={22}
           tone="moss"
-          avatarUrl={agent?.avatar_url}
+          avatarUrl={agent?.avatar_url ?? null}
         />
         <span className="font-[var(--font-display)] text-[13px] font-bold text-[var(--color-ink)]">
           {agentName}

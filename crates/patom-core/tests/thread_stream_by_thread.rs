@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use patom::auth::Caller;
 use patom::clock::SystemClock;
-use patom::colleagues::resolve_user_colleague;
+use patom::colleagues::{resolve_agent_colleague, resolve_user_colleague};
 use patom::runtime::{
     IdempotencyKey, LeaseTiming, NewTrigger, PgPromptQueue, PgResponseHub, PgThreadStream,
     PromptQueue, RequestKindPayload, ResponseChunk, ResponseSink as _, ThreadStreamEvent,
@@ -42,8 +42,11 @@ async fn publish_on_a_request_reaches_a_subscriber_on_its_thread(pool: PgPool) {
     let human_col = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
         .await
         .expect("human colleague");
+    let agent_col = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
+        .await
+        .expect("agent colleague");
     let thread = threads
-        .create_thread(&caller, None, None, human_col)
+        .create_thread(&caller, None, None, human_col, Some(agent_col))
         .await
         .expect("create thread");
     let state_id = threads

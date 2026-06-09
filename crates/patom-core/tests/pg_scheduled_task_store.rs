@@ -66,7 +66,6 @@ async fn extra_agent(pool: &PgPool, seed: &common::pg::Seed, name: &str) -> Agen
         name: AgentName::try_from(name).expect("valid name"),
         system_prompt: AgentSystemPrompt::try_from("p").expect("valid prompt"),
         description: patom::agents::AgentDescription::try_from("p").expect("desc"),
-        is_default: false,
         allowed_mcp_tools: patom::agents::AllowedMcpTools::empty(),
         model: None,
         avatar_url: None,

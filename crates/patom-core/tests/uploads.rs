@@ -213,7 +213,6 @@ impl UploadsHarness {
                 system_prompt: AgentSystemPrompt::try_from("be helpful").expect("valid prompt"),
                 description: AgentDescription::try_from(format!("agent {name}"))
                     .expect("valid desc"),
-                is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
                 avatar_url: None,

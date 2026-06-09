@@ -444,6 +444,7 @@ impl Worker {
                     receiver: None,
                     body: ChatMessage::User(vec![UserContent::Text(PINGPONG_NUDGE.to_string())]),
                     request_id: Some(receipt.root_request_id()),
+                    idempotency_key: None,
                 },
             )
             .await

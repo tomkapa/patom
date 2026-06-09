@@ -403,7 +403,6 @@ async fn excludes_calls_from_other_agents(pool: PgPool) {
             system_prompt: patom::agents::AgentSystemPrompt::try_from("you are bob")
                 .expect("prompt"),
             description: patom::agents::AgentDescription::try_from("a helper").expect("desc"),
-            is_default: false,
             allowed_mcp_tools: patom::agents::AllowedMcpTools::default(),
             model: None,
             avatar_url: None,
@@ -548,7 +547,6 @@ async fn cross_org_agent_returns_404(pool: PgPool) {
             system_prompt: patom::agents::AgentSystemPrompt::try_from("you are eve")
                 .expect("prompt"),
             description: patom::agents::AgentDescription::try_from("eavesdrop").expect("desc"),
-            is_default: false,
             allowed_mcp_tools: patom::agents::AllowedMcpTools::default(),
             model: None,
             avatar_url: None,

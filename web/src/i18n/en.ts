@@ -24,7 +24,7 @@ const en = {
   "sidebar.brand": "Workspace",
   "sidebar.channels": "Channels",
   "sidebar.dms": "Direct Messages",
-  "sidebar.empty_agents": "No agents registered.",
+  "sidebar.empty_dms": "No colleagues yet.",
   "sidebar.empty_channels": "No channels yet.",
 
   "menu.home": "Home",

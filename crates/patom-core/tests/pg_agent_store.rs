@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::collections::BTreeMap;
 
 use patom::agents::{
-    AgentDescription, AgentId, AgentName, AgentStore, AgentStoreError, AgentSystemPrompt,
-    AgentUpdate, AllowedMcpTools, DefaultAgentSeed, NewAgent, PgAgentStore,
+    AgentDescription, AgentId, AgentName, AgentSeed, AgentStore, AgentStoreError,
+    AgentSystemPrompt, AgentUpdate, AllowedMcpTools, NewAgent, PgAgentStore,
 };
 use patom::auth::OrgId;
 use patom::clock::SystemClock;
@@ -24,21 +24,20 @@ fn store(pool: &PgPool) -> Arc<PgAgentStore> {
     agent_store(pool.clone(), SystemClock::shared())
 }
 
-fn default_seed(name: &str, prompt: &str) -> DefaultAgentSeed {
-    DefaultAgentSeed {
+fn default_seed(name: &str, prompt: &str) -> AgentSeed {
+    AgentSeed {
         name: AgentName::try_from(name).expect("valid name"),
         system_prompt: AgentSystemPrompt::try_from(prompt).expect("valid prompt"),
         description: AgentDescription::try_from("Default seed.").expect("valid desc"),
     }
 }
 
-fn new_agent(org_id: OrgId, name: &str, prompt: &str, is_default: bool) -> NewAgent {
+fn new_agent(org_id: OrgId, name: &str, prompt: &str) -> NewAgent {
     NewAgent {
         org_id,
         name: AgentName::try_from(name).expect("valid name"),
         system_prompt: AgentSystemPrompt::try_from(prompt).expect("valid prompt"),
         description: AgentDescription::try_from(format!("Role: {name}")).expect("valid desc"),
-        is_default,
         allowed_mcp_tools: AllowedMcpTools::empty(),
         model: None,
         avatar_url: None,
@@ -66,17 +65,18 @@ async fn seed_default_is_idempotent(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
-    // First seed: seed_tenant already inserted one. A second call must return
-    // the same id rather than minting a new row.
+    // First seed: seed_tenant already inserted one ("test-default"). A second
+    // call with the same name must return the same id rather than minting a
+    // new row — preset idempotency is by (org, name).
     let again = store
-        .seed_default(seed.org_id, default_seed("ignored", "ignored"))
+        .seed_preset(seed.org_id, default_seed("test-default", "ignored"))
         .await
         .expect("seed again");
     assert_eq!(again, seed.agent_id);
 
-    // Third call from a totally fresh seed payload still resolves to the same row.
+    // Case-insensitive: the name-uniqueness index is on lower(name).
     let third = store
-        .seed_default(seed.org_id, default_seed("also-ignored", "also-ignored"))
+        .seed_preset(seed.org_id, default_seed("TEST-DEFAULT", "also-ignored"))
         .await
         .expect("seed third");
     assert_eq!(third, seed.agent_id);
@@ -87,18 +87,18 @@ async fn seed_default_does_not_overwrite_existing_prompt(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
-    // Re-seed with a different prompt; the existing row's prompt must be
-    // preserved per the design conversation ("seed-only, no overwrite").
+    // Re-seed (same name) with a different prompt; the existing row's prompt
+    // must be preserved per the design conversation ("seed-only, no
+    // overwrite").
     let _ = store
-        .seed_default(
+        .seed_preset(
             seed.org_id,
-            default_seed("new-name", "this should be ignored"),
+            default_seed("test-default", "this should be ignored"),
         )
         .await
         .expect("seed again");
 
     let record = store.read(seed.agent_id).await.expect("read");
-    assert!(record.is_default);
     // Original prompt from seed_tenant wins.
     assert_eq!(record.system_prompt.as_str(), "test default prompt");
     assert_eq!(record.name.as_str(), "test-default");
@@ -121,7 +121,7 @@ async fn create_persists_avatar_url_and_reads_back(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
     let url = AvatarUrl::try_from("https://cdn.example/atlas.png").expect("valid url");
-    let mut payload = new_agent(seed.org_id, "with-avatar", "be helpful", false);
+    let mut payload = new_agent(seed.org_id, "with-avatar", "be helpful");
     payload.avatar_url = Some(url.clone());
 
     let created = store.create(payload).await.expect("create");
@@ -146,7 +146,7 @@ async fn update_sets_then_clears_avatar_url(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
     let created = store
-        .create(new_agent(seed.org_id, "patchable", "be helpful", false))
+        .create(new_agent(seed.org_id, "patchable", "be helpful"))
         .await
         .expect("create");
     assert!(created.avatar_url.is_none());
@@ -214,29 +214,18 @@ async fn read_unknown_returns_not_found(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn default_id_returns_seeded_row(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let store = store(&pool);
-
-    let id = store.default_id_for(seed.org_id).await.expect("default");
-    assert_eq!(id, seed.agent_id);
-}
-
-#[sqlx::test]
 async fn create_then_list_round_trip(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
-    let a = store
-        .create(new_agent(seed.org_id, "alpha", "you are alpha", false))
+    store
+        .create(new_agent(seed.org_id, "alpha", "you are alpha"))
         .await
         .expect("create alpha");
-    let b = store
-        .create(new_agent(seed.org_id, "beta", "you are beta", false))
+    store
+        .create(new_agent(seed.org_id, "beta", "you are beta"))
         .await
         .expect("create beta");
-    assert!(!a.is_default);
-    assert!(!b.is_default);
 
     let list = store.list().await.expect("list");
     // 1 seeded default + 2 new = 3 rows.
@@ -248,83 +237,12 @@ async fn create_then_list_round_trip(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn create_with_is_default_demotes_previous_default(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let store = store(&pool);
-
-    let promoted = store
-        .create(new_agent(
-            seed.org_id,
-            "new-default",
-            "I am the new default",
-            true,
-        ))
-        .await
-        .expect("create promoted");
-    assert!(promoted.is_default);
-
-    // The previously-seeded default has been demoted in the same transaction.
-    let old = store.read(seed.agent_id).await.expect("read old");
-    assert!(!old.is_default);
-    // And there is exactly one default now.
-    let now_default = store.default_id_for(seed.org_id).await.expect("default");
-    assert_eq!(now_default, promoted.id);
-}
-
-#[sqlx::test]
-async fn update_promotes_to_default_atomically(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let store = store(&pool);
-
-    let other = store
-        .create(new_agent(seed.org_id, "other", "I am other", false))
-        .await
-        .expect("create other");
-    assert!(!other.is_default);
-
-    let promoted = store
-        .update(
-            other.id,
-            AgentUpdate {
-                is_default: Some(true),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("promote");
-    assert!(promoted.is_default);
-
-    let old = store.read(seed.agent_id).await.expect("read old");
-    assert!(!old.is_default);
-    let now_default = store.default_id_for(seed.org_id).await.expect("default");
-    assert_eq!(now_default, other.id);
-}
-
-#[sqlx::test]
-async fn update_cannot_demote_only_default(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let store = store(&pool);
-
-    let err = store
-        .update(
-            seed.agent_id,
-            AgentUpdate {
-                is_default: Some(false),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect_err("cannot demote");
-    assert!(matches!(err, AgentStoreError::DefaultDeletionForbidden));
-}
-
-#[sqlx::test]
 async fn update_changes_name_and_prompt(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
     let agent = store
-        .create(new_agent(seed.org_id, "orig", "orig prompt", false))
+        .create(new_agent(seed.org_id, "orig", "orig prompt"))
         .await
         .expect("create");
     let updated = store
@@ -345,12 +263,12 @@ async fn update_changes_name_and_prompt(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn delete_removes_non_default_row(pool: PgPool) {
+async fn delete_removes_row(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
     let agent = store
-        .create(new_agent(seed.org_id, "disposable", "throwaway", false))
+        .create(new_agent(seed.org_id, "disposable", "throwaway"))
         .await
         .expect("create");
     store.delete(agent.id).await.expect("delete");
@@ -360,22 +278,13 @@ async fn delete_removes_non_default_row(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn delete_refuses_default(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let store = store(&pool);
-
-    let err = store.delete(seed.agent_id).await.expect_err("forbidden");
-    assert!(matches!(err, AgentStoreError::DefaultDeletionForbidden));
-}
-
-#[sqlx::test]
 async fn create_default_allowed_mcp_tools_is_empty(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = store(&pool);
 
     // Operator opts in explicitly; absence of opt-in means no MCP tools.
     let agent = store
-        .create(new_agent(seed.org_id, "scoped", "I have no MCP yet", false))
+        .create(new_agent(seed.org_id, "scoped", "I have no MCP yet"))
         .await
         .expect("create");
     assert!(agent.allowed_mcp_tools.is_empty());
@@ -397,7 +306,6 @@ async fn create_with_explicit_allowed_mcp_tools_round_trips(pool: PgPool) {
         name: AgentName::try_from("scoped").expect("name"),
         system_prompt: AgentSystemPrompt::try_from("scoped agent").expect("prompt"),
         description: AgentDescription::try_from("Scoped agent.").expect("desc"),
-        is_default: false,
         allowed_mcp_tools: allowed(&["notion", "linear"]),
         model: None,
         avatar_url: None,
@@ -437,7 +345,6 @@ async fn update_replaces_allowed_mcp_tools(pool: PgPool) {
             name: AgentName::try_from("rotates").expect("name"),
             system_prompt: AgentSystemPrompt::try_from("rotating MCP").expect("prompt"),
             description: AgentDescription::try_from("Rotating MCP agent.").expect("desc"),
-            is_default: false,
             allowed_mcp_tools: allowed(&["notion", "linear"]),
             model: None,
             avatar_url: None,
@@ -517,15 +424,15 @@ async fn list_for_org_returns_alphabetised_pairs_scoped_to_org(pool: PgPool) {
     let store = store(&pool);
 
     let _zeta = store
-        .create(new_agent(seed.org_id, "zeta", "z", false))
+        .create(new_agent(seed.org_id, "zeta", "z"))
         .await
         .expect("create zeta");
     let _alpha = store
-        .create(new_agent(seed.org_id, "alpha", "a", false))
+        .create(new_agent(seed.org_id, "alpha", "a"))
         .await
         .expect("create alpha");
     let _mike = store
-        .create(new_agent(seed.org_id, "mike", "m", false))
+        .create(new_agent(seed.org_id, "mike", "m"))
         .await
         .expect("create mike");
 
@@ -542,7 +449,7 @@ async fn list_for_org_excludes_other_orgs(pool: PgPool) {
     let store = store(&pool);
 
     let _local = store
-        .create(new_agent(seed.org_id, "local", "in our org", false))
+        .create(new_agent(seed.org_id, "local", "in our org"))
         .await
         .expect("create local");
 
