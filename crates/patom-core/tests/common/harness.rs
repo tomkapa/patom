@@ -120,7 +120,6 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
 
     let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
     let queue = queue_impl.clone();
-    let leases = queue_impl.clone();
 
     let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let sink = hub.clone();
@@ -134,12 +133,6 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
     let colleagues: patom::colleagues::SharedColleagueStore =
         Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
-    let memory_store: patom::memory::SharedMemoryStore =
-        Arc::new(patom::memory::PgMemoryStore::new(
-            pool.clone(),
-            clock.clone(),
-            super::embedding::FakeEmbeddingProvider::shared(),
-        ));
 
     let provider: SharedProvider = provider;
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
@@ -188,14 +181,10 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
     };
     let workers = WorkerPool::new(
         queue.clone(),
-        leases,
         sink,
         agents_registry,
-        sessions.clone(),
+        threads.clone(),
         dag.clone(),
-        pool.clone(),
-        memory_store,
-        clock.clone(),
         cfg,
     )
     .spawn();

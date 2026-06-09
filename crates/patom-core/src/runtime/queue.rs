@@ -117,6 +117,21 @@ pub trait PromptQueue: fmt::Debug + Send + Sync {
     /// `claim_key` into a single [`ClaimedTurn`] under a per-`claim_key` lease.
     /// The thread-feed analogue of [`Self::claim_next_session`].
     async fn claim_next_turn(&self, worker: WorkerId) -> Result<Option<ClaimedTurn>, PromptError>;
+    /// Mark every trigger in `receipt` as `Done` (fenced on the claim's
+    /// `lease_seq`). The turn-path analogue of [`Self::mark_done`].
+    async fn mark_turn_done(&self, receipt: &TurnReceipt) -> Result<(), PromptError>;
+    /// As [`mark_turn_done`](Self::mark_turn_done) but parks the triggers as
+    /// `Failed` with `reason`.
+    async fn mark_turn_failed(
+        &self,
+        receipt: &TurnReceipt,
+        reason: FailureReason,
+    ) -> Result<(), PromptError>;
+    /// Renew the `claim_key` lease (heartbeat), fenced on `lease_seq`.
+    async fn heartbeat_turn(&self, receipt: &TurnReceipt) -> Result<(), PromptError>;
+    /// Release the `claim_key` lease so the next pending trigger for it can be
+    /// claimed without waiting for TTL expiry. Fenced on `lease_seq`.
+    async fn release_turn(&self, receipt: &TurnReceipt) -> Result<(), PromptError>;
     /// Mark every request in `receipt` as `Done`. The receipt binds the lease and the
     /// claimed ids together — there is no API for passing a foreign id list, so the
     /// "every id belongs to this lease's session" invariant is enforced by
@@ -490,7 +505,66 @@ pub struct ClaimedTurn {
     pub receiver_agent_id: AgentId,
     pub receiver_colleague_id: ColleagueId,
     pub trigger_ids: Vec<PromptRequestId>,
+    /// DAG root of the coalesced triggers — the budget anchor the worker
+    /// threads into the agent's tool context so `send_message` bumps the right
+    /// `prompt_request_dags` row, and the key the worker checks for quiescence.
+    pub root_request_id: PromptRequestId,
     pub kind_payload: RequestKindPayload,
     pub worker: WorkerId,
     pub lease_seq: TurnSeq,
+}
+
+impl ClaimedTurn {
+    /// Materialise a [`TurnReceipt`] binding this claim's lease fence to the
+    /// trigger ids it drained. Carried through `mark_turn_done` /
+    /// `mark_turn_failed` / `release_turn` so those calls cannot be passed ids
+    /// from another claim by accident.
+    #[must_use]
+    pub fn receipt(&self) -> TurnReceipt {
+        TurnReceipt {
+            claim_key: self.claim_key,
+            lease_seq: self.lease_seq,
+            trigger_ids: self.trigger_ids.clone(),
+            acting_user_id: self.acting_user_id,
+            root_request_id: self.root_request_id,
+        }
+    }
+}
+
+/// Proof that a worker holds a `claim_key` lease *and* the trigger ids it
+/// drained under that fence.
+///
+/// The only handle accepted by the turn-finalise queue methods; constructed
+/// solely via [`ClaimedTurn::receipt`] (private fields — a caller cannot forge
+/// a receipt mixing another claim's ids).
+#[derive(Debug, Clone)]
+pub struct TurnReceipt {
+    claim_key: Uuid,
+    lease_seq: TurnSeq,
+    trigger_ids: Vec<PromptRequestId>,
+    acting_user_id: UserId,
+    root_request_id: PromptRequestId,
+}
+
+impl TurnReceipt {
+    #[must_use]
+    pub const fn claim_key(&self) -> Uuid {
+        self.claim_key
+    }
+    #[must_use]
+    pub const fn lease_seq(&self) -> TurnSeq {
+        self.lease_seq
+    }
+    #[must_use]
+    pub fn trigger_ids(&self) -> &[PromptRequestId] {
+        &self.trigger_ids
+    }
+    #[must_use]
+    pub const fn acting_user_id(&self) -> UserId {
+        self.acting_user_id
+    }
+    #[must_use]
+    pub const fn root_request_id(&self) -> PromptRequestId {
+        self.root_request_id
+    }
 }

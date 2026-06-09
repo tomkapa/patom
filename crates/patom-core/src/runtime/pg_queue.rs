@@ -31,6 +31,7 @@ use super::limits::{MAX_ATTEMPTS, MAX_DAG_TURNS, MAX_PENDING_PER_SESSION};
 use super::queue::{
     ClaimReceipt, ClaimedPrompt, ClaimedSession, ClaimedTurn, EnqueueOutcome, LeaseManager,
     LeaseTiming, LeaseToken, NewPromptRequest, NewTrigger, PromptQueue, RequestStatusView,
+    TurnReceipt,
 };
 use super::types::{
     FailureReason, PromptRequestId, RequestKind, RequestKindPayload, RequestStatus, TurnSeq,
@@ -326,7 +327,8 @@ impl PromptQueue for PgPromptQueue {
             bool,
             Option<FailureReason>,
         )> = sqlx::query_as(
-            "SELECT id, session_id, status, cancellation_requested, failure_reason
+            "SELECT id, COALESCE(state_id, background_turn_id), status, cancellation_requested, \
+                    failure_reason
              FROM prompt_requests
              WHERE id = $1",
         )
@@ -368,7 +370,8 @@ impl PromptQueue for PgPromptQueue {
             bool,
             Option<FailureReason>,
         )> = sqlx::query_as(
-            "SELECT id, session_id, status, cancellation_requested, failure_reason
+            "SELECT id, COALESCE(state_id, background_turn_id), status, cancellation_requested, \
+                    failure_reason
              FROM prompt_requests
              WHERE id = ANY($1)",
         )
@@ -405,6 +408,27 @@ impl PromptQueue for PgPromptQueue {
 
     async fn claim_next_turn(&self, worker: WorkerId) -> Result<Option<ClaimedTurn>, PromptError> {
         Self::claim_next_turn(self, worker).await
+    }
+
+    async fn mark_turn_done(&self, receipt: &TurnReceipt) -> Result<(), PromptError> {
+        self.finalise_turn(receipt, RequestStatus::Done, None).await
+    }
+
+    async fn mark_turn_failed(
+        &self,
+        receipt: &TurnReceipt,
+        reason: FailureReason,
+    ) -> Result<(), PromptError> {
+        self.finalise_turn(receipt, RequestStatus::Failed, Some(reason))
+            .await
+    }
+
+    async fn heartbeat_turn(&self, receipt: &TurnReceipt) -> Result<(), PromptError> {
+        self.heartbeat_turn_impl(receipt).await
+    }
+
+    async fn release_turn(&self, receipt: &TurnReceipt) -> Result<(), PromptError> {
+        self.release_turn_impl(receipt).await
     }
 }
 
@@ -1213,9 +1237,71 @@ impl PgPromptQueue {
             drained,
         )?))
     }
+
+    /// Mark every trigger in `receipt` as `Done`, fenced on the claim's
+    /// `lease_seq` so a stale worker (whose lease was reclaimed) cannot finalise
+    /// a turn another worker is now running. Privileged: the worker holds no
+    /// per-request principal, and the receipt's id list is the authority. Flip
+    /// the drained triggers to a terminal status (`Done` or `Failed` + reason),
+    /// fenced on `lease_seq` so a reclaimed worker can't finalise another's turn.
+    async fn finalise_turn(
+        &self,
+        receipt: &TurnReceipt,
+        status: RequestStatus,
+        reason: Option<FailureReason>,
+    ) -> Result<(), PromptError> {
+        let now = self.now();
+        let mut tx = crate::auth::begin_privileged(&self.pool).await?;
+        sqlx::query(
+            "UPDATE prompt_requests
+             SET status = $1, failure_reason = $2, updated_at = $3
+             WHERE id = ANY($4) AND turn_seq = $5 AND status = $6",
+        )
+        .bind(status)
+        .bind(reason)
+        .bind(now)
+        .bind(receipt.trigger_ids())
+        .bind(receipt.lease_seq())
+        .bind(RequestStatus::Processing)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Renew the `claim_key` lease, fenced on `lease_seq`.
+    async fn heartbeat_turn_impl(&self, receipt: &TurnReceipt) -> Result<(), PromptError> {
+        let now = self.now();
+        let deadline = self.deadline(now);
+        let mut tx = crate::auth::begin_privileged(&self.pool).await?;
+        sqlx::query(
+            "UPDATE claim_leases SET leased_until = $1 WHERE claim_key = $2 AND lease_seq = $3",
+        )
+        .bind(deadline)
+        .bind(receipt.claim_key())
+        .bind(receipt.lease_seq())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Release the `claim_key` lease (delete the row), fenced on `lease_seq` so a
+    /// stale worker cannot drop a lease another worker has taken over.
+    async fn release_turn_impl(&self, receipt: &TurnReceipt) -> Result<(), PromptError> {
+        let mut tx = crate::auth::begin_privileged(&self.pool).await?;
+        sqlx::query("DELETE FROM claim_leases WHERE claim_key = $1 AND lease_seq = $2")
+            .bind(receipt.claim_key())
+            .bind(receipt.lease_seq())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
-/// One drained trigger row: `(id, kind, thread_id, receiver_colleague, agent_id, payload)`.
+/// One drained trigger row:
+/// `(id, kind, thread_id, receiver_colleague, agent_id, payload, root_request_id)`.
 type DrainedTrigger = (
     PromptRequestId,
     RequestKind,
@@ -1223,6 +1309,7 @@ type DrainedTrigger = (
     ColleagueId,
     Option<AgentId>,
     sqlx::types::Json<RequestKindPayload>,
+    PromptRequestId,
 );
 
 /// Oldest pending trigger whose `claim_key` has no live lease.
@@ -1316,7 +1403,8 @@ async fn drain_turn_pending(
          FROM colleagues rc
          WHERE COALESCE(pr.state_id, pr.background_turn_id) = $4 AND pr.status = $5
            AND rc.id = pr.receiver_colleague_id
-         RETURNING pr.id, pr.kind, pr.thread_id, pr.receiver_colleague_id, rc.agent_id, pr.kind_payload",
+         RETURNING pr.id, pr.kind, pr.thread_id, pr.receiver_colleague_id, rc.agent_id, \
+                   pr.kind_payload, pr.root_request_id",
     )
     .bind(RequestStatus::Processing)
     .bind(lease_seq)
@@ -1352,7 +1440,8 @@ fn build_claimed_turn(
     let thread_id = drained[0].2;
     let receiver_colleague_id = drained[0].3;
     let kind_payload = drained[0].5.0.clone();
-    for (_, k, _, _, rcv, _) in &drained[1..] {
+    let root_request_id = drained[0].6;
+    for (_, k, _, _, rcv, _, _) in &drained[1..] {
         if *rcv != Some(receiver_agent_id) {
             return Err(PromptError::Backend(
                 "drained triggers for one claim_key must share receiver_agent_id".into(),
@@ -1374,6 +1463,7 @@ fn build_claimed_turn(
         receiver_agent_id,
         receiver_colleague_id,
         trigger_ids,
+        root_request_id,
         kind_payload,
         worker,
         lease_seq,

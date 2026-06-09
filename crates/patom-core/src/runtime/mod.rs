@@ -35,7 +35,7 @@ pub use pg_thread_stream::{
 pub use queue::{
     ClaimReceipt, ClaimedPrompt, ClaimedSession, ClaimedTurn, EnqueueOutcome, LeaseManager,
     LeaseTiming, LeaseToken, NewPromptRequest, NewTrigger, PromptQueue, RequestStatusView,
-    SharedLeaseManager, SharedPromptQueue,
+    SharedLeaseManager, SharedPromptQueue, TurnReceipt,
 };
 pub use response::{
     ResponseChunk, ResponseChunkEnvelope, ResponseSink, ResponseSource, SharedResponseSink,

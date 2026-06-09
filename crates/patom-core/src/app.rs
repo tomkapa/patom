@@ -114,6 +114,7 @@ struct Collaborators {
     providers: SharedProviderRegistry,
     pool: PgPool,
     sessions: SharedSessionStore,
+    threads: crate::threads::SharedThreadStore,
     agents: SharedAgentStore,
     colleagues: crate::colleagues::SharedColleagueStore,
     memory: SharedMemory,
@@ -356,6 +357,7 @@ impl Collaborators {
             providers: build_provider_registry(settings)?,
             pool,
             sessions,
+            threads,
             agents,
             colleagues,
             memory,
@@ -391,6 +393,7 @@ impl Collaborators {
 struct AgentFactoryPieces {
     providers: SharedProviderRegistry,
     sessions: SharedSessionStore,
+    threads: crate::threads::SharedThreadStore,
     memory: SharedMemory,
     clock: SharedClock,
     builtin_tools: ToolRegistry,
@@ -444,6 +447,7 @@ impl AgentFactoryPieces {
         .with_tools(toolbox)
         .with_hooks(HookChain::new())
         .with_clock(self.clock.clone())
+        .with_thread_store(self.threads.clone())
         .with_tool_call_store(self.tool_call_store.clone())
         .with_todos_store(self.todos_store.clone())
         .with_turn_metrics(
@@ -645,6 +649,7 @@ pub async fn build_server(
     let factory_pieces = AgentFactoryPieces {
         providers: pieces.providers.clone(),
         sessions: pieces.sessions.clone(),
+        threads: pieces.threads.clone(),
         memory: pieces.memory.clone(),
         clock: pieces.clock.clone(),
         builtin_tools: pieces.builtin_tools.clone(),
@@ -674,14 +679,10 @@ pub async fn build_server(
 
     let pool = WorkerPool::new(
         pieces.queue.clone(),
-        pieces.leases.clone(),
         pieces.sink.clone(),
         agents_registry,
-        pieces.sessions.clone(),
+        pieces.threads.clone(),
         pieces.dag.clone(),
-        pieces.pool.clone(),
-        pieces.memory_store.clone(),
-        pieces.clock.clone(),
         WorkerConfig::default(),
     );
     let workers = pool.spawn();

@@ -169,6 +169,27 @@ no dedicated tests yet (only the reject case); the SSE notify on human delivery 
 stream re-key (posting to the feed is the durable delivery). `ctx.root_request_id` in the thread loop is
 still `= request_id`, not the resolved DAG root — wire the real root in P6 (worker → `ClaimedTurn`).
 
+**P6 core ✅** — the worker drives thread-feed turns.
+- `runtime/worker.rs` rewritten around `ClaimedTurn`: `run()` claims via `claim_next_turn`; `handle_turn`
+  resolves the agent, spawns heartbeat (`heartbeat_turn`) + cancel-watcher, runs the force-exit guard, then
+  `release_turn`. The guard re-runs `reply_in_thread` (read-at-run) each attempt; no egress (`send_message`
+  posted no row) ⇒ append an owner-private `system_note` nudge + retry; after `MAX_PINGPONG_RETRIES` ⇒
+  `mark_turn_failed(NoEgress)`. RLS principal = `Caller::new(claim.acting_user_id, claim.org_id)`.
+- New `PromptQueue` turn-finalise surface: `mark_turn_done` / `mark_turn_failed` / `heartbeat_turn` /
+  `release_turn` (+ `TurnReceipt` from `ClaimedTurn::receipt()`, fenced on `lease_seq`). `ClaimedTurn` now
+  carries `root_request_id` (drained from the trigger) → threaded into `reply_in_thread` so `send_message`'s
+  budget bump + quiescence use the real DAG root (the P5-deferred fix).
+- `status`/`statuses` SQL re-keyed off the dropped `session_id` to `COALESCE(state_id, background_turn_id)`.
+- `WorkerPool::new` re-keyed: dropped `leases`/`sessions`/`pool`/`memory_store`/`clock`, added `threads`;
+  the agent factory (`app.rs` + test harness + `runtime_pipeline.rs`) now wires `with_thread_store`.
+- Test `tests/worker_thread_turn.rs::no_egress_nudges_then_fails` green; lib+tests clippy `-D warnings` + fmt clean.
+**Remaining in P6 / deferred:** background cognition (`RequestKind::Reflection|Resolution`) is rejected as
+unsupported until P8 builds the `background_turns` claim path (the old `run_background_kind` /
+reflection-checkpoint / no-action-close logic was removed — rebuild in P8 from git history + this doc).
+SSE delivery is best-effort on trigger ids (full stream re-key to `thread_id` is P10). The
+`turn_metrics`/`tool_calls` recorders still `INSERT session_id` (broken since migration 63, best-effort §6) —
+retype to `state_id` in **P11** when the old `run_turn` caller (which passes a real `SessionId`) is deleted.
+
 ## 7. Discovered gaps / handoff notes (read before resuming)
 
 These are facts learned while building P0–P3 that aren't obvious from the plan:

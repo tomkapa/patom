@@ -172,6 +172,7 @@ async fn context_is_read_at_run(pool: PgPool) {
             thread,
             viewer,
             request_id,
+            request_id,
             caller,
             RequestKindPayload::Normal {},
             CancellationToken::new(),

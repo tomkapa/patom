@@ -195,6 +195,7 @@ impl Agent {
         thread: ThreadId,
         viewer: Participant,
         request_id: PromptRequestId,
+        root_request_id: PromptRequestId,
         caller: Caller,
         kind_payload: &RequestKindPayload,
         send_message_calls: &mut usize,
@@ -284,6 +285,7 @@ impl Agent {
             viewer,
             agent_id,
             request_id,
+            root_request_id,
             caller,
             kind_payload,
             &tool_calls,
@@ -339,6 +341,7 @@ impl Agent {
         viewer: Participant,
         agent_id: crate::agents::AgentId,
         request_id: PromptRequestId,
+        root_request_id: PromptRequestId,
         caller: Caller,
         kind_payload: &RequestKindPayload,
         tool_calls: &[&ToolCall],
@@ -348,12 +351,14 @@ impl Agent {
     ) -> Result<(), AgentError> {
         // `session_id` carries `claim_key` bridged via `SessionId::from` for the
         // legacy-typed contexts; `state_id` carries the typed participation id.
+        // `root_request_id` is the real DAG root (resolved by the worker), so
+        // `send_message`'s budget bump lands on the right `prompt_request_dags`.
         let tool_ctx = ToolCallContext {
             session_id: ctx.session_id,
             thread_id: Some(thread),
             state_id: Some(claim_key),
             viewer,
-            root_request_id: request_id,
+            root_request_id,
             request_id,
             kind_payload: kind_payload.clone(),
             acting_user_id: caller.user_id,

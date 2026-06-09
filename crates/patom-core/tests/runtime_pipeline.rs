@@ -157,6 +157,7 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
     let agent = AgentBuilder::new(providers, sessions.clone(), memory, model)
         .expect("builder")
         .with_clock(clock.clone())
+        .with_thread_store(threads.clone())
         .with_tools(ToolBox::from_builtins(registry))
         .with_hooks(HookChain::new())
         .build();
@@ -168,13 +169,6 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
         AGENT_PROMPT_CACHE_TTL,
         clock.clone(),
     ));
-    let memory_store_for_pool: patom::memory::SharedMemoryStore =
-        Arc::new(patom::memory::PgMemoryStore::new(
-            pool.clone(),
-            clock.clone(),
-            common::embedding::FakeEmbeddingProvider::shared(),
-        ));
-
     let cfg = WorkerConfig {
         workers: 2,
         lease_timing: LeaseTiming::try_new(Duration::from_secs(2), Duration::from_millis(100))
@@ -185,14 +179,10 @@ async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Harness
     };
     let worker_pool = WorkerPool::new(
         queue_impl.clone(),
-        queue_impl.clone(),
         hub.clone(),
         agents_registry,
-        sessions.clone(),
+        threads.clone(),
         dag,
-        pool.clone(),
-        memory_store_for_pool,
-        clock.clone(),
         cfg,
     )
     .spawn();
