@@ -54,7 +54,7 @@ impl TryFrom<i128> for CostMicros {
 
 /// An org's configured monthly spend cap in micro-USD.
 ///
-/// The `org_budgets` column is `BIGINT CHECK (... > 0)` — the absence of a cap
+/// The `org_billing` column is `BIGINT CHECK (... > 0)` — the absence of a cap
 /// (unlimited) is modelled as `Option::None` at the boundary, never a stored
 /// zero, so a `MonthlyCapMicros` is always strictly positive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -158,7 +158,7 @@ impl TryFrom<u16> for WarnThresholdBps {
     }
 }
 
-/// First day of a billing month (UTC). The `org_budget_usage` primary key is
+/// First day of a billing month (UTC). The `org_billing_usage` primary key is
 /// `(org_id, period_start)`, so a new month is a fresh row whose counter
 /// starts at zero — that *is* the monthly reset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

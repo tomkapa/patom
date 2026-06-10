@@ -9,7 +9,7 @@ use crate::auth::{
     CookieDomain, JwtSigner, SharedOidcAuth, SharedOrgLanguageResolver, SharedOrgRuleResolver,
     SharedUserStore,
 };
-use crate::budget::SharedBudgetService;
+use crate::billing::SharedBillingService;
 use crate::clock::SharedClock;
 use crate::entitlements::SharedEntitlements;
 use crate::http::MembershipCache;
@@ -44,7 +44,7 @@ pub struct AppState {
     /// Per-org spend budget. The admission gate (`POST /prompts`) calls
     /// `check_or_fail_for_user` through this handle; the same `Arc` is shared
     /// with the agent worker so HTTP and worker enforce one budget seam.
-    pub budget: SharedBudgetService,
+    pub billing: SharedBillingService,
     /// Operator-side memory access (doc/memory.md §1.9). HTTP routes
     /// under `/agents/{id}/memory*` read and mutate through this handle.
     pub memory_store: SharedMemoryStore,

@@ -26,7 +26,7 @@ use crate::tools::{
 use crate::types::{Participant, TurnIndex};
 
 use crate::auth::OrgId;
-use crate::budget::{BudgetError, price_for, turn_cost};
+use crate::billing::{BillingError, price_for, turn_cost};
 
 use super::core::{Agent, send_message_tool_name};
 use super::error::AgentError;
@@ -62,7 +62,7 @@ impl Agent {
         observer: Option<&SharedTurnObserver>,
     ) -> Result<Option<String>, AgentError> {
         self.hooks().before_turn(ctx).await?.into_result()?;
-        self.budget_gate(caller.org_id).await?;
+        self.billing_gate(caller.org_id).await?;
         let started_at = self.clock().now_utc();
         let started_mono = Instant::now();
         let request = self
@@ -82,7 +82,7 @@ impl Agent {
             &response,
         )
         .await;
-        self.budget_settle(caller.org_id, &response).await;
+        self.billing_settle(caller.org_id, &response).await;
         self.hooks()
             .after_turn(ctx, &response)
             .await?
@@ -342,7 +342,7 @@ impl Agent {
         observer: Option<&SharedTurnObserver>,
     ) -> Result<Option<String>, AgentError> {
         self.hooks().before_turn(ctx).await?.into_result()?;
-        self.budget_gate(caller.org_id).await?;
+        self.billing_gate(caller.org_id).await?;
         let started_at = self.clock().now_utc();
         let started_mono = Instant::now();
         let request = self
@@ -364,7 +364,7 @@ impl Agent {
             &response,
         )
         .await;
-        self.budget_settle(caller.org_id, &response).await;
+        self.billing_settle(caller.org_id, &response).await;
         self.hooks()
             .after_turn(ctx, &response)
             .await?
@@ -508,23 +508,23 @@ impl Agent {
         })
     }
 
-    /// Pre-turn spend gate. Returns [`AgentError::BudgetExceeded`] when the org
+    /// Pre-turn spend gate. Returns [`AgentError::BillingExceeded`] when the org
     /// is at/over its monthly cap. A DB error fails *open* — a transient blip
     /// must not block a turn the admission gate already admitted; the counter is
     /// reconciled from `turn_metrics`. No-op when no budget service is wired
     /// (agent_core unit tests).
-    async fn budget_gate(&self, org: OrgId) -> Result<(), AgentError> {
-        let Some(budget) = self.budget() else {
+    async fn billing_gate(&self, org: OrgId) -> Result<(), AgentError> {
+        let Some(budget) = self.billing() else {
             return Ok(());
         };
         match budget.check_or_fail(org).await {
             Ok(()) => Ok(()),
-            Err(BudgetError::Exceeded { .. }) => Err(AgentError::BudgetExceeded { org }),
-            Err(BudgetError::Db(e)) => {
+            Err(BillingError::Exceeded { .. }) => Err(AgentError::BillingExceeded { org }),
+            Err(BillingError::Db(e)) => {
                 tracing::error!(
                     error = ?e,
                     patom.org.id = %org,
-                    "budget.gate.db_error_fail_open",
+                    "billing.gate.db_error_fail_open",
                 );
                 Ok(())
             }
@@ -535,8 +535,8 @@ impl Agent {
     /// period. Fail-open — a settle failure is logged and the turn proceeds (the
     /// user already received the answer); `turn_metrics` is the reconciliation
     /// ledger (CLAUDE.md §6). No-op when no budget service is wired.
-    async fn budget_settle(&self, org: OrgId, response: &ChatResponse) {
-        let Some(budget) = self.budget() else {
+    async fn billing_settle(&self, org: OrgId, response: &ChatResponse) {
+        let Some(budget) = self.billing() else {
             return;
         };
         let cost = turn_cost(price_for(self.model()), &response.usage);
@@ -544,7 +544,7 @@ impl Agent {
             tracing::error!(
                 error = ?e,
                 patom.org.id = %org,
-                "budget.settle.failed",
+                "billing.settle.failed",
             );
         }
     }

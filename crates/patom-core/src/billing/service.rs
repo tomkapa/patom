@@ -2,8 +2,8 @@
 //!
 //! Mirrors [`crate::runtime::dag::DagBudget`]: an atomic counter in Postgres
 //! with a privileged (worker-side) and a tenant-scoped (RLS) entry point. The
-//! difference is post-paid accounting — the gate ([`BudgetService::check_or_fail`])
-//! reads a stale total before a turn runs, and [`BudgetService::settle`] adds
+//! difference is post-paid accounting — the gate ([`BillingService::check_or_fail`])
+//! reads a stale total before a turn runs, and [`BillingService::settle`] adds
 //! the real cost atomically afterwards.
 
 use std::fmt;
@@ -18,57 +18,57 @@ use chrono::{DateTime, NaiveDate, Utc};
 use crate::auth::{OrgId, UserId, begin_as_user, begin_privileged};
 use crate::clock::SharedClock;
 
-use super::error::BudgetError;
+use super::error::BillingError;
 use super::limits::DEFAULT_WARN_BPS;
 use super::types::{BillingPeriod, CostMicros, MonthlyCapMicros, WarnThresholdBps};
 
 /// Atomically add `cost` to the current period and read back the new total
-/// alongside the org's config in one round-trip. A `LEFT JOIN` on `org_budgets`
+/// alongside the org's config in one round-trip. A `LEFT JOIN` on `org_billing`
 /// so an unconfigured (unlimited) org still returns the upserted usage with NULL
 /// cap/threshold.
 const SETTLE: &str = "
     WITH up AS (
-        INSERT INTO org_budget_usage (org_id, period_start, used_micro_usd, created_at, updated_at)
+        INSERT INTO org_billing_usage (org_id, period_start, used_micro_usd, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $4)
         ON CONFLICT (org_id, period_start)
-        DO UPDATE SET used_micro_usd = org_budget_usage.used_micro_usd + EXCLUDED.used_micro_usd,
+        DO UPDATE SET used_micro_usd = org_billing_usage.used_micro_usd + EXCLUDED.used_micro_usd,
                       updated_at     = EXCLUDED.updated_at
         RETURNING used_micro_usd
     )
     SELECT up.used_micro_usd, b.monthly_cap_micro_usd, b.warn_threshold_bps
-    FROM up LEFT JOIN org_budgets b ON b.org_id = $1";
+    FROM up LEFT JOIN org_billing b ON b.org_id = $1";
 
 /// Cap + current-period usage for the gate, in one round-trip. Driven from
-/// `org_budgets`: an org with no row is unlimited, so the absent-row case (no
+/// `org_billing`: an org with no row is unlimited, so the absent-row case (no
 /// cap) is exactly the pass case and the usage value is irrelevant there.
 const GATE_SNAPSHOT: &str = "
     SELECT b.monthly_cap_micro_usd, u.used_micro_usd
-    FROM org_budgets b
-    LEFT JOIN org_budget_usage u ON u.org_id = b.org_id AND u.period_start = $2
+    FROM org_billing b
+    LEFT JOIN org_billing_usage u ON u.org_id = b.org_id AND u.period_start = $2
     WHERE b.org_id = $1";
 
 /// Set `warned_at` exactly once per period, the first time usage crosses the
 /// threshold. The `warned_at IS NULL` guard makes concurrent settles race-safe.
 const MARK_WARNED: &str = "
-    UPDATE org_budget_usage SET warned_at = $3, updated_at = $3
+    UPDATE org_billing_usage SET warned_at = $3, updated_at = $3
     WHERE org_id = $1 AND period_start = $2 AND warned_at IS NULL";
 
 /// Read the org's config (cap + warn threshold) alongside the current period's
 /// usage in one round-trip for the admin GET. Driven from a synthetic single
-/// row so the result is always present: an absent `org_budgets` row reads as
+/// row so the result is always present: an absent `org_billing` row reads as
 /// unlimited (NULL cap), an absent usage row as zero spent — and under RLS a
 /// cross-tenant org argument leaves both joins NULL rather than reading another
 /// org's row.
 const READ_CONFIG: &str = "
     SELECT b.monthly_cap_micro_usd, b.warn_threshold_bps, u.used_micro_usd, u.warned_at
     FROM (SELECT $1::uuid AS org_id) k
-    LEFT JOIN org_budgets b ON b.org_id = k.org_id
-    LEFT JOIN org_budget_usage u ON u.org_id = k.org_id AND u.period_start = $2";
+    LEFT JOIN org_billing b ON b.org_id = k.org_id
+    LEFT JOIN org_billing_usage u ON u.org_id = k.org_id AND u.period_start = $2";
 
 /// Set (or clear) the cap + warn threshold for one org. `$2` NULL clears the
-/// cap (unlimited). Mirrors the `set_budget` upsert in tests/common/pg.rs.
+/// cap (unlimited). Mirrors the `set_billing` upsert in tests/common/pg.rs.
 const WRITE_CONFIG: &str = "
-    INSERT INTO org_budgets (org_id, monthly_cap_micro_usd, warn_threshold_bps, created_at, updated_at)
+    INSERT INTO org_billing (org_id, monthly_cap_micro_usd, warn_threshold_bps, created_at, updated_at)
     VALUES ($1, $2, $3, $4, $4)
     ON CONFLICT (org_id) DO UPDATE
         SET monthly_cap_micro_usd = EXCLUDED.monthly_cap_micro_usd,
@@ -81,7 +81,7 @@ const WRITE_CONFIG: &str = "
 /// `warn_threshold_bps` falls back to [`DEFAULT_WARN_BPS`] when no config row
 /// exists yet.
 #[derive(Debug, Clone, Copy)]
-pub struct BudgetConfig {
+pub struct BillingConfig {
     pub cap_micro_usd: Option<i64>,
     pub warn_threshold_bps: u16,
     pub used_micro_usd: i64,
@@ -91,11 +91,11 @@ pub struct BudgetConfig {
 
 /// Operations the admission gate, per-turn gate, and settle path need.
 #[async_trait]
-pub trait BudgetService: fmt::Debug + Send + Sync {
+pub trait BillingService: fmt::Debug + Send + Sync {
     /// Privileged (worker-side) gate. `Ok(())` while the org's current-period
     /// spend is under its cap, or when no cap is configured (unlimited);
-    /// [`BudgetError::Exceeded`] at/over the cap.
-    async fn check_or_fail(&self, org: OrgId) -> Result<(), BudgetError>;
+    /// [`BillingError::Exceeded`] at/over the cap.
+    async fn check_or_fail(&self, org: OrgId) -> Result<(), BillingError>;
 
     /// Tenant-scoped gate for the HTTP admission path. Opens `begin_as_user` so
     /// the read is RLS-filtered to the acting principal's org — a cross-tenant
@@ -104,11 +104,11 @@ pub trait BudgetService: fmt::Debug + Send + Sync {
         &self,
         acting_user_id: UserId,
         org: OrgId,
-    ) -> Result<(), BudgetError>;
+    ) -> Result<(), BillingError>;
 
     /// Post-paid settle (privileged, worker-side). Adds `cost` to the current
     /// period atomically and fires the soft-warn alert once per period.
-    async fn settle(&self, org: OrgId, cost: CostMicros) -> Result<(), BudgetError>;
+    async fn settle(&self, org: OrgId, cost: CostMicros) -> Result<(), BillingError>;
 
     /// Tenant-scoped read for the admin GET. Opens `begin_as_user` so the read
     /// is RLS-filtered to the acting principal's org. Returns the configured cap
@@ -117,7 +117,7 @@ pub trait BudgetService: fmt::Debug + Send + Sync {
         &self,
         acting_user_id: UserId,
         org: OrgId,
-    ) -> Result<BudgetConfig, BudgetError>;
+    ) -> Result<BillingConfig, BillingError>;
 
     /// Tenant-scoped write for the admin PUT. Sets/clears the cap and warn
     /// threshold via `begin_as_user` (RLS) and returns the fresh config read in
@@ -129,33 +129,33 @@ pub trait BudgetService: fmt::Debug + Send + Sync {
         org: OrgId,
         cap: Option<MonthlyCapMicros>,
         warn: WarnThresholdBps,
-    ) -> Result<BudgetConfig, BudgetError>;
+    ) -> Result<BillingConfig, BillingError>;
 }
 
 /// Cheap-clone handle held by the admission gate and the agent worker.
-pub type SharedBudgetService = Arc<dyn BudgetService>;
+pub type SharedBillingService = Arc<dyn BillingService>;
 
-/// Postgres-backed [`BudgetService`]. Holds the [`SharedClock`] so the billing
+/// Postgres-backed [`BillingService`]. Holds the [`SharedClock`] so the billing
 /// period is deterministic under a `TestClock` (CLAUDE.md §11).
-pub struct PgBudgetService {
+pub struct PgBillingService {
     pool: PgPool,
     clock: SharedClock,
 }
 
-impl PgBudgetService {
+impl PgBillingService {
     #[must_use]
     pub const fn new(pool: PgPool, clock: SharedClock) -> Self {
         Self { pool, clock }
     }
 }
 
-impl fmt::Debug for PgBudgetService {
+impl fmt::Debug for PgBillingService {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PgBudgetService").finish_non_exhaustive()
+        f.debug_struct("PgBillingService").finish_non_exhaustive()
     }
 }
 
-/// A point-in-time read of one org's budget: what it has spent this period and
+/// A point-in-time read of one org's billing: what it has spent this period and
 /// its cap (`None` = unlimited).
 #[derive(Debug, Clone, Copy)]
 struct UsageSnapshot {
@@ -166,34 +166,34 @@ struct UsageSnapshot {
 impl UsageSnapshot {
     /// Turn a snapshot into a gate decision, recording the outcome on the
     /// current span.
-    fn decide(self, org: OrgId) -> Result<(), BudgetError> {
+    fn decide(self, org: OrgId) -> Result<(), BillingError> {
         let span = tracing::Span::current();
-        span.record("patom.budget.used_micro", self.used_micro_usd);
+        span.record("patom.billing.used_micro", self.used_micro_usd);
         let Some(cap) = self.cap_micro_usd else {
-            span.record("patom.budget.outcome", "unlimited");
+            span.record("patom.billing.outcome", "unlimited");
             return Ok(());
         };
         // §6: a configured cap is positive (column CHECK) and usage never
         // negative (column CHECK); assert both so a corrupt read crashes here.
         assert!(cap > 0, "invariant: configured cap must be positive");
         assert!(self.used_micro_usd >= 0, "invariant: usage non-negative");
-        span.record("patom.budget.cap_micro", cap);
+        span.record("patom.billing.cap_micro", cap);
         if self.used_micro_usd >= cap {
-            span.record("patom.budget.outcome", "exceeded");
-            return Err(BudgetError::Exceeded {
+            span.record("patom.billing.outcome", "exceeded");
+            return Err(BillingError::Exceeded {
                 org,
                 used_micro_usd: self.used_micro_usd,
                 cap_micro_usd: cap,
             });
         }
-        span.record("patom.budget.outcome", "ok");
+        span.record("patom.billing.outcome", "ok");
         Ok(())
     }
 }
 
 /// Read the cap + current-period usage in one round-trip. An absent
-/// `org_budgets` row means unlimited (so usage is irrelevant); an absent
-/// `org_budget_usage` row means zero spent.
+/// `org_billing` row means unlimited (so usage is irrelevant); an absent
+/// `org_billing_usage` row means zero spent.
 async fn read_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     org: OrgId,
@@ -212,13 +212,13 @@ async fn read_snapshot(
 }
 
 /// Read one org's config (cap + warn threshold) plus the current period's usage
-/// inside an open transaction, and assemble a [`BudgetConfig`]. Shared by the
+/// inside an open transaction, and assemble a [`BillingConfig`]. Shared by the
 /// get (read-only) and set (read-after-write) paths so the assembly lives once.
 async fn read_config(
     tx: &mut Transaction<'_, Postgres>,
     org: OrgId,
     period: BillingPeriod,
-) -> Result<BudgetConfig, sqlx::Error> {
+) -> Result<BillingConfig, sqlx::Error> {
     let (cap, bps, used, warned_at): (
         Option<i64>,
         Option<i32>,
@@ -238,7 +238,7 @@ async fn read_config(
     let warn_threshold_bps = bps.map_or(DEFAULT_WARN_BPS, |b| {
         u16::try_from(b).unwrap_or(DEFAULT_WARN_BPS)
     });
-    Ok(BudgetConfig {
+    Ok(BillingConfig {
         cap_micro_usd: cap,
         warn_threshold_bps,
         used_micro_usd: used,
@@ -257,20 +257,24 @@ fn warn_threshold_micros(cap: i64, bps: i32) -> i64 {
     i64::try_from(threshold).expect("invariant: warn threshold <= cap fits i64")
 }
 
-impl PgBudgetService {
+impl PgBillingService {
     /// Shared gate body: read the snapshot inside `tx`, commit, decide. Both
     /// entry points differ only in how `tx` was opened (privileged vs RLS).
     #[tracing::instrument(
         skip_all,
-        name = "budget.check",
+        name = "billing.check",
         fields(
             patom.org.id = %org,
-            patom.budget.outcome = tracing::field::Empty,
-            patom.budget.used_micro = tracing::field::Empty,
-            patom.budget.cap_micro = tracing::field::Empty,
+            patom.billing.outcome = tracing::field::Empty,
+            patom.billing.used_micro = tracing::field::Empty,
+            patom.billing.cap_micro = tracing::field::Empty,
         ),
     )]
-    async fn gate(&self, org: OrgId, mut tx: Transaction<'_, Postgres>) -> Result<(), BudgetError> {
+    async fn gate(
+        &self,
+        org: OrgId,
+        mut tx: Transaction<'_, Postgres>,
+    ) -> Result<(), BillingError> {
         let period = BillingPeriod::current(&self.clock);
         let snapshot = read_snapshot(&mut tx, org, period).await?;
         tx.commit().await?;
@@ -279,8 +283,8 @@ impl PgBudgetService {
 }
 
 #[async_trait]
-impl BudgetService for PgBudgetService {
-    async fn check_or_fail(&self, org: OrgId) -> Result<(), BudgetError> {
+impl BillingService for PgBillingService {
+    async fn check_or_fail(&self, org: OrgId) -> Result<(), BillingError> {
         let tx = begin_privileged(&self.pool).await?;
         self.gate(org, tx).await
     }
@@ -289,22 +293,22 @@ impl BudgetService for PgBudgetService {
         &self,
         acting_user_id: UserId,
         org: OrgId,
-    ) -> Result<(), BudgetError> {
+    ) -> Result<(), BillingError> {
         let tx = begin_as_user(&self.pool, acting_user_id).await?;
         self.gate(org, tx).await
     }
 
     #[tracing::instrument(
         skip_all,
-        name = "budget.settle",
+        name = "billing.settle",
         fields(
             patom.org.id = %org,
-            patom.budget.cost_micro = cost.get(),
-            patom.budget.used_micro = tracing::field::Empty,
-            patom.budget.warned = tracing::field::Empty,
+            patom.billing.cost_micro = cost.get(),
+            patom.billing.used_micro = tracing::field::Empty,
+            patom.billing.warned = tracing::field::Empty,
         ),
     )]
-    async fn settle(&self, org: OrgId, cost: CostMicros) -> Result<(), BudgetError> {
+    async fn settle(&self, org: OrgId, cost: CostMicros) -> Result<(), BillingError> {
         let period = BillingPeriod::current(&self.clock);
         let now = self.clock.now_utc();
         let mut tx = begin_privileged(&self.pool).await?;
@@ -321,25 +325,25 @@ impl BudgetService for PgBudgetService {
         let warned = fire_warn_once(&mut tx, org, period, used, cap, bps, now).await?;
         tx.commit().await?;
         let span = tracing::Span::current();
-        span.record("patom.budget.used_micro", used);
-        span.record("patom.budget.warned", warned);
+        span.record("patom.billing.used_micro", used);
+        span.record("patom.billing.warned", warned);
         if warned {
             warn!(
-                event = "budget.warn",
+                event = "billing.warn",
                 patom.org.id = %org,
-                patom.budget.used_micro = used,
+                patom.billing.used_micro = used,
                 "org crossed its soft spend warn threshold this period"
             );
         }
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, name = "budget.get_config", fields(patom.org.id = %org))]
+    #[tracing::instrument(skip_all, name = "billing.get_config", fields(patom.org.id = %org))]
     async fn get_config(
         &self,
         acting_user_id: UserId,
         org: OrgId,
-    ) -> Result<BudgetConfig, BudgetError> {
+    ) -> Result<BillingConfig, BillingError> {
         let period = BillingPeriod::current(&self.clock);
         let mut tx = begin_as_user(&self.pool, acting_user_id).await?;
         let config = read_config(&mut tx, org, period).await?;
@@ -347,14 +351,14 @@ impl BudgetService for PgBudgetService {
         Ok(config)
     }
 
-    #[tracing::instrument(skip_all, name = "budget.set_config", fields(patom.org.id = %org))]
+    #[tracing::instrument(skip_all, name = "billing.set_config", fields(patom.org.id = %org))]
     async fn set_config(
         &self,
         acting_user_id: UserId,
         org: OrgId,
         cap: Option<MonthlyCapMicros>,
         warn: WarnThresholdBps,
-    ) -> Result<BudgetConfig, BudgetError> {
+    ) -> Result<BillingConfig, BillingError> {
         let period = BillingPeriod::current(&self.clock);
         let now = self.clock.now_utc();
         let cap_micros = cap.map(MonthlyCapMicros::get);
@@ -440,7 +444,7 @@ mod tests {
         };
         assert!(matches!(
             at.decide(org),
-            Err(BudgetError::Exceeded {
+            Err(BillingError::Exceeded {
                 used_micro_usd: 100,
                 cap_micro_usd: 100,
                 ..

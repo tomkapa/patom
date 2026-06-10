@@ -87,7 +87,7 @@ impl PromptsHarness {
             agents: agents.clone(),
             colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
-            budget: std::sync::Arc::new(patom::budget::PgBudgetService::new(
+            billing: std::sync::Arc::new(patom::billing::PgBillingService::new(
                 pool.clone(),
                 patom::clock::SystemClock::shared(),
             )),
@@ -533,7 +533,7 @@ async fn over_budget_org_is_rejected_with_429(pool: PgPool) {
     let agent = h.create_agent("worker-bee").await;
 
     // Cap the org at 1 micro-USD and record 1000 already spent this period.
-    common::pg::set_budget(&h.pool, h.seed.org_id, Some(1), 8000).await;
+    common::pg::set_billing(&h.pool, h.seed.org_id, Some(1), 8000).await;
     common::pg::seed_period_usage(&h.pool, h.seed.org_id, 1000).await;
 
     let (status, _body) = post_json(

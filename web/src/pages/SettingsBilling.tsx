@@ -11,7 +11,7 @@ import { Switch } from "../components/atoms/Switch";
 import { ProgressBar } from "../components/atoms/ProgressBar";
 import { SectionCard } from "../components/molecules/SectionCard";
 import { SettingsField } from "../components/molecules/SettingsField";
-import { useOrgBudget, useUpdateOrgBudget } from "../hooks/useOrgBudget";
+import { useOrgBilling, useUpdateOrgBilling } from "../hooks/useOrgBilling";
 import { formatUSD, microToUsd, usdToMicro } from "../lib/currency";
 import { useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
@@ -21,8 +21,8 @@ const BPS_PER_PERCENT = 100;
 
 export function SettingsBilling() {
   const { t } = useT();
-  const budgetQuery = useOrgBudget();
-  const updateBudget = useUpdateOrgBudget();
+  const budgetQuery = useOrgBilling();
+  const updateBudget = useUpdateOrgBilling();
   const budget = budgetQuery.data;
 
   const canEdit = budget?.role === "owner" || budget?.role === "admin";

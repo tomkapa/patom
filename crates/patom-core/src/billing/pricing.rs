@@ -57,7 +57,7 @@ fn price_for_name(name: &str) -> Price {
         "test-model-openai" => Price::new(1_250_000, 10_000_000, 1_250_000, 125_000),
         _ => {
             warn!(
-                event = "budget.price.fallback",
+                event = "billing.price.fallback",
                 patom.model = name,
                 "no price entry; using pessimistic fallback"
             );

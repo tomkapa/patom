@@ -8,7 +8,7 @@ use super::routes::turns::TurnDetailError;
 use crate::agents::{AgentStoreError, PromptVersionError};
 use crate::assets::AssetError;
 use crate::auth::AuthError;
-use crate::budget::BudgetError;
+use crate::billing::BillingError;
 use crate::entitlements::LicenseError;
 use crate::mcp::McpError;
 use crate::orgs::OrgError;
@@ -61,8 +61,8 @@ pub enum HttpError {
     #[error("auth: {0}")]
     Auth(#[from] AuthError),
 
-    #[error("budget: {0}")]
-    Budget(#[from] BudgetError),
+    #[error("billing: {0}")]
+    Budget(#[from] BillingError),
 
     /// Inner failure on the per-turn detail route. 4xx variants (NotFound /
     /// MetricsMissing / PromptVersionMissing) are bridged to `Self::NotFound`
@@ -117,12 +117,12 @@ impl IntoResponse for HttpError {
                 (StatusCode::NOT_FOUND, self.to_string())
             }
             Self::Mcp(McpError::ServerCapExceeded { .. })
-            | Self::Budget(BudgetError::Exceeded { .. }) => {
+            | Self::Budget(BillingError::Exceeded { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, self.to_string())
             }
-            Self::Budget(BudgetError::Db(_)) => (
+            Self::Budget(BillingError::Db(_)) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "budget store error".into(),
+                "billing store error".into(),
             ),
             Self::Colleague(crate::colleagues::ColleagueError::NotFound(_)) => {
                 (StatusCode::NOT_FOUND, "colleague not found".into())

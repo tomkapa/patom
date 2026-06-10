@@ -5,7 +5,7 @@ use super::types::Price;
 
 /// Default soft-alert threshold in basis points (8000 = 80%).
 ///
-/// Mirrors the `org_budgets.warn_threshold_bps` column default; used when a row
+/// Mirrors the `org_billing.warn_threshold_bps` column default; used when a row
 /// predates a configured value. 80% is the conventional "heads-up before you
 /// hit the wall" point.
 pub const DEFAULT_WARN_BPS: u16 = 8000;
@@ -17,7 +17,7 @@ pub const DEFAULT_WARN_BPS: u16 = 8000;
 /// (today the Anthropic Opus tier: input 15 / output 75 / cache-write 18.75 /
 /// cache-read 1.5 USD per Mtok). Over-billing an unpriced model is the safe
 /// failure: it can only *tighten* the budget, never silently let spend run
-/// free. A `pricing.price_for` fallback also emits `patom.budget.price.fallback`
+/// free. A `pricing.price_for` fallback also emits `patom.billing.price.fallback`
 /// so ops can add the missing entry. Units: micro-USD per million tokens.
 pub const FALLBACK_PRICE: Price = Price::new(
     20_000_000, // input:       $20 / Mtok

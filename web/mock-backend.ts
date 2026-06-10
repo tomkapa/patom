@@ -199,7 +199,7 @@ const orgState = {
 // `/me`.
 let orgLess = false;
 
-// Mutable spend-budget state so GET/PUT /me/org/budget round-trips. Seeded
+// Mutable spend-budget state so GET/PUT /me/org/billing round-trips. Seeded
 // over the 80% warn threshold so the progress bar + warn chip are visible.
 const MONTH_START = (() => {
   const d = new Date();
@@ -2027,10 +2027,10 @@ const server = Bun.serve({
       return json({ default_rule: raw });
     }
     // ─── Spend budget (src/http/routes/org.rs) ────────────────────────
-    if (path === "/me/org/budget" && method === "GET") {
+    if (path === "/me/org/billing" && method === "GET") {
       return json(budgetView());
     }
-    if (path === "/me/org/budget" && method === "PUT") {
+    if (path === "/me/org/billing" && method === "PUT") {
       // Members are read-only; mirror the server's 403 role gate.
       if (me.role === "member") {
         return json({ error: "owner or admin role required" }, 403);

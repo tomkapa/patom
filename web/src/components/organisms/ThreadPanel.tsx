@@ -373,7 +373,7 @@ function HumanReplyCard({
  *  raw reason so nothing is swallowed. */
 function FailureBanner({ bubble }: { bubble: Bubble }) {
   const { t } = useT();
-  const isBudget = bubble.error_code === "budget_exceeded";
+  const isBudget = bubble.error_code === "billing_exceeded";
   return (
     <div
       role="alert"
@@ -383,7 +383,7 @@ function FailureBanner({ bubble }: { bubble: Bubble }) {
       <div className="min-w-0">
         {isBudget ? (
           <>
-            <span>{t("chat.error.budget_exceeded")}</span>{" "}
+            <span>{t("chat.error.billing_exceeded")}</span>{" "}
             <Link to="/settings/billing" className="font-medium underline">
               {t("settings.nav.billing")}
             </Link>

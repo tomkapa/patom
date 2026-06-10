@@ -394,7 +394,7 @@ struct AgentFactoryPieces {
     tool_call_store: crate::tools::SharedToolCallStore,
     todos_store: SharedSessionTodoStore,
     turn_metrics_store: crate::agent_core::turn_metrics::SharedTurnMetricsStore,
-    budget: crate::budget::SharedBudgetService,
+    billing: crate::billing::SharedBillingService,
 }
 
 impl AgentFactoryPieces {
@@ -443,7 +443,7 @@ impl AgentFactoryPieces {
                 record.id,
                 record.current_prompt_version_id,
             )
-            .with_budget(self.budget.clone())
+            .with_billing(self.billing.clone())
             .build()
     }
 }
@@ -638,10 +638,9 @@ pub async fn build_server(
         Arc::new(crate::agents::StaticAgentModelResolver::new(settings.model));
     // Per-org spend budget — a thin (pool, clock) wrapper, built here so every
     // agent the factory materialises shares one handle (CLAUDE.md §9).
-    let budget: crate::budget::SharedBudgetService = Arc::new(crate::budget::PgBudgetService::new(
-        pieces.pool.clone(),
-        pieces.clock.clone(),
-    ));
+    let billing: crate::billing::SharedBillingService = Arc::new(
+        crate::billing::PgBillingService::new(pieces.pool.clone(), pieces.clock.clone()),
+    );
     let factory_pieces = AgentFactoryPieces {
         providers: pieces.providers.clone(),
         threads: pieces.threads.clone(),
@@ -654,7 +653,7 @@ pub async fn build_server(
         tool_call_store,
         todos_store: pieces.todos_store.clone(),
         turn_metrics_store,
-        budget: budget.clone(),
+        billing: billing.clone(),
     };
     let factory: AgentFactory = Arc::new(move |record| factory_pieces.build(record));
     let agents_registry: SharedAgents = Arc::new(CachedAgents::new(
@@ -888,7 +887,7 @@ pub async fn build_server(
         agents: pieces.agents,
         colleagues: pieces.colleagues,
         dag: pieces.dag,
-        budget,
+        billing,
         memory_store: pieces.memory_store.clone(),
         mcp_store: pieces.mcp_store,
         mcp_catalog: pieces.mcp_catalog,

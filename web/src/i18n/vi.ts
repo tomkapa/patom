@@ -636,7 +636,7 @@ const vi: TranslationTable = {
   "settings.budget.error": "Không thể lưu ngân sách. Hãy thử lại.",
 
   // Chat — budget exceeded
-  "chat.error.budget_exceeded":
+  "chat.error.billing_exceeded":
     "Workspace này đã vượt ngân sách chi tiêu hằng tháng. Chủ sở hữu có thể nâng giới hạn trong Cài đặt → Thanh toán.",
 
   // General tab

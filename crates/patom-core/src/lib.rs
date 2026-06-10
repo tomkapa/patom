@@ -10,7 +10,7 @@ pub mod app;
 pub mod assets;
 pub mod auth;
 pub mod background;
-pub mod budget;
+pub mod billing;
 pub mod cache;
 pub mod channels;
 pub mod clock;

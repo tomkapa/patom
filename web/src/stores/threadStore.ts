@@ -42,7 +42,7 @@ export type LiveAgent = {
   wire_requests: McpWireRequest[];
   status: LiveStatus;
   error?: string;
-  /** Stable, low-cardinality failure label (e.g. `"budget_exceeded"`) from the
+  /** Stable, low-cardinality failure label (e.g. `"billing_exceeded"`) from the
    *  error chunk — lets the UI branch on the failure kind without parsing the
    *  human `error` text. */
   errorCode?: string;

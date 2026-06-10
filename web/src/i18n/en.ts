@@ -636,7 +636,7 @@ const en = {
   "settings.budget.error": "Couldn't save the budget. Try again.",
 
   // Chat — budget exceeded
-  "chat.error.budget_exceeded":
+  "chat.error.billing_exceeded":
     "This workspace is over its monthly spend budget. An owner can raise the cap in Settings → Billing.",
 
   // General tab

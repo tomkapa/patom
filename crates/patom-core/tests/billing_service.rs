@@ -1,4 +1,4 @@
-//! Trait-contract tests for [`BudgetService`] / [`PgBudgetService`].
+//! Trait-contract tests for [`BillingService`] / [`PgBillingService`].
 //!
 //! Covers the post-paid budget semantics: atomic settle under concurrency, the
 //! gate blocking at the cap, unlimited orgs, monthly-period rollover (via
@@ -11,12 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use patom::auth::OrgId;
-use patom::budget::{BudgetError, BudgetService, CostMicros, PgBudgetService};
+use patom::billing::{BillingError, BillingService, CostMicros, PgBillingService};
 use patom::clock::{SharedClock, SystemClock, TestClock};
 use sqlx::PgPool;
 
 mod common;
-use common::pg::{seed_tenant, set_budget};
+use common::pg::{seed_tenant, set_billing};
 
 fn cost(micros: i64) -> CostMicros {
     CostMicros::try_from(micros).expect("non-negative cost")
@@ -28,7 +28,7 @@ async fn read_usage(
     org: OrgId,
 ) -> Option<(i64, Option<chrono::DateTime<chrono::Utc>>)> {
     sqlx::query_as(
-        "SELECT used_micro_usd, warned_at FROM org_budget_usage
+        "SELECT used_micro_usd, warned_at FROM org_billing_usage
          WHERE org_id = $1 ORDER BY period_start DESC LIMIT 1",
     )
     .bind(org)
@@ -40,7 +40,7 @@ async fn read_usage(
 #[sqlx::test]
 async fn settle_accumulates_atomically_under_concurrency(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
-    let service = Arc::new(PgBudgetService::new(pool.clone(), SystemClock::shared()));
+    let service = Arc::new(PgBillingService::new(pool.clone(), SystemClock::shared()));
 
     // 20 concurrent settles of 1000 micro-USD each must total exactly 20_000 —
     // the ON CONFLICT increment cannot lose an update.
@@ -63,8 +63,8 @@ async fn settle_accumulates_atomically_under_concurrency(pool: PgPool) {
 #[sqlx::test]
 async fn gate_blocks_at_cap_and_passes_below(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
-    let service = PgBudgetService::new(pool.clone(), SystemClock::shared());
-    set_budget(&pool, seed.org_id, Some(5_000), 8000).await;
+    let service = PgBillingService::new(pool.clone(), SystemClock::shared());
+    set_billing(&pool, seed.org_id, Some(5_000), 8000).await;
 
     service
         .settle(seed.org_id, cost(3_000))
@@ -85,7 +85,7 @@ async fn gate_blocks_at_cap_and_passes_below(pool: PgPool) {
         .expect_err("over cap blocks");
     assert!(matches!(
         err,
-        BudgetError::Exceeded {
+        BillingError::Exceeded {
             used_micro_usd: 5_500,
             cap_micro_usd: 5_000,
             ..
@@ -96,8 +96,8 @@ async fn gate_blocks_at_cap_and_passes_below(pool: PgPool) {
 #[sqlx::test]
 async fn gate_unlimited_without_configured_cap(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
-    let service = PgBudgetService::new(pool.clone(), SystemClock::shared());
-    // No org_budgets row at all → unlimited.
+    let service = PgBillingService::new(pool.clone(), SystemClock::shared());
+    // No org_billing row at all → unlimited.
     service
         .settle(seed.org_id, cost(1_000_000_000))
         .await
@@ -116,8 +116,8 @@ async fn period_rollover_starts_a_fresh_counter(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let test_clock = Arc::new(TestClock::new());
     let clock: SharedClock = test_clock.clone();
-    let service = PgBudgetService::new(pool.clone(), clock);
-    set_budget(&pool, seed.org_id, Some(3_000), 8000).await;
+    let service = PgBillingService::new(pool.clone(), clock);
+    set_billing(&pool, seed.org_id, Some(3_000), 8000).await;
 
     // Month A: spend over the cap → blocked.
     service
@@ -135,11 +135,12 @@ async fn period_rollover_starts_a_fresh_counter(pool: PgPool) {
         .await
         .expect("new period resets usage");
 
-    let (rows,): (i64,) = sqlx::query_as("SELECT count(*) FROM org_budget_usage WHERE org_id = $1")
-        .bind(seed.org_id)
-        .fetch_one(&pool)
-        .await
-        .expect("count rows");
+    let (rows,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM org_billing_usage WHERE org_id = $1")
+            .bind(seed.org_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count rows");
     assert_eq!(rows, 1, "only month A has a usage row until B settles");
 }
 
@@ -148,9 +149,9 @@ async fn warn_fires_once_per_period(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let test_clock = Arc::new(TestClock::new());
     let clock: SharedClock = test_clock.clone();
-    let service = PgBudgetService::new(pool.clone(), clock);
+    let service = PgBillingService::new(pool.clone(), clock);
     // cap $0.10 (100_000 micro), warn at 80% → threshold 80_000.
-    set_budget(&pool, seed.org_id, Some(100_000), 8000).await;
+    set_billing(&pool, seed.org_id, Some(100_000), 8000).await;
 
     service
         .settle(seed.org_id, cost(50_000))
@@ -187,8 +188,8 @@ async fn tenant_gate_is_rls_isolated(pool: PgPool) {
     // Two independent tenants. A is over its cap; B is a stranger to A.
     let a = seed_tenant(&pool).await;
     let b = seed_tenant(&pool).await;
-    let service = PgBudgetService::new(pool.clone(), SystemClock::shared());
-    set_budget(&pool, a.org_id, Some(1_000), 8000).await;
+    let service = PgBillingService::new(pool.clone(), SystemClock::shared());
+    set_billing(&pool, a.org_id, Some(1_000), 8000).await;
     service
         .settle(a.org_id, cost(2_000))
         .await
@@ -199,7 +200,7 @@ async fn tenant_gate_is_rls_isolated(pool: PgPool) {
         .check_or_fail_for_user(a.user_id, a.org_id)
         .await
         .expect_err("A's user is blocked");
-    assert!(matches!(err, BudgetError::Exceeded { .. }));
+    assert!(matches!(err, BillingError::Exceeded { .. }));
 
     // B's user cannot read A's budget row (RLS) → reads as unlimited → passes.
     service

@@ -22,7 +22,7 @@ import type {
   MemoryRow,
   MetricsTimeseriesResponse,
   ModelEntry,
-  OrgBudget,
+  OrgBilling,
   OrgDetails,
   PromptVersionList,
   RestorePromptVersionResponse,
@@ -187,14 +187,14 @@ export const api = {
     }),
   /** Read the active workspace's spend budget: cap + warn threshold +
    *  current-period usage. Any member may read. */
-  orgBudget: () => request<OrgBudget>("/me/org/budget"),
+  orgBilling: () => request<OrgBilling>("/me/org/billing"),
   /** Set/clear the cap + warn threshold. Owner/admin only (server-gated).
    *  `monthly_cap_micro_usd: null` clears the cap (unlimited). */
-  updateOrgBudget: (body: {
+  updateOrgBilling: (body: {
     monthly_cap_micro_usd: number | null;
     warn_threshold_bps: number;
   }) =>
-    request<OrgBudget>("/me/org/budget", {
+    request<OrgBilling>("/me/org/billing", {
       method: "PUT",
       body: JSON.stringify(body),
     }),

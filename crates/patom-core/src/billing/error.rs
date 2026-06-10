@@ -6,7 +6,7 @@ use crate::auth::OrgId;
 
 /// Every failure the budget gate or settle path can surface.
 #[derive(Debug, Error)]
-pub enum BudgetError {
+pub enum BillingError {
     /// The org has spent its monthly cap. Carries the period total and the cap
     /// (both micro-USD) so the caller — and the `429` / SSE failure it maps to
     /// — can report exactly how far over the line the request was.

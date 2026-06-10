@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::{
     AuthError, Email, InviteId, Language, OrgName, OrgSlug, Principal, Role, UserId,
 };
-use crate::budget::{BudgetConfig, MonthlyCapMicros, WarnThresholdBps};
+use crate::billing::{BillingConfig, MonthlyCapMicros, WarnThresholdBps};
 use crate::orgs::{
     INVITE_TTL, MAX_INVITE_BATCH, MAX_MEMBERS_PER_PAGE, MemberFilter, MemberRow, MemberStatus,
     OrgError, OrgUpdate,
@@ -35,7 +35,7 @@ pub(super) fn router() -> Router<AppState> {
             "/me/org",
             get(read_org).patch(update_org).delete(delete_org),
         )
-        .route("/me/org/budget", get(read_budget).put(set_budget))
+        .route("/me/org/billing", get(read_billing).put(set_billing))
         .route("/me/org/members", get(list_members))
         .route("/me/org/members/{user_id}", delete(remove_member))
         .route("/me/org/members/{user_id}/role", patch(change_role))
@@ -202,12 +202,12 @@ async fn delete_org(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// GET /me/org/budget — current cap + warn threshold + this period's spend.
-// PUT /me/org/budget — set/clear the cap + warn threshold (owner/admin).
+// GET /me/org/billing — current cap + warn threshold + this period's spend.
+// PUT /me/org/billing — set/clear the cap + warn threshold (owner/admin).
 // ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-struct BudgetView {
+struct BillingView {
     /// `null` → unlimited (no cap configured).
     monthly_cap_micro_usd: Option<i64>,
     warn_threshold_bps: u16,
@@ -222,8 +222,8 @@ struct BudgetView {
     role: Role,
 }
 
-impl BudgetView {
-    fn new(config: BudgetConfig, role: Role) -> Self {
+impl BillingView {
+    fn new(config: BillingConfig, role: Role) -> Self {
         let remaining_micro_usd = config
             .cap_micro_usd
             .map(|cap| (cap - config.used_micro_usd).max(0));
@@ -239,7 +239,7 @@ impl BudgetView {
     }
 }
 
-async fn read_budget(
+async fn read_billing(
     State(state): State<AppState>,
     principal: Principal,
 ) -> Result<Response, HttpError> {
@@ -247,23 +247,23 @@ async fn read_budget(
     // renders the edit controls read-only for members.
     let role = live_role(&state, &principal).await?;
     let config = state
-        .budget
+        .billing
         .get_config(principal.user_id, principal.active_org_id)
         .await?;
-    Ok(Json(BudgetView::new(config, role)).into_response())
+    Ok(Json(BillingView::new(config, role)).into_response())
 }
 
 #[derive(Debug, Deserialize)]
-struct SetBudgetRequest {
+struct SetBillingRequest {
     /// `null` → clear the cap (unlimited). A configured cap must be positive.
     monthly_cap_micro_usd: Option<i64>,
     warn_threshold_bps: u16,
 }
 
-async fn set_budget(
+async fn set_billing(
     State(state): State<AppState>,
     principal: Principal,
-    Json(req): Json<SetBudgetRequest>,
+    Json(req): Json<SetBillingRequest>,
 ) -> Result<Response, HttpError> {
     let role = live_role(&state, &principal).await?;
     require_admin(role)?;
@@ -277,10 +277,10 @@ async fn set_budget(
     // `set_config` returns the fresh view read in the write transaction — no
     // second round-trip needed.
     let config = state
-        .budget
+        .billing
         .set_config(principal.user_id, principal.active_org_id, cap, warn)
         .await?;
-    Ok(Json(BudgetView::new(config, role)).into_response())
+    Ok(Json(BillingView::new(config, role)).into_response())
 }
 
 // ─────────────────────────────────────────────────────────────────────
