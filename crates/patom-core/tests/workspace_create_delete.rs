@@ -60,6 +60,19 @@ impl Harness {
         cloud: bool,
         entitlements: patom::entitlements::SharedEntitlements,
     ) -> Self {
+        // Default: launch guardrails off → baseline org cap + inert throttle.
+        Self::with_launch(pool, cloud, entitlements, false).await
+    }
+
+    /// Full constructor with the launch-period guardrails master switch (#121)
+    /// exposed, so tests can exercise both the flag-on (tightened cap) and
+    /// flag-off (baseline) behavior through the same harness.
+    async fn with_launch(
+        pool: &PgPool,
+        cloud: bool,
+        entitlements: patom::entitlements::SharedEntitlements,
+        launch_guardrails: bool,
+    ) -> Self {
         let clock = SystemClock::shared();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
@@ -138,6 +151,11 @@ impl Harness {
             cookie_secure: false,
             cookie_domain: None,
             cors_allowed_origins: Vec::new(),
+            launch: patom::http::launch_guardrails::LaunchConfig::new(
+                launch_guardrails,
+                0,
+                clock.clone(),
+            ),
             memberships: Arc::new(patom::http::MembershipCache::new(clock.clone())),
             prompts: common::lang::prompts(),
             language_resolver: common::lang::english_resolver(),
@@ -169,6 +187,26 @@ impl Harness {
 
     async fn get(&self, path: &str, cookie_header: &str) -> (axum::http::StatusCode, Value) {
         self.send("GET", path, cookie_header, None).await
+    }
+
+    /// Drive `GET /auth/oidc/callback` with an `X-Forwarded-For` header, used
+    /// to exercise the launch-period signup throttle (#121). The `state`/`code`
+    /// query values need only be present — a throttled request is rejected
+    /// before they are read, and an admitted one fails later at the stub
+    /// exchange (a non-429 status), which is exactly what the throttle assert
+    /// distinguishes.
+    async fn oauth_callback_with_ip(&self, forwarded_for: &str) -> axum::http::StatusCode {
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/auth/oidc/callback?code=stub-code&state=stubstatevalue000000000000000000000000")
+            .header("x-forwarded-for", forwarded_for)
+            .body(axum::body::Body::empty())
+            .expect("request");
+        router(self.state.clone())
+            .oneshot(req)
+            .await
+            .expect("response")
+            .status()
     }
 
     async fn send(
@@ -574,5 +612,135 @@ async fn create_org_grants_nothing_under_oss_default(pool: PgPool) {
     assert!(
         org_credits(&pool, new_org).await.is_none(),
         "OSS default must not seed credits"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn launch_cap_limits_identity_to_one_org_and_one_grant(pool: PgPool) {
+    // #121: with the launch guardrails switch on and the cloud signup-grant
+    // policy, a fresh identity's FIRST workspace is created and seeded with
+    // exactly one $2 grant; a SECOND create is refused 409
+    // (`MAX_ORGS_PER_USER_LAUNCH` = 1), so one Google account can farm at most
+    // a single grant.
+    let h = Harness::with_launch(
+        &pool,
+        true,
+        common::billing::signup_grant_policy(2_000_000),
+        true,
+    )
+    .await;
+    let (_user_id, cookie) = seed_org_less(&pool, &h.state.jwt).await;
+
+    let (status, body) = h
+        .create_org(&cookie, json!({ "name": "First Workspace" }))
+        .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::CREATED,
+        "a fresh identity's first workspace must succeed; body = {body}"
+    );
+    let new_org = uuid::Uuid::parse_str(
+        body.get("active_org_id")
+            .and_then(Value::as_str)
+            .expect("active_org_id"),
+    )
+    .expect("uuid");
+    let (balance, _granted, _used) = org_credits(&pool, new_org).await.expect("credits row");
+    assert_eq!(
+        balance, 2_000_000,
+        "the first org receives the one signup grant"
+    );
+
+    // The org-less cookie still authenticates the same user; their second
+    // create hits the launch cap of one workspace.
+    let (status, body) = h
+        .create_org(&cookie, json!({ "name": "Second Workspace" }))
+        .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::CONFLICT,
+        "the launch cap is 1 — a second workspace must be refused; body = {body}"
+    );
+}
+
+/// Saturate the per-IP signup bucket through the public limiter API so the
+/// callback's own admit attempt is the one that trips the cap.
+fn saturate_signup_ip(h: &Harness, forwarded_for: &str) {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-forwarded-for",
+        forwarded_for.parse().expect("header value"),
+    );
+    let ip = patom::http::launch_guardrails::ClientIp::from_forwarded(&headers, 1)
+        .expect("trusted ip with one hop");
+    for _ in 0..patom::auth::limits::SIGNUP_PER_IP_PER_WINDOW {
+        assert!(
+            h.state.launch.signup_rate.try_admit(ip),
+            "fill below cap admits"
+        );
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn launch_signup_throttle_429s_a_saturated_ip(pool: PgPool) {
+    // #121: with the switch on and a trusted proxy, an IP that has already
+    // used its window's signup budget is refused 429 — before any DB work or
+    // the token exchange (the throttle is the first thing the callback does).
+    let mut h = Harness::with_launch(
+        &pool,
+        true,
+        Arc::new(patom::entitlements::UnlimitedEntitlements),
+        true,
+    )
+    .await;
+    h.state.launch.trusted_proxy_hops = 1;
+    saturate_signup_ip(&h, "203.0.113.7");
+
+    assert_eq!(
+        h.oauth_callback_with_ip("203.0.113.7").await,
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        "a saturated IP must be throttled at the callback"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn signup_throttle_inert_when_launch_off(pool: PgPool) {
+    // The master switch off → the limiter is never consulted even when the
+    // bucket is full, so the callback proceeds (and fails later at the stub
+    // exchange / state lookup, a non-429). Proves the flag truly reverts.
+    let mut h = Harness::with_launch(
+        &pool,
+        true,
+        Arc::new(patom::entitlements::UnlimitedEntitlements),
+        false,
+    )
+    .await;
+    h.state.launch.trusted_proxy_hops = 1;
+    saturate_signup_ip(&h, "203.0.113.7");
+
+    assert_ne!(
+        h.oauth_callback_with_ip("203.0.113.7").await,
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        "with the switch off the throttle must never fire"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn signup_throttle_inert_without_trusted_proxy(pool: PgPool) {
+    // Switch on but no trusted proxy (hops = 0): `X-Forwarded-For` is
+    // untrusted, so no client IP is resolved and the throttle cannot fire —
+    // the correct fail-open posture for local-dev / self-host.
+    let h = Harness::with_launch(
+        &pool,
+        true,
+        Arc::new(patom::entitlements::UnlimitedEntitlements),
+        true,
+    )
+    .await;
+    // trusted_proxy_hops left at the default 0.
+    assert_ne!(
+        h.oauth_callback_with_ip("203.0.113.7").await,
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        "without a trusted proxy the throttle is inert"
     );
 }

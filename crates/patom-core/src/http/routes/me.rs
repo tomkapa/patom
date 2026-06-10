@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use crate::auth::{
     AuthError, InviteToken, Language, OrgId, OrgMembership, OrgName, OrganizationRule, Principal,
     Role, User, UserSession,
-    limits::{COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_TOKEN_MAX_LEN, MAX_ORGS_PER_USER},
+    limits::{
+        COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_TOKEN_MAX_LEN, MAX_ORGS_PER_USER,
+        MAX_ORGS_PER_USER_LAUNCH,
+    },
 };
 use crate::billing::LedgerReason;
 use crate::runtime::IdempotencyKey;
@@ -192,6 +195,16 @@ async fn create_org(
     // Per-user cap (§5), enforced atomically inside the create transaction
     // (advisory lock + count + insert) so concurrent creates can't both
     // slip past it. Over the cap → 409 via `AuthError::OrgLimitReached`.
+    //
+    // Launch-period guardrail (#121): when `launch_guardrails` is on, the cap
+    // tightens to `MAX_ORGS_PER_USER_LAUNCH` (one workspace per identity), so a
+    // single Google account can only ever hold one org and thus farm a single
+    // signup credit grant. Off → the generous baseline `MAX_ORGS_PER_USER`.
+    let org_cap = if state.launch.enabled {
+        MAX_ORGS_PER_USER_LAUNCH
+    } else {
+        MAX_ORGS_PER_USER
+    };
     let new_org = state
         .users
         .create_personal_org(
@@ -199,7 +212,7 @@ async fn create_org(
             name.as_str(),
             name.as_str(),
             language,
-            Some(MAX_ORGS_PER_USER),
+            Some(org_cap),
             now,
         )
         .await?;

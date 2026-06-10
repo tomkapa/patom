@@ -916,6 +916,12 @@ pub async fn build_server(
         cookie_secure: settings.auth.cookie_secure,
         cookie_domain: settings.auth.cookie_domain.clone(),
         cors_allowed_origins: settings.auth.cors_allowed_origins.clone(),
+        // Launch-period guardrails (#121), bundled into one removable field.
+        launch: crate::http::launch_guardrails::LaunchConfig::new(
+            settings.auth.launch_guardrails,
+            settings.auth.trusted_proxy_hops,
+            pieces.clock.clone(),
+        ),
         memberships,
         prompts: pieces.prompts,
         language_resolver: pieces.language_resolver,

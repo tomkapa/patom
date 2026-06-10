@@ -102,6 +102,7 @@ async fn build_state(pool: PgPool) -> (AppState, patom::mcp::McpRefresher) {
         cookie_secure: false,
         cookie_domain: None,
         cors_allowed_origins: Vec::new(),
+        launch: patom::http::launch_guardrails::LaunchConfig::new(false, 0, clock.clone()),
         memberships: Arc::new(patom::http::MembershipCache::new(clock.clone())),
         prompts: common::lang::prompts(),
         language_resolver: common::lang::english_resolver(),

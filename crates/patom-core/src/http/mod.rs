@@ -4,6 +4,7 @@
 mod auth_layer;
 mod csrf;
 mod error;
+pub mod launch_guardrails;
 mod limits;
 mod membership_cache;
 mod routes;

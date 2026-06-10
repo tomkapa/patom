@@ -27,7 +27,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
 use cookie::time::Duration as CookieDuration;
 use serde::Deserialize;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::auth::{
     CookieDomain, Language, LocaleHint, OAuthStateRow, OrgId, UserId, limits::COOKIE_NAME,
@@ -35,6 +35,7 @@ use crate::auth::{
 
 use super::super::csrf::{build_csrf_cookie, mint_csrf_token};
 use super::super::error::HttpError;
+use super::super::launch_guardrails::ClientIp;
 use super::super::state::AppState;
 
 pub(super) fn router() -> Router<AppState> {
@@ -127,11 +128,33 @@ fn primary_subtag(entry: &str) -> Option<String> {
 async fn callback(
     State(state): State<AppState>,
     Query(query): Query<CallbackQuery>,
+    headers: HeaderMap,
     jar: CookieJar,
 ) -> Result<Response, HttpError> {
     if let Some(err) = query.error.as_deref() {
         return Err(HttpError::BadRequest(format!("oauth: {err}")));
     }
+
+    // Launch-period signup throttle (#121): cap signup velocity per trusted
+    // client IP to blunt scripted mass-signup credit farming. Placed first —
+    // ahead of the one-time-state consume and the expensive token exchange —
+    // so a farm loop is rejected before doing any work. Inert when the launch
+    // switch is off or no trusted proxy is configured
+    // (`ClientIp::from_forwarded` returns `None`). Throttling the whole
+    // callback — not just the new-user branch — is deliberate: newness isn't
+    // known until the user row exists, and the per-IP cap sits far above any
+    // legitimate returning-login rate (see `SIGNUP_PER_IP_PER_WINDOW`).
+    if state.launch.enabled
+        && let Some(ip) = ClientIp::from_forwarded(&headers, state.launch.trusted_proxy_hops)
+        && !state.launch.signup_rate.try_admit(ip)
+    {
+        // Operational signal for alerting on a signup farm. Carries no subject:
+        // the raw IP is PII (§2) and is recoverable from ingress/proxy logs,
+        // which already record it, rather than being duplicated here.
+        warn!(event = "auth.signup.throttled");
+        return Err(HttpError::TooManyRequests);
+    }
+
     let now = now_utc(&state);
     let state_token =
         crate::auth::OAuthState::try_from(query.state.as_str()).map_err(HttpError::Parse)?;

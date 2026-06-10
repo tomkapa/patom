@@ -117,6 +117,40 @@ pub const MAX_ORG_NAME_BYTES: usize = 200;
 /// user hits it; deletion (`DELETE /me/org`) frees slots.
 pub const MAX_ORGS_PER_USER: i64 = 10;
 
+/// Launch-period override of [`MAX_ORGS_PER_USER`] (#121).
+///
+/// While `PATOM_LAUNCH_GUARDRAILS` is on, self-service org creation is capped
+/// at **one** workspace per identity. Because the free signup credit grant
+/// (#154) is keyed `signup:{org_id}` and each identity can now hold exactly
+/// one org, this bounds the credit a single Google account can farm to one $2
+/// grant — the whole point of the launch guardrail. A launch-only value: when
+/// the promo ends, flipping the env switch off restores the generous baseline
+/// [`MAX_ORGS_PER_USER`] with no code change.
+pub const MAX_ORGS_PER_USER_LAUNCH: i64 = 1;
+
+/// Signup-velocity limit (#121): max OAuth-callback completions admitted from a
+/// single trusted client IP within [`SIGNUP_RATE_WINDOW`].
+///
+/// Tuned to sit far above any legitimate login rate — a real person logs in
+/// seconds-to-minutes apart, and even a shared corporate NAT egressing through
+/// one IP will not approach 30 interactive Google logins in a minute — while a
+/// scripted signup farm doing hundreds per minute trips it immediately. The
+/// residual (a NAT with an unusually dense burst) only ever delays a login by
+/// the window, never blocks it permanently. Only consulted under
+/// `launch_guardrails` with a trusted IP available.
+pub const SIGNUP_PER_IP_PER_WINDOW: usize = 30;
+
+/// Rolling window for [`SIGNUP_PER_IP_PER_WINDOW`]. Mirrors the MCP
+/// test-connect limiter's one-minute window for operational consistency.
+pub const SIGNUP_RATE_WINDOW: Duration = Duration::from_mins(1);
+
+/// Eviction cap on the signup limiter's per-IP bucket map (CLAUDE.md §5).
+///
+/// A flood of distinct source IPs cannot grow the map unboundedly: at ~80 bytes
+/// per bucket this caps the structure at well under 2 MiB. The LRU victim is
+/// the least-recently-touched bucket, matching the MCP limiter.
+pub const SIGNUP_RATE_BUCKETS_MAX: usize = 16_384;
+
 /// Maximum byte length of `PATOM_COOKIE_DOMAIN` (the shared cookie
 /// `Domain` attribute, e.g. `.patom.app`).
 ///

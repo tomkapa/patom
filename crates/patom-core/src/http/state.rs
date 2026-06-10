@@ -134,6 +134,12 @@ pub struct AppState {
     /// `https://patom.app`). Empty disables the CORS layer. Sourced from
     /// [`crate::config::AuthSettings`].
     pub cors_allowed_origins: Vec<String>,
+    /// Launch-period abuse-guardrails (#121) — the master switch, trusted-proxy
+    /// hop count, and per-IP signup limiter, bundled into one value so the whole
+    /// promo is a single removable field. `enabled == false` (the default) is
+    /// exactly baseline behavior. Set via `PATOM_LAUNCH_GUARDRAILS` /
+    /// `PATOM_TRUSTED_PROXY_HOPS`; see [`crate::http::launch_guardrails`].
+    pub launch: crate::http::launch_guardrails::LaunchConfig,
     /// `(user_id, org_id) → role` lookup cache. Cuts the per-request
     /// membership round-trip down to a Mutex lookup for repeat callers.
     pub memberships: Arc<MembershipCache>,

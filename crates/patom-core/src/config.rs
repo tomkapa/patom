@@ -402,6 +402,24 @@ pub struct AuthSettings {
     /// CORS layer is attached — same-origin app traffic is unaffected.
     /// Sourced from `PATOM_CORS_ALLOWED_ORIGINS` (comma-separated).
     pub cors_allowed_origins: Vec<String>,
+    /// Launch-period abuse guardrails master switch (#121), from
+    /// `PATOM_LAUNCH_GUARDRAILS`. Default **false** — the OSS / self-host and
+    /// any pre-launch build behave exactly like baseline. When true, the
+    /// cloud launch promo's anti-farming policy is active: self-service org
+    /// creation is capped at [`crate::auth::limits::MAX_ORGS_PER_USER_LAUNCH`]
+    /// (one workspace per identity → one signup grant) and the OAuth callback
+    /// throttles per-IP signup velocity. A launch-only feature: flipping this
+    /// off reverts to baseline without a code change (see
+    /// `crate::http::launch_guardrails`).
+    pub launch_guardrails: bool,
+    /// Number of trusted reverse-proxy hops in front of the app, from
+    /// `PATOM_TRUSTED_PROXY_HOPS`. Default **0** — no proxy, so no client IP
+    /// is trusted and the signup throttle is inert (correct for local-dev /
+    /// self-host). Set to the real ingress hop count in a proxied deployment
+    /// (k8s ingress → 1) so [`crate::http::launch_guardrails::ClientIp`] reads
+    /// the genuine client address from `X-Forwarded-For` rather than a
+    /// spoofable left-most entry.
+    pub trusted_proxy_hops: u8,
 }
 
 /// Embedding-provider settings — `EMBEDDING_API_KEY` /
@@ -550,6 +568,12 @@ struct RawSettings {
     // in `TryFrom`; `None`/empty means no CORS layer.
     #[serde(default)]
     patom_cors_allowed_origins: Option<String>,
+    // Launch-period abuse guardrails (#121). Both default off so any build
+    // that does not opt in behaves like baseline; cloud sets them at rollout.
+    #[serde(default)]
+    patom_launch_guardrails: bool,
+    #[serde(default)]
+    patom_trusted_proxy_hops: u8,
     #[serde(default = "default_web_dist")]
     patom_web_dist: PathBuf,
     #[serde(default)]
@@ -869,6 +893,8 @@ impl TryFrom<RawSettings> for Settings {
             web_base_url,
             cookie_domain,
             cors_allowed_origins,
+            launch_guardrails: raw.patom_launch_guardrails,
+            trusted_proxy_hops: raw.patom_trusted_proxy_hops,
         };
         let slack = match (
             raw.patom_slack_signing_secret,
@@ -1163,6 +1189,8 @@ mod tests {
             patom_web_base_url: None,
             patom_cookie_domain: None,
             patom_cors_allowed_origins: None,
+            patom_launch_guardrails: false,
+            patom_trusted_proxy_hops: 0,
             patom_web_dist: default_web_dist(),
             patom_posthog_key: None,
             patom_posthog_host: None,
@@ -1273,6 +1301,28 @@ mod tests {
         let s = Settings::try_from(raw).expect("valid");
         assert!(s.auth.cookie_domain.is_none());
         assert!(s.auth.cors_allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn launch_guardrails_default_off() {
+        // Launch-period abuse guardrails (#121) are opt-in: a build that sets
+        // neither env var behaves exactly like baseline.
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        let s = Settings::try_from(raw).expect("valid");
+        assert!(!s.auth.launch_guardrails);
+        assert_eq!(s.auth.trusted_proxy_hops, 0);
+    }
+
+    #[test]
+    fn launch_guardrails_parsed_when_set() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_launch_guardrails = true;
+        raw.patom_trusted_proxy_hops = 1;
+        let s = Settings::try_from(raw).expect("valid");
+        assert!(s.auth.launch_guardrails);
+        assert_eq!(s.auth.trusted_proxy_hops, 1);
     }
 
     #[test]
