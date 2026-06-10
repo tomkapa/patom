@@ -61,6 +61,13 @@ pub struct AppState {
     /// Send-half of the MCP refresh signal. Cheap to clone; CRUD handlers fire it
     /// after every write. The owning coordinator task lives on [`Server`].
     pub mcp_refresh: McpRefreshTrigger,
+    /// BYO provider-credential store (#141). The provider-credentials CRUD +
+    /// validate routes write through it; the overlay refresher reads it.
+    pub provider_credentials: crate::provider::SharedOrgProviderCredentialStore,
+    /// Send-half of the BYO provider-overlay refresh signal. CRUD handlers fire
+    /// it after every key write so the new key routes within one tick. The
+    /// owning coordinator task lives on [`Server`].
+    pub provider_refresh: crate::provider::ProviderRefreshTrigger,
     /// Per-user rate limiter for `POST /mcp-servers/test-connect`. Process-wide
     /// singleton shared across all handlers.
     pub mcp_test_rate: TestConnectRateLimiter,

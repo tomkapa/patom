@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use crate::agents::AgentId;
 use crate::agents::prompt_versions::PromptVersionId;
+use crate::auth::OrgId;
 use crate::background::SharedBackgroundStore;
 use crate::billing::SharedBillingService;
 use crate::clock::{SharedClock, SystemClock};
 use crate::hook::HookChain;
 use crate::memory::SharedMemory;
-use crate::provider::{Model, SharedProviderRegistry};
+use crate::provider::{Model, OrgProviderOverlay, SharedProviderRegistry};
 use crate::threads::SharedThreadStore;
 use crate::tools::system::todos::SharedSessionTodoStore;
 use crate::tools::{SharedToolCallStore, ToolBox, ToolRegistry};
@@ -28,6 +29,12 @@ use super::limits::{
 #[derive(Debug)]
 pub struct AgentBuilder {
     providers: SharedProviderRegistry,
+    /// Owning org + BYO overlay for per-turn provider routing (#141). Default
+    /// to a fresh org id + an empty overlay (platform-only) so the many
+    /// builder-based unit tests keep their existing behavior; the production
+    /// factory calls [`with_org_routing`](Self::with_org_routing).
+    org_id: OrgId,
+    overlay: OrgProviderOverlay,
     memory: SharedMemory,
     clock: SharedClock,
     tools: ToolBox,
@@ -70,6 +77,8 @@ impl AgentBuilder {
     ) -> Result<Self, ParseError> {
         Ok(Self {
             providers,
+            org_id: OrgId::new(),
+            overlay: OrgProviderOverlay::empty(),
             memory,
             clock: SystemClock::shared(),
             tools: ToolBox::from_builtins(ToolRegistry::empty()),
@@ -109,6 +118,16 @@ impl AgentBuilder {
     #[must_use]
     pub fn with_tools(mut self, tools: ToolBox) -> Self {
         self.tools = tools;
+        self
+    }
+
+    /// Bind the owning org and its BYO provider overlay (#141). The production
+    /// factory calls this with `record.org_id` and the process-wide overlay so
+    /// the agent's turns route to the org's BYO client when one is keyed.
+    #[must_use]
+    pub fn with_org_routing(mut self, org_id: OrgId, overlay: OrgProviderOverlay) -> Self {
+        self.org_id = org_id;
+        self.overlay = overlay;
         self
     }
 
@@ -219,6 +238,8 @@ impl AgentBuilder {
     pub fn build(self) -> Agent {
         Agent::new(
             self.providers,
+            self.org_id,
+            self.overlay,
             self.memory,
             self.clock,
             self.tools,

@@ -14,21 +14,30 @@
 
 use std::sync::Arc;
 
-use crate::provider::{Model, ProviderRegistry};
+use crate::provider::{Model, OrgProviderOverlay, ProviderRegistry};
 
 use super::types::AgentRecord;
 
 /// Cheap-clone handle to a [`ModelResolver`].
 pub type SharedModelResolver = Arc<dyn ModelResolver>;
 
-/// Strategy for turning `(AgentRecord, ProviderRegistry)` into the [`Model`]
-/// an agent will use for its next turn.
+/// Strategy for turning `(AgentRecord, ProviderRegistry, OrgProviderOverlay)`
+/// into the [`Model`] an agent will use for its next turn.
 pub trait ModelResolver: std::fmt::Debug + Send + Sync + 'static {
-    /// Resolve the effective model for `record`. `registry` is provided so a
-    /// resolver can validate provider availability and degrade gracefully
-    /// (e.g. fall back to a known-good default) rather than letting the
-    /// runtime crash on a missing provider entry.
-    fn resolve(&self, record: &AgentRecord, registry: &ProviderRegistry) -> Model;
+    /// Resolve the effective model for `record`.
+    ///
+    /// A provider is *usable* by the agent's org when it is either configured
+    /// platform-side (`registry`) **or** the org holds a BYO key for it
+    /// (`overlay`) — the union of keyed providers (#141). When the pinned
+    /// model's provider is not usable, degrade to the org's default model
+    /// (`overlay.default_model`, else the workspace default) rather than
+    /// crashing the turn at provider-lookup time.
+    fn resolve(
+        &self,
+        record: &AgentRecord,
+        registry: &ProviderRegistry,
+        overlay: &OrgProviderOverlay,
+    ) -> Model;
 }
 
 /// Static resolver: each agent's own `model`, falling back to the workspace default.
@@ -51,25 +60,37 @@ impl StaticAgentModelResolver {
 }
 
 impl ModelResolver for StaticAgentModelResolver {
-    fn resolve(&self, record: &AgentRecord, registry: &ProviderRegistry) -> Model {
+    fn resolve(
+        &self,
+        record: &AgentRecord,
+        registry: &ProviderRegistry,
+        overlay: &OrgProviderOverlay,
+    ) -> Model {
+        let org = record.org_id;
+        // The org's default model overrides the workspace default when set
+        // (chosen when the first BYO key is entered, #141).
+        let default = overlay.default_model(org).unwrap_or(self.default);
+        // Usable = configured platform-side OR the org has a BYO key for it.
+        let usable =
+            |m: Model| registry.contains(m.provider()) || overlay.has_key(org, m.provider());
         match record.model {
-            Some(m) if registry.contains(m.provider()) => m,
+            Some(m) if usable(m) => m,
             Some(m) => {
-                // Operational drift: a row pins a model whose provider was
-                // dropped from `Settings::providers`. Degrade to the default
-                // (whose provider is checked at startup, so it's guaranteed
-                // routable) and log loudly so operators can fix it.
+                // Operational drift: a row pins a model whose provider is
+                // neither configured platform-side nor BYO-keyed for this org.
+                // Degrade to the org/workspace default (routable by
+                // construction) and log loudly so operators can fix it.
                 tracing::warn!(
                     event = "agent.model.degraded",
                     patom.agent.id = %record.id,
                     patom.model.pinned = %m,
                     patom.provider.missing = m.provider().as_str(),
-                    patom.model.fallback = %self.default,
-                    "pinned model's provider not configured; falling back to workspace default"
+                    patom.model.fallback = %default,
+                    "pinned model's provider not usable; falling back to default"
                 );
-                self.default
+                default
             }
-            None => self.default,
+            None => default,
         }
     }
 }
@@ -133,7 +154,8 @@ mod tests {
         let default = Model::try_from("claude-sonnet-4-5").expect("catalog");
         let resolver = StaticAgentModelResolver::new(default);
         let registry = registry_with(&[ProviderId::Anthropic]);
-        let model = resolver.resolve(&record_with(None), &registry);
+        let overlay = OrgProviderOverlay::empty();
+        let model = resolver.resolve(&record_with(None), &registry, &overlay);
         assert_eq!(model.as_str(), "claude-sonnet-4-5");
     }
 
@@ -143,7 +165,8 @@ mod tests {
         let pinned = Model::try_from("gpt-4o-mini").expect("catalog");
         let resolver = StaticAgentModelResolver::new(default);
         let registry = registry_with(&[ProviderId::Anthropic, ProviderId::Openai]);
-        let model = resolver.resolve(&record_with(Some(pinned)), &registry);
+        let overlay = OrgProviderOverlay::empty();
+        let model = resolver.resolve(&record_with(Some(pinned)), &registry, &overlay);
         assert_eq!(model.as_str(), "gpt-4o-mini");
     }
 
@@ -153,7 +176,47 @@ mod tests {
         let pinned = Model::try_from("deepseek-v4-flash").expect("catalog");
         let resolver = StaticAgentModelResolver::new(default);
         let registry = registry_with(&[ProviderId::Anthropic]); // no deepseek
-        let model = resolver.resolve(&record_with(Some(pinned)), &registry);
+        let overlay = OrgProviderOverlay::empty(); // no BYO keys
+        let model = resolver.resolve(&record_with(Some(pinned)), &registry, &overlay);
         assert_eq!(model.as_str(), "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn pinned_model_usable_via_byo_key_is_kept() {
+        // Provider absent platform-side but the org holds a BYO key for it —
+        // the pin is usable (union of keyed providers, #141), no degrade.
+        let default = Model::try_from("claude-sonnet-4-6").expect("catalog");
+        let pinned = Model::try_from("deepseek-v4-flash").expect("catalog");
+        let resolver = StaticAgentModelResolver::new(default);
+        let registry = registry_with(&[ProviderId::Anthropic]); // no deepseek platform-side
+        let record = record_with(Some(pinned));
+        let byo: SharedProvider = Arc::new(StubProvider);
+        let overlay =
+            OrgProviderOverlay::for_test(vec![(record.org_id, ProviderId::Deepseek, byo)], vec![]);
+        let model = resolver.resolve(&record, &registry, &overlay);
+        assert_eq!(
+            model.as_str(),
+            "deepseek-v4-flash",
+            "BYO key makes the pin usable"
+        );
+    }
+
+    #[test]
+    fn reroutes_to_per_org_default_when_provider_unusable() {
+        // Pinned provider neither platform-configured nor BYO-keyed → degrade,
+        // and the org's own default model (not the workspace default) wins.
+        let workspace_default = Model::try_from("claude-sonnet-4-6").expect("catalog");
+        let org_default = Model::try_from("gpt-5.4-mini").expect("catalog");
+        let pinned = Model::try_from("deepseek-v4-flash").expect("catalog");
+        let resolver = StaticAgentModelResolver::new(workspace_default);
+        let registry = registry_with(&[ProviderId::Anthropic, ProviderId::Openai]); // no deepseek
+        let record = record_with(Some(pinned));
+        let overlay = OrgProviderOverlay::for_test(vec![], vec![(record.org_id, org_default)]);
+        let model = resolver.resolve(&record, &registry, &overlay);
+        assert_eq!(
+            model.as_str(),
+            "gpt-5.4-mini",
+            "per-org default overrides workspace"
+        );
     }
 }

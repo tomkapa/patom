@@ -14,8 +14,8 @@ use crate::auth::Caller;
 use crate::background::{BackgroundTurnId, NewBackgroundMessage};
 use crate::hook::{ToolContext, TurnContext};
 use crate::provider::{
-    ChatMessage, ChatRequest, ChatResponse, StopReason, ToolCall, ToolCallId, ToolResult,
-    UserContent,
+    ChatMessage, ChatRequest, ChatResponse, SharedProvider, StopReason, ToolCall, ToolCallId,
+    ToolResult, UserContent,
 };
 use crate::runtime::{IdempotencyKey, PromptRequestId, RequestKind, RequestKindPayload};
 use crate::threads::{AgentThreadId, MessageKind, NewMessage, ThreadId};
@@ -62,14 +62,18 @@ impl Agent {
         observer: Option<&SharedTurnObserver>,
     ) -> Result<Option<String>, AgentError> {
         self.hooks().before_turn(ctx).await?.into_result()?;
-        self.billing_gate(caller.org_id).await?;
+        // Resolve the provider client + BYO flag once for this turn from one
+        // overlay snapshot, so the gate, the send, and the settle all agree
+        // even if the overlay swaps mid-turn (#141).
+        let (provider, is_byo) = self.route();
+        self.billing_gate(caller.org_id, is_byo).await?;
         let started_at = self.clock().now_utc();
         let started_mono = Instant::now();
         let request = self
             .build_thread_request(claim_key, thread, viewer, kind_payload)
             .await?;
         let response = self
-            .call_provider(request, self.provider_timeout(), cancel)
+            .call_provider(&provider, request, self.provider_timeout(), cancel)
             .await?;
         let duration = started_mono.elapsed();
         self.record_turn_metrics(
@@ -82,7 +86,7 @@ impl Agent {
             &response,
         )
         .await;
-        self.billing_settle(caller.org_id, request_id, ctx.turn_index, &response)
+        self.billing_settle(caller.org_id, request_id, ctx.turn_index, &response, is_byo)
             .await;
         self.hooks()
             .after_turn(ctx, &response)
@@ -343,14 +347,15 @@ impl Agent {
         observer: Option<&SharedTurnObserver>,
     ) -> Result<Option<String>, AgentError> {
         self.hooks().before_turn(ctx).await?.into_result()?;
-        self.billing_gate(caller.org_id).await?;
+        let (provider, is_byo) = self.route();
+        self.billing_gate(caller.org_id, is_byo).await?;
         let started_at = self.clock().now_utc();
         let started_mono = Instant::now();
         let request = self
             .build_background_request(turn, viewer, caller, kind_payload)
             .await?;
         let response = self
-            .call_provider(request, self.provider_timeout(), cancel)
+            .call_provider(&provider, request, self.provider_timeout(), cancel)
             .await?;
         let duration = started_mono.elapsed();
         // Background turns have no `agent_thread_state` row, so the recorder FK
@@ -365,7 +370,7 @@ impl Agent {
             &response,
         )
         .await;
-        self.billing_settle(caller.org_id, request_id, ctx.turn_index, &response)
+        self.billing_settle(caller.org_id, request_id, ctx.turn_index, &response, is_byo)
             .await;
         self.hooks()
             .after_turn(ctx, &response)
@@ -515,7 +520,14 @@ impl Agent {
     /// must not block a turn the admission gate already admitted; the counter is
     /// reconciled from `turn_metrics`. No-op when no budget service is wired
     /// (agent_core unit tests).
-    async fn billing_gate(&self, org: OrgId) -> Result<(), AgentError> {
+    ///
+    /// `is_byo` short-circuits the gate entirely (#141): a turn routed through
+    /// the org's own provider key is the org's own spend, so a zero platform
+    /// balance (or an exhausted monthly cap) must never block it.
+    async fn billing_gate(&self, org: OrgId, is_byo: bool) -> Result<(), AgentError> {
+        if is_byo {
+            return Ok(());
+        }
         let Some(budget) = self.billing() else {
             return Ok(());
         };
@@ -538,17 +550,35 @@ impl Agent {
     /// period. Fail-open — a settle failure is logged and the turn proceeds (the
     /// user already received the answer); `turn_metrics` is the reconciliation
     /// ledger (CLAUDE.md §6). No-op when no budget service is wired.
+    ///
+    /// `is_byo` skips settle entirely (#141): a BYO turn is the org's own spend,
+    /// so it neither debits platform credit nor counts toward the monthly
+    /// platform cap. `turn_metrics` (recorded before this call) still captures
+    /// its cost for BYO usage analytics.
     async fn billing_settle(
         &self,
         org: OrgId,
         request_id: PromptRequestId,
         turn_index: TurnIndex,
         response: &ChatResponse,
+        is_byo: bool,
     ) {
+        let cost = turn_cost(price_for(self.model()), &response.usage);
+        if is_byo {
+            // BYO usage analytics (#141): a parallel signal to `credit.debit`
+            // so dashboards can break turns down BYO-vs-platform. No key
+            // material (CLAUDE.md §2); the org paid its own provider directly.
+            tracing::info!(
+                event = "billing.byo_skip",
+                patom.org.id = %org,
+                patom.provider = self.model().provider().as_str(),
+                patom.byo.cost_micro = cost.get(),
+            );
+            return;
+        }
         let Some(budget) = self.billing() else {
             return;
         };
-        let cost = turn_cost(price_for(self.model()), &response.usage);
         // Stable per-turn key so a retried settle (worker resume) never
         // double-debits credits: `(request_id, turn_index)` is the same across
         // re-runs of the same turn, unlike the provider's response id.
@@ -644,11 +674,15 @@ impl Agent {
     /// so timeout, cancellation, and error mapping live in one place.
     pub(super) async fn call_provider(
         &self,
+        provider: &SharedProvider,
         request: ChatRequest,
         timeout_after: std::time::Duration,
         cancel: &CancellationToken,
     ) -> Result<ChatResponse, AgentError> {
-        let send = self.provider().send(request);
+        // `provider` is the client the turn resolved once via `Agent::route`
+        // (#141) — the same overlay snapshot that decided the BYO gate/settle
+        // skip, so routing and metering can't disagree.
+        let send = provider.send(request);
         tokio::select! {
             biased;
             () = cancel.cancelled() => Err(AgentError::Cancelled),

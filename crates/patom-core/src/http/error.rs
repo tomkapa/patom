@@ -58,6 +58,13 @@ pub enum HttpError {
     #[error("mcp: {0}")]
     Mcp(#[from] McpError),
 
+    /// BYO provider-credential store failure (#141). Every variant is an
+    /// internal fault (crypto / corruption / Db) — boundary parse failures
+    /// surface as [`Self::Parse`] before the store is reached — so this maps
+    /// to 500 with no detail (never leak key material, CLAUDE.md §2).
+    #[error("provider credential store error")]
+    ProviderCredential(#[from] crate::provider::ProviderCredentialError),
+
     #[error("auth: {0}")]
     Auth(#[from] AuthError),
 
@@ -175,6 +182,10 @@ impl IntoResponse for HttpError {
                 (StatusCode::NOT_FOUND, "mcp server not found".into())
             }
             Self::Mcp(_) => (StatusCode::INTERNAL_SERVER_ERROR, "mcp store error".into()),
+            Self::ProviderCredential(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "provider credential store error".into(),
+            ),
             Self::Auth(
                 AuthError::Unauthenticated | AuthError::Jwt(_) | AuthError::OAuthStateInvalid,
             ) => (StatusCode::UNAUTHORIZED, "unauthorized".into()),

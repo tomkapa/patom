@@ -14,6 +14,7 @@ import { ConnectionsList } from "./pages/ConnectionsList";
 import { OAuthCallback } from "./pages/OAuthCallback";
 import { Onboarding } from "./pages/Onboarding";
 import { SettingsBilling } from "./pages/SettingsBilling";
+import { SettingsProviderKeys } from "./pages/SettingsProviderKeys";
 import { SettingsComingSoon } from "./pages/SettingsComingSoon";
 import { SettingsGeneral } from "./pages/SettingsGeneral";
 import { SettingsIntegrations } from "./pages/SettingsIntegrations";
@@ -164,6 +165,14 @@ export function App() {
         element={
           <Protected>
             <SettingsBilling />
+          </Protected>
+        }
+      />
+      <Route
+        path="/settings/provider-keys"
+        element={
+          <Protected>
+            <SettingsProviderKeys />
           </Protected>
         }
       />

@@ -215,6 +215,32 @@ const budgetState = {
   period_start: MONTH_START,
 };
 
+// BYO provider credentials (#141). One stored row per provider; the wire view
+// never carries the raw key, only a masked suffix.
+const PROVIDER_IDS = ["anthropic", "openai", "deepseek"] as const;
+type ProviderRow = {
+  masked_key: string;
+  base_url: string | null;
+  last_validated_at: string | null;
+};
+const providerKeys = new Map<string, ProviderRow>();
+function maskKey(raw: string): string {
+  const tail = raw.slice(-4);
+  return `${"•".repeat(8)}${tail}`;
+}
+function providerCredentialsView() {
+  return PROVIDER_IDS.map((provider) => {
+    const row = providerKeys.get(provider);
+    return {
+      provider,
+      status: row ? "active" : "not_set",
+      masked_key: row?.masked_key ?? null,
+      base_url: row?.base_url ?? null,
+      last_validated_at: row?.last_validated_at ?? null,
+    };
+  });
+}
+
 function budgetView() {
   const cap = budgetState.monthly_cap_micro_usd;
   return {
@@ -2082,6 +2108,52 @@ const server = Bun.serve({
       budgetState.monthly_cap_micro_usd = cap as number | null;
       budgetState.warn_threshold_bps = bps;
       return json(budgetView());
+    }
+    // ─── BYO provider credentials (#141) ──────────────────────────────
+    if (path === "/me/org/provider-credentials" && method === "GET") {
+      return json(providerCredentialsView());
+    }
+    {
+      const m = path.match(/^\/me\/org\/provider-credentials\/([^/]+)(\/validate)?$/);
+      if (m) {
+        const provider = decodeURIComponent(m[1]!);
+        const isValidate = m[2] === "/validate";
+        const known = (PROVIDER_IDS as readonly string[]).includes(provider);
+        // Owner/admin gate, mirroring the server.
+        if (method !== "GET" && me.role === "member") {
+          return json({ error: "owner or admin role required" }, 403);
+        }
+        if (!known) return json({ error: "unknown provider" }, 400);
+
+        if (isValidate && method === "POST") {
+          const body = (await req.json()) as { api_key?: string };
+          if (!body.api_key) return json({ error: "api_key required" }, 400);
+          // Mock: keys containing "bad" are rejected; others pass.
+          if (body.api_key.includes("bad")) {
+            return json({ outcome: "invalid", error: "rejected" });
+          }
+          const row = providerKeys.get(provider);
+          if (row) row.last_validated_at = new Date().toISOString();
+          return json({ outcome: "ok" });
+        }
+        if (!isValidate && method === "PUT") {
+          const body = (await req.json()) as {
+            api_key?: string;
+            base_url?: string | null;
+          };
+          if (!body.api_key) return json({ error: "api_key required" }, 400);
+          providerKeys.set(provider, {
+            masked_key: maskKey(body.api_key),
+            base_url: body.base_url ?? null,
+            last_validated_at: null,
+          });
+          return empty(204);
+        }
+        if (!isValidate && method === "DELETE") {
+          providerKeys.delete(provider);
+          return empty(204);
+        }
+      }
     }
     if (path === "/me/org/members" && method === "GET") {
       const qs = url.searchParams;

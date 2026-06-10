@@ -5,6 +5,7 @@ import {
   Bell,
   Blocks,
   CreditCard,
+  KeyRound,
   Settings2,
   Users,
 } from "lucide-react";
@@ -18,6 +19,7 @@ export type SettingsNavId =
   | "general"
   | "members"
   | "billing"
+  | "provider-keys"
   | "integrations"
   | "notifications";
 
@@ -58,6 +60,12 @@ export function SettingsLayout({
       label: t("settings.nav.billing"),
       icon: CreditCard,
       to: "/settings/billing",
+    },
+    {
+      id: "provider-keys",
+      label: t("settings.nav.providerKeys"),
+      icon: KeyRound,
+      to: "/settings/provider-keys",
     },
     {
       id: "integrations",

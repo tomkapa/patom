@@ -607,6 +607,7 @@ const en = {
   "settings.nav.general": "General",
   "settings.nav.members": "Members",
   "settings.nav.billing": "Billing",
+  "settings.nav.providerKeys": "Provider keys",
   "settings.nav.integrations": "Integrations",
   "settings.nav.notifications": "Notifications",
   "settings.comingSoon.title": "{label}",
@@ -648,6 +649,34 @@ const en = {
   "settings.credits.granted": "Granted",
   "settings.credits.used": "Used",
   "settings.credits.empty": "No credit activity yet.",
+
+  // Settings — BYO provider keys (#141)
+  "settings.providerKeys.subtitle":
+    "Bring your own LLM provider keys. A keyed provider's usage runs on your account and stops drawing platform credit.",
+  "settings.providerKeys.sectionTitle": "PROVIDER KEYS",
+  "settings.providerKeys.sectionHelper": "One key per provider — add, rotate, or remove",
+  "settings.providerKeys.outOfCredit":
+    "This workspace is out of free credit. Add a provider key below to keep your agents running.",
+  "settings.providerKeys.status.active": "Active",
+  "settings.providerKeys.status.notSet": "Not set",
+  "settings.providerKeys.add": "Add key",
+  "settings.providerKeys.rotate": "Rotate",
+  "settings.providerKeys.remove": "Remove",
+  "settings.providerKeys.save": "Save key",
+  "settings.providerKeys.cancel": "Cancel",
+  "settings.providerKeys.validate": "Test key",
+  "settings.providerKeys.apiKeyPlaceholder": "Paste your API key",
+  "settings.providerKeys.baseUrlPlaceholder": "Custom base URL (optional)",
+  "settings.providerKeys.defaultModelLabel": "Default model",
+  "settings.providerKeys.defaultModelHelper":
+    "Chosen when you add your first key. Agents whose provider has no key fall back to this.",
+  "settings.providerKeys.lastValidated": "Tested {when}",
+  "settings.providerKeys.neverValidated": "Not yet tested",
+  "settings.providerKeys.validateOk": "Key is valid.",
+  "settings.providerKeys.validateInvalid": "The provider rejected this key.",
+  "settings.providerKeys.validateError": "Couldn't reach the provider. Try again.",
+  "settings.providerKeys.memberHint": "Only an owner or admin can manage provider keys.",
+  "settings.providerKeys.saveError": "Couldn't save the key. Try again.",
 
   // Chat — first-contact welcome (empty #general after onboarding)
   "chat.welcome.title": "Hi {name}, welcome to Patom",
