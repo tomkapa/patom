@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { OnboardingTopBar, type StepKey } from "../components/onboarding/OnboardingTopBar";
@@ -11,6 +11,7 @@ import { useDeleteOrg } from "../hooks/useOrg";
 import { useLogout } from "../hooks/useLogout";
 import { useAuthStore } from "../stores/authStore";
 import { useLightModeOnly } from "../lib/theme";
+import { track } from "../lib/analytics";
 import type { PresetId } from "../data/teamPresets";
 import { findPreset } from "../data/teamPresets";
 
@@ -32,6 +33,13 @@ export function Onboarding() {
   const logout = useLogout();
   const [cancelling, setCancelling] = useState(false);
   useLightModeOnly();
+
+  // One funnel step per wizard screen. Keyed on `step` so each is recorded
+  // once as the user advances; `workspace_created` / `onboarding_completed`
+  // fire from the steps' own success handlers.
+  useEffect(() => {
+    track("onboarding_step_viewed", { step });
+  }, [step]);
 
   // On the final ("done") screen the stepper paints every step as a
   // green check (`allDone={true}`); meanwhile we still need to hand

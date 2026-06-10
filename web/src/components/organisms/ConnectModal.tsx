@@ -11,6 +11,7 @@ import {
   useStartOAuth,
 } from "../../hooks/useMcpServers";
 import { formatError } from "../../lib/errors";
+import { track } from "../../lib/analytics";
 import { useT } from "../../i18n";
 import type { McpCatalogEntry, McpServer } from "../../types/api";
 
@@ -136,6 +137,8 @@ function OAuthBody({
         id: server.id,
         input: { redirect_to: callbackUrl(server.id) },
       });
+      // Fire before the full-page redirect to the vendor leaves the SPA.
+      track("connection_oauth_started", { vendor: entry.catalog_id });
       window.location.href = res.authorize_url;
     });
 
@@ -352,6 +355,8 @@ function ReconnectBody({
         id: server.id,
         input: { redirect_to: callbackUrl(server.id) },
       });
+      // Fire before the full-page redirect to the vendor leaves the SPA.
+      track("connection_oauth_started", { vendor: server.catalog_id });
       window.location.href = res.authorize_url;
     });
 

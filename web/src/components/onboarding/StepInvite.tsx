@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { TitleWithMossPill } from "./OnboardingTopBar";
 import { api } from "../../lib/api";
+import { track } from "../../lib/analytics";
 import { useAuthStore } from "../../stores/authStore";
 import type { Role } from "../../types/api";
 
@@ -76,7 +77,12 @@ export function StepInvite({ onFinished }: { onFinished: () => void }) {
       }
       await api.updateOrg({ onboarded: true });
     },
-    onSuccess: () => onFinished(),
+    onSuccess: () => {
+      // The `onboarded` flip is the funnel's terminal step (both the
+      // Send-invites and Skip-for-now paths reach here).
+      track("onboarding_completed");
+      onFinished();
+    },
   });
 
   return (

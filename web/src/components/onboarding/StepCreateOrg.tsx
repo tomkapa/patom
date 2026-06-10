@@ -3,6 +3,7 @@ import { ArrowRight, Building2 } from "lucide-react";
 import { ApiError } from "../../lib/errors";
 import { useCreateOrg } from "../../hooks/useOrg";
 import { useAuthStore } from "../../stores/authStore";
+import { track } from "../../lib/analytics";
 import { TitleWithMossPill } from "./OnboardingTopBar";
 
 const MIN = 1;
@@ -32,7 +33,12 @@ export function StepCreateOrg({ onContinue }: { onContinue: () => void }) {
   const submit = () =>
     // `useCreateOrg` already invalidates every query, so /me refetches
     // under the new session before we advance to the next step.
-    create.mutate(trimmed, { onSuccess: () => onContinue() });
+    create.mutate(trimmed, {
+      onSuccess: () => {
+        track("workspace_created");
+        onContinue();
+      },
+    });
 
   return (
     <form

@@ -28,6 +28,7 @@ import {
 } from "../lib/demo";
 import { decodeBody } from "../lib/chatBody";
 import { ApiError } from "../lib/errors";
+import { track } from "../lib/analytics";
 import type { Bubble, Poster, RootMessage } from "../lib/foldHistory";
 import { uuidv7 } from "../lib/utils";
 import { useIsWide } from "../hooks/useMediaQuery";
@@ -180,11 +181,20 @@ export function ChatView() {
 
   const { t } = useT();
 
+  // Engagement signal — one event each time a thread is opened (sidebar
+  // click, deep-link, or just-sent root). Demo mode is excluded.
+  useEffect(() => {
+    if (isDemo || !selectedRoot) return;
+    track("thread_opened");
+  }, [selectedRoot, isDemo]);
+
   // A 429 from POST /prompts means the workspace is over its monthly budget —
   // surface it inline rather than as a generic failure. Returns true if handled.
   const handleBudgetExceeded = (e: unknown): boolean => {
     if (e instanceof ApiError && e.status === 429) {
       setComposerError(t("chat.error.budget_exceeded"));
+      // Monetization signal — the workspace hit its monthly spend cap.
+      track("budget_warning_shown");
       return true;
     }
     return false;

@@ -5,6 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { track } from "../lib/analytics";
 import type {
   IssuedInvite,
   ListMembersQuery,
@@ -101,7 +102,11 @@ export function useInviteMembers() {
   return useMutation({
     mutationFn: ({ emails, role }: { emails: string[]; role: Role }) =>
       api.inviteMembers(emails, role),
-    onSuccess: (_data: IssuedInvite[]) => {
+    onSuccess: (data: IssuedInvite[]) => {
+      // Viral-loop signal. Onboarding's StepInvite calls api.inviteMembers
+      // directly (not this hook), so this fires only for post-onboarding
+      // invites from the members settings — no double-count.
+      track("invite_sent", { count: data.length });
       qc.invalidateQueries({ queryKey: ["org", "members"] });
       qc.invalidateQueries({ queryKey: ORG_KEY });
     },

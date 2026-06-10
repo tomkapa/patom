@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import {
   ConnectionsBreadcrumb,
@@ -11,6 +11,7 @@ import { useMcpCatalog } from "../hooks/useMcpServers";
 import { useT } from "../i18n";
 import type { McpCatalogEntry } from "../types/api";
 import { cn } from "../lib/utils";
+import { track } from "../lib/analytics";
 
 type Pending =
   | { kind: "entry"; entry: McpCatalogEntry }
@@ -21,6 +22,11 @@ export function ConnectionsCatalog() {
   const catalog = useMcpCatalog();
   const [query, setQuery] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
+
+  // Top of the connections funnel — the highest-abandonment flow.
+  useEffect(() => {
+    track("connection_catalog_opened");
+  }, []);
 
   const filtered = useMemo(() => {
     const rows = catalog.data ?? [];

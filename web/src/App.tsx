@@ -20,6 +20,7 @@ import { SettingsIntegrations } from "./pages/SettingsIntegrations";
 import { SettingsMembers } from "./pages/SettingsMembers";
 import { SignIn } from "./pages/SignIn";
 import { Protected } from "./components/organisms/Protected";
+import { AnalyticsBridge } from "./components/AnalyticsBridge";
 import { useLangFromOrg } from "./i18n";
 
 export function App() {
@@ -29,7 +30,10 @@ export function App() {
   // browser-detected default.
   useLangFromOrg();
   return (
-    <Routes>
+    <>
+      {/* Headless: identity, pageviews, signed_in. No-ops without a key. */}
+      <AnalyticsBridge />
+      <Routes>
       <Route path="/sign-in" element={<SignIn />} />
       {/* Invite landing — the page redeems the token itself and drives
           its own auth (a 401 bounces through /sign-in), so it is not
@@ -187,6 +191,7 @@ export function App() {
           </Protected>
         }
       />
-    </Routes>
+      </Routes>
+    </>
   );
 }
