@@ -46,7 +46,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push app image
+      # Public OSS / self-host image: no cloud feature, no billing code. This is
+      # the image self-hosters pull, so it must NOT carry `--features cloud`.
+      - name: Build & push OSS app image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -55,8 +57,27 @@ jobs:
           tags: |
             ghcr.io/tomkapa/patom:${{ steps.vars.outputs.sha }}
             ghcr.io/tomkapa/patom:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=oss
+          cache-to: type=gha,mode=max,scope=oss
+
+      # SaaS image: same source, built with `--features cloud` so
+      # `AppState.cloud` is true and self-service workspace creation
+      # (`POST /me/orgs`, the onboarding wizard) works. Kept on a distinct
+      # `cloud-*` tag so the public image above stays feature-less. The
+      # patom-infra ArgoCD app floats to this tag (see below).
+      - name: Build & push cloud app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          build-args: |
+            FEATURES=cloud
+          tags: |
+            ghcr.io/tomkapa/patom:cloud-${{ steps.vars.outputs.sha }}
+            ghcr.io/tomkapa/patom:cloud-latest
+          cache-from: type=gha,scope=cloud
+          cache-to: type=gha,mode=max,scope=cloud
 
       # The Postgres backup image (patom-backup) is no longer built here: backups
       # are a SaaS-operational concern owned by patom-infra, which builds and
@@ -70,8 +91,12 @@ jobs:
         # patom ArgoCD Application in patom-infra; ArgoCD's app-of-apps tracks that
         # repo's HEAD and syncs the new tag. (The Postgres backup image tag is
         # managed entirely within patom-infra now — not floated from here.)
+        #
+        # SaaS runs the CLOUD image, so float to the `cloud-<sha>` tag (same
+        # repository, cloud-feature build). The public chart's pinned tag stays
+        # on the feature-less OSS image for self-hosters.
         env:
-          SHA: ${{ steps.vars.outputs.sha }}
+          SHA: cloud-${{ steps.vars.outputs.sha }}
           # Fine-grained PAT with contents:write on tomkapa/patom-infra. The
           # built-in GITHUB_TOKEN is scoped to THIS repo and cannot push cross-repo.
           INFRA_REPO_TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
