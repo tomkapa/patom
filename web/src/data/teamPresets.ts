@@ -25,18 +25,10 @@
  *  rendered separately below the divider). */
 export const VISIBLE_PRESET_COUNT = 4;
 
-/** Built-in MCP catalog ids a preset may reference. The backend owns the
- *  authoritative list; this union is the subset presets use today and
- *  catches a typo'd id at compile time. */
-export type CatalogId =
-  | "notion"
-  | "slack"
-  | "gmail"
-  | "gcal"
-  | "google"
-  | "github"
-  | "linear"
-  | "jira";
+/** Built-in MCP catalog ids a preset may reference — the connectors the
+ *  workspace supports by default. Keep in sync with the seeded catalog;
+ *  the union catches a typo'd id at compile time. */
+export type CatalogId = "notion" | "jira" | "linear" | "github";
 
 export type PresetAgent = {
   /** Display name + the `name` field on POST /agents. Must be unique
@@ -56,13 +48,13 @@ export type PresetAgent = {
    *  the catalog id doesn't silently change what the wizard advertises. */
   model_label: string;
   /** Display-only meta on the preview card — a human label for the
-   *  connections below ("Slack · Notion"), or "Web research" / "Chat
-   *  only" when the role leans on built-in tools. Not sent to the
-   *  backend; keep it honest against `allowed_mcp_tools`. */
+   *  connections below ("Notion"), or "Web research" / "Chat only" when
+   *  the role leans on built-in tools. Not sent to the backend; keep it
+   *  honest against `allowed_mcp_tools`. */
   tools_hint: string;
   /** Connections this role uses, sent verbatim as `allowed_mcp_tools`
-   *  on POST /agents. Keys are built-in catalog ids (notion, slack,
-   *  gmail, gcal, google, github, linear, jira). `null` = every tool
+   *  on POST /agents. Keys are built-in catalog ids (notion, jira,
+   *  linear, github). `null` = every tool
    *  the catalog exposes; a string[] = only those remote tool names. A
    *  catalog the org hasn't wired yet is inert until the owner connects
    *  it — the Recruiter's first-contact orientation surfaces the wiring
@@ -105,8 +97,8 @@ const MARKETING: TeamPreset = {
       icon: "crown",
       model: "claude-opus-4-7",
       model_label: "opus",
-      tools_hint: "Slack · Notion",
-      allowed_mcp_tools: { slack: null, notion: null },
+      tools_hint: "Notion",
+      allowed_mcp_tools: { notion: null },
       system_prompt: `You are the Marketing Lead at {workspace}. You own the
 campaign strategy: pick the bets, brief the team, and make sure outputs
 ladder up to a clear narrative.
@@ -140,8 +132,8 @@ re-litigate settled calls or repeat a dud.`,
       icon: "pen-line",
       model: "claude-sonnet-4-6",
       model_label: "sonnet",
-      tools_hint: "Notion · Drive",
-      allowed_mcp_tools: { notion: null, google: null },
+      tools_hint: "Notion",
+      allowed_mcp_tools: { notion: null },
       system_prompt: `You are the Content Writer at {workspace}. You produce
 the words: blog posts, email copy, landing-page sections, social posts.
 
@@ -204,8 +196,8 @@ on the last instead of restarting from zero.`,
       icon: "calendar-clock",
       model: "claude-haiku-4-5",
       model_label: "haiku",
-      tools_hint: "Slack",
-      allowed_mcp_tools: { slack: null },
+      tools_hint: "Chat only",
+      allowed_mcp_tools: {},
       system_prompt: `You are the Social Manager at {workspace}. You schedule
 posts, monitor mentions, and reply in-voice.
 
@@ -242,8 +234,8 @@ const SALES: TeamPreset = {
       icon: "crown",
       model: "claude-opus-4-7",
       model_label: "opus",
-      tools_hint: "Slack",
-      allowed_mcp_tools: { slack: null },
+      tools_hint: "Chat only",
+      allowed_mcp_tools: {},
       system_prompt: `You are the Sales Lead at {workspace}. You own the
 pipeline: prioritize who to chase, set discounting bounds, and unblock
 the team.
@@ -260,9 +252,9 @@ You report to the human who owns {workspace}. You direct two teammates
   • Researcher — feeds you and the SDR account facts. Ask for a brief
     before you prioritize a target.
 Escalation: pricing, contract, or anything legal goes to the human; the
-SDR escalates stuck deals to you. No CRM is wired yet — track the
-pipeline in Slack and ask the human to connect one when deal volume
-warrants it.
+SDR escalates stuck deals to you. No CRM is wired yet — keep the
+pipeline in your own running notes and ask the human to connect one when
+deal volume warrants it.
 
 — Remember as you work —
 Keep the active pipeline and stage of each deal, the discount bounds
@@ -275,8 +267,8 @@ stay consistent and you don't re-chase a dead lead.`,
       icon: "send",
       model: "claude-sonnet-4-6",
       model_label: "sonnet",
-      tools_hint: "Gmail",
-      allowed_mcp_tools: { gmail: null },
+      tools_hint: "Chat only",
+      allowed_mcp_tools: {},
       system_prompt: `You are the SDR at {workspace}. You run outbound:
 research a prospect, write a personalized first touch, and follow up.
 
@@ -347,8 +339,8 @@ const CUSTOMER_SUPPORT: TeamPreset = {
       icon: "crown",
       model: "claude-opus-4-7",
       model_label: "opus",
-      tools_hint: "Slack",
-      allowed_mcp_tools: { slack: null },
+      tools_hint: "Chat only",
+      allowed_mcp_tools: {},
       system_prompt: `You are the Support Lead at {workspace}. You own
 response-time SLAs and reply quality. You coach the team and step in on
 escalations.
@@ -365,8 +357,8 @@ You report to the human who owns {workspace}. You direct two teammates
   • KB Writer — turns resolved tickets into articles. Tell them which
     recurring issue deserves an article next.
 Escalation: refunds, outages, and anything legal go to the human. No
-helpdesk is wired yet — work tickets from Slack and ask the human to
-connect one when volume warrants it.
+helpdesk is wired yet — track tickets in your own running notes and ask
+the human to connect one when volume warrants it.
 
 — Remember as you work —
 Keep the SLA targets, the issues that recur and their known-good
@@ -451,8 +443,8 @@ const OPERATIONS: TeamPreset = {
       icon: "crown",
       model: "claude-opus-4-7",
       model_label: "opus",
-      tools_hint: "Calendar · Notion",
-      allowed_mcp_tools: { gcal: null, notion: null },
+      tools_hint: "Notion",
+      allowed_mcp_tools: { notion: null },
       system_prompt: `You are the Chief of Staff at {workspace}. You keep the
 founder's calendar honest, draft the weekly status, and pull in context
 across teams when decisions get stuck.
@@ -484,8 +476,8 @@ track deltas instead of re-summarizing the same state.`,
       icon: "user-round-search",
       model: "claude-sonnet-4-6",
       model_label: "sonnet",
-      tools_hint: "Gmail",
-      allowed_mcp_tools: { gmail: null },
+      tools_hint: "Chat only",
+      allowed_mcp_tools: {},
       system_prompt: `You are the Hiring Recruiter at {workspace}. You source
 human candidates against the role brief, run the first-round screen, and
 schedule onsites. (You hire people; the org's "recruiter" agent hires
