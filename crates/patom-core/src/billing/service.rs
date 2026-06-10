@@ -80,15 +80,27 @@ const WRITE_CONFIG: &str = "
             warn_threshold_bps    = EXCLUDED.warn_threshold_bps,
             updated_at            = EXCLUDED.updated_at";
 
-/// Append a grant entry, deduped by `idempotency_key`. `RETURNING id` yields a
-/// row only when a *new* entry was written — `ON CONFLICT DO NOTHING` returns
-/// nothing on replay, which is exactly the signal to skip the balance move.
-const GRANT_INSERT_LEDGER: &str = "
+/// Append one ledger entry, deduped by `idempotency_key`. `RETURNING id` yields
+/// a row only when a *new* entry was written — `ON CONFLICT DO NOTHING` returns
+/// nothing on replay, which is exactly the signal a grant uses to skip the
+/// balance move. Usage debits pass a NULL key (never conflicts, always inserts).
+const INSERT_LEDGER_ENTRY: &str = "
     INSERT INTO org_credit_ledger
         (id, org_id, delta_micro_usd, kind, reason, idempotency_key, actor, created_at)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     ON CONFLICT (idempotency_key) DO NOTHING
     RETURNING id";
+
+/// Debit the materialized balance by a turn's cost and read the new totals back
+/// for the `balance == granted − used` invariant (§6). Affects no row (returns
+/// nothing) when the org has no `org_credits` row.
+const SETTLE_DEBIT_CREDITS: &str = "
+    UPDATE org_credits
+       SET balance_micro_usd    = balance_micro_usd - $2,
+           used_total_micro_usd = used_total_micro_usd + $2,
+           updated_at           = $3
+     WHERE org_id = $1
+     RETURNING balance_micro_usd, granted_total_micro_usd, used_total_micro_usd";
 
 /// Move the materialized balance by a grant: create the row on first credit or
 /// add to the existing balance, and read the new totals back so the caller can
@@ -390,6 +402,54 @@ impl PgBillingService {
         }
         Ok(())
     }
+
+    /// Debit this turn's `cost` from the org's credit balance inside the open
+    /// settle transaction, and append the matching `usage` ledger entry — but
+    /// only when the credit gate is active for the org and the turn cost a
+    /// nonzero amount. A missing `org_credits` row (a pre-grant / OSS org) is a
+    /// no-op. Usage debits carry a NULL idempotency key (not deduped); the gate
+    /// already bounds the single-turn overrun, so a post-paid dip is acceptable.
+    async fn debit_credits(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        org: OrgId,
+        cost: CostMicros,
+        now: DateTime<Utc>,
+    ) -> Result<(), BillingError> {
+        if !self.entitlements.credit_gate_active(org) || cost.get() == 0 {
+            return Ok(());
+        }
+        let debited: Option<(i64, i64, i64)> = sqlx::query_as(SETTLE_DEBIT_CREDITS)
+            .bind(org)
+            .bind(cost.get())
+            .bind(now)
+            .fetch_optional(&mut **tx)
+            .await?;
+        let Some((balance, granted, used)) = debited else {
+            return Ok(());
+        };
+        sqlx::query(INSERT_LEDGER_ENTRY)
+            .bind(CreditLedgerId::new())
+            .bind(org)
+            .bind(LedgerDelta::from(cost).get())
+            .bind(LedgerKind::Debit.as_str())
+            .bind(LedgerReason::Usage.as_str())
+            .bind(None::<&str>)
+            .bind(None::<UserId>)
+            .bind(now)
+            .execute(&mut **tx)
+            .await?;
+        // §6: the column CHECKs keep the totals non-negative; assert the balance
+        // identity so a corrupt materialization crashes here.
+        assert!(granted >= 0, "invariant: granted_total non-negative");
+        assert!(used >= 0, "invariant: used_total non-negative");
+        assert_eq!(
+            balance,
+            granted - used,
+            "invariant: balance == granted - used"
+        );
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -433,6 +493,9 @@ impl BillingService for PgBillingService {
             .await?;
         assert!(used >= 0, "invariant: period total never negative");
         let warned = fire_warn_once(&mut tx, org, period, used, cap, bps, now).await?;
+        // Credit debit (#154) in the *same* tx, so the cap usage and the credit
+        // balance move atomically. Inert under the OSS default (gate inactive).
+        self.debit_credits(&mut tx, org, cost, now).await?;
         tx.commit().await?;
         let span = tracing::Span::current();
         span.record("patom.billing.used_micro", used);
@@ -474,7 +537,7 @@ impl BillingService for PgBillingService {
         // Insert-gated idempotency: the unique `idempotency_key` makes the
         // INSERT the dedup point. Only when a *new* row is written do we move
         // the balance, so a replayed grant (same key) is a true no-op.
-        let inserted: Option<(CreditLedgerId,)> = sqlx::query_as(GRANT_INSERT_LEDGER)
+        let inserted: Option<(CreditLedgerId,)> = sqlx::query_as(INSERT_LEDGER_ENTRY)
             .bind(CreditLedgerId::new())
             .bind(org)
             .bind(delta)
