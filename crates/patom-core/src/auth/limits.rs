@@ -109,13 +109,17 @@ pub const MAX_ORG_NAME_BYTES: usize = 200;
 /// Maximum number of workspaces (orgs) a single user may **own** via
 /// self-service creation (`POST /me/orgs`).
 ///
-/// Each created workspace seeds a default agent, so an unbounded create
-/// path is a free-resource hole (CLAUDE.md §5). Ten is generous for any
-/// realistic person juggling distinct teams/clients while capping a
-/// runaway script. Counts owner rows only — being *invited* into many
-/// orgs is unbounded and not gated here. Raise deliberately if a real
-/// user hits it; deletion (`DELETE /me/org`) frees slots.
-pub const MAX_ORGS_PER_USER: i64 = 10;
+/// **One org per account** (#121, launch policy). Each new org draws a
+/// one-time `$2` signup credit grant (#154), so an account that could mint
+/// many workspaces could farm that grant. Capping owned workspaces at one
+/// per identity closes that — cheaper and simpler than the descoped signup-
+/// abuse guardrails (IP/velocity throttling, identity gating), whose real
+/// backstop is instead a hard budget cap at the inference provider plus
+/// reactive monitoring. Counts owner rows only — being *invited* into many
+/// orgs is unbounded and not gated here. Self-host auto-create passes no cap
+/// and stays unbounded. Deletion (`DELETE /me/org`) frees the slot; raise
+/// deliberately if the data later justifies it.
+pub const MAX_ORGS_PER_USER: i64 = 1;
 
 /// Maximum byte length of `PATOM_COOKIE_DOMAIN` (the shared cookie
 /// `Domain` attribute, e.g. `.patom.app`).

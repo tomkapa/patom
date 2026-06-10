@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use patom::auth::{JwtSigner, OrgId, UserId, limits::MAX_ORGS_PER_USER};
+use patom::auth::{JwtSigner, UserId, limits::MAX_ORGS_PER_USER};
 use patom::clock::SystemClock;
 use patom::http::{AppState, router};
 use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
@@ -244,9 +244,10 @@ async fn seed_org_less(pool: &PgPool, jwt: &JwtSigner) -> (UserId, String) {
 #[sqlx::test(migrations = "./migrations")]
 async fn create_org_cloud_makes_owner_with_default_agent(pool: PgPool) {
     let h = Harness::new(&pool, true).await;
-    let (status, body) = h
-        .create_org(&h.owner.cookie_header(), json!({ "name": "Atlas Labs" }))
-        .await;
+    // One org per account (#121): the caller must own no workspace yet, so
+    // start from a fresh org-less session rather than the pre-seeded owner.
+    let (user_id, cookie) = seed_org_less(&pool, &h.state.jwt).await;
+    let (status, body) = h.create_org(&cookie, json!({ "name": "Atlas Labs" })).await;
     assert_eq!(status, axum::http::StatusCode::CREATED, "body = {body}");
     assert_eq!(body.get("role").and_then(Value::as_str), Some("owner"));
     let new_org = body
@@ -260,7 +261,7 @@ async fn create_org_cloud_makes_owner_with_default_agent(pool: PgPool) {
         "SELECT count(*) FROM org_members WHERE org_id = $1 AND user_id = $2 AND role = 'owner'",
     )
     .bind(new_org_uuid)
-    .bind(h.owner.user_id)
+    .bind(user_id)
     .fetch_one(&pool)
     .await
     .expect("count owner");
@@ -275,42 +276,24 @@ async fn create_org_cloud_makes_owner_with_default_agent(pool: PgPool) {
     assert!(agent_count >= 1, "new org must have a seeded default agent");
 }
 
+/// One org per account (#121): an identity may own exactly one self-service
+/// workspace. The seeded owner already owns their single org, so a second
+/// `POST /me/orgs` is the (cap+1)-th create and must be rejected 409.
 #[sqlx::test(migrations = "./migrations")]
-async fn create_org_over_cap_returns_409(pool: PgPool) {
-    let h = Harness::new(&pool, true).await;
-    // The seeded owner already owns 1 org; top up to exactly the cap so
-    // the next create is the (cap+1)-th.
-    let now = chrono::Utc::now();
-    for i in 1..MAX_ORGS_PER_USER {
-        let org_id = OrgId::new();
-        let slug = format!(
-            "capfill-{i}-{}",
-            &uuid::Uuid::new_v4().simple().to_string()[..6]
-        );
-        sqlx::query("INSERT INTO organizations (id, name, slug, default_language, created_at, updated_at) VALUES ($1, $2, $3, 'en', $4, $4)")
-            .bind(org_id)
-            .bind("Capfill")
-            .bind(&slug)
-            .bind(now)
-            .execute(&pool)
-            .await
-            .expect("seed capfill org");
-        sqlx::query("INSERT INTO org_members (org_id, user_id, role, created_at) VALUES ($1, $2, 'owner', $3)")
-            .bind(org_id)
-            .bind(h.owner.user_id)
-            .bind(now)
-            .execute(&pool)
-            .await
-            .expect("seed capfill membership");
-    }
+async fn second_owned_org_per_account_returns_409(pool: PgPool) {
+    // Guard the policy constant itself so this test can't silently pass for
+    // the wrong reason if the cap is later raised.
+    assert_eq!(MAX_ORGS_PER_USER, 1, "launch policy is one org per account");
 
+    let h = Harness::new(&pool, true).await;
+    // The seeded owner already owns exactly one org — the cap.
     let (status, body) = h
         .create_org(&h.owner.cookie_header(), json!({ "name": "One Too Many" }))
         .await;
     assert_eq!(
         status,
         axum::http::StatusCode::CONFLICT,
-        "the (cap+1)-th create must be rejected; body = {body}"
+        "a second owned workspace must be rejected (one org per account); body = {body}"
     );
 }
 
@@ -492,8 +475,10 @@ async fn create_org_fires_signup_grant_under_cloud_policy(pool: PgPool) {
     let h =
         Harness::with_entitlements(&pool, true, common::billing::signup_grant_policy(2_000_000))
             .await;
+    // One org per account (#121): create from a fresh org-less session.
+    let (_user_id, cookie) = seed_org_less(&pool, &h.state.jwt).await;
     let (status, body) = h
-        .create_org(&h.owner.cookie_header(), json!({ "name": "Funded Labs" }))
+        .create_org(&cookie, json!({ "name": "Funded Labs" }))
         .await;
     assert_eq!(status, axum::http::StatusCode::CREATED, "body = {body}");
     let new_org = uuid::Uuid::parse_str(
@@ -528,9 +513,9 @@ async fn signup_grant_is_idempotent_on_replay(pool: PgPool) {
     let h =
         Harness::with_entitlements(&pool, true, common::billing::signup_grant_policy(2_000_000))
             .await;
-    let (_, body) = h
-        .create_org(&h.owner.cookie_header(), json!({ "name": "Retry Labs" }))
-        .await;
+    // One org per account (#121): create from a fresh org-less session.
+    let (_user_id, cookie) = seed_org_less(&pool, &h.state.jwt).await;
+    let (_, body) = h.create_org(&cookie, json!({ "name": "Retry Labs" })).await;
     let new_org = uuid::Uuid::parse_str(
         body.get("active_org_id")
             .and_then(Value::as_str)
@@ -561,8 +546,10 @@ async fn signup_grant_is_idempotent_on_replay(pool: PgPool) {
 async fn create_org_grants_nothing_under_oss_default(pool: PgPool) {
     // UnlimitedEntitlements → signup_grant is None → no org_credits row at all.
     let h = Harness::new(&pool, true).await;
+    // One org per account (#121): create from a fresh org-less session.
+    let (_user_id, cookie) = seed_org_less(&pool, &h.state.jwt).await;
     let (status, body) = h
-        .create_org(&h.owner.cookie_header(), json!({ "name": "Self Host Inc" }))
+        .create_org(&cookie, json!({ "name": "Self Host Inc" }))
         .await;
     assert_eq!(status, axum::http::StatusCode::CREATED, "body = {body}");
     let new_org = uuid::Uuid::parse_str(
