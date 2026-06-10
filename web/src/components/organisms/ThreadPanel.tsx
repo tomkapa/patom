@@ -38,6 +38,14 @@ const THREAD_PANEL_DEFAULT_WIDTH = 360;
 const THREAD_PANEL_MIN_WIDTH = 320;
 /** Upper bound: never let the panel eat more than ~half the viewport. */
 const THREAD_PANEL_MAX_FRACTION = 0.5;
+/** Within this many px of the tail counts as "at the bottom": close enough to
+ *  follow new replies, far enough to leave a deliberate scroll-up alone. */
+const TAIL_FOLLOW_THRESHOLD_PX = 120;
+
+/** Px between the scroll position and the tail. Zero at the very bottom. */
+function distanceToBottom(el: HTMLElement): number {
+  return el.scrollHeight - el.scrollTop - el.clientHeight;
+}
 
 /**
  * Pure renderer. Takes the merged `Bubble[]` from `useThreadView` and the
@@ -100,7 +108,17 @@ export function ThreadPanel({
   const [reply, setReply] = useState("");
   const replyRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // "Jump to latest" affordance: shown only once the reader has scrolled up
+  // away from the tail. Kept in sync by the scroll listener and the
+  // tail-follow effect below.
+  const [showJump, setShowJump] = useState(false);
   const trimmed = reply.trim();
+  const scrollToBottom = (behavior: ScrollBehavior) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+    setShowJump(false);
+  };
   const sendReply = () => {
     if (!trimmed || pending || !thread) return;
     onReply?.({ content: trimmed });
@@ -108,10 +126,7 @@ export function ThreadPanel({
     // Pin to bottom after the optimistic bubble has had a chance to render.
     // Two RAFs cover both React commit and the bubble's measured layout.
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const el = scrollRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-      });
+      requestAnimationFrame(() => scrollToBottom("auto"));
     });
   };
   const insertAt = () => insertAtCaret(replyRef, reply, setReply, "@");
@@ -143,25 +158,58 @@ export function ThreadPanel({
     return () => window.clearTimeout(timer);
   }, [focusRequestId, bubbles, onFocusConsumed]);
 
-  // Follow the tail only if the reader is already near the bottom — never
-  // yank a user who scrolled up to re-read older replies.
+  const threadId = thread?.thread_id ?? null;
   const lastSignature = useRef<string>("");
+  // The thread whose first content load we've already pinned to the bottom.
+  // History arrives asynchronously, so "thread changed" alone can't trigger
+  // the initial scroll — we'd pin an empty container, then treat the late
+  // history as the reader having scrolled up. We keep re-pinning until this
+  // thread actually has bubbles, then hand off to tail-follow.
+  const pinnedThreadRef = useRef<string | null>(null);
   const signature = useMemo(() => {
     const tail = bubbles[bubbles.length - 1];
     return `${bubbles.length}|${tail?.key ?? ""}|${tail?.text.length ?? 0}|${
       showThinking ? 1 : 0
     }`;
   }, [bubbles, showThinking]);
+
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    if (signature === lastSignature.current) return;
-    const distanceFromBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight;
-    const wasAtBottom = distanceFromBottom < 120;
+    const isNewThread = pinnedThreadRef.current !== threadId;
+    if (signature === lastSignature.current && !isNewThread) return;
     lastSignature.current = signature;
-    if (wasAtBottom) el.scrollTop = el.scrollHeight;
-  }, [signature]);
+
+    // Opening a thread lands the reader on the latest message, the way every
+    // chat view does. Keep snapping to the bottom across the empty → loaded
+    // transition; only mark the thread pinned once its history is present so
+    // async loads still settle at the bottom. Deep-link focus is handled by
+    // the dedicated effect above, which runs after paint and wins.
+    if (isNewThread) {
+      el.scrollTop = el.scrollHeight;
+      setShowJump(false);
+      if (bubbles.length > 0) pinnedThreadRef.current = threadId;
+      return;
+    }
+
+    // Same thread, new content: follow the tail only if the reader is already
+    // near the bottom — never yank someone who scrolled up to re-read older
+    // replies. When new content lands while they're up, surface the button.
+    if (distanceToBottom(el) < TAIL_FOLLOW_THRESHOLD_PX) {
+      el.scrollTop = el.scrollHeight;
+      setShowJump(false);
+    } else {
+      setShowJump(true);
+    }
+  }, [signature, threadId, bubbles.length]);
+
+  // Track manual scrolling so the jump button appears once the reader leaves
+  // the tail and disappears the moment they return to it.
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setShowJump(distanceToBottom(el) > TAIL_FOLLOW_THRESHOLD_PX);
+  };
 
   return (
     <aside
@@ -204,69 +252,90 @@ export function ThreadPanel({
         </Button>
       </header>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto scroll-thin">
-        {/* Root post */}
-        {rootMessage && (
-          <article className="flex gap-3 border-b border-[var(--color-line)] px-5 py-4">
-            <Monogram
-            name={rootMessage.name}
-            id={rootMessage.id}
-            size={28}
-            avatarUrl={rootMessage.avatar_url}
-          />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline gap-2">
-                <span className="font-[var(--font-display)] text-[13.5px] font-bold text-[var(--color-ink)]">
-                  {rootMessage.name}
-                </span>
-                <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
-                  {clockTime(rootMessage.ts)}
-                </span>
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="h-full overflow-y-auto scroll-thin"
+        >
+          {/* Root post */}
+          {rootMessage && (
+            <article className="flex gap-3 border-b border-[var(--color-line)] px-5 py-4">
+              <Monogram
+              name={rootMessage.name}
+              id={rootMessage.id}
+              size={28}
+              avatarUrl={rootMessage.avatar_url}
+            />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-2">
+                  <span className="font-[var(--font-display)] text-[13.5px] font-bold text-[var(--color-ink)]">
+                    {rootMessage.name}
+                  </span>
+                  <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
+                    {clockTime(rootMessage.ts)}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[13.5px] leading-[1.5] text-[var(--color-ink)]">
+                  {renderMentions(rootMessage.text, roster.map((m) => m.name))}
+                </p>
               </div>
-              <p className="mt-0.5 text-[13.5px] leading-[1.5] text-[var(--color-ink)]">
-                {renderMentions(rootMessage.text, roster.map((m) => m.name))}
-              </p>
-            </div>
-          </article>
-        )}
-
-        {/* Replies count bar */}
-        <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-1.5">
-          <span className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
-            {bubbles.length} {bubbles.length === 1 ? "reply" : "replies"}
-          </span>
-          <Button variant="ghost" size="xs" iconOnly aria-label="Notifications">
-            <Bell className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-
-        <div className="flex flex-col">
-          {bubbles.length === 0 && !showThinking && (
-            <p className="px-5 py-6 font-[var(--font-mono)] text-[12px] text-[var(--color-fg-muted)]">
-              No replies yet.
-            </p>
+            </article>
           )}
-          {bubbles.map((b) => {
-            const focused = highlightId === b.request_id;
-            return (
-              <div key={b.key}>
-                {b.kind === "human" ? (
-                  <HumanReplyCard bubble={b} roster={roster} focused={focused} />
-                ) : (
-                  <AgentReplyCard
-                    bubble={b}
-                    roster={roster}
-                    thread={thread}
-                    focused={focused}
-                    meta={metaByKey?.[b.key]}
-                  />
-                )}
-                {renderAfterBubble?.(b)}
-              </div>
-            );
-          })}
-          {showThinking && <ThinkingCard />}
+
+          {/* Replies count bar */}
+          <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-1.5">
+            <span className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-muted-foreground)]">
+              {bubbles.length} {bubbles.length === 1 ? "reply" : "replies"}
+            </span>
+            <Button variant="ghost" size="xs" iconOnly aria-label="Notifications">
+              <Bell className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+
+          <div className="flex flex-col">
+            {bubbles.length === 0 && !showThinking && (
+              <p className="px-5 py-6 font-[var(--font-mono)] text-[12px] text-[var(--color-fg-muted)]">
+                No replies yet.
+              </p>
+            )}
+            {bubbles.map((b) => {
+              const focused = highlightId === b.request_id;
+              return (
+                <div key={b.key}>
+                  {b.kind === "human" ? (
+                    <HumanReplyCard bubble={b} roster={roster} focused={focused} />
+                  ) : (
+                    <AgentReplyCard
+                      bubble={b}
+                      roster={roster}
+                      thread={thread}
+                      focused={focused}
+                      meta={metaByKey?.[b.key]}
+                    />
+                  )}
+                  {renderAfterBubble?.(b)}
+                </div>
+              );
+            })}
+            {showThinking && <ThinkingCard />}
+          </div>
         </div>
+
+        {showJump && (
+          <Button
+            variant="secondary"
+            size="md"
+            iconOnly
+            onClick={() => scrollToBottom("auto")}
+            aria-label="Jump to latest"
+            // Opaque card fill + shadow so it floats legibly over the feed —
+            // the transparent `secondary` default would let text bleed through.
+            className="absolute bottom-3 right-4 z-10 bg-[var(--color-card)] shadow-md"
+          >
+            <ChevronDown className="h-4 w-4" strokeWidth={2.25} />
+          </Button>
+        )}
       </div>
 
       {/* Reply composer */}
