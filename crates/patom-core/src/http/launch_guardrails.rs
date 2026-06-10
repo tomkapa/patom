@@ -160,6 +160,10 @@ impl SignupRateLimiter {
             while bucket.samples.front().is_some_and(|t| *t < cutoff) {
                 bucket.samples.pop_front();
             }
+            // Post-prune invariant: every surviving sample is inside the window
+            // (samples are append-only in non-decreasing clock order, so once
+            // the front is >= cutoff the rest are too).
+            assert!(bucket.samples.iter().all(|t| *t >= cutoff));
         }
         assert!(bucket.samples.len() <= SIGNUP_PER_IP_PER_WINDOW);
         if bucket.samples.len() >= SIGNUP_PER_IP_PER_WINDOW {
@@ -167,6 +171,9 @@ impl SignupRateLimiter {
         }
         bucket.samples.push_back(now);
 
+        // We inserted at most one new bucket since the last eviction kept the
+        // map at or below the cap, so we are at most one entry over it here.
+        assert!(guard.len() <= SIGNUP_RATE_BUCKETS_MAX + 1);
         if guard.len() > SIGNUP_RATE_BUCKETS_MAX {
             // LRU eviction, excluding the bucket we just touched. O(n) in the
             // map cap; bounded.
