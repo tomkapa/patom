@@ -251,10 +251,6 @@ pub enum SessionError {
 
 For axum handlers, the module's error type implements `IntoResponse` once, so HTTP mapping lives next to the variants and can't drift. `From` impls bridge sub-errors at the seams; the `?` operator is the only error-propagation mechanism in app code.
 
-## 13. PR hygiene.
-
-One logical change per PR. Mechanical refactors (rename, move, `cargo fmt`, edition bump) go in their own PR. Description answers *what changed, why now, what could break*. Mixed-concern PRs are reverted.
-
-## 14. Migration discipline.
+## 13. Migration discipline.
 
 Every schema change has a forward `sqlx` migration and a tested reversible rollback, both verified against a staging dump before merge. Online migrations (`NOT NULL` on a large table, column-type change, non-`CONCURRENTLY` index) require a written rollout plan in the PR. `sqlx migrate add -r <name>` for paired up/down; never edit a migration after it's merged; never squash.
