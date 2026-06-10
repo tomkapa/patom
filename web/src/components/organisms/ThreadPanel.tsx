@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   AlertTriangle,
   AtSign,
@@ -23,7 +30,7 @@ import { cn, insertAtCaret } from "../../lib/utils";
 import { useResizableWidth } from "../../hooks/useResizableWidth";
 import type { Mentionable, ThreadSummary, ToolCallEntry } from "../../types/api";
 import type { Bubble, RootMessage } from "../../lib/foldHistory";
-import { DEMO_REPLY_META } from "../../lib/demo";
+import { DEMO_REPLY_META, type DemoReplyMeta } from "../../lib/demo";
 import { renderMentions } from "../../lib/mentions";
 
 const THREAD_PANEL_WIDTH_KEY = "patom.threadPanel.width";
@@ -50,6 +57,8 @@ export function ThreadPanel({
   onReply,
   onClose,
   resizable = false,
+  metaByKey,
+  renderAfterBubble,
 }: {
   channel: string;
   thread: ThreadSummary | null;
@@ -57,6 +66,14 @@ export function ThreadPanel({
   roster: Mentionable[];
   bubbles: Bubble[];
   rootMessage?: RootMessage;
+  /** Per-bubble reasoning/tool/token decoration keyed by `bubble.key`.
+   *  Live chat leaves this undefined and the card falls back to the static
+   *  `DEMO_REPLY_META` fixtures; the `/demo` playback supplies a scripted map. */
+  metaByKey?: Record<string, DemoReplyMeta>;
+  /** Optional slot rendered immediately after each bubble's card. Used by the
+   *  demo to inject scripted chrome (trigger / guardrail / mention badges, the
+   *  Connect card). Undefined in live chat → the feed renders unchanged. */
+  renderAfterBubble?: (bubble: Bubble) => ReactNode;
   /** When inline (≥ lg), allow drag-to-resize from the left edge. In the
    *  compact overlay drawer the width is owned by the drawer, so leave off. */
   resizable?: boolean;
@@ -231,16 +248,21 @@ export function ThreadPanel({
           )}
           {bubbles.map((b) => {
             const focused = highlightId === b.request_id;
-            return b.kind === "human" ? (
-              <HumanReplyCard key={b.key} bubble={b} roster={roster} focused={focused} />
-            ) : (
-              <AgentReplyCard
-                key={b.key}
-                bubble={b}
-                roster={roster}
-                thread={thread}
-                focused={focused}
-              />
+            return (
+              <div key={b.key}>
+                {b.kind === "human" ? (
+                  <HumanReplyCard bubble={b} roster={roster} focused={focused} />
+                ) : (
+                  <AgentReplyCard
+                    bubble={b}
+                    roster={roster}
+                    thread={thread}
+                    focused={focused}
+                    meta={metaByKey?.[b.key]}
+                  />
+                )}
+                {renderAfterBubble?.(b)}
+              </div>
             );
           })}
           {showThinking && <ThinkingCard />}
@@ -379,6 +401,7 @@ function AgentReplyCard({
   roster,
   thread,
   focused,
+  meta: metaOverride,
 }: {
   bubble: Bubble;
   roster: Mentionable[];
@@ -386,11 +409,14 @@ function AgentReplyCard({
    *  flow can populate `resume_ctx` for the server-side auto-continue. */
   thread: ThreadSummary | null;
   focused?: boolean;
+  /** Scripted decoration from the `/demo` playback; falls back to the static
+   *  `DEMO_REPLY_META` fixtures keyed by `bubble.key`. */
+  meta?: DemoReplyMeta;
 }) {
   // Demo metas pre-populate reasoning + tool calls when the bubble doesn't
   // yet carry them — keeps the design-reference panel honest without
   // coupling demo fixtures to live wire data.
-  const meta = DEMO_REPLY_META[bubble.key];
+  const meta = metaOverride ?? DEMO_REPLY_META[bubble.key];
   const tools: (ToolCallEntry & { durationMs?: number })[] =
     bubble.tool_calls.length > 0
       ? bubble.tool_calls

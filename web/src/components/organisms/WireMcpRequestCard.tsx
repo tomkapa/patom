@@ -111,16 +111,52 @@ export function WireMcpRequestCard({
   };
 
   return (
+    <WireMcpRequestCardView
+      entry={entry}
+      iconUrl={visual?.icon_url}
+      wired={wired}
+      done={done}
+      submitting={submitting}
+      error={error}
+      onConnect={onConnect}
+    />
+  );
+}
+
+/** Presentational half of the wire-MCP card — no data hooks, so it renders
+ *  safely outside the authenticated app (e.g. the public `/demo` playback,
+ *  where `onConnect` advances the script instead of mutating anything). The
+ *  live `WireMcpRequestCard` wrapper resolves the catalog/server state and
+ *  hands it down here. `useT()` is i18n-only and stays. */
+export function WireMcpRequestCardView({
+  entry,
+  iconUrl,
+  wired,
+  done,
+  submitting,
+  onConnect,
+  error,
+}: {
+  entry: McpWireRequest;
+  iconUrl?: string;
+  /** Final state — the connection is live; show the connected badge + check. */
+  wired: boolean;
+  /** Created but credentials still pending (static_headers / none). */
+  done: boolean;
+  /** Connect in flight — disables the button and shows "connecting…". */
+  submitting: boolean;
+  onConnect: () => void;
+  error?: string | null;
+}) {
+  const { t } = useT();
+  const homepageUrl = safeHttpUrl(entry.homepage_url);
+  return (
     <aside
       className="mt-3 border border-[var(--color-line)] bg-[var(--color-paper-2)] px-4 py-3"
       data-testid="wire-mcp-request"
     >
       <header className="flex items-center gap-2.5">
-        <CatalogIcon
-          name={entry.display_name}
-          iconUrl={visual?.icon_url}
-          size={28}
-        />
+        <CatalogIcon name={entry.display_name} iconUrl={iconUrl} size={28} />
         <div className="flex-1">
           <div className="flex items-center gap-2">
             <span className="font-[var(--font-display)] text-[13px] font-semibold text-[var(--color-ink)]">

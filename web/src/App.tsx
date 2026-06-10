@@ -7,6 +7,7 @@ import { AgentTools } from "./pages/AgentTools";
 import { ScheduledTasks } from "./pages/ScheduledTasks";
 import { AgentsIndex } from "./pages/AgentsIndex";
 import { ChatView } from "./pages/ChatView";
+import { DemoView } from "./pages/DemoView";
 import { ConnectionDetail } from "./pages/ConnectionDetail";
 import { ConnectionsCatalog } from "./pages/ConnectionsCatalog";
 import { ConnectionsList } from "./pages/ConnectionsList";
@@ -34,6 +35,11 @@ export function App() {
           its own auth (a 401 bounces through /sign-in), so it is not
           wrapped in <Protected>. Must precede the /* catch-all. */}
       <Route path="/i/:slug/:token" element={<AcceptInvite />} />
+
+      {/* Public scripted product demo — synthetic data, no signup. Mounted
+          OUTSIDE <Protected> and before the /* catch-all so a logged-out
+          visitor reaches it without a /me round-trip or sign-in bounce. */}
+      <Route path="/demo" element={<DemoView />} />
 
       {/* First-time-user wizard. Wrapped in <Protected> so the JWT is
           resolved before any wizard step runs; the OnboardingGate
