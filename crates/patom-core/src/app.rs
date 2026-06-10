@@ -619,6 +619,7 @@ fn inject_runtime_config(raw_html: &str, posthog_key: &str, posthog_host: &str) 
 #[allow(clippy::too_many_lines)] // composition root: configuration + binding, not branching
 pub async fn build_server(
     settings: Settings,
+    entitlements: crate::entitlements::SharedEntitlements,
     cancel: CancellationToken,
 ) -> Result<Server, AppError> {
     let pieces = Collaborators::new(&settings).await?;
@@ -922,11 +923,11 @@ pub async fn build_server(
         assets,
         orgs: orgs_store,
         mailer,
-        // Entitlement policy (#134). This one line is the policy seam: the OSS
-        // build runs the permissive default; `patom-cloud` swaps it for a
-        // billing-backed impl behind `--features cloud` (#131), and a future
-        // self-host limit would swap it here too.
-        entitlements: Arc::new(crate::entitlements::UnlimitedEntitlements),
+        // Entitlement policy seam (#134/#154). Injected by the binary's
+        // composition root: the OSS / self-host build passes the permissive
+        // `UnlimitedEntitlements`; the cloud build (`--features cloud`) passes
+        // `patom_cloud::CloudEntitlements`. Nothing below branches on the build.
+        entitlements,
     };
 
     Ok(Server {

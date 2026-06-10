@@ -24,6 +24,7 @@ pub use types::{AgentLimit, Feature};
 use std::sync::Arc;
 
 use crate::auth::OrgId;
+use crate::billing::GrantAmount;
 
 /// Cheaply-cloneable, object-safe handle to the entitlement policy.
 ///
@@ -41,6 +42,18 @@ pub trait Entitlements: std::fmt::Debug + Send + Sync + 'static {
     /// Whether `org`'s plan licenses `feature`. `true` for everything under
     /// the OSS default.
     fn allows(&self, org: OrgId, feature: Feature) -> bool;
+
+    /// Whether the free-credit gate is enforced for `org` (#154). `false` under
+    /// the OSS default — self-host runs unmetered, so the credit balance is
+    /// ignored and a turn never blocks on it. A cloud build returns `true`, so
+    /// a zero balance gates further platform inference.
+    fn credit_gate_active(&self, org: OrgId) -> bool;
+
+    /// The automatic credit grant to seed a new `org` with, if any (#154). The
+    /// launch-period signup promo: `Some($2)` on cloud, `None` under the OSS
+    /// default and once the promo ends. Keyed `signup:{org_id}` by the caller
+    /// so it fires exactly once per org.
+    fn signup_grant(&self, org: OrgId) -> Option<GrantAmount>;
 }
 
 /// The permissive default: unlimited agents, every feature on.
@@ -60,6 +73,14 @@ impl Entitlements for UnlimitedEntitlements {
 
     fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
         true
+    }
+
+    fn credit_gate_active(&self, _org: OrgId) -> bool {
+        false
+    }
+
+    fn signup_grant(&self, _org: OrgId) -> Option<GrantAmount> {
+        None
     }
 }
 
@@ -110,9 +131,11 @@ mod tests {
         require_agent_capacity, require_feature,
     };
     use crate::auth::OrgId;
+    use crate::billing::GrantAmount;
 
     /// A restrictive policy for exercising the deny paths the OSS default
-    /// never takes.
+    /// never takes. Models a paid/cloud-shaped tier: the credit gate is active
+    /// and a signup grant fires.
     #[derive(Debug)]
     struct CappedEntitlements {
         max: u32,
@@ -124,6 +147,12 @@ mod tests {
         }
         fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
             false
+        }
+        fn credit_gate_active(&self, _org: OrgId) -> bool {
+            true
+        }
+        fn signup_grant(&self, _org: OrgId) -> Option<GrantAmount> {
+            Some(GrantAmount::try_from(2_000_000).expect("positive"))
         }
     }
 
@@ -137,6 +166,24 @@ mod tests {
     fn default_allows_every_feature() {
         let ent = UnlimitedEntitlements;
         assert!(ent.allows(OrgId::new(), Feature::Reserved));
+    }
+
+    #[test]
+    fn default_credit_gate_is_inactive_with_no_signup_grant() {
+        // OSS / self-host: credits are ignored and no grant fires.
+        let ent = UnlimitedEntitlements;
+        assert!(!ent.credit_gate_active(OrgId::new()));
+        assert!(ent.signup_grant(OrgId::new()).is_none());
+    }
+
+    #[test]
+    fn paid_policy_activates_gate_and_grants() {
+        let ent = CappedEntitlements { max: 1 };
+        assert!(ent.credit_gate_active(OrgId::new()));
+        assert_eq!(
+            ent.signup_grant(OrgId::new()).map(GrantAmount::get),
+            Some(2_000_000)
+        );
     }
 
     #[test]
