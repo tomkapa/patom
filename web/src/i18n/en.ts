@@ -639,6 +639,14 @@ const en = {
   "chat.error.budget_exceeded":
     "This workspace is over its monthly spend budget. An owner can raise the cap in Settings → Billing.",
 
+  // Chat — first-contact welcome (empty #general after onboarding)
+  "chat.welcome.title": "Hi {name}, welcome to Patom",
+  "chat.welcome.body":
+    "Your team is hired and waiting. Want them to introduce themselves and tell you which connections to set up? We'll drop a message to your Recruiter into the box below — review it and hit send.",
+  "chat.welcome.cta": "Introduce me to the team",
+  "chat.welcome.prefill":
+    "@recruiter Hi! Could you introduce me to my team — who does what and how they hand off — and tell me which connections I should set up?",
+
   // General tab
   "settings.general.title": "General",
   "settings.general.subtitle":

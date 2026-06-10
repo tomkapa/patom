@@ -1,11 +1,18 @@
 import { useMemo } from "react";
-import { Inbox, MessageSquareText } from "lucide-react";
+import { ArrowRight, Inbox, MessageSquareText, Sparkles } from "lucide-react";
 import { BoxedLabel } from "../molecules/BoxedLabel";
 import { EmptyState } from "../molecules/EmptyState";
 import { Monogram } from "../atoms/Monogram";
 import { renderMentions } from "../../lib/mentions";
 import { clockTime, dateLabel, longDate } from "../../lib/time";
+import { useT } from "../../i18n";
 import type { Mentionable, ThreadSummary } from "../../types/api";
+
+/** First-contact orientation, shown in place of the generic empty state
+ *  when the system channel (#general) has no threads yet — i.e. right
+ *  after onboarding. The CTA does NOT post; it drops a prefilled message
+ *  to the Recruiter into the composer so the user reviews and sends. */
+export type WelcomeContext = { userName: string; onIntro: () => void };
 
 type Item = { t: ThreadSummary; key: string };
 type DatedGroup = { label: string; items: Item[] };
@@ -17,12 +24,16 @@ export function MessageList({
   threads,
   roster,
   channel,
+  welcome,
   onOpenThread,
 }: {
   threads: ThreadSummary[];
   /** Names for mention highlighting + agent author resolution. */
   roster: Mentionable[];
   channel: string;
+  /** When present and the timeline is empty, show the first-contact
+   *  orientation instead of the generic empty state. Null elsewhere. */
+  welcome?: WelcomeContext | null;
   onOpenThread?: (threadId: string) => void;
 }) {
   const dated = useMemo<DatedGroup[]>(() => {
@@ -57,11 +68,15 @@ export function MessageList({
   if (threads.length === 0) {
     return (
       <div className="flex-1 grain-paper">
-        <EmptyState
-          icon={<Inbox className="h-5 w-5" />}
-          title={`Welcome to #${channel}`}
-          description="Say something below — tag an agent or a colleague with @, or just post."
-        />
+        {welcome ? (
+          <WelcomeCard welcome={welcome} />
+        ) : (
+          <EmptyState
+            icon={<Inbox className="h-5 w-5" />}
+            title={`Welcome to #${channel}`}
+            description="Say something below — tag an agent or a colleague with @, or just post."
+          />
+        )}
       </div>
     );
   }
@@ -83,6 +98,41 @@ export function MessageList({
             ))}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/** Rendered as a system-style notice in the empty system channel: a
+ *  greeting + a single CTA that prefills the composer (no auto-post). */
+function WelcomeCard({ welcome }: { welcome: WelcomeContext }) {
+  const { t } = useT();
+  return (
+    <div className="flex h-full items-center justify-center px-4 py-10">
+      <div className="flex w-full max-w-[440px] flex-col gap-4 border border-[var(--color-line-strong)] bg-[var(--color-card)] p-6 shadow-sm">
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-8 w-8 items-center justify-center bg-[var(--color-moss)] text-white">
+            <Sparkles className="h-4 w-4" />
+          </span>
+          <span className="font-[var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-[var(--color-moss)]">
+            Patom
+          </span>
+        </div>
+        <h2 className="font-[var(--font-display)] text-[19px] font-bold leading-tight text-[var(--color-ink)]">
+          {t("chat.welcome.title", { name: welcome.userName })}
+        </h2>
+        <p className="text-[13.5px] leading-[1.55] text-[var(--color-fg-secondary)]">
+          {t("chat.welcome.body")}
+        </p>
+        <button
+          type="button"
+          onClick={welcome.onIntro}
+          data-testid="welcome-intro-cta"
+          className="inline-flex items-center justify-center gap-2 self-start bg-[var(--color-moss)] px-4 py-2.5 text-[14px] font-semibold text-white transition-colors hover:bg-[var(--color-moss-deep)]"
+        >
+          {t("chat.welcome.cta")}
+          <ArrowRight className="h-3.5 w-3.5" />
+        </button>
       </div>
     </div>
   );

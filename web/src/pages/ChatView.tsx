@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChatLayout } from "../components/templates/ChatLayout";
 import { ChannelHeader } from "../components/organisms/ChannelHeader";
 import { Composer } from "../components/organisms/Composer";
-import { MessageList } from "../components/organisms/MessageList";
+import { MessageList, type WelcomeContext } from "../components/organisms/MessageList";
 import { Sidebar, dmKey } from "../components/organisms/Sidebar";
 import { ThreadPanel } from "../components/organisms/ThreadPanel";
 import { ChannelDialog } from "../components/organisms/ChannelDialog";
@@ -80,6 +80,12 @@ export function ChatView() {
   // Inline composer error — surfaces a 429 (over monthly spend budget) from
   // POST /prompts instead of swallowing it as a generic mutation rejection.
   const [composerError, setComposerError] = useState<string | null>(null);
+  // Text dropped into the composer from outside (the welcome CTA). The
+  // bumped nonce lets the same text be re-filled on a repeat click; the
+  // user reviews and sends — nothing posts on their behalf.
+  const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(
+    null,
+  );
 
   // Deep-link from the memory pane: `/?turn=<request_id>` opens the thread
   // that owns the turn and scrolls the matching bubble into view. The
@@ -180,6 +186,22 @@ export function ChatView() {
   const channelName = selectedChannel?.name ?? "general";
 
   const { t } = useT();
+
+  // First-contact orientation: in the system channel (#general) with an
+  // empty timeline — i.e. right after onboarding — offer the team intro.
+  // The CTA prefills a message to the Recruiter; it does not auto-post.
+  const welcome: WelcomeContext | null =
+    !isDemo && !selectedDm && selectedChannel?.system === true
+      ? {
+          userName:
+            me?.user.display_name ?? me?.user.email ?? "there",
+          onIntro: () =>
+            setPrefill((p) => ({
+              text: t("chat.welcome.prefill"),
+              nonce: (p?.nonce ?? 0) + 1,
+            })),
+        }
+      : null;
 
   // Engagement signal — one event each time a thread is opened (sidebar
   // click, deep-link, or just-sent root). Demo mode is excluded.
@@ -302,6 +324,7 @@ export function ChatView() {
             threads={threads}
             roster={roster}
             channel={channelLabel}
+            welcome={welcome}
             onOpenThread={(rootId) => {
               setSelectedRoot(rootId);
               setShowPanel(true);
@@ -330,6 +353,7 @@ export function ChatView() {
             channel={channelName}
             pending={submit.isPending}
             disabled={liveRoster.isLoading && !isDemo}
+            prefill={prefill}
             onSubmit={onSubmit}
           />
         </>
