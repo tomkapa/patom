@@ -848,11 +848,14 @@ pub async fn build_server(
         .posthog_host
         .as_deref()
         .unwrap_or("https://eu.i.posthog.com");
-    let config_script = format!(
-        r#"<script>window.__PATOM_CONFIG__={{"posthogKey":"{}","posthogHost":"{}"}};</script>"#,
-        posthog_key.replace('"', "\\\""),
-        posthog_host.replace('"', "\\\""),
-    );
+    let config_json = serde_json::to_string(&serde_json::json!({
+        "posthogKey": posthog_key,
+        "posthogHost": posthog_host,
+    }))
+    .expect("invariant: static config object serializes");
+    // Escape `</` to prevent an early `</script>` tag close in the HTML context.
+    let config_json = config_json.replace("</", "<\\/");
+    let config_script = format!("<script>window.__PATOM_CONFIG__={config_json};</script>");
     let index_html: Arc<str> =
         Arc::from(raw_html.replace("</head>", &format!("{config_script}</head>")));
 

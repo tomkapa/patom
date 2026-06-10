@@ -69,6 +69,9 @@ pub enum SettingsError {
     #[error("auth: PATOM_CORS_ALLOWED_ORIGINS has too many entries: max {max}, got {got}")]
     TooManyCorsOrigins { max: usize, got: usize },
 
+    #[error("analytics: PATOM_POSTHOG_HOST {raw:?} is not a valid http(s) origin ({reason})")]
+    InvalidPosthogHost { raw: String, reason: &'static str },
+
     #[error(
         "slack: partial configuration; set all of PATOM_SLACK_SIGNING_SECRET, \
          PATOM_SLACK_CLIENT_ID, PATOM_SLACK_CLIENT_SECRET — or none"
@@ -910,6 +913,15 @@ impl TryFrom<RawSettings> for Settings {
             raw.patom_email_from,
             raw.patom_email_from_name,
         )?;
+        let posthog_host = match raw.patom_posthog_host {
+            Some(ref h) => Some(parse_origin(h, &["http", "https"]).map_err(|reason| {
+                SettingsError::InvalidPosthogHost {
+                    raw: h.clone(),
+                    reason,
+                }
+            })?),
+            None => None,
+        };
         Ok(Self {
             providers,
             brave_search_api_key: raw.brave_search_api_key,
@@ -921,7 +933,7 @@ impl TryFrom<RawSettings> for Settings {
             auth,
             web_dist: raw.patom_web_dist,
             posthog_key: raw.patom_posthog_key,
-            posthog_host: raw.patom_posthog_host,
+            posthog_host,
             slack,
             object_storage,
             smtp,
