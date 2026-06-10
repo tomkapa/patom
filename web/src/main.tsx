@@ -14,7 +14,7 @@ import { init as initAnalytics } from "./lib/analytics";
 // Apply persisted theme before first paint to avoid a light→dark flash.
 applyTheme(getStoredTheme());
 
-// Boot product analytics. No-op unless BUN_PUBLIC_POSTHOG_KEY is set.
+// Boot product analytics. No-op unless PATOM_POSTHOG_KEY is set on the server.
 initAnalytics();
 
 const queryClient = new QueryClient();

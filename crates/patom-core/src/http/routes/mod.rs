@@ -23,13 +23,15 @@ mod threads;
 pub(super) mod turns;
 mod uploads;
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::http::{HeaderName, HeaderValue, Method, header};
 use axum::middleware;
 use tower_http::classify::{ServerErrorsAsFailures, SharedClassifier};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 use tower_http::trace::{MakeSpan, TraceLayer};
 
 use super::auth_layer::{require_principal, require_user};
@@ -195,12 +197,27 @@ pub fn router(state: AppState) -> Router {
         None => private,
     };
 
-    // Misses fall to `index.html` so React Router resolves deep links.
-    // Missing files at boot are intentionally not validated — surfacing
-    // as 404s catches a broken deploy at the smoke test instead of at
-    // startup, and lets the BE run without a built FE in dev.
-    let index_html = state.web_dist.join("index.html");
-    let spa_fallback = ServeDir::new(&state.web_dist).not_found_service(ServeFile::new(index_html));
+    // Misses fall to the pre-injected `index.html` so React Router resolves
+    // deep links. The HTML has `window.__PATOM_CONFIG__` already inline so
+    // the SPA picks up runtime config without a network roundtrip.
+    let html: Arc<str> = Arc::clone(&state.index_html);
+    let index_svc = tower::service_fn(
+        move |_req: axum::http::Request<axum::body::Body>| {
+            let html = Arc::clone(&html);
+            async move {
+                Ok::<_, std::convert::Infallible>(
+                    axum::http::Response::builder()
+                        .header(
+                            axum::http::header::CONTENT_TYPE,
+                            "text/html; charset=utf-8",
+                        )
+                        .body(axum::body::Body::from(html.as_bytes().to_vec()))
+                        .expect("invariant: response builder with known-valid header cannot fail"),
+                )
+            }
+        },
+    );
+    let spa_fallback = ServeDir::new(&state.web_dist).not_found_service(index_svc);
 
     Router::new()
         .merge(public)

@@ -153,6 +153,12 @@ pub struct AppState {
     pub rule_resolver: SharedOrgRuleResolver,
     /// SPA dist path the `ServeDir` fallback reads from.
     pub web_dist: PathBuf,
+    /// `index.html` with `window.__PATOM_CONFIG__` injected before `</head>`.
+    /// Built once at startup from `PATOM_POSTHOG_KEY` / `PATOM_POSTHOG_HOST`.
+    /// Empty string when `web_dist/index.html` does not exist (dev without a
+    /// built SPA). Served by the not-found fallback so React Router deep links
+    /// get the correct config without a network roundtrip.
+    pub index_html: Arc<str>,
     /// Slack adapter wiring — `Some` when `PATOM_SLACK_*` env vars are
     /// configured, `None` otherwise. Public webhook + OAuth handlers
     /// 404 cleanly when this is `None`, so deployments without Slack

@@ -121,6 +121,7 @@ impl PromptsHarness {
             language_resolver: common::lang::english_resolver(),
             rule_resolver: common::rule::empty_resolver(),
             web_dist: std::path::PathBuf::from("."),
+            index_html: std::sync::Arc::from(""),
             slack: None,
             assets: None,
             orgs: std::sync::Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),

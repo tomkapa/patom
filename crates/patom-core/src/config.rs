@@ -142,6 +142,14 @@ pub struct Settings {
     /// SPA dist path the `ServeDir` fallback reads from. Sourced from
     /// `PATOM_WEB_DIST` (default `./web/dist`).
     pub web_dist: PathBuf,
+    /// PostHog project API key (`PATOM_POSTHOG_KEY`). When `Some`, the server
+    /// injects it into `index.html` at startup so the SPA picks it up at
+    /// runtime without a network roundtrip. `None` (default) keeps analytics
+    /// a hard no-op — suitable for OSS / self-host deployments.
+    pub posthog_key: Option<String>,
+    /// PostHog ingest host (`PATOM_POSTHOG_HOST`). Defaults to the EU endpoint
+    /// when unset; only relevant when `posthog_key` is `Some`.
+    pub posthog_host: Option<String>,
     /// Slack adapter — present iff all `PATOM_SLACK_*` env vars are
     /// set. `None` is a first-class deployment (the Slack routes and
     /// background workers stay un-spawned).
@@ -541,6 +549,10 @@ struct RawSettings {
     patom_cors_allowed_origins: Option<String>,
     #[serde(default = "default_web_dist")]
     patom_web_dist: PathBuf,
+    #[serde(default)]
+    patom_posthog_key: Option<String>,
+    #[serde(default)]
+    patom_posthog_host: Option<String>,
 
     // Slack adapter — all three are optional individually but accepted
     // only as a complete set (validation in `TryFrom<RawSettings>`).
@@ -908,6 +920,8 @@ impl TryFrom<RawSettings> for Settings {
             default_timezone,
             auth,
             web_dist: raw.patom_web_dist,
+            posthog_key: raw.patom_posthog_key,
+            posthog_host: raw.patom_posthog_host,
             slack,
             object_storage,
             smtp,
@@ -1138,6 +1152,8 @@ mod tests {
             patom_cookie_domain: None,
             patom_cors_allowed_origins: None,
             patom_web_dist: default_web_dist(),
+            patom_posthog_key: None,
+            patom_posthog_host: None,
             patom_slack_signing_secret: None,
             patom_slack_client_id: None,
             patom_slack_client_secret: None,

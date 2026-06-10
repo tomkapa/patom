@@ -8,16 +8,14 @@
 import type { PostHog } from "posthog-js";
 import type { Org, User } from "../types/api";
 
-// `globalThis.__POSTHOG_*__` are replaced with string literals by `bun build`'s
-// `define` (see `build.ts`), sourced from the `BUN_PUBLIC_POSTHOG_*` env vars.
-// Reading through `globalThis` (not a bare identifier or `process.env`) keeps
-// an un-replaced reference — e.g. `bun dev`, which does no substitution and has
-// no `process` — a harmless `undefined`, so a key-less build never throws. See
-// `types/assets.d.ts` for the ambient declaration.
-const KEY = globalThis.__POSTHOG_KEY__ ?? "";
-// `||` (not `??`): an unset host inlines to "" in a build and is `undefined` in
-// `bun dev`; both fall through to the EU default, while a real value wins.
-const HOST = globalThis.__POSTHOG_HOST__ || "https://eu.i.posthog.com";
+// `window.__PATOM_CONFIG__` is injected by the Rust server into `index.html` at
+// startup (see `crates/patom-core/src/app.rs`). Reading it here is synchronous —
+// no fetch roundtrip. An absent or empty key keeps analytics a hard no-op, so
+// OSS / self-host deployments without `PATOM_POSTHOG_KEY` are unaffected.
+const KEY = window.__PATOM_CONFIG__?.posthogKey ?? "";
+// `||` (not `??`): the server injects "" when no host is configured; both ""
+// and `undefined` fall through to the EU default, while a real value wins.
+const HOST = window.__PATOM_CONFIG__?.posthogHost || "https://eu.i.posthog.com";
 
 /** `false` in OSS / self-host / local-dev builds (no key) — the no-op switch. */
 const enabled = KEY.length > 0;
