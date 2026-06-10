@@ -323,10 +323,15 @@ pub enum FailureReason {
     /// hit its loop budget.
     DagBudgetExceeded,
     /// The org reached its monthly spend cap mid-conversation. The per-turn
-    /// budget gate ([`crate::agent_core::AgentError::BudgetExceeded`]) stopped
+    /// budget gate ([`crate::agent_core::AgentError::BillingExceeded`]) stopped
     /// the turn before the provider call; surfaced as a terminal chunk so the
     /// caller learns the workspace ran out of budget.
-    BudgetExceeded,
+    BillingExceeded,
+    /// The org's free-credit balance is exhausted (#154). The per-turn credit
+    /// gate ([`crate::agent_core::AgentError::OutOfCredit`]) stopped the turn;
+    /// surfaced as a terminal chunk so the caller can prompt for a top-up or a
+    /// bring-your-own-key escape.
+    OutOfCredit,
     /// Agent produced text without ever calling `send_message`. The worker
     /// nudged it `MAX_PINGPONG_RETRIES` times and still got no delivery —
     /// the request is parked so the caller knows the model misbehaved.
@@ -345,7 +350,8 @@ impl FailureReason {
             Self::Poison => "poison",
             Self::Unrecoverable(_) => "unrecoverable",
             Self::DagBudgetExceeded => "dag_budget_exceeded",
-            Self::BudgetExceeded => "budget_exceeded",
+            Self::BillingExceeded => "billing_exceeded",
+            Self::OutOfCredit => "out_of_credit",
             Self::NoEgress => "no_egress",
         }
     }
@@ -361,7 +367,8 @@ impl fmt::Display for FailureReason {
             Self::Poison => f.write_str("max attempts exceeded"),
             Self::Unrecoverable(s) => write!(f, "unrecoverable: {s}"),
             Self::DagBudgetExceeded => f.write_str("dag turn budget exceeded"),
-            Self::BudgetExceeded => f.write_str("monthly spend budget exceeded"),
+            Self::BillingExceeded => f.write_str("monthly spend budget exceeded"),
+            Self::OutOfCredit => f.write_str("out of platform credit"),
             Self::NoEgress => {
                 f.write_str("agent produced text without calling send_message after retries")
             }

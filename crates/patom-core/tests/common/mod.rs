@@ -6,6 +6,7 @@
 #![allow(dead_code, unreachable_pub, clippy::expect_used, clippy::unwrap_used)]
 
 pub mod auth;
+pub mod billing;
 pub mod embedding;
 pub mod harness;
 pub mod lang;

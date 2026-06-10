@@ -214,9 +214,16 @@ export function ChatView() {
   // surface it inline rather than as a generic failure. Returns true if handled.
   const handleBudgetExceeded = (e: unknown): boolean => {
     if (e instanceof ApiError && e.status === 429) {
-      setComposerError(t("chat.error.budget_exceeded"));
+      setComposerError(t("chat.error.billing_exceeded"));
       // Monetization signal — the workspace hit its monthly spend cap.
       track("budget_warning_shown");
+      return true;
+    }
+    // 402 from POST /prompts means the workspace is out of free credit (#154) —
+    // surface the top-up / bring-your-own-key prompt inline.
+    if (e instanceof ApiError && e.status === 402) {
+      setComposerError(t("chat.error.out_of_credit"));
+      track("out_of_credit_shown");
       return true;
     }
     return false;

@@ -6,6 +6,11 @@ use chrono::{Datelike, NaiveDate};
 use crate::clock::SharedClock;
 use crate::types::ParseError;
 
+crate::uuid_newtype! {
+    /// Opaque identifier for an `org_credit_ledger` row.
+    pub CreditLedgerId
+}
+
 /// Money in micro-USD (`1e-6` USD). A single turn's cost is always `>= 0`;
 /// the period total is a `BIGINT` counter that never approaches `i64::MAX`
 /// for any realistic spend.
@@ -54,7 +59,7 @@ impl TryFrom<i128> for CostMicros {
 
 /// An org's configured monthly spend cap in micro-USD.
 ///
-/// The `org_budgets` column is `BIGINT CHECK (... > 0)` — the absence of a cap
+/// The `org_billing` column is `BIGINT CHECK (... > 0)` — the absence of a cap
 /// (unlimited) is modelled as `Option::None` at the boundary, never a stored
 /// zero, so a `MonthlyCapMicros` is always strictly positive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -77,6 +82,89 @@ impl TryFrom<i64> for MonthlyCapMicros {
             });
         }
         Ok(Self(raw))
+    }
+}
+
+/// A credit grant in micro-USD — strictly positive.
+///
+/// The input to [`crate::billing::BillingService::grant_credit`]. A grant only
+/// ever *adds* balance, so zero or negative is a programmer error rejected at
+/// the boundary (a "reversal" is a separate `Adjustment`/`Refund` entry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GrantAmount(i64);
+
+impl GrantAmount {
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for GrantAmount {
+    type Error = ParseError;
+    fn try_from(raw: i64) -> Result<Self, Self::Error> {
+        if raw <= 0 {
+            return Err(ParseError::OutOfRange {
+                field: "grant_amount_micro_usd",
+                detail: "must be > 0",
+            });
+        }
+        Ok(Self(raw))
+    }
+}
+
+/// A signed movement on the credit ledger in micro-USD: grants are positive,
+/// debits negative. The stored `org_credit_ledger.delta_micro_usd`.
+///
+/// Carries no positivity invariant (sign *is* the meaning), so the only bound
+/// is the `i64` range — but it is still a newtype so a raw `i64` can never be
+/// mistaken for a delta when appending an entry (§1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LedgerDelta(i64);
+
+impl LedgerDelta {
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl From<GrantAmount> for LedgerDelta {
+    /// A grant is a positive delta.
+    fn from(g: GrantAmount) -> Self {
+        Self(g.0)
+    }
+}
+
+impl From<CostMicros> for LedgerDelta {
+    /// A usage debit is a negative delta. `CostMicros` is `>= 0`, so negating
+    /// it can never overflow `i64`.
+    fn from(c: CostMicros) -> Self {
+        Self(-c.get())
+    }
+}
+
+crate::str_enum! {
+    /// The kind of a ledger entry. The label is the single source of truth for
+    /// the `org_credit_ledger.kind` CHECK constraint, the JSON wire format, and
+    /// tracing attributes (§10).
+    pub enum LedgerKind {
+        Grant      => "grant",
+        Debit      => "debit",
+        Adjustment => "adjustment",
+    }
+}
+
+crate::str_enum! {
+    /// Why a ledger entry exists. The label drives the `org_credit_ledger.reason`
+    /// CHECK constraint and the JSON wire format (§10).
+    pub enum LedgerReason {
+        SignupBonus => "signup_bonus",
+        Promo       => "promo",
+        Referral    => "referral",
+        Manual      => "manual",
+        Refund      => "refund",
+        Usage       => "usage",
     }
 }
 
@@ -158,7 +246,7 @@ impl TryFrom<u16> for WarnThresholdBps {
     }
 }
 
-/// First day of a billing month (UTC). The `org_budget_usage` primary key is
+/// First day of a billing month (UTC). The `org_billing_usage` primary key is
 /// `(org_id, period_start)`, so a new month is a fresh row whose counter
 /// starts at zero — that *is* the monthly reset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -239,6 +327,45 @@ mod tests {
                 .get(),
             10_000
         );
+    }
+
+    #[test]
+    fn grant_amount_rejects_non_positive() {
+        assert!(GrantAmount::try_from(0_i64).is_err());
+        assert!(GrantAmount::try_from(-1_i64).is_err());
+        assert_eq!(
+            GrantAmount::try_from(2_000_000_i64).expect("valid").get(),
+            2_000_000
+        );
+    }
+
+    #[test]
+    fn ledger_delta_signs_grant_positive_and_cost_negative() {
+        let grant = GrantAmount::try_from(2_000_000_i64).expect("valid");
+        assert_eq!(LedgerDelta::from(grant).get(), 2_000_000);
+
+        let cost = CostMicros::try_from(1_500_i64).expect("valid");
+        assert_eq!(LedgerDelta::from(cost).get(), -1_500);
+
+        // The zero-cost turn maps to a zero delta, not a panic.
+        assert_eq!(LedgerDelta::from(CostMicros::ZERO).get(), 0);
+    }
+
+    #[test]
+    fn ledger_kind_round_trips_through_str() {
+        for kind in LedgerKind::ALL.iter().copied() {
+            assert_eq!(LedgerKind::parse(kind.as_str()).expect("known"), kind);
+        }
+        assert!(LedgerKind::parse("nonsense").is_none());
+    }
+
+    #[test]
+    fn ledger_reason_round_trips_through_str() {
+        for reason in LedgerReason::ALL.iter().copied() {
+            assert_eq!(LedgerReason::parse(reason.as_str()).expect("known"), reason);
+        }
+        assert_eq!(LedgerReason::SignupBonus.as_str(), "signup_bonus");
+        assert!(LedgerReason::parse("bribe").is_none());
     }
 
     #[test]

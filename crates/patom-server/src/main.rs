@@ -25,7 +25,19 @@ async fn main() -> Result<()> {
     // the same token and react to Ctrl+C in lockstep.
     let cancel = CancellationToken::new();
 
-    let server = app::build_server(settings, cancel.clone())
+    // Entitlement policy seam (#154): the cloud binary injects the
+    // billing-backed `CloudEntitlements` (free-credit gate active, signup grant
+    // fires); the default OSS / self-host binary injects the permissive
+    // `UnlimitedEntitlements`. `patom-cloud` is linked only under `--features
+    // cloud`, so the OSS build never names it.
+    #[cfg(feature = "cloud")]
+    let entitlements: patom::entitlements::SharedEntitlements =
+        std::sync::Arc::new(patom_cloud::CloudEntitlements::new());
+    #[cfg(not(feature = "cloud"))]
+    let entitlements: patom::entitlements::SharedEntitlements =
+        std::sync::Arc::new(patom::entitlements::UnlimitedEntitlements);
+
+    let server = app::build_server(settings, entitlements, cancel.clone())
         .await
         .context("compose server")?;
 

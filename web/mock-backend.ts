@@ -199,7 +199,7 @@ const orgState = {
 // `/me`.
 let orgLess = false;
 
-// Mutable spend-budget state so GET/PUT /me/org/budget round-trips. Seeded
+// Mutable spend-budget state so GET/PUT /me/org/billing round-trips. Seeded
 // over the 80% warn threshold so the progress bar + warn chip are visible.
 const MONTH_START = (() => {
   const d = new Date();
@@ -2027,10 +2027,42 @@ const server = Bun.serve({
       return json({ default_rule: raw });
     }
     // ─── Spend budget (src/http/routes/org.rs) ────────────────────────
-    if (path === "/me/org/budget" && method === "GET") {
+    if (path === "/me/org/billing" && method === "GET") {
       return json(budgetView());
     }
-    if (path === "/me/org/budget" && method === "PUT") {
+    // ─── Free-credit balance + ledger (#154) ──────────────────────────
+    if (path === "/me/org/credits" && method === "GET") {
+      const day = 24 * 60 * 60 * 1000;
+      return json({
+        balance_micro_usd: 1_700_000,
+        granted_total_micro_usd: 2_000_000,
+        used_total_micro_usd: 300_000,
+        recent: [
+          {
+            id: "11111111-1111-1111-1111-111111111111",
+            delta_micro_usd: -120_000,
+            kind: "debit",
+            reason: "usage",
+            created_at: new Date(Date.now() - day).toISOString(),
+          },
+          {
+            id: "22222222-2222-2222-2222-222222222222",
+            delta_micro_usd: -180_000,
+            kind: "debit",
+            reason: "usage",
+            created_at: new Date(Date.now() - 2 * day).toISOString(),
+          },
+          {
+            id: "33333333-3333-3333-3333-333333333333",
+            delta_micro_usd: 2_000_000,
+            kind: "grant",
+            reason: "signup_bonus",
+            created_at: new Date(Date.now() - 5 * day).toISOString(),
+          },
+        ],
+      });
+    }
+    if (path === "/me/org/billing" && method === "PUT") {
       // Members are read-only; mirror the server's 403 role gate.
       if (me.role === "member") {
         return json({ error: "owner or admin role required" }, 403);

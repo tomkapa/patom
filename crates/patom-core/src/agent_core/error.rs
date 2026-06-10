@@ -59,7 +59,10 @@ pub enum AgentError {
     EmptyReply,
 
     #[error("org {org} has exhausted its monthly spend budget")]
-    BudgetExceeded { org: OrgId },
+    BillingExceeded { org: OrgId },
+
+    #[error("org {org} is out of platform credit")]
+    OutOfCredit { org: OrgId },
 
     #[error("agent cancelled")]
     Cancelled,

@@ -394,7 +394,7 @@ struct AgentFactoryPieces {
     tool_call_store: crate::tools::SharedToolCallStore,
     todos_store: SharedSessionTodoStore,
     turn_metrics_store: crate::agent_core::turn_metrics::SharedTurnMetricsStore,
-    budget: crate::budget::SharedBudgetService,
+    billing: crate::billing::SharedBillingService,
 }
 
 impl AgentFactoryPieces {
@@ -443,7 +443,7 @@ impl AgentFactoryPieces {
                 record.id,
                 record.current_prompt_version_id,
             )
-            .with_budget(self.budget.clone())
+            .with_billing(self.billing.clone())
             .build()
     }
 }
@@ -619,6 +619,7 @@ fn inject_runtime_config(raw_html: &str, posthog_key: &str, posthog_host: &str) 
 #[allow(clippy::too_many_lines)] // composition root: configuration + binding, not branching
 pub async fn build_server(
     settings: Settings,
+    entitlements: crate::entitlements::SharedEntitlements,
     cancel: CancellationToken,
 ) -> Result<Server, AppError> {
     let pieces = Collaborators::new(&settings).await?;
@@ -638,10 +639,12 @@ pub async fn build_server(
         Arc::new(crate::agents::StaticAgentModelResolver::new(settings.model));
     // Per-org spend budget — a thin (pool, clock) wrapper, built here so every
     // agent the factory materialises shares one handle (CLAUDE.md §9).
-    let budget: crate::budget::SharedBudgetService = Arc::new(crate::budget::PgBudgetService::new(
-        pieces.pool.clone(),
-        pieces.clock.clone(),
-    ));
+    let billing: crate::billing::SharedBillingService =
+        Arc::new(crate::billing::PgBillingService::with_entitlements(
+            pieces.pool.clone(),
+            pieces.clock.clone(),
+            entitlements.clone(),
+        ));
     let factory_pieces = AgentFactoryPieces {
         providers: pieces.providers.clone(),
         threads: pieces.threads.clone(),
@@ -654,7 +657,7 @@ pub async fn build_server(
         tool_call_store,
         todos_store: pieces.todos_store.clone(),
         turn_metrics_store,
-        budget: budget.clone(),
+        billing: billing.clone(),
     };
     let factory: AgentFactory = Arc::new(move |record| factory_pieces.build(record));
     let agents_registry: SharedAgents = Arc::new(CachedAgents::new(
@@ -888,7 +891,7 @@ pub async fn build_server(
         agents: pieces.agents,
         colleagues: pieces.colleagues,
         dag: pieces.dag,
-        budget,
+        billing,
         memory_store: pieces.memory_store.clone(),
         mcp_store: pieces.mcp_store,
         mcp_catalog: pieces.mcp_catalog,
@@ -923,11 +926,11 @@ pub async fn build_server(
         assets,
         orgs: orgs_store,
         mailer,
-        // Entitlement policy (#134). This one line is the policy seam: the OSS
-        // build runs the permissive default; `patom-cloud` swaps it for a
-        // billing-backed impl behind `--features cloud` (#131), and a future
-        // self-host limit would swap it here too.
-        entitlements: Arc::new(crate::entitlements::UnlimitedEntitlements),
+        // Entitlement policy seam (#134/#154). Injected by the binary's
+        // composition root: the OSS / self-host build passes the permissive
+        // `UnlimitedEntitlements`; the cloud build (`--features cloud`) passes
+        // `patom_cloud::CloudEntitlements`. Nothing below branches on the build.
+        entitlements,
     };
 
     Ok(Server {

@@ -70,7 +70,7 @@ async fn build_state(pool: PgPool) -> (AppState, patom::mcp::McpRefresher) {
         agents: agent_store,
         colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
         dag,
-        budget: Arc::new(patom::budget::PgBudgetService::new(
+        billing: Arc::new(patom::billing::PgBillingService::new(
             pool.clone(),
             SystemClock::shared(),
         )),

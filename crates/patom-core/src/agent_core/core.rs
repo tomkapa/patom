@@ -5,7 +5,7 @@ use tracing::{Instrument, debug};
 
 use crate::auth::Caller;
 use crate::background::{BackgroundTurnId, SharedBackgroundStore};
-use crate::budget::SharedBudgetService;
+use crate::billing::SharedBillingService;
 use crate::clock::SharedClock;
 use crate::hook::{HookChain, TurnContext};
 use crate::memory::SharedMemory;
@@ -66,10 +66,10 @@ pub struct Agent {
     turn_metrics: Option<TurnMetricsBinding>,
     /// Per-org spend-budget seam. `None` in agent_core unit tests (the gate
     /// and settle are skipped); the production factory binds
-    /// [`crate::budget::PgBudgetService`]. When present, the turn loop checks
+    /// [`crate::billing::PgBillingService`]. When present, the turn loop checks
     /// the org's cap before each provider call and settles the turn's cost
-    /// after — see [`Agent::budget_gate`] / [`Agent::budget_settle`].
-    budget: Option<SharedBudgetService>,
+    /// after — see [`Agent::billing_gate`] / [`Agent::billing_settle`].
+    billing: Option<SharedBillingService>,
     /// Thread-feed store backing the read-at-run chat path
     /// ([`Agent::reply_in_thread`]). `None` in agent_core unit tests that
     /// do not exercise the thread path; the production factory wires
@@ -96,7 +96,7 @@ impl Agent {
         tool_call_store: Option<SharedToolCallStore>,
         todos_store: Option<SharedSessionTodoStore>,
         turn_metrics: Option<TurnMetricsBinding>,
-        budget: Option<SharedBudgetService>,
+        billing: Option<SharedBillingService>,
         threads: Option<SharedThreadStore>,
         background: Option<SharedBackgroundStore>,
     ) -> Self {
@@ -114,7 +114,7 @@ impl Agent {
             tool_call_store,
             todos_store,
             turn_metrics,
-            budget,
+            billing,
             threads,
             background,
         }
@@ -171,8 +171,8 @@ impl Agent {
     pub(super) fn turn_metrics(&self) -> Option<&TurnMetricsBinding> {
         self.turn_metrics.as_ref()
     }
-    pub(super) fn budget(&self) -> Option<&SharedBudgetService> {
-        self.budget.as_ref()
+    pub(super) fn billing(&self) -> Option<&SharedBillingService> {
+        self.billing.as_ref()
     }
     /// Thread-feed store for the read-at-run chat path. The `expect` is a named
     /// assertion (CLAUDE.md §6): [`Agent::reply_in_thread`] is only reachable

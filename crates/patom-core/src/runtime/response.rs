@@ -81,7 +81,7 @@ pub enum ResponseChunk {
     /// Turn failed. `reason` is the failure's `Display` form so SSE clients see
     /// provider/hook detail; `code` is the low-cardinality label
     /// ([`FailureReason::label`]) so clients can branch on the failure kind
-    /// (e.g. render a dedicated message for `budget_exceeded`) without parsing
+    /// (e.g. render a dedicated message for `billing_exceeded`) without parsing
     /// the human text.
     Error { reason: String, code: String },
     /// Slow subscriber overflowed the broadcast buffer; reconnect with `Last-Event-ID`.

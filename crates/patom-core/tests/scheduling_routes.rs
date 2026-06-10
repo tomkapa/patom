@@ -92,7 +92,7 @@ impl Harness {
             agents: agents.clone(),
             colleagues: Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
-            budget: Arc::new(patom::budget::PgBudgetService::new(
+            billing: Arc::new(patom::billing::PgBillingService::new(
                 pool.clone(),
                 SystemClock::shared(),
             )),

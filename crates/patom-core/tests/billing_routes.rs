@@ -1,4 +1,4 @@
-//! End-to-end probe for the org spend-budget admin API (`/api/me/org/budget`).
+//! End-to-end probe for the org spend-budget admin API (`/api/me/org/billing`).
 //!
 //! Covers the contracts in issue #92:
 //!   1. GET returns the configured cap + warn threshold + current-period usage,
@@ -29,17 +29,17 @@ use tower::ServiceExt;
 
 mod common;
 use common::auth::{SeededPrincipal, seed_principal};
-use common::pg::{seed_period_usage, set_budget};
+use common::pg::{seed_period_usage, set_billing};
 
-const BUDGET_PATH: &str = "/api/me/org/budget";
+const BUDGET_PATH: &str = "/api/me/org/billing";
 
-struct BudgetHarness {
+struct BillingHarness {
     state: AppState,
     /// A fresh owner principal in its own org.
     owner: SeededPrincipal,
 }
 
-impl BudgetHarness {
+impl BillingHarness {
     async fn new(pool: &PgPool) -> Self {
         let clock = SystemClock::shared();
 
@@ -86,7 +86,7 @@ impl BudgetHarness {
             agents,
             colleagues: Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
-            budget: Arc::new(patom::budget::PgBudgetService::new(
+            billing: Arc::new(patom::billing::PgBillingService::new(
                 pool.clone(),
                 clock.clone(),
             )),
@@ -139,7 +139,7 @@ impl BudgetHarness {
     }
 
     /// GET the budget view as `principal`; returns (status, body json).
-    async fn get_budget(&self, principal: &SeededPrincipal) -> (axum::http::StatusCode, Value) {
+    async fn get_billing(&self, principal: &SeededPrincipal) -> (axum::http::StatusCode, Value) {
         let res = router(self.state.clone())
             .oneshot(
                 axum::http::Request::builder()
@@ -160,7 +160,7 @@ impl BudgetHarness {
     }
 
     /// PUT a budget config as `principal`; returns (status, body json).
-    async fn put_budget(
+    async fn put_billing(
         &self,
         principal: &SeededPrincipal,
         body: Value,
@@ -222,8 +222,8 @@ async fn seed_member(pool: &PgPool, org: OrgId, jwt: &JwtSigner) -> SeededPrinci
 
 #[sqlx::test]
 async fn get_budget_unlimited_when_no_config(pool: PgPool) {
-    let h = BudgetHarness::new(&pool).await;
-    let (status, body) = h.get_budget(&h.owner).await;
+    let h = BillingHarness::new(&pool).await;
+    let (status, body) = h.get_billing(&h.owner).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(body["monthly_cap_micro_usd"], Value::Null);
     assert_eq!(body["remaining_micro_usd"], Value::Null);
@@ -234,11 +234,11 @@ async fn get_budget_unlimited_when_no_config(pool: PgPool) {
 
 #[sqlx::test]
 async fn get_budget_returns_cap_and_current_usage(pool: PgPool) {
-    let h = BudgetHarness::new(&pool).await;
-    set_budget(&pool, h.owner.org_id, Some(5_000_000), 7000).await;
+    let h = BillingHarness::new(&pool).await;
+    set_billing(&pool, h.owner.org_id, Some(5_000_000), 7000).await;
     seed_period_usage(&pool, h.owner.org_id, 1_000_000).await;
 
-    let (status, body) = h.get_budget(&h.owner).await;
+    let (status, body) = h.get_billing(&h.owner).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(body["monthly_cap_micro_usd"], json!(5_000_000));
     assert_eq!(body["warn_threshold_bps"], json!(7000));
@@ -249,11 +249,11 @@ async fn get_budget_returns_cap_and_current_usage(pool: PgPool) {
 
 #[sqlx::test]
 async fn put_budget_sets_and_clears_cap(pool: PgPool) {
-    let h = BudgetHarness::new(&pool).await;
+    let h = BillingHarness::new(&pool).await;
 
     // Set a cap + threshold.
     let (status, body) = h
-        .put_budget(
+        .put_billing(
             &h.owner,
             json!({ "monthly_cap_micro_usd": 5_000_000, "warn_threshold_bps": 9000 }),
         )
@@ -263,12 +263,12 @@ async fn put_budget_sets_and_clears_cap(pool: PgPool) {
     assert_eq!(body["warn_threshold_bps"], json!(9000));
 
     // GET reflects it.
-    let (_, after_set) = h.get_budget(&h.owner).await;
+    let (_, after_set) = h.get_billing(&h.owner).await;
     assert_eq!(after_set["monthly_cap_micro_usd"], json!(5_000_000));
 
     // Clear the cap → unlimited.
     let (status, body) = h
-        .put_budget(
+        .put_billing(
             &h.owner,
             json!({ "monthly_cap_micro_usd": Value::Null, "warn_threshold_bps": 9000 }),
         )
@@ -277,22 +277,22 @@ async fn put_budget_sets_and_clears_cap(pool: PgPool) {
     assert_eq!(body["monthly_cap_micro_usd"], Value::Null);
     assert_eq!(body["remaining_micro_usd"], Value::Null);
 
-    let (_, after_clear) = h.get_budget(&h.owner).await;
+    let (_, after_clear) = h.get_billing(&h.owner).await;
     assert_eq!(after_clear["monthly_cap_micro_usd"], Value::Null);
 }
 
 #[sqlx::test]
 async fn put_budget_member_is_forbidden_403(pool: PgPool) {
-    let h = BudgetHarness::new(&pool).await;
+    let h = BillingHarness::new(&pool).await;
     let member = seed_member(&pool, h.owner.org_id, h.jwt()).await;
 
     // A member may read.
-    let (get_status, _) = h.get_budget(&member).await;
+    let (get_status, _) = h.get_billing(&member).await;
     assert_eq!(get_status, axum::http::StatusCode::OK);
 
     // But not write — the owner/admin role gate rejects it.
     let (status, _) = h
-        .put_budget(
+        .put_billing(
             &member,
             json!({ "monthly_cap_micro_usd": 5_000_000, "warn_threshold_bps": 8000 }),
         )
@@ -302,11 +302,11 @@ async fn put_budget_member_is_forbidden_403(pool: PgPool) {
 
 #[sqlx::test]
 async fn put_budget_invalid_value_400(pool: PgPool) {
-    let h = BudgetHarness::new(&pool).await;
+    let h = BillingHarness::new(&pool).await;
 
     // warn_threshold_bps out of range (0).
     let (status, _) = h
-        .put_budget(
+        .put_billing(
             &h.owner,
             json!({ "monthly_cap_micro_usd": 5_000_000, "warn_threshold_bps": 0 }),
         )
@@ -315,7 +315,7 @@ async fn put_budget_invalid_value_400(pool: PgPool) {
 
     // warn_threshold_bps above 10000.
     let (status, _) = h
-        .put_budget(
+        .put_billing(
             &h.owner,
             json!({ "monthly_cap_micro_usd": 5_000_000, "warn_threshold_bps": 10_001 }),
         )
@@ -324,7 +324,7 @@ async fn put_budget_invalid_value_400(pool: PgPool) {
 
     // Non-positive cap (0) — unlimited is `null`, never a stored zero.
     let (status, _) = h
-        .put_budget(
+        .put_billing(
             &h.owner,
             json!({ "monthly_cap_micro_usd": 0, "warn_threshold_bps": 8000 }),
         )
@@ -334,13 +334,13 @@ async fn put_budget_invalid_value_400(pool: PgPool) {
 
 #[sqlx::test]
 async fn budget_is_tenant_isolated(pool: PgPool) {
-    let h = BudgetHarness::new(&pool).await;
+    let h = BillingHarness::new(&pool).await;
     // Second principal in a different org.
     let other = seed_principal(&pool, h.jwt()).await;
 
     // Owner sets a cap on org A.
     let (status, _) = h
-        .put_budget(
+        .put_billing(
             &h.owner,
             json!({ "monthly_cap_micro_usd": 5_000_000, "warn_threshold_bps": 8000 }),
         )
@@ -348,16 +348,16 @@ async fn budget_is_tenant_isolated(pool: PgPool) {
     assert_eq!(status, axum::http::StatusCode::OK);
 
     // Org B's principal sees its own (unlimited) budget, never org A's cap.
-    let (status, other_body) = h.get_budget(&other).await;
+    let (status, other_body) = h.get_billing(&other).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(other_body["monthly_cap_micro_usd"], Value::Null);
 
     // Org A still reads its own cap.
-    let (_, owner_body) = h.get_budget(&h.owner).await;
+    let (_, owner_body) = h.get_billing(&h.owner).await;
     assert_eq!(owner_body["monthly_cap_micro_usd"], json!(5_000_000));
 
-    // Org A's principal cannot write org B's row: org_budgets for B stays empty.
-    let (b_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM org_budgets WHERE org_id = $1")
+    // Org A's principal cannot write org B's row: org_billing for B stays empty.
+    let (b_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM org_billing WHERE org_id = $1")
         .bind(other.org_id)
         .fetch_one(&pool)
         .await

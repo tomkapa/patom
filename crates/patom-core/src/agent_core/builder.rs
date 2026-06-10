@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::agents::AgentId;
 use crate::agents::prompt_versions::PromptVersionId;
 use crate::background::SharedBackgroundStore;
-use crate::budget::SharedBudgetService;
+use crate::billing::SharedBillingService;
 use crate::clock::{SharedClock, SystemClock};
 use crate::hook::HookChain;
 use crate::memory::SharedMemory;
@@ -40,7 +40,7 @@ pub struct AgentBuilder {
     tool_call_store: Option<SharedToolCallStore>,
     todos_store: Option<SharedSessionTodoStore>,
     turn_metrics: Option<TurnMetricsBinding>,
-    budget: Option<SharedBudgetService>,
+    billing: Option<SharedBillingService>,
     /// Thread-feed store backing the read-at-run chat path
     /// ([`Agent::reply_in_thread`]). `None` in unit tests that do not exercise
     /// the thread path; the production factory wires
@@ -82,7 +82,7 @@ impl AgentBuilder {
             tool_call_store: None,
             todos_store: None,
             turn_metrics: None,
-            budget: None,
+            billing: None,
             threads: None,
             background: None,
         })
@@ -194,12 +194,12 @@ impl AgentBuilder {
     /// Attach the per-org spend-budget service.
     ///
     /// Optional: agent_core unit tests skip it and the turn loop runs without a
-    /// cap. The production factory binds [`crate::budget::PgBudgetService`] so
+    /// cap. The production factory binds [`crate::billing::PgBillingService`] so
     /// every turn is gated against the org's monthly cap and its cost settled
-    /// afterwards (see [`crate::agent_core::core::Agent::budget_gate`]).
+    /// afterwards (see [`crate::agent_core::core::Agent::billing_gate`]).
     #[must_use]
-    pub fn with_budget(mut self, budget: SharedBudgetService) -> Self {
-        self.budget = Some(budget);
+    pub fn with_billing(mut self, billing: SharedBillingService) -> Self {
+        self.billing = Some(billing);
         self
     }
 
@@ -231,7 +231,7 @@ impl AgentBuilder {
             self.tool_call_store,
             self.todos_store,
             self.turn_metrics,
-            self.budget,
+            self.billing,
             self.threads,
             self.background,
         )

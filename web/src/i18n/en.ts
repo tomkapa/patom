@@ -636,8 +636,18 @@ const en = {
   "settings.budget.error": "Couldn't save the budget. Try again.",
 
   // Chat — budget exceeded
-  "chat.error.budget_exceeded":
+  "chat.error.billing_exceeded":
     "This workspace is over its monthly spend budget. An owner can raise the cap in Settings → Billing.",
+  "chat.error.out_of_credit":
+    "This workspace is out of free credit. Add a provider key or top up in Settings → Billing.",
+
+  // Settings — free credit (#154)
+  "settings.credits.title": "FREE CREDIT",
+  "settings.credits.helper": "Platform credit for AI usage",
+  "settings.credits.remaining": "{amount} remaining",
+  "settings.credits.granted": "Granted",
+  "settings.credits.used": "Used",
+  "settings.credits.empty": "No credit activity yet.",
 
   // Chat — first-contact welcome (empty #general after onboarding)
   "chat.welcome.title": "Hi {name}, welcome to Patom",

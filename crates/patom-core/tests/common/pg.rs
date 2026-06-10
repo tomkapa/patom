@@ -206,9 +206,9 @@ pub async fn human_sender(
 /// Configure (or update) an org's spend budget. `cap` of `None` is the
 /// unlimited case. Runs as the table owner (RLS-bypassing in the dev/test
 /// image), mirroring [`seed_tenant`].
-pub async fn set_budget(pool: &PgPool, org: OrgId, cap: Option<i64>, bps: i32) {
+pub async fn set_billing(pool: &PgPool, org: OrgId, cap: Option<i64>, bps: i32) {
     sqlx::query(
-        "INSERT INTO org_budgets (org_id, monthly_cap_micro_usd, warn_threshold_bps, created_at, updated_at)
+        "INSERT INTO org_billing (org_id, monthly_cap_micro_usd, warn_threshold_bps, created_at, updated_at)
          VALUES ($1, $2, $3, now(), now())
          ON CONFLICT (org_id) DO UPDATE
              SET monthly_cap_micro_usd = EXCLUDED.monthly_cap_micro_usd,
@@ -227,7 +227,7 @@ pub async fn set_budget(pool: &PgPool, org: OrgId, cap: Option<i64>, bps: i32) {
 /// drive an org over its cap before exercising a gate.
 pub async fn seed_period_usage(pool: &PgPool, org: OrgId, used: i64) {
     sqlx::query(
-        "INSERT INTO org_budget_usage (org_id, period_start, used_micro_usd, created_at, updated_at)
+        "INSERT INTO org_billing_usage (org_id, period_start, used_micro_usd, created_at, updated_at)
          VALUES ($1, date_trunc('month', now())::date, $2, now(), now())",
     )
     .bind(org)

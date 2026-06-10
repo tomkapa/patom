@@ -47,6 +47,12 @@ impl Entitlements for CappedTestEntitlements {
     fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
         false
     }
+    fn credit_gate_active(&self, _org: OrgId) -> bool {
+        true
+    }
+    fn signup_grant(&self, _org: OrgId) -> Option<patom::billing::GrantAmount> {
+        patom::billing::GrantAmount::try_from(2_000_000).ok()
+    }
 }
 
 struct Harness {
@@ -109,7 +115,7 @@ impl Harness {
             agents,
             colleagues: Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
-            budget: Arc::new(patom::budget::PgBudgetService::new(
+            billing: Arc::new(patom::billing::PgBillingService::new(
                 pool.clone(),
                 SystemClock::shared(),
             )),

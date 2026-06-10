@@ -171,7 +171,7 @@ pub(super) async fn submit_internal(
     // no posted row, no trigger. A plain post costs nothing and never 429s.
     if !agent_tags.is_empty() {
         state
-            .budget
+            .billing
             .check_or_fail_for_user(params.user_id, params.org_id)
             .await?;
     }

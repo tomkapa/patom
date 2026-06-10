@@ -44,8 +44,22 @@ struct Harness {
 
 impl Harness {
     /// `cloud` toggles the build-mode flag the create endpoint + org-less
-    /// callback branch on.
+    /// callback branch on. Uses the permissive `UnlimitedEntitlements` (no
+    /// signup grant).
     async fn new(pool: &PgPool, cloud: bool) -> Self {
+        Self::with_entitlements(
+            pool,
+            cloud,
+            Arc::new(patom::entitlements::UnlimitedEntitlements),
+        )
+        .await
+    }
+
+    async fn with_entitlements(
+        pool: &PgPool,
+        cloud: bool,
+        entitlements: patom::entitlements::SharedEntitlements,
+    ) -> Self {
         let clock = SystemClock::shared();
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
@@ -91,9 +105,10 @@ impl Harness {
             agents,
             colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
-            budget: Arc::new(patom::budget::PgBudgetService::new(
+            billing: Arc::new(patom::billing::PgBillingService::with_entitlements(
                 pool.clone(),
                 clock.clone(),
+                entitlements.clone(),
             )),
             memory_store,
             mcp_store,
@@ -133,7 +148,7 @@ impl Harness {
             assets: None,
             orgs: Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
             mailer: Arc::new(patom::orgs::LogMailer),
-            entitlements: Arc::new(patom::entitlements::UnlimitedEntitlements),
+            entitlements,
         };
 
         Self { state, owner }
@@ -461,4 +476,103 @@ async fn org_details_surface_default_rule_round_trip(pool: PgPool) {
     let (status, body) = h.get(ORG_PATH, &cookie).await;
     assert_eq!(status, axum::http::StatusCode::OK, "body = {body}");
     assert_eq!(body.get("default_rule"), Some(&Value::Null));
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// #154 S8 — signup credit grant on org creation.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Read the materialized credit balance for an org (RLS-bypassed owner pool).
+async fn org_credits(pool: &PgPool, org: uuid::Uuid) -> Option<(i64, i64, i64)> {
+    common::billing::read_org_credits(pool, patom::auth::OrgId::from(org)).await
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_org_fires_signup_grant_under_cloud_policy(pool: PgPool) {
+    let h =
+        Harness::with_entitlements(&pool, true, common::billing::signup_grant_policy(2_000_000))
+            .await;
+    let (status, body) = h
+        .create_org(&h.owner.cookie_header(), json!({ "name": "Funded Labs" }))
+        .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED, "body = {body}");
+    let new_org = uuid::Uuid::parse_str(
+        body.get("active_org_id")
+            .and_then(Value::as_str)
+            .expect("active_org_id"),
+    )
+    .expect("uuid");
+
+    // The org is seeded with the $2 signup grant.
+    let (balance, granted, used) = org_credits(&pool, new_org).await.expect("credits row");
+    assert_eq!(balance, 2_000_000);
+    assert_eq!(granted, 2_000_000);
+    assert_eq!(used, 0);
+
+    // Exactly one signup_bonus ledger entry, keyed deterministically.
+    let (entries, key): (i64, String) = sqlx::query_as(
+        "SELECT count(*)::bigint, max(idempotency_key) FROM org_credit_ledger \
+         WHERE org_id = $1 AND reason = 'signup_bonus'",
+    )
+    .bind(new_org)
+    .fetch_one(&pool)
+    .await
+    .expect("ledger");
+    assert_eq!(entries, 1);
+    assert_eq!(key, format!("signup:{new_org}"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn signup_grant_is_idempotent_on_replay(pool: PgPool) {
+    // A retry of the grant (same deterministic key) must not double-credit.
+    let h =
+        Harness::with_entitlements(&pool, true, common::billing::signup_grant_policy(2_000_000))
+            .await;
+    let (_, body) = h
+        .create_org(&h.owner.cookie_header(), json!({ "name": "Retry Labs" }))
+        .await;
+    let new_org = uuid::Uuid::parse_str(
+        body.get("active_org_id")
+            .and_then(Value::as_str)
+            .expect("active_org_id"),
+    )
+    .expect("uuid");
+
+    // Re-fire the exact signup grant the handler issued.
+    let key = patom::runtime::IdempotencyKey::try_from(format!("signup:{new_org}")).expect("key");
+    h.state
+        .billing
+        .grant_credit(
+            patom::auth::OrgId::from(new_org),
+            patom::billing::GrantAmount::try_from(2_000_000).expect("amount"),
+            patom::billing::LedgerReason::SignupBonus,
+            &key,
+            None,
+        )
+        .await
+        .expect("replay grant");
+
+    let (balance, granted, _used) = org_credits(&pool, new_org).await.expect("credits row");
+    assert_eq!(balance, 2_000_000, "replay must not double-credit");
+    assert_eq!(granted, 2_000_000);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_org_grants_nothing_under_oss_default(pool: PgPool) {
+    // UnlimitedEntitlements → signup_grant is None → no org_credits row at all.
+    let h = Harness::new(&pool, true).await;
+    let (status, body) = h
+        .create_org(&h.owner.cookie_header(), json!({ "name": "Self Host Inc" }))
+        .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED, "body = {body}");
+    let new_org = uuid::Uuid::parse_str(
+        body.get("active_org_id")
+            .and_then(Value::as_str)
+            .expect("active_org_id"),
+    )
+    .expect("uuid");
+    assert!(
+        org_credits(&pool, new_org).await.is_none(),
+        "OSS default must not seed credits"
+    );
 }
