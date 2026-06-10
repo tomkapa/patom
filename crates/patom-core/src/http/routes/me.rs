@@ -15,6 +15,8 @@ use crate::auth::{
     Role, User, UserSession,
     limits::{COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_TOKEN_MAX_LEN, MAX_ORGS_PER_USER},
 };
+use crate::billing::LedgerReason;
+use crate::runtime::IdempotencyKey;
 
 use super::super::csrf::{build_csrf_cookie, build_expired_csrf_cookie, mint_csrf_token};
 // `build_session_cookie` lives in the sibling `auth` route module; the
@@ -203,6 +205,24 @@ async fn create_org(
         .await?;
     // Same seeding policy the OAuth callback uses (one copy).
     super::auth::seed_recruiter(&state, new_org.id, language).await?;
+
+    // Signup credit grant (#154): seed the org with the configured launch-period
+    // grant. Idempotent on the deterministic `signup:{org_id}` key, so a retry of
+    // this create can't double-credit. Inert under the OSS default, where
+    // `signup_grant` returns `None`; only a cloud-tier policy fires it.
+    if let Some(amount) = state.entitlements.signup_grant(new_org.id) {
+        let key = IdempotencyKey::try_from(format!("signup:{}", new_org.id.as_uuid()))?;
+        state
+            .billing
+            .grant_credit(
+                new_org.id,
+                amount,
+                LedgerReason::SignupBonus,
+                &key,
+                Some(session.user_id),
+            )
+            .await?;
+    }
 
     // Re-mint the session into the new org so the next request operates
     // there — mirrors `switch_org`.
