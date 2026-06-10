@@ -6,6 +6,11 @@ use chrono::{Datelike, NaiveDate};
 use crate::clock::SharedClock;
 use crate::types::ParseError;
 
+crate::uuid_newtype! {
+    /// Opaque identifier for an `org_credit_ledger` row.
+    pub CreditLedgerId
+}
+
 /// Money in micro-USD (`1e-6` USD). A single turn's cost is always `>= 0`;
 /// the period total is a `BIGINT` counter that never approaches `i64::MAX`
 /// for any realistic spend.

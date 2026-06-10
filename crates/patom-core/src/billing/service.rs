@@ -17,10 +17,14 @@ use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::auth::{OrgId, UserId, begin_as_user, begin_privileged};
 use crate::clock::SharedClock;
+use crate::runtime::IdempotencyKey;
 
 use super::error::BillingError;
 use super::limits::DEFAULT_WARN_BPS;
-use super::types::{BillingPeriod, CostMicros, MonthlyCapMicros, WarnThresholdBps};
+use super::types::{
+    BillingPeriod, CostMicros, CreditLedgerId, GrantAmount, LedgerDelta, LedgerKind, LedgerReason,
+    MonthlyCapMicros, WarnThresholdBps,
+};
 
 /// Atomically add `cost` to the current period and read back the new total
 /// alongside the org's config in one round-trip. A `LEFT JOIN` on `org_billing`
@@ -75,6 +79,29 @@ const WRITE_CONFIG: &str = "
             warn_threshold_bps    = EXCLUDED.warn_threshold_bps,
             updated_at            = EXCLUDED.updated_at";
 
+/// Append a grant entry, deduped by `idempotency_key`. `RETURNING id` yields a
+/// row only when a *new* entry was written — `ON CONFLICT DO NOTHING` returns
+/// nothing on replay, which is exactly the signal to skip the balance move.
+const GRANT_INSERT_LEDGER: &str = "
+    INSERT INTO org_credit_ledger
+        (id, org_id, delta_micro_usd, kind, reason, idempotency_key, actor, created_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    ON CONFLICT (idempotency_key) DO NOTHING
+    RETURNING id";
+
+/// Move the materialized balance by a grant: create the row on first credit or
+/// add to the existing balance, and read the new totals back so the caller can
+/// assert the `balance == granted − used` invariant (§6).
+const GRANT_UPSERT_CREDITS: &str = "
+    INSERT INTO org_credits
+        (org_id, balance_micro_usd, granted_total_micro_usd, used_total_micro_usd, updated_at)
+    VALUES ($1, $2, $2, 0, $3)
+    ON CONFLICT (org_id) DO UPDATE
+        SET balance_micro_usd       = org_credits.balance_micro_usd + EXCLUDED.balance_micro_usd,
+            granted_total_micro_usd = org_credits.granted_total_micro_usd + EXCLUDED.granted_total_micro_usd,
+            updated_at              = EXCLUDED.updated_at
+    RETURNING balance_micro_usd, granted_total_micro_usd, used_total_micro_usd";
+
 /// One org's budget configuration plus its current-period spend.
 ///
 /// For the admin read API. `cap_micro_usd == None` is the unlimited case;
@@ -109,6 +136,21 @@ pub trait BillingService: fmt::Debug + Send + Sync {
     /// Post-paid settle (privileged, worker-side). Adds `cost` to the current
     /// period atomically and fires the soft-warn alert once per period.
     async fn settle(&self, org: OrgId, cost: CostMicros) -> Result<(), BillingError>;
+
+    /// Idempotently grant `amount` credit to `org` (privileged). Appends a
+    /// `grant` ledger entry keyed by `key` and moves the materialized balance,
+    /// both in one transaction. A repeat call with the same `key` is a no-op —
+    /// the unique ledger insert gates the balance move — so a retried
+    /// signup/promo grant never double-credits. `actor` is the user behind the
+    /// grant, or `None` for a system grant.
+    async fn grant_credit(
+        &self,
+        org: OrgId,
+        amount: GrantAmount,
+        reason: LedgerReason,
+        key: &IdempotencyKey,
+        actor: Option<UserId>,
+    ) -> Result<(), BillingError>;
 
     /// Tenant-scoped read for the admin GET. Opens `begin_as_user` so the read
     /// is RLS-filtered to the acting principal's org. Returns the configured cap
@@ -335,6 +377,69 @@ impl BillingService for PgBillingService {
                 "org crossed its soft spend warn threshold this period"
             );
         }
+        Ok(())
+    }
+
+    #[tracing::instrument(
+        skip_all,
+        name = "billing.grant",
+        fields(
+            patom.org.id = %org,
+            patom.billing.grant_micros = amount.get(),
+            patom.billing.reason = reason.as_str(),
+            patom.billing.granted = tracing::field::Empty,
+        ),
+    )]
+    async fn grant_credit(
+        &self,
+        org: OrgId,
+        amount: GrantAmount,
+        reason: LedgerReason,
+        key: &IdempotencyKey,
+        actor: Option<UserId>,
+    ) -> Result<(), BillingError> {
+        let now = self.clock.now_utc();
+        let delta = LedgerDelta::from(amount).get();
+        // §6: a grant is always a positive movement (GrantAmount is `> 0`).
+        assert!(delta > 0, "invariant: a grant is a positive delta");
+        let mut tx = begin_privileged(&self.pool).await?;
+        // Insert-gated idempotency: the unique `idempotency_key` makes the
+        // INSERT the dedup point. Only when a *new* row is written do we move
+        // the balance, so a replayed grant (same key) is a true no-op.
+        let inserted: Option<(CreditLedgerId,)> = sqlx::query_as(GRANT_INSERT_LEDGER)
+            .bind(CreditLedgerId::new())
+            .bind(org)
+            .bind(delta)
+            .bind(LedgerKind::Grant.as_str())
+            .bind(reason.as_str())
+            .bind(key.as_str())
+            .bind(actor)
+            .bind(now)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let granted = if inserted.is_some() {
+            let (balance, granted_total, used_total): (i64, i64, i64) =
+                sqlx::query_as(GRANT_UPSERT_CREDITS)
+                    .bind(org)
+                    .bind(amount.get())
+                    .bind(now)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            // §6: the column CHECKs keep the totals non-negative; assert the
+            // balance identity so a corrupt materialization crashes here.
+            assert!(granted_total >= 0, "invariant: granted_total non-negative");
+            assert!(used_total >= 0, "invariant: used_total non-negative");
+            assert_eq!(
+                balance,
+                granted_total - used_total,
+                "invariant: balance == granted - used"
+            );
+            true
+        } else {
+            false
+        };
+        tx.commit().await?;
+        tracing::Span::current().record("patom.billing.granted", granted);
         Ok(())
     }
 
