@@ -7,7 +7,7 @@ use crate::agents::prompt_versions::PromptVersionId;
 use crate::auth::OrgId;
 use crate::provider::{Model, ProviderId};
 use crate::runtime::{PromptRequestId, RequestKind};
-use crate::session::SessionId;
+use crate::threads::AgentThreadId;
 use crate::types::ParseError;
 
 crate::uuid_newtype! {
@@ -146,7 +146,9 @@ pub struct TurnMetricsRow {
     /// many rows.
     pub request_id: PromptRequestId,
     pub org_id: OrgId,
-    pub session_id: SessionId,
+    /// FK to `agent_thread_state(id)` — the chat turn's participation id.
+    /// Sourced from `ToolCallContext.state_id`; background turns skip recording.
+    pub state_id: AgentThreadId,
     pub agent_id: AgentId,
     pub prompt_version_id: PromptVersionId,
     pub kind: RequestKind,

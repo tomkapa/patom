@@ -14,6 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId};
+use crate::channels::ChannelId;
 use crate::runtime::PromptRequestId;
 use crate::types::{PROMPT_MAX_BYTES, ParseError};
 
@@ -579,6 +580,10 @@ pub struct ScheduledTaskRecord {
     pub owner_agent_id: AgentId,
     pub org_id: OrgId,
     pub created_by_user_id: UserId,
+    /// Target channel the fire creates its thread in (migration 63). `None` ⇒
+    /// the fired thread is a DM private to the task owner. Inherited from the
+    /// thread the `schedule_task` tool ran in.
+    pub channel_id: Option<ChannelId>,
     pub name: ScheduledTaskName,
     pub prompt: ScheduledPrompt,
     pub schedule: ScheduleSpec,

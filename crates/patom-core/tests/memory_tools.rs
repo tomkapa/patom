@@ -17,11 +17,11 @@ use patom::clock::{SharedClock, SystemClock};
 use patom::memory::{
     AgentMemory, MAX_MEMORY_MUTATIONS_PER_TURN, MemoryContent, MemoryHandle, MemoryKind,
     MemoryMutation, MemorySectionLoader, MemoryState, MutationSource, PgMemoryStore,
-    SessionMemoryCache, SharedMemoryStore,
+    SharedMemoryStore,
 };
 use patom::prompts::Prompts;
-use patom::runtime::PromptRequestId;
-use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::runtime::{ClaimKey, PromptRequestId};
+use patom::threads::AgentThreadId;
 use patom::tools::system::{
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
 };
@@ -31,7 +31,7 @@ use serde_json::json;
 
 mod common;
 use common::lang::StaticOrgLanguageResolver;
-use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
+use common::pg::{seed_agent_thread_state, seed_prompt_request, seed_tenant};
 use common::rule::StaticOrgRuleResolver;
 use sqlx::PgPool;
 
@@ -39,7 +39,8 @@ struct Fixture {
     deps: MemoryToolDeps,
     loader: MemorySectionLoader,
     store: SharedMemoryStore,
-    session: patom::session::SessionId,
+    state_id: AgentThreadId,
+    claim_key: ClaimKey,
     agent_id: patom::agents::AgentId,
     agent_colleague_id: patom::colleagues::ColleagueId,
     user_id: patom::auth::UserId,
@@ -50,25 +51,21 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let clock: SharedClock = SystemClock::shared();
     let embeddings = common::embedding::FakeEmbeddingProvider::shared();
     let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let prompt_cache = AgentPromptCache::new(8, Duration::from_mins(1), clock.clone());
     let store: SharedMemoryStore = Arc::new(PgMemoryStore::new(
         pool.clone(),
         clock.clone(),
         embeddings.clone(),
     ));
-    let session_cache = SessionMemoryCache::new(8, Duration::from_mins(1), clock.clone());
     let colleagues: patom::colleagues::SharedColleagueStore =
         Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
     let roster_cache =
         patom::colleagues::ColleagueRosterCache::new(16, Duration::from_mins(1), clock.clone());
     let loader = MemorySectionLoader::new(
         store.clone(),
-        sessions.clone(),
         colleagues.clone(),
         roster_cache.clone(),
         embeddings,
-        session_cache,
     );
     let prompts = Arc::new(Prompts::load());
     let language_resolver: SharedOrgLanguageResolver =
@@ -85,14 +82,7 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
         rule_resolver,
         clock,
     );
-    let session = human_to_agent_session(
-        pool,
-        sessions.as_ref(),
-        seed.agent_id,
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
+    let state_id = seed_agent_thread_state(pool, seed.org_id, seed.agent_id).await;
     let agent_colleague_id =
         patom::colleagues::resolve_agent_colleague(pool, seed.org_id, seed.agent_id)
             .await
@@ -101,7 +91,8 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
         deps: MemoryToolDeps::new(loader.clone()),
         loader,
         store,
-        session,
+        state_id,
+        claim_key: ClaimKey::from(state_id.as_uuid()),
         agent_id: seed.agent_id,
         agent_colleague_id,
         user_id: seed.user_id,
@@ -111,7 +102,9 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
 
 fn ctx(f: &Fixture, request_id: PromptRequestId) -> ToolCallContext {
     ToolCallContext {
-        session_id: f.session,
+        claim_key: f.claim_key,
+        thread_id: None,
+        state_id: None,
         viewer: Participant::agent(f.agent_colleague_id, f.agent_id),
         root_request_id: request_id,
         request_id,
@@ -126,7 +119,7 @@ async fn memory_write_creates_tentative_row(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
     let tool = MemoryWriteTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
 
     let out = tool
         .execute(
@@ -151,7 +144,7 @@ async fn memory_write_collaborator_accepts_same_org_subject(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
     let tool = MemoryWriteTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
 
     // The human colleague in the agent's own org — a valid subject.
     let human = patom::colleagues::resolve_user_colleague(&pool, f.org_id, f.user_id)
@@ -183,7 +176,7 @@ async fn memory_write_collaborator_rejects_unknown_subject(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
     let tool = MemoryWriteTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
 
     // A colleague id that was never minted.
     let ghost = patom::colleagues::ColleagueId::new();
@@ -206,7 +199,7 @@ async fn memory_write_collaborator_rejects_foreign_org_subject(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
     let tool = MemoryWriteTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
 
     // A real colleague — but in a different org. The privileged read finds it;
     // the org check rejects it as unknown (no cross-org existence leak).
@@ -251,7 +244,7 @@ async fn memory_update_resolves_handle_and_resets_state(pool: PgPool) {
 
     // Compose the section so the handle map is populated. We do this
     // through the same path the tool uses: a `resolve_handle` call.
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
     let _ = MemoryWriteTool::new(f.deps.clone()); // ensure deps usable
     let update = MemoryUpdateTool::new(f.deps.clone());
     // The tool resolves M-1 via the session cache it shares.
@@ -295,7 +288,7 @@ async fn memory_update_pinned_row_rejects_agent_call(pool: PgPool) {
         .expect("seed pinned");
 
     let update = MemoryUpdateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
     let err = update
         .execute(
             json!({"handle": "M-1", "content": "agent attempt"}),
@@ -325,7 +318,7 @@ async fn memory_validate_promotes_state_without_content_change(pool: PgPool) {
         .expect("seed");
 
     let validate = MemoryValidateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
     let out = validate
         .execute(
             json!({
@@ -369,7 +362,7 @@ async fn memory_validate_rejects_pinned_row(pool: PgPool) {
         .expect("seed pinned");
 
     let validate = MemoryValidateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
     let err = validate
         .execute(
             json!({"handle": "M-1", "evidence": "external source agrees"}),
@@ -399,7 +392,7 @@ async fn memory_forget_removes_row(pool: PgPool) {
         .expect("seed");
 
     let forget = MemoryForgetTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
     let out = forget
         .execute(json!({"handle": "M-1"}), &ctx(&f, request))
         .await
@@ -418,7 +411,7 @@ async fn unknown_handle_surfaces_invalid_input(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
     let update = MemoryUpdateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
     let err = update
         .execute(
             json!({"handle": "M-99", "content": "nope"}),
@@ -434,7 +427,7 @@ async fn per_turn_cap_blocks_overflow_within_one_request_id(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
     let write = MemoryWriteTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
 
     // The first MAX_MEMORY_MUTATIONS_PER_TURN writes succeed.
     for i in 0..MAX_MEMORY_MUTATIONS_PER_TURN {
@@ -459,7 +452,7 @@ async fn per_turn_cap_blocks_overflow_within_one_request_id(pool: PgPool) {
     );
 
     // A different request id has its own quota.
-    let new_req = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let new_req = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
     write
         .execute(
             json!({"kind": "self", "content": "fresh turn"}),
@@ -508,7 +501,6 @@ async fn handle_round_trips_through_session_cache(pool: PgPool) {
     );
     let resolved = memory
         .resolve_handle(
-            f.session,
             f.agent_id,
             &patom::runtime::RequestKindPayload::Normal {},
             MemoryHandle::try_from(1u32).expect("h"),
@@ -526,7 +518,9 @@ fn ctx_with_target(
     target: patom::memory::ContradictionEventId,
 ) -> ToolCallContext {
     ToolCallContext {
-        session_id: f.session,
+        claim_key: f.claim_key,
+        thread_id: None,
+        state_id: None,
         viewer: Participant::agent(f.agent_colleague_id, f.agent_id),
         root_request_id: request_id,
         request_id,
@@ -586,7 +580,7 @@ async fn memory_update_with_resolution_target_closes_contradiction(pool: PgPool)
     let (_, _, target) = seed_pair_and_contradiction(&f).await;
 
     let update = MemoryUpdateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
     let _ = update
         .execute(
             json!({"handle": "M-1", "content": "ship on Friday after standup"}),
@@ -616,7 +610,7 @@ async fn memory_forget_with_resolution_target_closes_contradiction(pool: PgPool)
     let (_, _, target) = seed_pair_and_contradiction(&f).await;
 
     let forget = MemoryForgetTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
     let _ = forget
         .execute(
             json!({"handle": "M-1"}),
@@ -643,7 +637,7 @@ async fn memory_update_without_resolution_target_leaves_contradiction_open(pool:
     let (_, _, target) = seed_pair_and_contradiction(&f).await;
 
     let update = MemoryUpdateTool::new(f.deps.clone());
-    let request = seed_prompt_request(&pool, f.session, f.agent_id, f.org_id).await;
+    let request = seed_prompt_request(&pool, f.state_id, f.agent_id, f.org_id, f.user_id).await;
     let _ = update
         .execute(
             json!({"handle": "M-1", "content": "unrelated tweak"}),

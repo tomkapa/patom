@@ -14,6 +14,7 @@ use sqlx::PgPool;
 
 use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId, run_as_user, run_privileged};
+use crate::channels::ChannelId;
 use crate::clock::SharedClock;
 use crate::runtime::PromptRequestId;
 
@@ -51,7 +52,7 @@ impl fmt::Debug for PgScheduledTaskStore {
 /// [`row_to_record`]. `org_id` + `created_by_user_id` are the tenancy
 /// columns added by migration 19; they round-trip on every read so the
 /// scheduler can enqueue without a follow-up JOIN.
-const SELECT_COLUMNS: &str = "id, owner_agent_id, org_id, created_by_user_id, \
+const SELECT_COLUMNS: &str = "id, owner_agent_id, org_id, created_by_user_id, channel_id, \
      name, prompt, schedule, \
      next_run_at, last_fired_at, last_request_id, state, created_at, updated_at";
 
@@ -61,6 +62,7 @@ type Row = (
     AgentId,
     OrgId,
     UserId,
+    Option<ChannelId>,
     String,
     String,
     serde_json::Value,
@@ -78,6 +80,7 @@ fn row_to_record(row: Row) -> Result<ScheduledTaskRecord, ScheduledTaskError> {
         owner_agent_id,
         org_id,
         created_by_user_id,
+        channel_id,
         name,
         prompt,
         schedule,
@@ -93,6 +96,7 @@ fn row_to_record(row: Row) -> Result<ScheduledTaskRecord, ScheduledTaskError> {
         owner_agent_id,
         org_id,
         created_by_user_id,
+        channel_id,
         name: ScheduledTaskName::try_from(name)?,
         prompt: ScheduledPrompt::try_from(prompt)?,
         schedule: serde_json::from_value(schedule)?,
@@ -317,13 +321,14 @@ async fn create_in_tx(
     let row: Row = sqlx::query_as(&format!(
         "INSERT INTO scheduled_tasks \
                 ({SELECT_COLUMNS}) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, $9, $10, $10) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, $10, $11, $11) \
              RETURNING {SELECT_COLUMNS}"
     ))
     .bind(id)
     .bind(owner)
     .bind(payload.org_id)
     .bind(payload.created_by_user_id)
+    .bind(payload.channel_id)
     .bind(payload.name.as_str())
     .bind(payload.prompt.as_str())
     .bind(&schedule_json)

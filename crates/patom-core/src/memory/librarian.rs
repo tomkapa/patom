@@ -35,11 +35,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::agents::AgentId;
-use crate::auth::{OrgId, UserId};
+use crate::auth::{Caller, OrgId, UserId};
+use crate::background::{NewBackgroundMessage, SharedBackgroundStore};
 use crate::clock::SharedClock;
-use crate::runtime::{IdempotencyKey, NewPromptRequest, RequestKindPayload, SharedPromptQueue};
+use crate::provider::{ChatMessage, UserContent};
+use crate::runtime::{IdempotencyKey, NewTrigger, RequestKindPayload, SharedPromptQueue};
 use crate::tools::truncate_from_start;
-use crate::types::{PROMPT_MAX_BYTES, Participant, Prompt};
+use crate::types::{PROMPT_MAX_BYTES, Prompt};
 
 use crate::scheduling::ScheduledTask;
 
@@ -216,6 +218,7 @@ impl LibrarianScheduler {
         pool: PgPool,
         store: SharedMemoryStore,
         queue: SharedPromptQueue,
+        background: SharedBackgroundStore,
         clock: SharedClock,
         parent: CancellationToken,
     ) -> Self {
@@ -223,6 +226,7 @@ impl LibrarianScheduler {
             pool,
             store,
             queue,
+            background,
             clock,
             Duration::from_secs(LIBRARIAN_POLL_SECS),
             Some(parent),
@@ -230,10 +234,12 @@ impl LibrarianScheduler {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_cadence(
         pool: PgPool,
         store: SharedMemoryStore,
         queue: SharedPromptQueue,
+        background: SharedBackgroundStore,
         clock: SharedClock,
         poll_interval: Duration,
         parent: Option<CancellationToken>,
@@ -242,6 +248,7 @@ impl LibrarianScheduler {
             pool,
             store,
             queue,
+            background,
             clock,
             batch_limit: LIBRARIAN_BATCH_LIMIT,
         });
@@ -262,6 +269,7 @@ struct SchedulerInner {
     pool: PgPool,
     store: SharedMemoryStore,
     queue: SharedPromptQueue,
+    background: SharedBackgroundStore,
     clock: SharedClock,
     batch_limit: usize,
 }
@@ -359,37 +367,92 @@ impl SchedulerInner {
                             "resolve agent colleague: {e}"
                         ))
                     })?;
-            let viewer = Participant::agent(agent_colleague, agent);
             let (row_a, row_b) =
                 tokio::try_join!(self.store.get(ev.memory_a), self.store.get(ev.memory_b))?;
             let content = build_resolution_prompt(&ev, row_a.as_ref(), row_b.as_ref());
-            let req = NewPromptRequest {
-                session: None,
-                sender: viewer,
-                receiver_agent_id: agent,
-                parent_session: None,
-                content,
-                idempotency_key: key,
+            // The resolution's private LLM exchange lives in `background_turns`,
+            // never the chat feed (mirrors the reflection scheduler). Seed the
+            // turn with the prompt (System sender); the worker's background path
+            // reads it at run time.
+            if let Err(e) = self
+                .enqueue_one_resolution(
+                    agent,
+                    agent_colleague,
+                    org_id,
+                    owner_user_id,
+                    &ev,
+                    content,
+                    key,
+                )
+                .await
+            {
+                warn!(error = %e, "librarian.enqueue.resolution.error");
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_one_resolution(
+        &self,
+        agent: AgentId,
+        agent_colleague: crate::colleagues::ColleagueId,
+        org_id: OrgId,
+        owner_user_id: UserId,
+        ev: &super::store::ContradictionEventRow,
+        content: Prompt,
+        key: IdempotencyKey,
+    ) -> Result<(), super::store::MemoryStoreError> {
+        let caller = Caller::new(owner_user_id, org_id);
+        let turn = self
+            .background
+            .create_turn(&caller, agent)
+            .await
+            .map_err(|e| {
+                super::store::MemoryStoreError::Backend(format!("create background turn: {e}"))
+            })?;
+        self.background
+            .append(
+                &caller,
+                turn,
+                NewBackgroundMessage {
+                    sender: None,
+                    body: ChatMessage::User(vec![UserContent::Text(content.as_str().to_string())]),
+                    request_id: None,
+                },
+            )
+            .await
+            .map_err(|e| {
+                super::store::MemoryStoreError::Backend(format!("seed background turn: {e}"))
+            })?;
+        let request_id = self
+            .queue
+            .enqueue_trigger(NewTrigger {
                 org_id,
-                created_by_user_id: owner_user_id,
+                acting_user_id: owner_user_id,
+                thread_id: None,
+                state_id: None,
+                background_turn_id: Some(turn),
+                sender_colleague_id: agent_colleague,
+                receiver_agent_id: agent,
+                root_request_id: None,
+                trigger_message_id: None,
+                idempotency_key: key,
                 kind_payload: RequestKindPayload::Resolution {
                     contradiction_event_id: ev.id,
                 },
-            };
-            match self.queue.enqueue(req).await {
-                Ok(outcome) => {
-                    debug!(
-                        patom.agent.id = %agent,
-                        patom.contradiction.id = %ev.id,
-                        patom.request.id = %outcome.request_id(),
-                        "librarian.enqueue.resolution",
-                    );
-                }
-                Err(e) => {
-                    warn!(error = %e, "librarian.enqueue.resolution.error");
-                }
-            }
-        }
+            })
+            .await
+            .map_err(|e| {
+                super::store::MemoryStoreError::Backend(format!("enqueue trigger: {e}"))
+            })?;
+        debug!(
+            patom.agent.id = %agent,
+            patom.contradiction.id = %ev.id,
+            patom.request.id = %request_id,
+            patom.background.turn.id = %turn,
+            "librarian.enqueue.resolution",
+        );
         Ok(())
     }
 }

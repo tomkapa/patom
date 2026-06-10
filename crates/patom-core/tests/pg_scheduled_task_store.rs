@@ -66,7 +66,6 @@ async fn extra_agent(pool: &PgPool, seed: &common::pg::Seed, name: &str) -> Agen
         name: AgentName::try_from(name).expect("valid name"),
         system_prompt: AgentSystemPrompt::try_from("p").expect("valid prompt"),
         description: patom::agents::AgentDescription::try_from("p").expect("desc"),
-        is_default: false,
         allowed_mcp_tools: patom::agents::AllowedMcpTools::empty(),
         model: None,
         avatar_url: None,
@@ -98,6 +97,7 @@ fn new_task(t: &Tenancy, name: &str, schedule: ScheduleSpec) -> NewScheduledTask
         owner_agent_id: t.owner,
         org_id: t.org_id,
         created_by_user_id: t.user_id,
+        channel_id: None,
         name: ScheduledTaskName::try_from(name).expect("valid name"),
         prompt: ScheduledPrompt::try_from("Summarize new email since last check.")
             .expect("valid prompt"),
@@ -373,6 +373,7 @@ async fn insert_with_next_run(
         owner_agent_id: t.owner,
         org_id: t.org_id,
         created_by_user_id: t.user_id,
+        channel_id: None,
         name: ScheduledTaskName::try_from(name).expect("valid"),
         prompt: ScheduledPrompt::try_from("body").expect("valid"),
         // Recurring with a single weekday so the row is reusable across fires

@@ -20,7 +20,7 @@ const vi: TranslationTable = {
   "sidebar.brand": "Workspace",
   "sidebar.channels": "Kênh",
   "sidebar.dms": "Tin nhắn riêng",
-  "sidebar.empty_agents": "Chưa có agent nào được đăng ký.",
+  "sidebar.empty_dms": "Chưa có đồng nghiệp nào.",
   "sidebar.empty_channels": "Chưa có kênh nào.",
 
   "menu.home": "Trang chủ",

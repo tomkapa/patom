@@ -35,15 +35,18 @@
 
 use reqwest::Client;
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info, info_span, warn};
 
 use crate::agents::{AgentId, AgentName, SharedAgentStore};
-use crate::auth::OrgId;
-use crate::runtime::{EnqueueOutcome, IdempotencyKey, NewPromptRequest, SharedPromptQueue};
-use crate::session::SharedSessionStore;
-use crate::types::{Participant, ParticipantKind, Prompt};
+use crate::auth::{Caller, OrgId, UserId, run_privileged};
+use crate::colleagues::ColleagueId;
+use crate::provider::{ChatMessage, UserContent};
+use crate::runtime::{IdempotencyKey, NewTrigger, RequestKindPayload, SharedPromptQueue};
+use crate::threads::{MessageKind, NewMessage, SharedThreadStore, ThreadId};
+use crate::types::Prompt;
 
 use super::error::SlackError;
 use super::identity::SharedSlackIdentityStore;
@@ -51,7 +54,7 @@ use super::limits::SLACK_USERS_INFO_TIMEOUT;
 use super::mention;
 use super::poster::SharedSlackPoster;
 use super::stream_pump::{AttachRequest, SharedStreamPumpHandle};
-use super::thread_map::{SharedSlackThreadStore, ThreadMapping};
+use super::thread_map::SharedSlackThreadStore;
 use super::types::{
     SlackBotToken, SlackChannelId, SlackTeamId, SlackThreadTs, SlackTs, SlackUserId,
 };
@@ -95,15 +98,22 @@ pub struct InboundEvent {
 pub struct BridgeDeps {
     pub queue: SharedPromptQueue,
     pub agents: SharedAgentStore,
-    pub sessions: SharedSessionStore,
+    /// Patom thread feed — the bridge creates the thread, appends the human's
+    /// posted row, and resolves the agent's participation (the thread model's
+    /// replacement for the old pair-session store).
+    pub thread_store: SharedThreadStore,
     /// Colleague directory — resolves linked-human `(org_id, user_id)`
     /// to a colleague id so Slack events enqueue colleague-backed senders.
     pub colleagues: crate::colleagues::SharedColleagueStore,
     pub workspaces: SharedSlackWorkspaceStore,
     pub identities: SharedSlackIdentityStore,
+    /// Slack-thread ↔ Patom-thread binding (`slack_threads`).
     pub threads: SharedSlackThreadStore,
     pub poster: SharedSlackPoster,
     pub stream_pump: SharedStreamPumpHandle,
+    /// Direct pool handle for the trigger-idempotency pre-check (a Slack
+    /// re-delivery of the same `event_ts` must not double-post the human row).
+    pub pool: PgPool,
     /// Shared HTTP client used to call `users.info` so the slash-command
     /// prompt mirror reads as the sender (correct workspace display name
     /// and avatar) instead of the bot/app default.
@@ -185,6 +195,14 @@ async fn run_loop(
 
 /// Single-event processing — extracted so unit tests can drive the
 /// happy and error paths without spinning up the mpsc.
+///
+/// Thread model: a Slack `(team, channel, thread_ts)` triple maps to one Patom
+/// thread. A first mention creates a fresh Patom DM thread (created by the
+/// linked human) and binds it; a reply continues it. Either way the human's
+/// `posted` row is appended @tagging the chosen agent, the agent's
+/// participation is resolved, and a fresh-DAG trigger is enqueued — then the
+/// outbound pump is attached so the agent's reply lands back in this Slack
+/// thread.
 pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(), SlackError> {
     let workspace = deps.workspaces.read_by_team(&event.team_id).await?;
     assert_eq!(workspace.team_id.as_str(), event.team_id.as_str());
@@ -192,6 +210,8 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
         return Ok(());
     }
     let user_id = resolve_user_id(deps, &event, &workspace).await?;
+    let org_id = workspace.org_id;
+    let caller = Caller::new(user_id, org_id);
     let anchor = match event.thread_ts.clone() {
         Some(t) => t,
         None => SlackThreadTs::try_from(event.event_ts.as_str())?,
@@ -200,30 +220,218 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
         .threads
         .lookup_by_thread(&event.team_id, &event.channel_id, &anchor)
         .await?;
-    let receiver_agent_id = match (&existing, event.source) {
-        (Some(mapping), _) => session_agent_participant(deps, mapping.session_id).await?,
-        // Plain in-thread messages without a binding are dropped —
-        // we never start a fresh agent session from random channel
-        // chatter; that's the mention path's job.
+
+    let human_colleague = resolve_human_colleague(deps, org_id, user_id).await?;
+
+    // Resolve the target Patom thread + the agent the message addresses.
+    let (thread_id, agent_id) = match (existing, event.source) {
+        (Some(mapping), InboundSource::AppMention) => (
+            mapping.thread_id,
+            resolve_mention_or_recruiter(deps, &event, &workspace.bot_user_id, org_id).await?,
+        ),
+        (Some(mapping), InboundSource::ThreadMessage) => {
+            // Plain reply in a bound thread — route to the agent the
+            // conversation is with (a Slack thread maps to one Patom thread).
+            let agent = deps
+                .thread_store
+                .last_agent(mapping.thread_id)
+                .await
+                .map_err(|e| SlackError::Internal(format!("last_agent: {e}")))?
+                .ok_or_else(|| {
+                    SlackError::Internal("bound slack thread has no agent participant".to_owned())
+                })?;
+            (mapping.thread_id, agent)
+        }
+        // A plain in-thread message without a binding is dropped — we never
+        // start a fresh conversation from random channel chatter; that's the
+        // mention path's job.
         (None, InboundSource::ThreadMessage) => {
             info!(event = "slack.bridge.thread_message_unbound_dropped");
             return Ok(());
         }
         (None, InboundSource::AppMention) => {
-            resolve_mention_or_default(deps, &event, &workspace.bot_user_id, workspace.org_id)
-                .await?
+            let agent =
+                resolve_mention_or_recruiter(deps, &event, &workspace.bot_user_id, org_id).await?;
+            // New Slack-originated conversation → a fresh Patom DM thread
+            // between the linked human and the mentioned agent (the DM
+            // counterpart), bound to this Slack thread.
+            let agent_counterpart = deps
+                .colleagues
+                .resolve_agent(org_id, agent)
+                .await
+                .map_err(|e| SlackError::Internal(format!("resolve agent colleague: {e}")))?;
+            let thread = deps
+                .thread_store
+                .create_thread(
+                    &caller,
+                    None,
+                    None,
+                    human_colleague,
+                    Some(agent_counterpart),
+                )
+                .await
+                .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
+            deps.threads
+                .bind(org_id, &event.team_id, &event.channel_id, &anchor, thread)
+                .await?;
+            (thread, agent)
         }
     };
-    enqueue_and_bind(
+
+    let idempotency_key = IdempotencyKey::try_from(format!(
+        "slack:{team}:{channel}:{ts}",
+        team = event.team_id.as_str(),
+        channel = event.channel_id.as_str(),
+        ts = event.event_ts.as_str(),
+    ))?;
+    let prompt = Prompt::try_from(strip_for_prompt(&event, &workspace.bot_user_id))?;
+    submit_to_thread(
         deps,
-        &event,
-        &workspace,
-        &anchor,
-        existing.as_ref(),
-        receiver_agent_id,
-        user_id,
+        SlackSubmit {
+            caller,
+            org_id,
+            user_id,
+            human_colleague,
+            agent_id,
+            thread_id,
+            prompt,
+            idempotency_key,
+        },
+        AttachRequest {
+            thread_id,
+            team_id: event.team_id.clone(),
+            channel_id: event.channel_id.clone(),
+            thread_ts: anchor,
+            slack_user_id: event.user_id.clone(),
+        },
+        "mention",
     )
     .await
+}
+
+/// Inputs to [`submit_to_thread`] — the shared "append human post + enqueue a
+/// fresh-DAG trigger" sequence used by both the mention and slash paths.
+struct SlackSubmit {
+    caller: Caller,
+    org_id: OrgId,
+    user_id: UserId,
+    human_colleague: ColleagueId,
+    agent_id: AgentId,
+    thread_id: ThreadId,
+    prompt: Prompt,
+    idempotency_key: IdempotencyKey,
+}
+
+/// Append the human's posted row @tagging the agent, resolve the agent's
+/// participation, enqueue a fresh-DAG trigger, and attach the outbound pump.
+///
+/// Idempotent: a Slack re-delivery of the same `event_ts` (or slash `view_id`)
+/// re-derives the same `idempotency_key`; if a trigger already exists we skip
+/// the append/enqueue and only (re)attach the pump (cheap, deduped by the
+/// supervisor) so a binding that survived a restart still streams.
+async fn submit_to_thread(
+    deps: &BridgeDeps,
+    submit: SlackSubmit,
+    attach: AttachRequest,
+    source: &'static str,
+) -> Result<(), SlackError> {
+    if trigger_exists(&deps.pool, submit.org_id, &submit.idempotency_key).await? {
+        info!(
+            patom.slack.source = source,
+            event = "slack.bridge.duplicate_event_dropped"
+        );
+        deps.stream_pump.attach(attach).await;
+        return Ok(());
+    }
+
+    let agent_colleague = deps
+        .colleagues
+        .resolve_agent(submit.org_id, submit.agent_id)
+        .await
+        .map_err(|e| SlackError::Internal(format!("resolve agent colleague: {e}")))?;
+
+    let trigger_msg = deps
+        .thread_store
+        .append(
+            &submit.caller,
+            submit.thread_id,
+            NewMessage {
+                kind: MessageKind::Posted,
+                sender: Some(submit.human_colleague),
+                owner_agent_id: None,
+                receiver: Some(agent_colleague),
+                body: ChatMessage::User(vec![UserContent::Text(submit.prompt.as_str().to_owned())]),
+                request_id: None,
+                idempotency_key: None,
+            },
+        )
+        .await
+        .map_err(|e| SlackError::Internal(format!("append: {e}")))?;
+
+    let state_id = deps
+        .thread_store
+        .resolve_participation(&submit.caller, submit.thread_id, submit.agent_id)
+        .await
+        .map_err(|e| SlackError::Internal(format!("resolve participation: {e}")))?;
+
+    let request_id = deps
+        .queue
+        .enqueue_trigger(NewTrigger {
+            org_id: submit.org_id,
+            acting_user_id: submit.user_id,
+            thread_id: Some(submit.thread_id),
+            state_id: Some(state_id),
+            background_turn_id: None,
+            sender_colleague_id: submit.human_colleague,
+            receiver_agent_id: submit.agent_id,
+            root_request_id: None,
+            trigger_message_id: Some(trigger_msg),
+            idempotency_key: submit.idempotency_key,
+            kind_payload: RequestKindPayload::Normal {},
+        })
+        .await?;
+
+    deps.stream_pump.attach(attach).await;
+    info!(
+        patom.thread.id = %submit.thread_id.as_uuid(),
+        patom.request.id = %request_id.as_uuid(),
+        patom.slack.source = source,
+        event = "slack.bridge.enqueued",
+    );
+    Ok(())
+}
+
+/// Whether a trigger with `idempotency_key` already exists for `org` — the
+/// Slack-retry dedup guard. Privileged existence check (the bridge is
+/// workspace-keyed infra; the key is fully qualified by org).
+async fn trigger_exists(
+    pool: &PgPool,
+    org: OrgId,
+    key: &IdempotencyKey,
+) -> Result<bool, SlackError> {
+    run_privileged::<bool, SlackError>(pool, async |tx| {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM prompt_requests \
+             WHERE org_id = $1 AND idempotency_key = $2)",
+        )
+        .bind(org)
+        .bind(key.as_str())
+        .fetch_one(&mut **tx)
+        .await?)
+    })
+    .await
+}
+
+/// Resolve the linked human's colleague id within `org`.
+async fn resolve_human_colleague(
+    deps: &BridgeDeps,
+    org: OrgId,
+    user_id: UserId,
+) -> Result<ColleagueId, SlackError> {
+    deps.colleagues
+        .resolve_user(org, user_id)
+        .await
+        .map_err(|e| SlackError::Internal(format!("resolve human colleague: {e}")))
 }
 
 /// Slack user → Patom user. Phase 1 falls back to the workspace
@@ -247,116 +455,12 @@ async fn resolve_user_id(
     Ok(linked.user_id)
 }
 
-/// Enqueue a prompt for the resolved receiver and, on a fresh insert,
-/// record the `(team, channel, thread_ts) → root_request_id` mapping.
-/// Idempotency: a retried event with the same `event_ts` re-derives
-/// the same `idempotency_key` and short-circuits at the queue.
-///
-/// `existing` carries the stored `ThreadMapping` for a continuing
-/// thread. When `Some`, the pump attaches to its `root_request_id`
-/// (the slot the PgThreadStream notifies on) rather than to this
-/// turn's fresh `request_id`. Without this, threads resumed after a
-/// backend restart silently drop outbound messages because the pump
-/// is subscribed to the wrong broadcast slot.
-async fn enqueue_and_bind(
-    deps: &BridgeDeps,
-    event: &InboundEvent,
-    workspace: &crate::slack::workspace::WorkspaceWithToken,
-    anchor: &SlackThreadTs,
-    existing: Option<&ThreadMapping>,
-    receiver_agent_id: AgentId,
-    user_id: crate::auth::UserId,
-) -> Result<(), SlackError> {
-    let prompt = Prompt::try_from(strip_for_prompt(event, &workspace.bot_user_id))?;
-    let idempotency_key = IdempotencyKey::try_from(format!(
-        "slack:{team}:{channel}:{ts}",
-        team = event.team_id.as_str(),
-        channel = event.channel_id.as_str(),
-        ts = event.event_ts.as_str(),
-    ))?;
-    let human_colleague = deps
-        .colleagues
-        .resolve_user(workspace.org_id, user_id)
-        .await
-        .map_err(|e| SlackError::Internal(format!("resolve human colleague: {e}")))?;
-    let req = NewPromptRequest::normal(
-        existing.map(|m| m.session_id),
-        Participant::human(human_colleague, user_id),
-        receiver_agent_id,
-        None,
-        prompt,
-        idempotency_key,
-        workspace.org_id,
-        user_id,
-    );
-    let outcome = deps.queue.enqueue_for_user(user_id, req).await?;
-    if let EnqueueOutcome::Inserted {
-        request_id,
-        session,
-        ..
-    } = outcome
-    {
-        // For a continuing thread, the stored root_request_id is the
-        // original first request (bind_root is ON CONFLICT DO NOTHING).
-        // The PgThreadStream notifies on that original root, so the
-        // pump must subscribe to it — not to this turn's request_id.
-        let pump_root = existing.map_or(request_id, |m| m.root_request_id);
-        deps.threads
-            .bind_root(
-                workspace.org_id,
-                &event.team_id,
-                &event.channel_id,
-                anchor,
-                session,
-                pump_root,
-            )
-            .await?;
-        deps.stream_pump
-            .attach(AttachRequest {
-                root: pump_root,
-                org_id: workspace.org_id,
-                team_id: event.team_id.clone(),
-                channel_id: event.channel_id.clone(),
-                thread_ts: anchor.clone(),
-                slack_user_id: event.user_id.clone(),
-                session_id: session,
-            })
-            .await;
-        info!(
-            patom.session.id = %session.as_uuid(),
-            patom.request.id = %request_id.as_uuid(),
-            event = "slack.bridge.enqueued",
-        );
-    }
-    Ok(())
-}
-
-/// Read the agent participant of `session`. Mirrors `prompts.rs:126`.
-async fn session_agent_participant(
-    deps: &BridgeDeps,
-    session: crate::session::SessionId,
-) -> Result<AgentId, SlackError> {
-    let (a, b) = deps
-        .sessions
-        .participants(session)
-        .await
-        .map_err(|e| SlackError::Internal(format!("session.participants: {e}")))?;
-    match (a.kind(), b.kind()) {
-        (ParticipantKind::Agent, _) => a
-            .agent_id()
-            .ok_or_else(|| SlackError::Internal("agent kind without id".to_owned())),
-        (_, ParticipantKind::Agent) => b
-            .agent_id()
-            .ok_or_else(|| SlackError::Internal("agent kind without id".to_owned())),
-        _ => Err(SlackError::Internal(
-            "human-rooted session without an agent participant".to_owned(),
-        )),
-    }
-}
-
-/// Resolve `@AgentName` (if any) against the org. Falls back to the
-/// org's default agent on miss.
-async fn resolve_mention_or_default(
+/// Resolve `@AgentName` (if any) against the org. Falls back to the org's
+/// preset recruiter on miss — there is no "default agent" at runtime; the
+/// recruiter is simply the agent every workspace is seeded with. If the
+/// operator renamed or deleted it, the mention fails loudly with
+/// `NameNotFound` and the webhook handler logs + drops.
+async fn resolve_mention_or_recruiter(
     deps: &BridgeDeps,
     event: &InboundEvent,
     bot: &SlackUserId,
@@ -371,13 +475,19 @@ async fn resolve_mention_or_default(
             Err(crate::agents::AgentStoreError::NameNotFound(_)) => {
                 warn!(
                     patom.agent.name = %name_raw,
-                    event = "slack.bridge.agent_not_found_falling_back_to_default",
+                    event = "slack.bridge.agent_not_found_falling_back_to_recruiter",
                 );
             }
             Err(e) => return Err(e.into()),
         }
     }
-    Ok(deps.agents.default_id_for(org_id).await?)
+    let recruiter = AgentName::try_from(crate::app::RECRUITER_AGENT_NAME)
+        .expect("invariant: recruiter preset name is a valid AgentName");
+    Ok(deps
+        .agents
+        .read_by_name_for_org(org_id, &recruiter)
+        .await?
+        .id)
 }
 
 /// Strip the bot mention from the text and return the user's
@@ -414,10 +524,10 @@ pub struct SlashCommandSubmit {
 
 /// Drive the slash command path.
 ///
-/// Post the synthetic prompt mirror as a channel-top-level message
-/// (becomes the thread root), enqueue the agent prompt, and bind the
-/// resulting session to `(team, channel, thread_ts)` so future replies
-/// via stickiness and the outbound stream pump land in the right thread.
+/// Post the synthetic prompt mirror as a channel-top-level message (the Slack
+/// thread root), create a Patom thread bound to `(team, channel, thread_ts)`,
+/// append the human's posted row @tagging the agent, and enqueue a fresh-DAG
+/// trigger — then attach the outbound pump.
 ///
 /// Defence-in-depth: the caller is expected to have already re-checked
 /// that `submit.agent_id` belongs to the workspace's `org_id`; this
@@ -451,56 +561,25 @@ pub async fn enqueue_from_slash(
     if agent.org_id != workspace.org_id {
         return Err(SlackError::AgentNotFound(agent.name.as_str().to_owned()));
     }
+    let org_id = workspace.org_id;
 
-    // Try the queue idempotency gate BEFORE posting the synthetic
-    // prompt mirror to Slack. Slack retries `view_submission` on
-    // upstream 5xx / timeouts; if we posted first, the retry would
-    // produce duplicate top-level channel messages even though the
-    // queue would collapse the duplicate enqueue.
+    // Idempotency gate BEFORE posting the synthetic prompt mirror. Slack
+    // retries `view_submission` on upstream 5xx / timeouts; posting first
+    // would produce duplicate top-level channel messages.
     let idempotency_key = IdempotencyKey::try_from(format!(
         "slack-slash:{team}:{channel}:{view}",
         team = submit.team_id.as_str(),
         channel = submit.channel_id.as_str(),
         view = submit.view_id,
     ))?;
-    let prompt_text = submit.prompt.as_str().to_owned();
-    let human_colleague = deps
-        .colleagues
-        .resolve_user(workspace.org_id, user_id)
-        .await
-        .map_err(|e| SlackError::Internal(format!("resolve human colleague: {e}")))?;
-    let req = NewPromptRequest::normal(
-        None,
-        Participant::human(human_colleague, user_id),
-        submit.agent_id,
-        None,
-        submit.prompt,
-        idempotency_key,
-        workspace.org_id,
-        user_id,
-    );
-    let outcome = deps.queue.enqueue_for_user(user_id, req).await?;
-    let request_id = outcome.request_id();
-    let session = outcome.session();
-
-    // Idempotency gate: use the *thread binding* (not the queue
-    // outcome) as the signal that a previous attempt finished. An
-    // `EnqueueOutcome::Existing` whose binding is missing means the
-    // earlier attempt died between enqueue and bind — Slack retried
-    // the `view_submission`, we hit the idempotency short-circuit at
-    // the queue, but the agent's reply has no Slack thread to land
-    // in. Re-posting the mirror and binding here closes that hole.
-    //
-    // Concurrent Slack retries can both pass this check before either
-    // calls `bind_root`. The double-post race is bounded: Slack
-    // retries are >=1 s apart and the mirror post + bind typically
-    // complete in well under that. `bind_root` is ON CONFLICT DO
-    // NOTHING, so the second `attach` will still land on the
-    // correct (first-write-wins) root.
-    if deps.threads.lookup_by_session(session).await?.is_some() {
-        info!(event = "slack.bridge.slash_already_bound");
+    if trigger_exists(&deps.pool, org_id, &idempotency_key).await? {
+        info!(event = "slack.bridge.slash_already_submitted");
         return Ok(());
     }
+
+    let prompt_text = submit.prompt.as_str().to_owned();
+    let caller = Caller::new(user_id, org_id);
+    let human_colleague = resolve_human_colleague(deps, org_id, user_id).await?;
 
     let prompt_post = post_prompt_mirror(
         deps,
@@ -514,34 +593,57 @@ pub async fn enqueue_from_slash(
     .await?;
     let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
 
+    // A slash command starts a fresh conversation → new Patom DM thread
+    // between the linked human and the chosen agent, bound to the mirror's
+    // Slack thread.
+    let agent_counterpart = deps
+        .colleagues
+        .resolve_agent(org_id, agent.id)
+        .await
+        .map_err(|e| SlackError::Internal(format!("resolve agent colleague: {e}")))?;
+    let thread_id = deps
+        .thread_store
+        .create_thread(
+            &caller,
+            None,
+            None,
+            human_colleague,
+            Some(agent_counterpart),
+        )
+        .await
+        .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
     deps.threads
-        .bind_root(
-            workspace.org_id,
+        .bind(
+            org_id,
             &submit.team_id,
             &submit.channel_id,
             &anchor,
-            session,
-            request_id,
+            thread_id,
         )
         .await?;
-    deps.stream_pump
-        .attach(AttachRequest {
-            root: request_id,
-            org_id: workspace.org_id,
+
+    submit_to_thread(
+        deps,
+        SlackSubmit {
+            caller,
+            org_id,
+            user_id,
+            human_colleague,
+            agent_id: submit.agent_id,
+            thread_id,
+            prompt: submit.prompt,
+            idempotency_key,
+        },
+        AttachRequest {
+            thread_id,
             team_id: submit.team_id.clone(),
             channel_id: submit.channel_id.clone(),
             thread_ts: anchor,
             slack_user_id: submit.slack_user_id.clone(),
-            session_id: session,
-        })
-        .await;
-    info!(
-        patom.session.id = %session.as_uuid(),
-        patom.request.id = %request_id.as_uuid(),
-        patom.slack.source = "slash",
-        event = "slack.bridge.enqueued",
-    );
-    Ok(())
+        },
+        "slash",
+    )
+    .await
 }
 
 /// Post the synthetic prompt-mirror message as a channel-top-level

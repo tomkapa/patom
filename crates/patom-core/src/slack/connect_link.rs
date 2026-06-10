@@ -3,7 +3,7 @@
 //! The button's `url` field is a `GET /slack/mcp/connect?token=...` that
 //! runs without a session cookie — auth is the signed token. Token
 //! payload binds the originating Slack thread, the Slack user who saw
-//! the card, the catalog entry being wired, and the agent + session
+//! the card, the catalog entry being wired, and the agent + Patom thread
 //! that emitted the request (so the OAuth callback can resume the
 //! agent loop after the user finishes consent).
 //!
@@ -15,14 +15,14 @@
 //! ## Wire shape
 //!
 //! ```text
-//! <catalog>:<team>:<channel>:<thread>:<slack_user>:<session_uuid>:<agent_uuid>:<exp>:<hex_sig>
+//! <catalog>:<team>:<channel>:<thread>:<slack_user>:<thread_uuid>:<agent_uuid>:<exp>:<hex_sig>
 //! ```
 //!
 //! `:` is the field separator because every payload field is constrained
 //! to one of:
 //!   - alphanumeric + `_-` (slack ids, catalog id)
 //!   - digits + `.` (thread_ts)
-//!   - hyphenated UUIDs (session, agent)
+//!   - hyphenated UUIDs (thread, agent)
 //!   - digits (exp)
 //!
 //! none of which contain `:`, so the split is unambiguous.
@@ -34,7 +34,7 @@ use uuid::Uuid;
 
 use crate::agents::AgentId;
 use crate::mcp::McpCatalogId;
-use crate::session::SessionId;
+use crate::threads::ThreadId;
 
 use super::types::{SlackChannelId, SlackTeamId, SlackThreadTs, SlackUserId};
 
@@ -50,7 +50,7 @@ pub struct SlackConnectClaims {
     pub channel_id: SlackChannelId,
     pub thread_ts: SlackThreadTs,
     pub slack_user_id: SlackUserId,
-    pub session_id: SessionId,
+    pub thread_id: ThreadId,
     pub agent_id: AgentId,
 }
 
@@ -93,7 +93,7 @@ pub fn verify_connect(key: &[u8], token: &str, now_secs: i64) -> Option<SlackCon
     let channel_raw = parts.next()?;
     let thread_raw = parts.next()?;
     let user_raw = parts.next()?;
-    let session_raw = parts.next()?;
+    let thread_raw_uuid = parts.next()?;
     let agent_raw = parts.next()?;
     let exp_raw = parts.next()?;
     if parts.next().is_some() {
@@ -106,7 +106,7 @@ pub fn verify_connect(key: &[u8], token: &str, now_secs: i64) -> Option<SlackCon
     let channel_id = SlackChannelId::try_from(channel_raw).ok()?;
     let thread_ts = SlackThreadTs::try_from(thread_raw).ok()?;
     let slack_user_id = SlackUserId::try_from(user_raw).ok()?;
-    let session_id = Uuid::parse_str(session_raw).ok().map(SessionId::from)?;
+    let thread_id = Uuid::parse_str(thread_raw_uuid).ok().map(ThreadId::from)?;
     let agent_id = Uuid::parse_str(agent_raw).ok().map(AgentId::from)?;
     let exp_secs: i64 = exp_raw.parse().ok()?;
     if exp_secs < now_secs {
@@ -119,20 +119,20 @@ pub fn verify_connect(key: &[u8], token: &str, now_secs: i64) -> Option<SlackCon
         channel_id,
         thread_ts,
         slack_user_id,
-        session_id,
+        thread_id,
         agent_id,
     })
 }
 
 fn render_payload(claims: &SlackConnectClaims, exp_secs: i64) -> String {
     format!(
-        "{catalog}:{team}:{channel}:{thread}:{user}:{session}:{agent}:{exp}",
+        "{catalog}:{team}:{channel}:{thread}:{user}:{thread_id}:{agent}:{exp}",
         catalog = claims.catalog_id.as_str(),
         team = claims.team_id.as_str(),
         channel = claims.channel_id.as_str(),
         thread = claims.thread_ts.as_str(),
         user = claims.slack_user_id.as_str(),
-        session = claims.session_id.as_uuid(),
+        thread_id = claims.thread_id.as_uuid(),
         agent = claims.agent_id.as_uuid(),
         exp = exp_secs,
     )
@@ -149,7 +149,7 @@ mod tests {
             channel_id: SlackChannelId::try_from("C1XYZ12").expect("valid channel"),
             thread_ts: SlackThreadTs::try_from("1700000000.000100").expect("valid thread"),
             slack_user_id: SlackUserId::try_from("U0USER1").expect("valid user"),
-            session_id: SessionId::new(),
+            thread_id: ThreadId::new(),
             agent_id: AgentId::new(),
         }
     }

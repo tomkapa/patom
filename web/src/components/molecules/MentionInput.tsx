@@ -7,84 +7,50 @@ import {
   type KeyboardEvent,
   type MutableRefObject,
 } from "react";
-import type { Agent } from "../../types/api";
+import { Bot } from "lucide-react";
+import type { Mentionable } from "../../types/api";
 import { Monogram } from "../atoms/Monogram";
+import { findNamedMentions } from "../../lib/mentions";
 import { cn } from "../../lib/utils";
-
-export type MentionMode = "channel" | "dm" | "thread";
 
 type Token =
   | { kind: "text"; text: string }
-  | { kind: "mention"; text: string; active: boolean };
+  | { kind: "mention"; text: string };
 
-/** Find all @-mentions in `text` that match a known agent name.
- *  Sorts names longest-first so "Sales Lead" beats "Sales" when both exist.
- *  A mention is valid when the character immediately after the name is
- *  whitespace, punctuation, or end-of-string. */
-function findAgentMentions(
-  text: string,
-  agentsByName: ReadonlyMap<string, Agent>,
-): Array<{ name: string; start: number; end: number }> {
-  if (!text || agentsByName.size === 0) return [];
-  const names = [...agentsByName.keys()].sort((a, b) => b.length - a.length);
-  const out: Array<{ name: string; start: number; end: number }> = [];
-  let i = 0;
-  while (i < text.length) {
-    const ch = text[i];
-    if (ch === "@" && (i === 0 || /\s/.test(text[i - 1] ?? ""))) {
-      let matched: string | null = null;
-      for (const name of names) {
-        if (text.slice(i + 1, i + 1 + name.length) === name) {
-          const charAfter = text[i + 1 + name.length] ?? "";
-          if (charAfter === "" || /[\s.,!?;:]/.test(charAfter)) {
-            matched = name;
-            break;
-          }
-        }
-      }
-      if (matched !== null) {
-        out.push({ name: matched, start: i, end: i + 1 + matched.length });
-        i += 1 + matched.length;
-        continue;
-      }
-    }
-    i++;
-  }
-  return out;
-}
-
-export function tokenizeMentions(
-  text: string,
-  agentsByName: ReadonlyMap<string, Agent>,
-  mode: MentionMode,
-): Token[] {
+/** Every known-name mention is live — humans and agents alike, first or
+ *  fifth. (The old "only the first tag routes" rule is gone; the backend
+ *  triggers each tagged agent.) Matching rules live in the shared
+ *  `findNamedMentions` so compose-highlight can't drift from feed-render. */
+export function tokenizeMentions(text: string, names: string[]): Token[] {
   const out: Token[] = [];
   if (!text) return out;
-  const mentions = findAgentMentions(text, agentsByName);
   let last = 0;
-  let canBeActive = mode === "channel";
-  for (const { name, start, end } of mentions) {
+  for (const { name, start, end } of findNamedMentions(text, names)) {
     if (start > last) out.push({ kind: "text", text: text.slice(last, start) });
-    let active = false;
-    if (canBeActive) {
-      active = true;
-      canBeActive = false;
-    }
-    out.push({ kind: "mention", text: `@${name}`, active });
+    out.push({ kind: "mention", text: `@${name}` });
     last = end;
   }
   if (last < text.length) out.push({ kind: "text", text: text.slice(last) });
   return out;
 }
 
-export function firstActiveMentionAgent(
+/** All distinct roster entries tagged in `text`, in order of first
+ *  appearance — the submit's `tags` payload. */
+export function matchMentions(
   text: string,
-  agents: Agent[],
-): Agent | undefined {
-  if (!text) return undefined;
-  const byName = new Map(agents.map((a) => [a.name, a]));
-  const mentions = findAgentMentions(text, byName);
-  return mentions.length > 0 ? byName.get(mentions[0]!.name) : undefined;
+  roster: Mentionable[],
+): Mentionable[] {
+  if (!text || roster.length === 0) return [];
+  const byName = new Map(roster.map((m) => [m.name, m]));
+  const seen = new Set<string>();
+  const out: Mentionable[] = [];
+  for (const { name } of findNamedMentions(text, [...byName.keys()])) {
+    const entry = byName.get(name);
+    if (!entry || seen.has(`${entry.kind}:${entry.id}`)) continue;
+    seen.add(`${entry.kind}:${entry.id}`);
+    out.push(entry);
+  }
+  return out;
 }
 
 /** If the caret sits inside an active "@..." token (start-of-input or
@@ -114,8 +80,7 @@ export type MentionInputHandle = HTMLTextAreaElement;
 export function MentionInput({
   value,
   onChange,
-  agents,
-  mode,
+  roster,
   placeholder,
   onSubmit,
   disabled,
@@ -126,8 +91,9 @@ export function MentionInput({
 }: {
   value: string;
   onChange: (v: string) => void;
-  agents: Agent[];
-  mode: MentionMode;
+  /** Everyone taggable here — channel members (humans) plus the org's
+   *  agents. Humans and agents render alike; only the row icon differs. */
+  roster: Mentionable[];
   placeholder?: string;
   onSubmit?: () => void;
   disabled?: boolean;
@@ -168,25 +134,22 @@ export function MentionInput({
     setHl(0);
   }, [active?.query]);
 
-  const agentsByName = useMemo(
-    () => new Map(agents.map((a) => [a.name, a])),
-    [agents],
-  );
+  const names = useMemo(() => roster.map((m) => m.name), [roster]);
   const tokens = useMemo(
-    () => tokenizeMentions(value, agentsByName, mode),
-    [value, agentsByName, mode],
+    () => tokenizeMentions(value, names),
+    [value, names],
   );
   const filtered = useMemo(() => {
     if (!active) return [];
     const q = active.query.toLowerCase();
-    return agents.filter((a) => a.name.toLowerCase().includes(q)).slice(0, 8);
-  }, [active, agents]);
+    return roster.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
+  }, [active, roster]);
 
-  const insertMention = (agent: Agent) => {
+  const insertMention = (entry: Mentionable) => {
     if (!active) return;
     const before = value.slice(0, active.start);
     const after = value.slice(caret);
-    const insertion = `@${agent.name} `;
+    const insertion = `@${entry.name} `;
     const next = before + insertion + after;
     onChange(next);
     const newCaret = (before + insertion).length;
@@ -266,14 +229,7 @@ export function MentionInput({
             t.kind === "text" ? (
               <span key={i}>{t.text}</span>
             ) : (
-              <span
-                key={i}
-                className={
-                  t.active
-                    ? "text-[var(--color-moss)]"
-                    : "text-[var(--color-fg-muted)]"
-                }
-              >
+              <span key={i} className="text-[var(--color-moss)]">
                 {t.text}
               </span>
             ),
@@ -316,13 +272,13 @@ export function MentionInput({
       />
       {active && filtered.length > 0 && (
         <div className="absolute bottom-full left-2 z-30 mb-1 max-h-56 w-64 overflow-y-auto border border-[var(--color-line-strong)] bg-[var(--color-card)] shadow-lg">
-          {filtered.map((a, i) => (
+          {filtered.map((m, i) => (
             <button
-              key={a.id}
+              key={`${m.kind}:${m.id}`}
               type="button"
               onMouseDown={(e) => {
                 e.preventDefault();
-                insertMention(a);
+                insertMention(m);
               }}
               onMouseEnter={() => setHl(i)}
               className={cn(
@@ -333,16 +289,15 @@ export function MentionInput({
               )}
             >
               <Monogram
-                name={a.name}
-                id={a.id}
+                name={m.name}
+                id={m.id}
                 size={18}
-                tone={i === hl ? "user" : "moss"}
+                tone={m.kind === "agent" ? "moss" : "user"}
+                avatarUrl={m.avatar_url}
               />
-              <span className="font-[var(--font-mono)]">{a.name}</span>
-              {a.is_default && (
-                <span className="ml-auto font-[var(--font-mono)] text-[9.5px] uppercase tracking-[0.14em] text-[var(--color-muted-foreground)]">
-                  default
-                </span>
+              <span className="font-[var(--font-mono)]">{m.name}</span>
+              {m.kind === "agent" && (
+                <Bot className="ml-auto h-3 w-3 text-[var(--color-moss)]" />
               )}
             </button>
           ))}

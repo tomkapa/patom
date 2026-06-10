@@ -4,10 +4,10 @@ import { ChatLayout } from "../components/templates/ChatLayout";
 import { ChannelHeader } from "../components/organisms/ChannelHeader";
 import { Composer } from "../components/organisms/Composer";
 import { MessageList } from "../components/organisms/MessageList";
-import { Sidebar } from "../components/organisms/Sidebar";
+import { Sidebar, dmKey } from "../components/organisms/Sidebar";
 import { ThreadPanel } from "../components/organisms/ThreadPanel";
 import { ChannelDialog } from "../components/organisms/ChannelDialog";
-import { useAgents } from "../hooks/useAgents";
+import { matchMentions } from "../components/molecules/MentionInput";
 import { useChannels } from "../hooks/useChannels";
 import { useActiveOrg } from "../hooks/useMe";
 import { useAuthStore } from "../stores/authStore";
@@ -17,11 +17,12 @@ import { useSubmitPrompt } from "../hooks/useSubmitPrompt";
 import { useThreadView } from "../hooks/useThreadView";
 import { useTurnDetail } from "../hooks/useAgentLogs";
 import { useThreadStore } from "../stores/threadStore";
+import { useRoster, tagRef } from "../hooks/useRoster";
 import {
-  DEMO_AGENTS,
   DEMO_HISTORY,
   DEMO_HUMAN_POSTER,
   DEMO_REPLIES,
+  DEMO_ROSTER,
   DEMO_THREADS,
   DEMO_USER,
 } from "../lib/demo";
@@ -29,10 +30,9 @@ import { decodeBody } from "../lib/chatBody";
 import { ApiError } from "../lib/errors";
 import type { Bubble, Poster, RootMessage } from "../lib/foldHistory";
 import { uuidv7 } from "../lib/utils";
-import { prefixMention } from "../lib/mentions";
 import { useIsWide } from "../hooks/useMediaQuery";
 import { useT } from "../i18n";
-import type { Channel } from "../types/api";
+import type { Channel, Mentionable } from "../types/api";
 
 /** Demo mode has no backend; show a single read-only #general so the feed
  *  renders. Real channels come from `useChannels`. */
@@ -56,14 +56,14 @@ function isDemoMode(): boolean {
 export function ChatView() {
   const forcedDemo = isDemoMode();
   const [selectedRoot, setSelectedRoot] = useState<string | null>(
-    forcedDemo ? DEMO_THREADS[0]!.root_request_id : null,
+    forcedDemo ? DEMO_THREADS[0]!.thread_id : null,
   );
-  // When set, the channel feed is filtered to threads where this agent is
-  // the human's first recipient (`first_agent.id === selectedAgentId`).
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  // The selected channel (mutually exclusive with `selectedAgentId`: an agent
-  // DM or a channel feed, never both). `null` until channels load; an effect
-  // defaults it to the first channel (#general).
+  // When set, the view shows the 1:1 conversation with this colleague —
+  // human or agent, both are DM counterparts (Slack parity). Mutually
+  // exclusive with `selectedChannelId`.
+  const [selectedDm, setSelectedDm] = useState<Mentionable | null>(null);
+  // The selected channel. `null` until channels load; an effect defaults it
+  // to the first channel (#general).
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(
     forcedDemo ? DEMO_CHANNELS[0]!.id : null,
   );
@@ -81,18 +81,18 @@ export function ChatView() {
   const [composerError, setComposerError] = useState<string | null>(null);
 
   // Deep-link from the memory pane: `/?turn=<request_id>` opens the thread
-  // that owns the turn and scrolls the matching bubble into view. We
-  // resolve turn → root_request_id via the turn-detail endpoint (the
-  // memory rows / events only carry the turn id, not the root).
+  // that owns the turn and scrolls the matching bubble into view. The
+  // turn-detail wire carries the thread id directly (threads are keyed by
+  // `thread_id`, not request ids).
   const [searchParams, setSearchParams] = useSearchParams();
   const focusTurnId = searchParams.get("turn");
   const turnDetailQ = useTurnDetail(forcedDemo ? null : focusTurnId);
   useEffect(() => {
-    const rootId = turnDetailQ.data?.turn.root_request_id;
-    if (!rootId) return;
-    setSelectedRoot(rootId);
+    const threadId = turnDetailQ.data?.turn.thread_id;
+    if (!threadId) return;
+    setSelectedRoot(threadId);
     setShowPanel(true);
-  }, [turnDetailQ.data?.turn.root_request_id]);
+  }, [turnDetailQ.data?.turn.thread_id]);
   const clearFocusTurn = () => {
     if (!focusTurnId) return;
     const next = new URLSearchParams(searchParams);
@@ -100,42 +100,58 @@ export function ChatView() {
     setSearchParams(next, { replace: true });
   };
 
-  const agentsQ = useAgents();
   const channelsQ = useChannels();
-  // DM mode (agent selected) reads the caller's direct messages (channel-less
-  // feed); channel mode reads the selected channel. Passing `null` to
-  // `useThreads` requests the DM feed.
-  const feedChannelId = selectedAgentId ? null : selectedChannelId;
-  const threadsQ = useThreads(forcedDemo ? null : feedChannelId);
-  // The sidebar's per-agent badges count DM threads, which must NOT depend on
-  // the channel currently in view. Read the DM feed on its own; react-query
-  // dedupes it with `threadsQ` whenever we're already in DM mode.
-  const dmThreadsQ = useThreads(null);
-  const submit = useSubmitPrompt();
+  const channels = forcedDemo ? DEMO_CHANNELS : (channelsQ.data ?? []);
+  const isDemo = forcedDemo;
+
+  // The system #general enrolls every org member, so its roster IS the
+  // workspace's humans — the source for the DM sidebar and DM composers.
+  const general = channels.find((c) => c.system) ?? channels[0] ?? null;
+  const selectedChannel =
+    channels.find((c) => c.id === selectedChannelId) ?? null;
+
+  // Roster of the open context: the channel's members (or, in DM mode, the
+  // whole workspace via #general) plus every agent (org-global).
+  const rosterChannelId = isDemo
+    ? null
+    : selectedDm
+      ? (general?.id ?? null)
+      : (selectedChannelId ?? general?.id ?? null);
+  const liveRoster = useRoster(rosterChannelId);
   const me = useAuthStore((s) => s.me);
+  const roster = isDemo ? DEMO_ROSTER : liveRoster.roster;
+  const agents = useMemo(() => roster.filter((m) => m.kind === "agent"), [roster]);
+  const humans = useMemo(() => roster.filter((m) => m.kind === "human"), [roster]);
+  // DM sidebar: everyone except the viewer (you don't DM yourself).
+  const dmRoster = useMemo(
+    () => [
+      ...humans.filter((h) => h.id !== me?.user.id),
+      ...agents,
+    ],
+    [humans, agents, me?.user.id],
+  );
+
+  // DM mode reads the pair's conversation; channel mode reads the channel.
+  const threadsQ = useThreads(
+    isDemo ? null : selectedDm ? null : selectedChannelId,
+    isDemo || !selectedDm ? null : tagRef(selectedDm),
+  );
+  const submit = useSubmitPrompt();
   const activeOrg = useActiveOrg();
   const addPending = useThreadStore((s) => s.addPending);
-  const attachRequestId = useThreadStore((s) => s.attachRequestId);
+  const attachOutcome = useThreadStore((s) => s.attachOutcome);
   const removePending = useThreadStore((s) => s.removePending);
 
-  // Demo fixtures are opt-in via `?demo=1`. An empty backend renders the
-  // real (empty) UI — never fall back to fixtures, or replies get silently
-  // dropped by the `if (isDemo) return;` guards below.
-  const isDemo = forcedDemo;
-  const agents = isDemo ? DEMO_AGENTS : (agentsQ.data ?? []);
-  const channels = isDemo ? DEMO_CHANNELS : (channelsQ.data ?? []);
   const threads = isDemo ? DEMO_THREADS : (threadsQ.data ?? []);
-  // DM threads drive the sidebar agent counts regardless of the active feed.
-  const dmThreads = isDemo ? DEMO_THREADS : (dmThreadsQ.data ?? []);
 
   // Default the channel selection to the first channel (#general) once the
-  // list loads, unless the reader is already in a channel or an agent DM.
+  // list loads, unless the reader is already in a channel or a DM.
   useEffect(() => {
-    if (selectedChannelId || selectedAgentId) return;
+    if (selectedChannelId || selectedDm) return;
     const first = channels[0];
     if (first) setSelectedChannelId(first.id);
-  }, [channels, selectedChannelId, selectedAgentId]);
-  const poster = isDemo
+  }, [channels, selectedChannelId, selectedDm]);
+  const poster: Poster = isDemo
     ? { ...DEMO_HUMAN_POSTER, avatar_url: null }
     : {
         name: me?.user.display_name ?? me?.user.email ?? DEMO_USER.name,
@@ -146,7 +162,7 @@ export function ChatView() {
   // SSE stream + view selector are skipped in demo mode by passing null.
   const liveRootId = isDemo ? null : selectedRoot;
   useThreadStream(liveRootId);
-  const view = useThreadView(liveRootId, agents, poster);
+  const view = useThreadView(liveRootId, roster, poster);
   const demoView = useMemo(
     () => (isDemo ? buildDemoView(poster) : null),
     [isDemo, poster],
@@ -155,37 +171,12 @@ export function ChatView() {
   const rootMessage = isDemo ? demoView?.rootMessage : view.rootMessage;
   const showThinking = isDemo ? false : view.showThinking;
 
-  const defaultAgent = useMemo(
-    () => agents.find((a) => a.is_default) ?? agents[0],
-    [agents],
-  );
-
-  const visibleThreads = useMemo(
-    () =>
-      selectedAgentId
-        ? threads.filter((t) => t.first_agent.id === selectedAgentId)
-        : threads,
-    [threads, selectedAgentId],
-  );
-
-  const selectedAgent = useMemo(
-    () =>
-      selectedAgentId
-        ? (agents.find((a) => a.id === selectedAgentId) ?? null)
-        : null,
-    [agents, selectedAgentId],
-  );
-
-  // Cheap find over a short list; no memo needed (it allocates a new result
-  // each render anyway).
-  const selectedChannel =
-    channels.find((c) => c.id === selectedChannelId) ?? null;
-  const channelName = selectedChannel?.name ?? "general";
-
   const selectedThread = useMemo(
-    () => threads.find((t) => t.root_request_id === selectedRoot) ?? null,
+    () => threads.find((t) => t.thread_id === selectedRoot) ?? null,
     [threads, selectedRoot],
   );
+
+  const channelName = selectedChannel?.name ?? "general";
 
   const { t } = useT();
 
@@ -199,85 +190,85 @@ export function ChatView() {
     return false;
   };
 
-  const onSubmit = async (input: { content: string; agent_id?: string }) => {
+  // Post to the channel timeline (or start a DM thread). Tags are whoever
+  // was @-mentioned — agents among them get invoked; none is required.
+  const onSubmit = async (input: { content: string; tags: Mentionable[] }) => {
     if (isDemo) return;
-    const agent_id = selectedAgentId ?? input.agent_id ?? defaultAgent?.id;
-    if (!agent_id) return;
     setComposerError(null);
     try {
       const res = await submit.mutateAsync({
         content: input.content,
-        agent_id,
+        tags: input.tags.map(tagRef),
         // In channel mode the new thread is stamped with the channel; a DM
-        // (agent selected) leaves it unset so the BE files it as a DM.
-        ...(selectedAgentId ? {} : { channel_id: selectedChannelId ?? undefined }),
+        // names its counterpart so the BE files it as the pair's thread.
+        ...(selectedDm
+          ? { counterpart: tagRef(selectedDm) }
+          : { channel_id: selectedChannelId ?? undefined }),
       });
-      setSelectedRoot(res.request_id);
+      setSelectedRoot(res.thread_id);
+      if (!isWide) setShowPanel(true);
     } catch (e) {
       if (handleBudgetExceeded(e)) return;
       throw e;
     }
   };
 
+  // Reply inside the open thread. The text goes exactly as typed — no
+  // implicit @-prefix; the backend routes DM replies to the counterpart and
+  // leaves untagged channel replies as plain posts.
   const onThreadReply = async (input: { content: string }) => {
     if (isDemo || !selectedThread) return;
-    const root = selectedThread.root_request_id;
-    // Auto-prefix the receiver's @handle so the optimistic bubble matches
-    // what the fold renders for the persisted row.
-    const text = prefixMention(input.content, selectedThread.first_agent.name);
+    const threadId = selectedThread.thread_id;
     const idempotency_key = uuidv7();
-    addPending(root, {
+    addPending(threadId, {
       idempotency_key,
-      text,
+      text: input.content,
       ts: new Date().toISOString(),
     });
     setComposerError(null);
     try {
       const res = await submit.mutateAsync({
-        content: text,
-        session_id: selectedThread.root_session_id,
+        content: input.content,
+        tags: matchMentions(input.content, roster).map(tagRef),
+        thread_id: threadId,
         idempotency_key,
       });
-      // Stamps the request_id so the persisted echo can dedupe this entry.
-      attachRequestId(root, idempotency_key, res.request_id);
+      // Stamp the outcome so the persisted echo can dedupe this entry and
+      // the "thinking…" placeholder knows whether anyone will reply.
+      attachOutcome(threadId, idempotency_key, {
+        request_id: res.request_id,
+        triggered: res.triggered_agent_ids.length > 0,
+      });
     } catch (e) {
       // Withdraw the optimistic bubble; the user can retry.
-      removePending(root, idempotency_key);
+      removePending(threadId, idempotency_key);
       if (handleBudgetExceeded(e)) return;
       throw e;
     }
   };
 
-  // Auto-resume is now server-driven: the OAuth callback enqueues the
-  // synthetic continuation prompt itself, so every channel adapter
-  // (web, Slack, future Lark) gets the resume for free. The card
-  // flipping to its "connected" state is still driven by the
-  // useMcpServers poll; the agent's next response arrives via the
-  // existing thread stream.
-
-  // Feed label: agent DMs read `dm/<name>`, a channel reads its bare name
+  // Feed label: DMs read `dm/<name>`, a channel reads its bare name
   // (the `#` prefix is added only where a header wants it).
-  const channelLabel = selectedAgent ? `dm/${selectedAgent.name}` : channelName;
+  const channelLabel = selectedDm ? `dm/${selectedDm.name}` : channelName;
 
   return (
     <>
     <ChatLayout
-      title={selectedAgent ? channelLabel : `#${channelName}`}
+      title={selectedDm ? channelLabel : `#${channelName}`}
       sidebar={
         <Sidebar
           workspace={activeOrg?.name ?? "Patom"}
-          dmThreads={dmThreads}
           channels={channels}
-          agents={agents}
-          selectedChannelId={selectedAgentId ? null : selectedChannelId}
-          selectedAgentId={selectedAgentId}
+          dms={dmRoster}
+          selectedChannelId={selectedDm ? null : selectedChannelId}
+          selectedDmKey={selectedDm ? dmKey(selectedDm) : null}
           onSelectChannel={(id) => {
-            setSelectedAgentId(null);
+            setSelectedDm(null);
             setSelectedChannelId(id);
             setSelectedRoot(null);
           }}
-          onSelectAgent={(id) => {
-            setSelectedAgentId(id);
+          onSelectDm={(m) => {
+            setSelectedDm(m);
             setSelectedRoot(null);
           }}
           onAddChannel={() => {
@@ -292,9 +283,14 @@ export function ChatView() {
       }
       main={
         <>
-          <ChannelHeader channel={channelLabel} agents={agents} />
+          <ChannelHeader
+            channel={channelLabel}
+            memberCount={humans.length}
+            agentCount={agents.length}
+          />
           <MessageList
-            threads={visibleThreads}
+            threads={threads}
+            roster={roster}
             channel={channelLabel}
             onOpenThread={(rootId) => {
               setSelectedRoot(rootId);
@@ -318,12 +314,12 @@ export function ChatView() {
             </div>
           ) : null}
           <Composer
-            agents={agents}
-            mode={selectedAgent ? "dm" : "channel"}
-            dmAgent={selectedAgent ?? undefined}
+            roster={roster}
+            mode={selectedDm ? "dm" : "channel"}
+            dmCounterpart={selectedDm ?? undefined}
             channel={channelName}
             pending={submit.isPending}
-            disabled={agentsQ.isLoading && !isDemo}
+            disabled={liveRoster.isLoading && !isDemo}
             onSubmit={onSubmit}
           />
         </>
@@ -335,7 +331,7 @@ export function ChatView() {
           channel={channelName}
           resizable={isWide}
           thread={selectedThread}
-          agents={agents}
+          roster={roster}
           bubbles={bubbles}
           rootMessage={rootMessage}
           showThinking={showThinking}
@@ -389,8 +385,9 @@ function buildDemoView(poster: Poster): {
     if (m.sender.kind === "agent") {
       return {
         kind: "agent",
-        key: `h:${m.session_id}:${m.seq}`,
-        request_id: `demo:${m.session_id}:${m.seq}`,
+        key: `h:${m.seq}`,
+        request_id: `demo:${m.seq}`,
+        client_key: null,
         agent_id: m.sender.agent_id,
         agent_name: null,
         human_name: null,
@@ -406,8 +403,9 @@ function buildDemoView(poster: Poster): {
     }
     return {
       kind: "human",
-      key: `h:${m.session_id}:${m.seq}`,
-      request_id: `demo:${m.session_id}:${m.seq}`,
+      key: `h:${m.seq}`,
+      request_id: `demo:${m.seq}`,
+      client_key: null,
       agent_id: null,
       agent_name: null,
       human_name: poster.name,

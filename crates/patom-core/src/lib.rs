@@ -1,6 +1,6 @@
 //! Patom-rs — provider-agnostic, hookable agent runtime.
 //!
-//! The seams (`provider`, `session`, `memory`, `hook`, `tools`) are the public surface.
+//! The seams (`provider`, `threads`, `memory`, `hook`, `tools`) are the public surface.
 //! `Agent` orchestrates them; nothing else does. Adding a new backend on any seam means
 //! one new module and one composition-root edit in [`app::build_agent`].
 
@@ -9,6 +9,7 @@ pub mod agents;
 pub mod app;
 pub mod assets;
 pub mod auth;
+pub mod background;
 pub mod budget;
 pub mod cache;
 pub mod channels;
@@ -29,8 +30,8 @@ pub mod prompts;
 pub mod provider;
 pub mod runtime;
 pub mod scheduling;
-pub mod session;
 pub mod slack;
+pub mod threads;
 pub mod tools;
 pub mod types;
 

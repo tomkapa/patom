@@ -33,7 +33,6 @@ use patom::runtime::{
     LeaseTiming, PgDagBudget, PgPromptQueue, PgResponseHub, SharedDagBudget, WorkerConfig,
     WorkerPool, WorkerPoolHandle,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::tools::system::SendMessageTool;
 use patom::tools::{ToolBox, ToolRegistry};
 use sqlx::PgPool;
@@ -83,7 +82,6 @@ impl LlmProvider for ScriptedProvider {
 pub struct WorkerHarness {
     pub queue: Arc<PgPromptQueue>,
     pub hub: Arc<PgResponseHub>,
-    pub sessions: SharedSessionStore,
     pub dag: SharedDagBudget,
     pub pool: PgPool,
     pub default_agent_id: patom::agents::AgentId,
@@ -120,22 +118,18 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
 
     let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
     let queue = queue_impl.clone();
-    let leases = queue_impl.clone();
 
     let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let sink = hub.clone();
 
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+    let threads: patom::threads::SharedThreadStore = Arc::new(patom::threads::PgThreadStore::new(
+        pool.clone(),
+        clock.clone(),
+    ));
     let agent_store: SharedAgentStore = super::pg::shared_agent_store(pool.clone(), clock.clone());
     let colleagues: patom::colleagues::SharedColleagueStore =
         Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
-    let memory_store: patom::memory::SharedMemoryStore =
-        Arc::new(patom::memory::PgMemoryStore::new(
-            pool.clone(),
-            clock.clone(),
-            super::embedding::FakeEmbeddingProvider::shared(),
-        ));
 
     let provider: SharedProvider = provider;
     let memory: SharedMemory = Arc::new(StaticMemory::new("test"));
@@ -148,7 +142,7 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
 
     let tool_registry = ToolRegistry::builder()
         .with(Arc::new(SendMessageTool::new(
-            sessions.clone(),
+            threads.clone(),
             queue.clone(),
             dag.clone(),
             agent_store.clone(),
@@ -158,9 +152,10 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
         .build();
     let toolbox = ToolBox::from_builtins(tool_registry);
 
-    let agent = AgentBuilder::new(providers, sessions.clone(), memory, model)
+    let agent = AgentBuilder::new(providers, memory, model)
         .expect("builder")
         .with_clock(clock.clone())
+        .with_thread_store(threads.clone())
         .with_tools(toolbox)
         .with_hooks(HookChain::new())
         .build();
@@ -183,14 +178,10 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
     };
     let workers = WorkerPool::new(
         queue.clone(),
-        leases,
         sink,
         agents_registry,
-        sessions.clone(),
+        threads.clone(),
         dag.clone(),
-        pool.clone(),
-        memory_store,
-        clock.clone(),
         cfg,
     )
     .spawn();
@@ -207,7 +198,6 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
     WorkerHarness {
         queue,
         hub,
-        sessions,
         dag,
         pool,
         default_agent_id: seed.agent_id,

@@ -1,35 +1,58 @@
 import { useMemo } from "react";
-import { Inbox } from "lucide-react";
+import { Inbox, MessageSquareText } from "lucide-react";
 import { BoxedLabel } from "../molecules/BoxedLabel";
 import { EmptyState } from "../molecules/EmptyState";
-import { MessageBubble } from "./MessageBubble";
-import { dateLabel, longDate } from "../../lib/time";
-import { prefixMention } from "../../lib/mentions";
-import type { ThreadSummary } from "../../types/api";
+import { Monogram } from "../atoms/Monogram";
+import { renderMentions } from "../../lib/mentions";
+import { clockTime, dateLabel, longDate } from "../../lib/time";
+import type { Mentionable, ThreadSummary } from "../../types/api";
 
 type Item = { t: ThreadSummary; key: string };
 type DatedGroup = { label: string; items: Item[] };
 
+/** Slack-style timeline: each thread renders as its root posted message —
+ *  author, snippet, time — with a reply affordance. The G1 wire carries the
+ *  root summary + reply count so no per-thread feed fetch is needed. */
 export function MessageList({
   threads,
+  roster,
   channel,
   onOpenThread,
 }: {
   threads: ThreadSummary[];
+  /** Names for mention highlighting + agent author resolution. */
+  roster: Mentionable[];
   channel: string;
-  onOpenThread?: (rootId: string) => void;
+  onOpenThread?: (threadId: string) => void;
 }) {
   const dated = useMemo<DatedGroup[]>(() => {
     const out: DatedGroup[] = [];
-    for (const t of threads) {
-      const label = `${dateLabel(t.created_at)} · ${longDate(t.created_at)}`;
+    // Timeline order: oldest day first, like a chat log (G1 is
+    // newest-activity-first for the sidebar's benefit).
+    const ordered = [...threads].sort((a, b) =>
+      (a.root?.created_at ?? a.last_activity_at) <
+      (b.root?.created_at ?? b.last_activity_at)
+        ? -1
+        : 1,
+    );
+    for (const t of ordered) {
+      const ts = t.root?.created_at ?? t.last_activity_at;
+      const label = `${dateLabel(ts)} · ${longDate(ts)}`;
       const last = out[out.length - 1];
-      const item = { t, key: t.root_request_id };
+      const item = { t, key: t.thread_id };
       if (last && last.label === label) last.items.push(item);
       else out.push({ label, items: [item] });
     }
     return out;
   }, [threads]);
+
+  // Built once per roster change rather than per row: the mention name list
+  // and an agent-by-id lookup the root-author resolution needs.
+  const names = useMemo(() => roster.map((m) => m.name), [roster]);
+  const agentsById = useMemo(
+    () => new Map(roster.filter((m) => m.kind === "agent").map((m) => [m.id, m])),
+    [roster],
+  );
 
   if (threads.length === 0) {
     return (
@@ -37,7 +60,7 @@ export function MessageList({
         <EmptyState
           icon={<Inbox className="h-5 w-5" />}
           title={`Welcome to #${channel}`}
-          description="Start a thread with the composer below. Each thread is its own DAG of agent ↔ agent conversations."
+          description="Say something below — tag an agent or a colleague with @, or just post."
         />
       </div>
     );
@@ -49,32 +72,15 @@ export function MessageList({
         {dated.map((d) => (
           <div key={d.label}>
             <BoxedLabel>{d.label}</BoxedLabel>
-            {d.items.map((it) => {
-              const text = prefixMention(it.t.preview, it.t.first_agent.name);
-              return (
-                <MessageBubble
-                  key={it.key}
-                  sender={{
-                    kind: "human",
-                    name: it.t.starter.name,
-                    id: it.t.starter.user_id,
-                    avatarUrl: it.t.starter.avatar_url,
-                  }}
-                  body={text}
-                  ts={it.t.created_at}
-                  replyPill={
-                    it.t.reply_count > 0
-                      ? {
-                          count: it.t.reply_count,
-                          participants: [it.t.first_agent],
-                          meta: it.t.first_agent.name,
-                          onView: () => onOpenThread?.(it.t.root_request_id),
-                        }
-                      : undefined
-                  }
-                />
-              );
-            })}
+            {d.items.map((it) => (
+              <ThreadRow
+                key={it.key}
+                thread={it.t}
+                names={names}
+                agentsById={agentsById}
+                onOpen={() => onOpenThread?.(it.t.thread_id)}
+              />
+            ))}
           </div>
         ))}
       </div>
@@ -82,3 +88,89 @@ export function MessageList({
   );
 }
 
+/** Resolve the root author's display name + avatar from the wire (humans
+ *  are profile-enriched server-side; agents resolve via the roster map). */
+function rootAuthor(
+  thread: ThreadSummary,
+  agentsById: ReadonlyMap<string, Mentionable>,
+): { name: string; id: string; avatarUrl: string | null; isAgent: boolean } {
+  const root = thread.root;
+  if (!root) return { name: "…", id: thread.thread_id, avatarUrl: null, isAgent: false };
+  const sender = root.sender;
+  if (sender.kind === "agent") {
+    const agent = agentsById.get(sender.agent_id);
+    return {
+      name: agent?.name ?? "agent",
+      id: sender.agent_id,
+      avatarUrl: agent?.avatar_url ?? null,
+      isAgent: true,
+    };
+  }
+  if (sender.kind === "human") {
+    return {
+      name: root.sender_display_name ?? "member",
+      id: sender.user_id,
+      avatarUrl: root.sender_avatar_url,
+      isAgent: false,
+    };
+  }
+  return { name: "system", id: thread.thread_id, avatarUrl: null, isAgent: false };
+}
+
+function ThreadRow({
+  thread,
+  names,
+  agentsById,
+  onOpen,
+}: {
+  thread: ThreadSummary;
+  names: string[];
+  agentsById: ReadonlyMap<string, Mentionable>;
+  onOpen: () => void;
+}) {
+  const author = rootAuthor(thread, agentsById);
+  return (
+    <article
+      onClick={onOpen}
+      className="group flex cursor-pointer gap-3 px-4 md:px-8 py-2.5 hover:bg-[var(--color-paper-2)]/40 transition-colors"
+    >
+      <Monogram
+        name={author.name}
+        id={author.id}
+        size={32}
+        tone={author.isAgent ? "moss" : "user"}
+        avatarUrl={author.avatarUrl}
+      />
+      <div className="min-w-0 flex-1">
+        <header className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="font-[var(--font-display)] text-[13.5px] font-bold text-[var(--color-ink)]">
+            {author.name}
+          </span>
+          {author.isAgent && (
+            <span className="border border-[var(--color-moss)] px-1 font-[var(--font-mono)] text-[9px] font-bold uppercase tracking-[0.14em] text-[var(--color-moss)]">
+              AGENT
+            </span>
+          )}
+          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
+            {clockTime(thread.root?.created_at ?? thread.last_activity_at)}
+          </span>
+        </header>
+        <p className="mt-0.5 truncate text-[13.5px] leading-[1.5] text-[var(--color-ink)]">
+          {thread.root ? renderMentions(thread.root.snippet, names) : "…"}
+        </p>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen();
+          }}
+          className="mt-0.5 inline-flex items-center gap-1 font-[var(--font-mono)] text-[11px] font-medium text-[var(--color-moss-deep)] hover:text-[var(--color-moss)] transition-colors"
+        >
+          <MessageSquareText className="h-3 w-3" />
+          {thread.reply_count > 0
+            ? `${thread.reply_count} ${thread.reply_count === 1 ? "reply" : "replies"}`
+            : "Reply in thread"}
+        </button>
+      </div>
+    </article>
+  );
+}

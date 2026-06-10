@@ -19,7 +19,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::memory::ContradictionEventId;
-use crate::session::SessionId;
+use crate::threads::{ThreadId, ThreadMessageId};
 use crate::types::ParseError;
 
 use super::limits::{MAX_ATTEMPTS, MAX_IDEMPOTENCY_KEY_BYTES};
@@ -77,6 +77,12 @@ crate::uuid_newtype! {
     /// Identifier for an individual worker in the pool. Carried on lease tokens so we can
     /// trace which worker held a session.
     pub WorkerId
+}
+
+crate::uuid_newtype! {
+    /// Polymorphic turn scope — `agent_thread_state.id` (chat) or `background_turn_id`
+    /// (background). The hook/tracing/memory contexts key on this.
+    pub ClaimKey
 }
 
 /// Monotonically-increasing sequence number bumped on every claim. Stale writes from
@@ -263,14 +269,15 @@ crate::str_enum! {
 pub enum RequestKindPayload {
     Normal {},
     Reflection {
-        /// Conversation session this reflection covers — its
-        /// `reflection_checkpoints` row is the audit anchor.
-        session_id: SessionId,
-        /// Cursor the scheduler captured at enqueue time. The conversation
-        /// slice carried in the prompt body spans `(previous checkpoint,
-        /// up_to_turn_id]`; on success the checkpoint is stamped to this
-        /// value so the next reflection picks up strictly after it.
-        up_to_turn_id: PromptRequestId,
+        /// Thread this reflection covers — its `reflection_checkpoints`
+        /// `(agent_id, thread_id)` row is the audit anchor.
+        thread_id: ThreadId,
+        /// Frozen-slice upper bound the scheduler captured at enqueue time. The
+        /// conversation slice spans `(previous checkpoint, up_to_message_id]`;
+        /// on success the checkpoint is stamped to this `thread_messages.id` so
+        /// the next reflection picks up strictly after it. NOT read-at-run — the
+        /// slice is frozen at enqueue so late chat doesn't shift what was reflected.
+        up_to_message_id: ThreadMessageId,
     },
     Resolution {
         contradiction_event_id: ContradictionEventId,

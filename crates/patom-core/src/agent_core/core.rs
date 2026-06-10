@@ -4,16 +4,17 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug};
 
 use crate::auth::Caller;
+use crate::background::{BackgroundTurnId, SharedBackgroundStore};
 use crate::budget::SharedBudgetService;
 use crate::clock::SharedClock;
 use crate::hook::{HookChain, TurnContext};
 use crate::memory::SharedMemory;
-use crate::provider::{ChatMessage, Model, SharedProviderRegistry, UserContent};
-use crate::runtime::{PromptRequestId, RequestKindPayload};
-use crate::session::{SessionError, SessionId, SharedSessionStore};
+use crate::provider::{Model, SharedProviderRegistry};
+use crate::runtime::{ClaimKey, PromptRequestId, RequestKindPayload};
+use crate::threads::{AgentThreadId, SharedThreadStore, ThreadId};
 use crate::tools::system::todos::SharedSessionTodoStore;
 use crate::tools::{SharedToolCallStore, ToolBox};
-use crate::types::{AgentReply, MaxOutputTokens, MaxTurns, MessageSender, Participant, Prompt};
+use crate::types::{AgentReply, MaxOutputTokens, MaxTurns, Participant};
 
 use super::builder::TurnMetricsBinding;
 use super::error::AgentError;
@@ -36,7 +37,6 @@ pub(super) const fn send_message_tool_name() -> &'static str {
 #[derive(Debug, Clone)]
 pub struct Agent {
     providers: SharedProviderRegistry,
-    sessions: SharedSessionStore,
     memory: SharedMemory,
     clock: SharedClock,
     tools: ToolBox,
@@ -70,13 +70,20 @@ pub struct Agent {
     /// the org's cap before each provider call and settles the turn's cost
     /// after — see [`Agent::budget_gate`] / [`Agent::budget_settle`].
     budget: Option<SharedBudgetService>,
+    /// Thread-feed store backing the read-at-run chat path
+    /// ([`Agent::reply_in_thread`]). `None` in agent_core unit tests that
+    /// do not exercise the thread path; the production factory wires
+    /// [`crate::threads::PgThreadStore`].
+    threads: Option<SharedThreadStore>,
+    /// Background-cognition store backing [`Agent::reply_background`]. `None`
+    /// outside the worker's background path.
+    background: Option<SharedBackgroundStore>,
 }
 
 impl Agent {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         providers: SharedProviderRegistry,
-        sessions: SharedSessionStore,
         memory: SharedMemory,
         clock: SharedClock,
         tools: ToolBox,
@@ -90,10 +97,11 @@ impl Agent {
         todos_store: Option<SharedSessionTodoStore>,
         turn_metrics: Option<TurnMetricsBinding>,
         budget: Option<SharedBudgetService>,
+        threads: Option<SharedThreadStore>,
+        background: Option<SharedBackgroundStore>,
     ) -> Self {
         Self {
             providers,
-            sessions,
             memory,
             clock,
             tools,
@@ -107,6 +115,8 @@ impl Agent {
             todos_store,
             turn_metrics,
             budget,
+            threads,
+            background,
         }
     }
 
@@ -127,9 +137,6 @@ impl Agent {
              call_provider — upheld by startup config validation + the resolver's \
              graceful-degrade fallback to the workspace default",
         )
-    }
-    pub(super) fn sessions(&self) -> &SharedSessionStore {
-        &self.sessions
     }
     pub(super) fn memory(&self) -> &SharedMemory {
         &self.memory
@@ -167,140 +174,69 @@ impl Agent {
     pub(super) fn budget(&self) -> Option<&SharedBudgetService> {
         self.budget.as_ref()
     }
-
-    /// Drive a batch of user prompts to a final assistant text answer, running
-    /// tool calls in between turns. Honours `cancel` at the next checkpoint.
-    /// `observer` is notified at every assistant block and tool result so the
-    /// SSE pipeline streams chunks as the loop progresses.
-    ///
-    /// `kind` selects the per-mode `<core>` and the tool subset the model
-    /// sees. `kind_payload` is the worker-supplied per-claim metadata
-    /// (mirroring `prompt_requests.kind_payload`); tools that opt into
-    /// kind-specific behaviour read it from [`crate::tools::ToolCallContext`].
-    /// agent_core itself is variant-agnostic — it only forwards.
-    #[allow(clippy::too_many_arguments)]
-    #[tracing::instrument(
-        skip_all,
-        name = "agent.reply",
-        fields(
-            patom.session.id = %session,
-            patom.viewer = %viewer,
-            patom.request.kind = kind_payload.kind().as_str(),
-            patom.provider = self.provider().name(),
-            patom.model = %self.model,
-            patom.batch_size = prompts.len(),
-            patom.max_turns = self.max_turns.get(),
-            patom.dag.root = tracing::field::Empty,
-            patom.outcome = tracing::field::Empty,
-        ),
-    )]
-    pub async fn reply(
-        &self,
-        session: SessionId,
-        viewer: Participant,
-        prompts: Vec<Prompt>,
-        request_id: PromptRequestId,
-        caller: Caller,
-        kind_payload: RequestKindPayload,
-        cancel: CancellationToken,
-        observer: Option<SharedTurnObserver>,
-    ) -> Result<AgentReply, AgentError> {
-        let result = self
-            .reply_inner(
-                session,
-                viewer,
-                prompts,
-                request_id,
-                caller,
-                &kind_payload,
-                cancel,
-                observer,
-            )
-            .await;
-        record_reply(&result);
-        result
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn reply_inner(
-        &self,
-        session: SessionId,
-        viewer: Participant,
-        prompts: Vec<Prompt>,
-        request_id: PromptRequestId,
-        caller: Caller,
-        kind_payload: &RequestKindPayload,
-        cancel: CancellationToken,
-        observer: Option<SharedTurnObserver>,
-    ) -> Result<AgentReply, AgentError> {
-        assert!(!prompts.is_empty(), "reply requires at least one prompt");
-        let counterpart = self.counterpart(session, viewer).await?;
-
-        // Append once on the first call. The retry path (`resume`) re-enters
-        // the loop without re-appending the same prompt rows.
-        let user_blocks: Vec<UserContent> = prompts
-            .into_iter()
-            .map(|p| UserContent::Text(p.into_string()))
-            .collect();
-        self.sessions
-            .append_for_user(
-                caller.user_id,
-                session,
-                MessageSender::from(counterpart),
-                viewer,
-                ChatMessage::User(user_blocks),
-                request_id,
-            )
-            .await?;
-
-        self.run_loop(
-            session,
-            viewer,
-            counterpart,
-            request_id,
-            caller,
-            kind_payload,
-            cancel,
-            observer,
+    /// Thread-feed store for the read-at-run chat path. The `expect` is a named
+    /// assertion (CLAUDE.md §6): [`Agent::reply_in_thread`] is only reachable
+    /// from the worker's thread-feed claim path, which the production factory
+    /// always wires with a store. A `None` here means an agent built for the
+    /// legacy pair path was driven down the thread path — a wiring bug.
+    pub(super) fn threads(&self) -> &SharedThreadStore {
+        self.threads.as_ref().expect(
+            "invariant: reply_in_thread requires a thread store; the production agent \
+             factory wires PgThreadStore for the thread-feed worker path",
         )
-        .await
+    }
+    /// Background-cognition store. The `expect` is a named assertion (§6):
+    /// [`Agent::reply_background`] is only reachable from the worker's
+    /// background claim path, which the factory always wires with a store.
+    pub(super) fn background(&self) -> &SharedBackgroundStore {
+        self.background.as_ref().expect(
+            "invariant: reply_background requires a background store; the production agent \
+             factory wires PgBackgroundStore for the cognition worker path",
+        )
     }
 
-    /// Continue an existing reply from where it left off. Used by the worker's
-    /// ping-pong guard between retries — the prompt was already appended on
-    /// the first `reply` call.
+    /// Drive a thread-feed turn loop for `viewer` (an agent), reading the
+    /// thread context **at run time** from the [`crate::threads::ThreadStore`].
+    ///
+    /// There is no `prompts` argument — when the worker claims a `(thread,
+    /// agent)` turn, the agent reads the thread tail itself
+    /// (`context_for_agent`). The agent's reasoning / tool-call artifacts are
+    /// appended to the feed as owner-private rows (shown to all, ingested only
+    /// by this agent); the posted egress is the `send_message` tool.
+    #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(
         skip_all,
-        name = "agent.resume",
+        name = "agent.reply_in_thread",
         fields(
-            patom.session.id = %session,
+            patom.thread.id = %thread,
+            patom.state.id = %claim_key,
             patom.viewer = %viewer,
             patom.request.kind = kind_payload.kind().as_str(),
             patom.provider = self.provider().name(),
             patom.model = %self.model,
             patom.max_turns = self.max_turns.get(),
-            patom.dag.root = tracing::field::Empty,
             patom.outcome = tracing::field::Empty,
         ),
     )]
-    #[allow(clippy::too_many_arguments)]
-    pub async fn resume(
+    pub async fn reply_in_thread(
         &self,
-        session: SessionId,
+        claim_key: AgentThreadId,
+        thread: ThreadId,
         viewer: Participant,
         request_id: PromptRequestId,
+        root_request_id: PromptRequestId,
         caller: Caller,
         kind_payload: RequestKindPayload,
         cancel: CancellationToken,
         observer: Option<SharedTurnObserver>,
     ) -> Result<AgentReply, AgentError> {
-        let counterpart = self.counterpart(session, viewer).await?;
         let result = self
-            .run_loop(
-                session,
+            .run_thread_loop(
+                claim_key,
+                thread,
                 viewer,
-                counterpart,
                 request_id,
+                root_request_id,
                 caller,
                 &kind_payload,
                 cancel,
@@ -312,24 +248,23 @@ impl Agent {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn run_loop(
+    async fn run_thread_loop(
         &self,
-        session: SessionId,
+        claim_key: AgentThreadId,
+        thread: ThreadId,
         viewer: Participant,
-        counterpart: Participant,
         request_id: PromptRequestId,
+        root_request_id: PromptRequestId,
         caller: Caller,
         kind_payload: &RequestKindPayload,
         cancel: CancellationToken,
         observer: Option<SharedTurnObserver>,
     ) -> Result<AgentReply, AgentError> {
-        let viewer_as_sender = MessageSender::from(viewer);
-        // Resolved once per loop — constant across turns, threaded into every
-        // tool call so `send_message` can bump the per-DAG budget without
-        // redundant lookups.
-        let root_request_id = self.sessions.root_request_id(session).await?;
-        tracing::Span::current().record("patom.dag.root", tracing::field::display(root_request_id));
-
+        // In the thread model the agent's participation id (`state_id` =
+        // `claim_key`) is the polymorphic turn scope. The hook / tracing /
+        // memory contexts key on this `ClaimKey`; the recorder rows source
+        // `state_id` from the typed `claim_key` separately.
+        let scope = ClaimKey::from(claim_key.as_uuid());
         let observer = observer.as_ref();
         let mut send_message_calls = 0usize;
         for turn in 0..self.max_turns.get() {
@@ -337,25 +272,128 @@ impl Agent {
                 return Err(AgentError::Cancelled);
             }
             let ctx = TurnContext {
-                session_id: session,
+                claim_key: scope,
                 turn_index: turn_index(turn),
             };
             let turn_span = tracing::info_span!(
                 "agent.turn",
-                patom.session.id = %session,
-                patom.dag.root = %root_request_id,
+                patom.thread.id = %thread,
+                patom.state.id = %claim_key,
                 patom.turn_index = turn,
                 patom.viewer = %viewer,
                 patom.turn.outcome = tracing::field::Empty,
                 patom.tool_calls.count = tracing::field::Empty,
             );
             let outcome = async {
-                self.run_turn(
+                self.run_thread_turn(
                     ctx,
+                    claim_key,
+                    thread,
                     viewer,
-                    counterpart,
-                    viewer_as_sender,
+                    request_id,
                     root_request_id,
+                    caller,
+                    kind_payload,
+                    &mut send_message_calls,
+                    &cancel,
+                    observer,
+                )
+                .await
+            }
+            .instrument(turn_span.clone())
+            .await;
+            record_turn(&turn_span, &outcome);
+            if let Some(text) = outcome? {
+                debug!(turn, "agent.thread.turn.final");
+                return Ok(AgentReply::new(text, send_message_calls));
+            }
+        }
+        Err(AgentError::MaxTurnsExceeded(self.max_turns.get()))
+    }
+
+    /// Drive a **background-cognition** turn loop (reflection / resolution) for
+    /// `viewer`, reading + appending to the [`crate::background::BackgroundStore`].
+    ///
+    /// Like [`Self::reply_in_thread`] but off the chat feed: context comes from
+    /// the background turn's private log (seeded by the scheduler / librarian),
+    /// the agent's exchange is appended back there, and there is **no ping-pong
+    /// guard** — a cognition turn may legitimately end without `send_message`.
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(
+        skip_all,
+        name = "agent.reply_background",
+        fields(
+            patom.background.turn.id = %turn,
+            patom.viewer = %viewer,
+            patom.request.kind = kind_payload.kind().as_str(),
+            patom.provider = self.provider().name(),
+            patom.model = %self.model,
+            patom.outcome = tracing::field::Empty,
+        ),
+    )]
+    pub async fn reply_background(
+        &self,
+        turn: BackgroundTurnId,
+        viewer: Participant,
+        request_id: PromptRequestId,
+        caller: Caller,
+        kind_payload: RequestKindPayload,
+        cancel: CancellationToken,
+        observer: Option<SharedTurnObserver>,
+    ) -> Result<AgentReply, AgentError> {
+        let result = self
+            .run_background_loop(
+                turn,
+                viewer,
+                request_id,
+                caller,
+                &kind_payload,
+                cancel,
+                observer,
+            )
+            .await;
+        record_reply(&result);
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_background_loop(
+        &self,
+        turn: BackgroundTurnId,
+        viewer: Participant,
+        request_id: PromptRequestId,
+        caller: Caller,
+        kind_payload: &RequestKindPayload,
+        cancel: CancellationToken,
+        observer: Option<SharedTurnObserver>,
+    ) -> Result<AgentReply, AgentError> {
+        // The background turn id is this turn's polymorphic scope; the
+        // hook / tracing / memory contexts key on this `ClaimKey`. There is
+        // no `state_id` for a cognition turn, so the recorders skip.
+        let scope = ClaimKey::from(turn.as_uuid());
+        let observer = observer.as_ref();
+        let mut send_message_calls = 0usize;
+        for turn_idx in 0..self.max_turns.get() {
+            if cancel.is_cancelled() {
+                return Err(AgentError::Cancelled);
+            }
+            let ctx = TurnContext {
+                claim_key: scope,
+                turn_index: turn_index(turn_idx),
+            };
+            let turn_span = tracing::info_span!(
+                "agent.turn",
+                patom.background.turn.id = %turn,
+                patom.turn_index = turn_idx,
+                patom.viewer = %viewer,
+                patom.turn.outcome = tracing::field::Empty,
+                patom.tool_calls.count = tracing::field::Empty,
+            );
+            let outcome = async {
+                self.run_background_turn(
+                    ctx,
+                    turn,
+                    viewer,
                     request_id,
                     caller,
                     kind_payload,
@@ -369,32 +407,10 @@ impl Agent {
             .await;
             record_turn(&turn_span, &outcome);
             if let Some(text) = outcome? {
-                debug!(turn, "agent.turn.final");
+                debug!(turn_idx, "agent.background.turn.final");
                 return Ok(AgentReply::new(text, send_message_calls));
             }
         }
         Err(AgentError::MaxTurnsExceeded(self.max_turns.get()))
-    }
-
-    /// Look up the counterpart participant given the explicit viewer.
-    ///
-    /// Sessions are 2-party. The worker passes the receiver agent as `viewer` —
-    /// inferring from session ordering alone is ambiguous when both sides are
-    /// agents.
-    async fn counterpart(
-        &self,
-        session: SessionId,
-        viewer: Participant,
-    ) -> Result<Participant, AgentError> {
-        let (a, b) = self.sessions.participants(session).await?;
-        if a == viewer {
-            Ok(b)
-        } else if b == viewer {
-            Ok(a)
-        } else {
-            Err(AgentError::Session(SessionError::Backend(format!(
-                "agent {viewer} is not a participant of session {session}"
-            ))))
-        }
     }
 }

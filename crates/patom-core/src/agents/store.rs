@@ -10,8 +10,8 @@ use crate::types::AvatarUrl;
 
 use super::error::AgentStoreError;
 use super::types::{
-    AgentCard, AgentDescription, AgentId, AgentName, AgentRecord, AgentSystemPrompt,
-    AllowedMcpTools, DefaultAgentSeed,
+    AgentCard, AgentDescription, AgentId, AgentName, AgentRecord, AgentSeed, AgentSystemPrompt,
+    AllowedMcpTools,
 };
 
 /// Input to [`AgentStore::create`]. Server-side fields (`id`, `created_at`,
@@ -27,11 +27,6 @@ pub struct NewAgent {
     /// Operator-curated, model-facing one-sentence blurb. Required at
     /// create time — there is no "empty description" path.
     pub description: AgentDescription,
-    /// When `true`, the new row becomes the default within `org_id`; the
-    /// previously-default row in the same org is demoted in the same
-    /// transaction so the partial unique index `agents_default_unique`
-    /// stays satisfied.
-    pub is_default: bool,
     /// Initial MCP allowlist. Empty for the no-MCP-tools default; the operator
     /// supplies it explicitly when granting access at create time. Each
     /// server entry may carry `None` (= all of its tools) or `Some(set)`
@@ -55,11 +50,8 @@ pub struct NewAgent {
 /// HTTP-PATCH-style update payload.
 ///
 /// Each field's outer `Option` distinguishes "field omitted (no change)" from
-/// "field present (set)". `is_default = Some(true)` triggers an atomic
-/// demote-then-promote; `is_default = Some(false)` is rejected when applied to
-/// the current default row (the system requires a default to exist at all
-/// times). `allowed_mcp_tools = Some(<empty>)` is the lockdown path —
-/// distinct from "field omitted" so HTTP PATCH can revoke every server.
+/// "field present (set)". `allowed_mcp_tools = Some(<empty>)` is the lockdown
+/// path — distinct from "field omitted" so HTTP PATCH can revoke every server.
 #[derive(Debug, Clone, Default)]
 pub struct AgentUpdate {
     pub name: Option<AgentName>,
@@ -67,7 +59,6 @@ pub struct AgentUpdate {
     /// Patch the description. Required, non-empty if present — the
     /// newtype's `TryFrom` rejects empty/whitespace at the HTTP boundary.
     pub description: Option<AgentDescription>,
-    pub is_default: Option<bool>,
     pub allowed_mcp_tools: Option<AllowedMcpTools>,
     /// Patch the per-agent model. Double-`Option` follows the same nullable-
     /// PATCH idiom as the HTTP layer: outer `None` = "field omitted, leave
@@ -109,16 +100,14 @@ pub trait AgentStore: fmt::Debug + Send + Sync {
         payload: NewAgent,
     ) -> Result<AgentRecord, AgentStoreError>;
 
-    /// Idempotent per-org seed: insert `seed` as the default agent for
-    /// `org_id` if no default row exists for that org. Returns the id of
-    /// the resulting default row, whether minted here or already present.
-    /// Called from the OAuth callback on first sign-up so the freshly
-    /// minted personal org has a usable default agent immediately.
-    async fn seed_default(
-        &self,
-        org_id: OrgId,
-        seed: DefaultAgentSeed,
-    ) -> Result<AgentId, AgentStoreError>;
+    /// Idempotent per-org preset seed: insert `seed` (the recruiter) for
+    /// `org_id` if no agent of that name exists in the org. Returns the id
+    /// of the resulting row, whether minted here or already present. Called
+    /// from org creation so the fresh workspace has a usable agent
+    /// immediately. The preset is an ordinary agent — there is no runtime
+    /// "default" concept.
+    async fn seed_preset(&self, org_id: OrgId, seed: AgentSeed)
+    -> Result<AgentId, AgentStoreError>;
 
     /// Snapshot of every row, ordered by `created_at` ascending.
     async fn list(&self) -> Result<Vec<AgentRecord>, AgentStoreError>;
@@ -133,15 +122,8 @@ pub trait AgentStore: fmt::Debug + Send + Sync {
         payload: AgentUpdate,
     ) -> Result<AgentRecord, AgentStoreError>;
 
-    /// Remove the row. Refuses to delete the row currently flagged as default
-    /// (returns [`AgentStoreError::DefaultDeletionForbidden`]).
+    /// Remove the row.
     async fn delete(&self, id: AgentId) -> Result<(), AgentStoreError>;
-
-    /// Id of the row flagged `is_default = TRUE` within `org_id`. Each
-    /// org has exactly one default agent (enforced by the
-    /// `agents_default_unique` partial unique index on
-    /// `(org_id) WHERE is_default`), seeded when the org is created.
-    async fn default_id_for(&self, org_id: OrgId) -> Result<AgentId, AgentStoreError>;
 
     /// Case-insensitive lookup by [`AgentName`] scoped to the viewer
     /// agent's org. Returns the matching record on success;

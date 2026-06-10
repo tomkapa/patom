@@ -27,10 +27,9 @@ use patom::mcp::{
     SharedMcpServerStore,
 };
 use patom::runtime::{
-    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
-    SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream,
+    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedPromptQueue,
+    SharedResponseSink, SharedResponseSource, SharedThreadStream,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -81,14 +80,11 @@ impl UploadsHarness {
 
         let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = queue_impl.clone();
-        let leases: SharedLeaseManager = queue_impl;
 
         let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
         let _sink: SharedResponseSink = hub.clone();
         let responses: SharedResponseSource = hub;
 
-        let sessions: SharedSessionStore =
-            Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
         let agents = common::pg::shared_agent_store(pool.clone(), clock.clone());
         let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
@@ -118,9 +114,7 @@ impl UploadsHarness {
 
         let state = AppState {
             queue,
-            leases,
             responses,
-            sessions,
             agents,
             colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             dag,
@@ -219,7 +213,6 @@ impl UploadsHarness {
                 system_prompt: AgentSystemPrompt::try_from("be helpful").expect("valid prompt"),
                 description: AgentDescription::try_from(format!("agent {name}"))
                     .expect("valid desc"),
-                is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
                 avatar_url: None,

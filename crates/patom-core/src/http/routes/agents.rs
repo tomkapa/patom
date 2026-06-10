@@ -81,7 +81,6 @@ struct AgentResponse {
     /// Operator-curated, model-facing one-sentence blurb embedded for
     /// `search_agents`. Always present — the column is `NOT NULL`.
     description: String,
-    is_default: bool,
     /// Per-agent MCP tool allowlist, keyed by server id. `null` value =
     /// every tool from that server; otherwise the explicit list of remote
     /// tool names. Always present; an empty object means the agent has no
@@ -107,7 +106,6 @@ impl From<AgentRecord> for AgentResponse {
             name: r.name.as_str().to_owned(),
             system_prompt: r.system_prompt.as_str().to_owned(),
             description: r.description.as_str().to_owned(),
-            is_default: r.is_default,
             allowed_mcp_tools: r.allowed_mcp_tools,
             model: r.model.map(Model::as_str),
             avatar_url: r.avatar_url.map(|a| a.as_str().to_owned()),
@@ -124,10 +122,6 @@ struct CreateAgentRequest {
     /// Required, non-empty (doc/agent_discovery_plan.md §5.2). Embedded
     /// for `search_agents`.
     description: String,
-    /// When `true`, the new agent becomes the default. The previously-default
-    /// row is demoted in the same transaction.
-    #[serde(default)]
-    is_default: bool,
     /// MCP tools the new agent may use, keyed by server id. `null` =
     /// every tool from that server; otherwise the explicit list of remote
     /// tool names. Omitted = no MCP access (`{}`): there is no
@@ -157,11 +151,6 @@ struct UpdateAgentRequest {
     /// leaves the existing description and embedding untouched.
     #[serde(default)]
     description: Option<String>,
-    /// `Some(true)` promotes this row to default (atomically demotes the
-    /// previous default). `Some(false)` is rejected when applied to the
-    /// current default — the system requires exactly one default at all times.
-    #[serde(default)]
-    is_default: Option<bool>,
     /// `Some(map)` replaces the allowlist atomically — including
     /// `Some({})`, the explicit lockdown that revokes every server. `None`
     /// (field omitted) leaves the existing allowlist untouched.
@@ -232,7 +221,6 @@ async fn create_agent(
             name,
             system_prompt,
             description,
-            is_default: payload.is_default,
             allowed_mcp_tools: payload.allowed_mcp_tools,
             model: payload.model,
             avatar_url,
@@ -366,7 +354,6 @@ async fn update_agent(
                 name,
                 system_prompt,
                 description,
-                is_default: payload.is_default,
                 allowed_mcp_tools,
                 model: payload.model,
                 avatar_url,
@@ -403,7 +390,7 @@ async fn delete_agent(
 // run raw SQL inside the principal-scoped tx without going through the
 // store's privileged transaction.
 const AGENT_LIST_SELECT: &str = "a.id, a.org_id, a.name, apv.system_prompt, a.description, \
-    a.is_default, a.allowed_mcp_tools, a.model, a.avatar_url, a.created_at, a.updated_at \
+    a.allowed_mcp_tools, a.model, a.avatar_url, a.created_at, a.updated_at \
     FROM agents a \
     JOIN LATERAL ( \
         SELECT system_prompt FROM agent_prompt_versions \
@@ -418,7 +405,6 @@ struct AgentRowForList {
     name: String,
     system_prompt: String,
     description: String,
-    is_default: bool,
     allowed_mcp_tools: SqlxJson<AllowedMcpTools>,
     model: Option<Model>,
     avatar_url: Option<String>,
@@ -434,7 +420,6 @@ impl AgentRowForList {
             name: self.name,
             system_prompt: self.system_prompt,
             description: self.description,
-            is_default: self.is_default,
             allowed_mcp_tools: self.allowed_mcp_tools.0,
             model: self.model.map(Model::as_str),
             // The DB CHECK only caps length, so re-parse through `AvatarUrl`

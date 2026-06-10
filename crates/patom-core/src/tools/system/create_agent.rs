@@ -193,15 +193,13 @@ impl CreateAgentTool {
 
         // `is_default` and `model` are intentionally not on the input schema
         // and not patched here — both stay operator decisions via
-        // `PUT /agents/{id}`. The recruiter cannot promote a hire to default
-        // and cannot pick an LLM backend for it; new hires always inherit the
-        // workspace default model.
+        // `PUT /agents/{id}`. The recruiter cannot pick an LLM backend for a
+        // hire; new hires always inherit the workspace default model.
         let payload = NewAgent {
             org_id: viewer_record.org_id,
             name,
             system_prompt,
             description,
-            is_default: false,
             allowed_mcp_tools,
             model: None,
             // Recruiter-minted hires start with no avatar; the operator

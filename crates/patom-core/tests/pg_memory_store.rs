@@ -24,7 +24,7 @@ use patom::runtime::{PromptRequestId, RequestKind};
 use sqlx::PgPool;
 
 mod common;
-use common::pg::{human_to_agent_session, seed_prompt_request, seed_tenant};
+use common::pg::{seed_agent_thread_state, seed_prompt_request, seed_tenant};
 
 fn store(pool: &PgPool) -> Arc<PgMemoryStore> {
     Arc::new(PgMemoryStore::new(
@@ -424,17 +424,8 @@ async fn prompt_requests_kind_defaults_to_normal(pool: PgPool) {
     // existing rows continue to dispatch as `Normal`.
     let seed = seed_tenant(&pool).await;
 
-    let session_store =
-        patom::session::PgSessionStore::new(pool.clone(), patom::clock::SystemClock::shared());
-    let session = human_to_agent_session(
-        &pool,
-        &session_store,
-        seed.agent_id,
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
-    let id = seed_prompt_request(&pool, session, seed.agent_id, seed.org_id).await;
+    let state_id = seed_agent_thread_state(&pool, seed.org_id, seed.agent_id).await;
+    let id = seed_prompt_request(&pool, state_id, seed.agent_id, seed.org_id, seed.user_id).await;
 
     let (kind, payload): (RequestKind, serde_json::Value) =
         sqlx::query_as("SELECT kind, kind_payload FROM prompt_requests WHERE id = $1")

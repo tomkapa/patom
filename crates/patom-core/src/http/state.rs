@@ -22,10 +22,8 @@ use crate::memory::SharedMemoryStore;
 use crate::orgs::{SharedMailer, SharedOrgStore};
 use crate::prompts::Prompts;
 use crate::runtime::{
-    SharedDagBudget, SharedLeaseManager, SharedPromptQueue, SharedResponseSource,
-    SharedThreadStream,
+    SharedDagBudget, SharedPromptQueue, SharedResponseSource, SharedThreadStream,
 };
-use crate::session::SharedSessionStore;
 use crate::slack::SlackAppState;
 
 /// Cheaply-cloneable container of every collaborator the HTTP routes need. The router
@@ -33,10 +31,7 @@ use crate::slack::SlackAppState;
 #[derive(Clone, Debug)]
 pub struct AppState {
     pub queue: SharedPromptQueue,
-    #[allow(dead_code)] // surfaced for future endpoints (lease admin) and Postgres parity.
-    pub leases: SharedLeaseManager,
     pub responses: SharedResponseSource,
-    pub sessions: SharedSessionStore,
     pub agents: SharedAgentStore,
     /// Per-org colleague directory — humans + agents as one addressable
     /// roster. HTTP handlers resolve `(org_id, user_id)` → colleague to
@@ -91,10 +86,11 @@ pub struct AppState {
     /// Fan-in DAG stream — `GET /threads/{id}/stream` subscribes here. The
     /// owning task is held by [`Server`]; this handle is cheap to clone.
     pub thread_stream: SharedThreadStream,
-    /// Shared connection pool for threads-route SQL (channel feed + thread
-    /// history). The trait surface for those queries is small enough to keep
-    /// inline in the route module rather than spinning up another store
-    /// abstraction; this field is the seam.
+    /// Shared connection pool. The threads routes build a per-request
+    /// `PgThreadStore` from this `pool` + `clock` (a pair of `Arc` clones) to
+    /// reach the `ThreadStore` trait (channel feed + flat history); other
+    /// routes that still hold raw thread/feed SQL use it directly. This field
+    /// is the seam for both.
     pub pool: PgPool,
     /// JWT signer used by the auth middleware to verify cookies and by
     /// the OAuth callback route to mint them.

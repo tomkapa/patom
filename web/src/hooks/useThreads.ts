@@ -1,16 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import type { TagRef } from "../types/api";
 
 /**
- * Channel feed. `channelId` selects a channel's threads; `null` returns the
- * caller's direct messages (BE: human-rooted threads with no channel). The
- * key includes `channelId` so switching channels refetches rather than
- * showing the previous feed.
+ * Thread feed. `channelId` selects a channel's threads; `null` returns the
+ * caller's direct messages, optionally narrowed to the conversation with
+ * one `counterpart` colleague (both orientations). The key includes both so
+ * switching context refetches rather than showing the previous feed.
  */
-export function useThreads(channelId: string | null = null) {
+export function useThreads(
+  channelId: string | null = null,
+  counterpart: TagRef | null = null,
+) {
   return useQuery({
-    queryKey: ["threads", { channelId }],
-    queryFn: () => api.threads(channelId),
+    queryKey: ["threads", { channelId, counterpart }],
+    queryFn: () => api.threads(channelId, counterpart),
     refetchInterval: 15_000,
     refetchOnWindowFocus: true,
   });

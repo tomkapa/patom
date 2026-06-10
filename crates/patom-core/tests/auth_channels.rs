@@ -15,10 +15,9 @@ use patom::clock::SystemClock;
 use patom::http::{AppState, router};
 use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
 use patom::runtime::{
-    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
-    SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream,
+    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedPromptQueue,
+    SharedResponseSink, SharedResponseSource, SharedThreadStream,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
@@ -36,13 +35,11 @@ async fn build(pool: &PgPool) -> (AppState, SeededPrincipal) {
 
     let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
     let queue: SharedPromptQueue = queue_impl.clone();
-    let leases: SharedLeaseManager = queue_impl;
 
     let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let _sink: SharedResponseSink = hub.clone();
     let responses: SharedResponseSource = hub;
 
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let agents = common::pg::shared_agent_store(pool.clone(), clock.clone());
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
@@ -72,9 +69,7 @@ async fn build(pool: &PgPool) -> (AppState, SeededPrincipal) {
 
     let state = AppState {
         queue,
-        leases,
         responses,
-        sessions,
         agents,
         colleagues: Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
         dag,
@@ -211,7 +206,6 @@ async fn create_agent(state: &AppState, org: OrgId) -> String {
             name: AgentName::try_from(format!("agent-{}", &suffix[..8])).expect("name"),
             system_prompt: AgentSystemPrompt::try_from("prompt").expect("prompt"),
             description: AgentDescription::try_from("an agent").expect("desc"),
-            is_default: false,
             allowed_mcp_tools: AllowedMcpTools::empty(),
             model: None,
             avatar_url: None,
@@ -241,7 +235,7 @@ async fn channel_post_lands_in_channel_feed_not_dms(pool: PgPool) {
         "POST",
         "/api/prompts",
         Some(&primary),
-        Some(json!({"content":"hello channel","idempotency_key":"k-ch","agent_id":agent,"channel_id":ch_id})),
+        Some(json!({"content":"hello channel","idempotency_key":"k-ch","tags":[{"kind":"agent","id":agent}],"channel_id":ch_id})),
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::ACCEPTED);
@@ -283,7 +277,7 @@ async fn dm_is_private_to_creator(pool: PgPool) {
         "POST",
         "/api/prompts",
         Some(&primary),
-        Some(json!({"content":"private","idempotency_key":"k-dm","agent_id":agent})),
+        Some(json!({"content":"private","idempotency_key":"k-dm","counterpart":{"kind":"agent","id":agent}})),
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::ACCEPTED);
@@ -322,7 +316,7 @@ async fn non_member_cannot_see_or_post_to_channel(pool: PgPool) {
         "POST",
         "/api/prompts",
         Some(&primary),
-        Some(json!({"content":"hi","idempotency_key":"k-ch","agent_id":agent,"channel_id":ch_id})),
+        Some(json!({"content":"hi","idempotency_key":"k-ch","tags":[{"kind":"agent","id":agent}],"channel_id":ch_id})),
     )
     .await;
     assert_eq!(
@@ -352,7 +346,7 @@ async fn non_member_cannot_see_or_post_to_channel(pool: PgPool) {
         "POST",
         "/api/prompts",
         Some(&other),
-        Some(json!({"content":"sneak","idempotency_key":"k-sneak","agent_id":agent,"channel_id":ch_id})),
+        Some(json!({"content":"sneak","idempotency_key":"k-sneak","tags":[{"kind":"agent","id":agent}],"channel_id":ch_id})),
     )
     .await;
     assert_eq!(
@@ -573,6 +567,16 @@ async fn membership_flips_visibility(pool: PgPool) {
     .await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(roster.as_array().expect("array").len(), 2);
+    // Every roster row is profile-enriched (display name; avatar nullable) so
+    // the FE mention list / DM sidebar can render humans without a second
+    // endpoint.
+    for row in roster.as_array().expect("array") {
+        assert!(
+            row["display_name"].as_str().is_some(),
+            "member row carries a display name: {row:?}"
+        );
+        assert!(row.get("avatar_url").is_some(), "avatar key present");
+    }
 
     // Creator removes `other` → visibility revoked.
     let (status, _) = send(

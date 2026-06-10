@@ -4,7 +4,7 @@ use crate::auth::OrgId;
 use crate::hook::{HookDenied, HookError};
 use crate::memory::MemoryError;
 use crate::provider::ProviderError;
-use crate::session::SessionError;
+use crate::threads::ThreadError;
 use crate::tools::system::todos::TodoStoreError;
 
 #[derive(Debug, Error)]
@@ -12,8 +12,18 @@ pub enum AgentError {
     #[error("provider: {0}")]
     Provider(#[from] ProviderError),
 
-    #[error("session: {0}")]
-    Session(#[from] SessionError),
+    /// A turn-loop invariant the type system can't prove was violated — e.g.
+    /// the worker drove a non-agent viewer down the thread / background path.
+    /// §6: surfaced as a backend error rather than a panic so the lease
+    /// expires and another worker retries instead of unwinding the worker.
+    #[error("agent_core invariant: {0}")]
+    Internal(String),
+
+    #[error("thread: {0}")]
+    Thread(#[from] ThreadError),
+
+    #[error("background: {0}")]
+    Background(#[from] crate::background::BackgroundError),
 
     #[error("memory: {0}")]
     Memory(#[from] MemoryError),

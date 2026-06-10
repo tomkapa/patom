@@ -58,23 +58,6 @@ pub const MAX_SLACK_STREAM_PUMPS: usize = 256;
 /// fresh via `bridge::process_event`.
 pub const SLACK_PUMP_IDLE_TTL: Duration = Duration::from_mins(30);
 
-/// Upper bound on how many distinct Slack threads a single DAG may mint.
-///
-/// Every session inside the DAG that surfaces a message — `(agent, human)`
-/// replies *and* `(agent, agent)` handoffs (each visible to the channel as
-/// its own thread) — gets its own top-level Slack post; this cap bounds the
-/// per-DAG fan-out so a runaway agent graph cannot flood the channel.
-/// Exceeding the cap drops the chunk and logs
-/// `slack.stream_pump.mint_capped`; the human can re-engage by
-/// mentioning the agent in a fresh thread.
-///
-/// Sized to `runtime::limits::MAX_DAG_TURNS` (64): a thread is only minted
-/// off a `send_message`, and the DAG turn budget already caps the number of
-/// `send_message` calls per DAG at that figure, so one thread per pair is
-/// reachable but never unbounded. Kept as a literal (not a cross-module
-/// `as`-cast) to honour CLAUDE.md §7's ban on narrowing casts.
-pub const MAX_SLACK_THREADS_PER_DAG_ROOT: usize = 64;
-
 /// Retry budget for `chat.postMessage` on 429 / 5xx / `error: ratelimited`.
 /// Exhaustion drops the chunk and increments a counter; durable retries
 /// are GitHub issue #44 (post outbox).

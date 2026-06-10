@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 
 use crate::agents::AgentId;
 use crate::auth::{OrgId, UserId};
+use crate::channels::ChannelId;
 use crate::runtime::PromptRequestId;
 
 use super::error::ScheduledTaskError;
@@ -38,6 +39,9 @@ pub struct NewScheduledTask {
     pub owner_agent_id: AgentId,
     pub org_id: OrgId,
     pub created_by_user_id: UserId,
+    /// Target channel for the fired thread (`None` ⇒ DM). Sourced by the
+    /// `schedule_task` tool from the thread it ran in.
+    pub channel_id: Option<ChannelId>,
     pub name: ScheduledTaskName,
     pub prompt: ScheduledPrompt,
     pub schedule: ScheduleSpec,

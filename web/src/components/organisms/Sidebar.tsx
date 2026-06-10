@@ -1,45 +1,39 @@
-import { useMemo } from "react";
 import { Bot, ChevronDown, Hash, Plus, Search, Settings2 } from "lucide-react";
 import { Button } from "../atoms/Button";
 import { Kbd } from "../atoms/Kbd";
 import { Monogram } from "../atoms/Monogram";
 import { cn } from "../../lib/utils";
 import { useT } from "../../i18n";
-import type { Agent, Channel, ThreadSummary } from "../../types/api";
+import type { Channel, Mentionable } from "../../types/api";
+
+/** Stable key for a DM row (a colleague may share an id space with nothing). */
+export function dmKey(m: Mentionable): string {
+  return `${m.kind}:${m.id}`;
+}
 
 export function Sidebar({
   workspace = "Acme Robotics",
-  dmThreads,
   channels,
-  agents,
+  dms,
   selectedChannelId,
-  selectedAgentId,
+  selectedDmKey,
   onSelectChannel,
-  onSelectAgent,
+  onSelectDm,
   onAddChannel,
   onManageChannel,
 }: {
   workspace?: string;
-  /** The caller's direct-message threads — drives the per-agent badge counts.
-   *  Must be the DM feed, not the active channel's feed. */
-  dmThreads: ThreadSummary[];
   channels: Channel[];
-  agents: Agent[];
+  /** Direct-message roster: every colleague — humans and agents alike. */
+  dms: Mentionable[];
   selectedChannelId: string | null;
-  selectedAgentId: string | null;
+  selectedDmKey: string | null;
   onSelectChannel: (id: string) => void;
-  onSelectAgent: (agentId: string) => void;
+  onSelectDm: (m: Mentionable) => void;
   onAddChannel: () => void;
   onManageChannel: (channel: Channel) => void;
 }) {
   const { t } = useT();
-  const threadCountByAgent = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const t of dmThreads) {
-      m.set(t.first_agent.id, (m.get(t.first_agent.id) ?? 0) + 1);
-    }
-    return m;
-  }, [dmThreads]);
 
   return (
     <aside
@@ -111,47 +105,38 @@ export function Sidebar({
           )}
         </div>
 
-        {/* DIRECT MESSAGES — agents list, opens agent-scoped feed on click. */}
-        <Section
-          title={t("sidebar.dms")}
-          expandable
-          action={<AddBtn label="New DM" />}
-        />
+        {/* DIRECT MESSAGES — every colleague, human or agent, opens a
+            1:1 conversation on click. */}
+        <Section title={t("sidebar.dms")} expandable />
         <div className="mb-2 flex flex-col gap-0.5">
-          {agents.map((a) => {
-            const count = threadCountByAgent.get(a.id) ?? 0;
-            return (
-              <SidebarRow
-                key={a.id}
-                icon={
-                  <Monogram
-                    name={a.name}
-                    id={a.id}
-                    size={20}
-                    tone="moss"
-                    avatarUrl={a.avatar_url}
-                  />
-                }
-                label={a.name}
-                trailing={
+          {dms.map((m) => (
+            <SidebarRow
+              key={dmKey(m)}
+              icon={
+                <Monogram
+                  name={m.name}
+                  id={m.id}
+                  size={20}
+                  tone={m.kind === "agent" ? "moss" : "user"}
+                  avatarUrl={m.avatar_url}
+                />
+              }
+              label={m.name}
+              trailing={
+                m.kind === "agent" ? (
                   <span className="inline-flex items-center gap-1.5">
                     <Bot className="h-3.5 w-3.5 text-[var(--color-moss)]" />
-                    {count > 0 && (
-                      <span className="bg-[var(--color-paper-3)] px-1 font-[var(--font-mono)] text-[10px] text-[var(--color-muted-foreground)]">
-                        {count}
-                      </span>
-                    )}
                   </span>
-                }
-                active={selectedAgentId === a.id}
-                onClick={() => onSelectAgent(a.id)}
-                mono
-              />
-            );
-          })}
-          {agents.length === 0 && (
+                ) : null
+              }
+              active={selectedDmKey === dmKey(m)}
+              onClick={() => onSelectDm(m)}
+              mono
+            />
+          ))}
+          {dms.length === 0 && (
             <p className="px-2 py-1 font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
-              {t("sidebar.empty_agents")}
+              {t("sidebar.empty_dms")}
             </p>
           )}
         </div>

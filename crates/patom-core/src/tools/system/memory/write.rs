@@ -138,7 +138,7 @@ impl Tool for MemoryWriteTool {
             .map_err(store_to_tool_err)?;
 
         debug!(
-            patom.session.id = %ctx.session_id,
+            patom.claim_key = %ctx.claim_key,
             patom.agent.id = %agent,
             patom.memory.id = %outcome.memory_id,
             patom.memory.kind = parsed.kind.as_str(),

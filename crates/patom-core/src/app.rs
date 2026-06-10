@@ -19,8 +19,8 @@ use tracing::{info, warn};
 use crate::agent_core::{Agent, AgentBuilder};
 use crate::agents::{
     AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL, AgentDescription, AgentFactory, AgentName,
-    AgentPromptCache, AgentStoreError, AgentSystemPrompt, CachedAgents, DefaultAgentSeed,
-    PgAgentStore, SharedAgentStore, SharedAgents,
+    AgentPromptCache, AgentSeed, AgentStoreError, AgentSystemPrompt, CachedAgents, PgAgentStore,
+    SharedAgentStore, SharedAgents,
 };
 use crate::assets::{S3AssetStore, SharedAssetStore};
 use crate::auth::{
@@ -40,29 +40,27 @@ use crate::mcp::{
 };
 use crate::memory::{
     AgentMemory, LibrarianScheduler, MemorySectionLoader, PgMemoryStore, ReflectionScheduler,
-    SESSION_MEMORY_CACHE_CAP, SESSION_MEMORY_CACHE_TTL_SECS, SessionMemoryCache, SharedMemory,
-    SharedMemoryStore,
+    SharedMemory, SharedMemoryStore,
 };
 use crate::prompts::Prompts;
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::openai::{OpenAiEmbeddingProvider, OpenAiProvider};
 use crate::provider::{SharedEmbeddingProvider, SharedProviderRegistry};
 use crate::runtime::{
-    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
-    SharedPromptQueue, SharedResponseSink, SharedResponseSource, SharedThreadStream, WorkerConfig,
-    WorkerPool, WorkerPoolHandle,
+    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedPromptQueue,
+    SharedResponseSink, SharedResponseSource, SharedThreadStream, WorkerConfig, WorkerPool,
+    WorkerPoolHandle,
 };
 use crate::scheduling::{
     DefaultTimezone, PgScheduledTaskStore, ScheduledTaskScheduler, SharedScheduledTaskStore,
     Timezone,
 };
-use crate::session::{PgSessionStore, SharedSessionStore};
 use crate::tools::system::{
-    CancelScheduledTaskTool, CreateAgentTool, GetSessionTool, ListScheduledTasksTool,
-    MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
-    PgSessionTodoStore, RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchAgentsTool,
-    SearchToolsTool, SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool,
-    WebFetchTool, WebSearchTool,
+    CancelScheduledTaskTool, CreateAgentTool, ListScheduledTasksTool, MemoryForgetTool,
+    MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool, PgSessionTodoStore,
+    RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchAgentsTool, SearchToolsTool,
+    SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool, WebFetchTool,
+    WebSearchTool,
 };
 use crate::tools::{ToolBox, ToolRegistry};
 
@@ -79,18 +77,20 @@ const PG_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 // growing past 300 lines and made adding a second language a structural
 // edit; the registry makes "drop a sibling TOML" the entire process.
 
-/// Name of the seeded default agent for each new personal org.
+/// Name of the preset recruiter agent seeded into each new org.
 ///
 /// The role + description bodies for this seed live in the per-language
 /// prompt registry (`src/prompts/{en,vi}.toml`); only the agent's `name`
 /// is constant across languages so cross-language routing/messaging keeps
-/// working regardless of the org's chosen language.
-const DEFAULT_AGENT_NAME: &str = "recruiter";
+/// working regardless of the org's chosen language. Public because the
+/// Slack bridge routes an un-@-tagged `@Patom` mention to this preset
+/// (there is no "default agent" at runtime any more).
+pub const RECRUITER_AGENT_NAME: &str = "recruiter";
 
 // Note: every prompt body — the `<core>` family, the recruiter's role +
 // description in each supported language — lives in
 // `src/prompts/{internal,en,vi}.toml`, loaded once at startup into the
-// [`Prompts`] registry. `default_agent_seed` reads from the registry to
+// [`Prompts`] registry. `recruiter_seed` reads from the registry to
 // pick the right localized role + description per org.
 
 /// All the pieces a deployment needs to serve HTTP + run workers in-process.
@@ -113,7 +113,8 @@ pub struct Server {
 struct Collaborators {
     providers: SharedProviderRegistry,
     pool: PgPool,
-    sessions: SharedSessionStore,
+    threads: crate::threads::SharedThreadStore,
+    background: crate::background::SharedBackgroundStore,
     agents: SharedAgentStore,
     colleagues: crate::colleagues::SharedColleagueStore,
     memory: SharedMemory,
@@ -121,7 +122,6 @@ struct Collaborators {
     clock: SharedClock,
     builtin_tools: ToolRegistry,
     queue: SharedPromptQueue,
-    leases: SharedLeaseManager,
     dag: SharedDagBudget,
     sink: SharedResponseSink,
     responses: SharedResponseSource,
@@ -174,7 +174,7 @@ impl Collaborators {
             build_embedding_provider(&settings.embedding);
 
         // Per-org default-agent seeding happens lazily on first sign-up
-        // (see `seed_default_agent_for_org` and `auth::callback`); the
+        // (see `seed_recruiter_for_org` and `auth::callback`); the
         // composition root no longer mints a global default because there
         // is no global org to own it.
         let agents_impl = Arc::new(PgAgentStore::new(
@@ -184,8 +184,13 @@ impl Collaborators {
         ));
         let agents: SharedAgentStore = agents_impl;
 
-        let sessions: SharedSessionStore =
-            Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
+        let threads: crate::threads::SharedThreadStore = Arc::new(
+            crate::threads::PgThreadStore::new(pool.clone(), clock.clone()),
+        );
+
+        let background: crate::background::SharedBackgroundStore = Arc::new(
+            crate::background::PgBackgroundStore::new(pool.clone(), clock.clone()),
+        );
 
         let colleagues: crate::colleagues::SharedColleagueStore =
             Arc::new(crate::colleagues::PgColleagueStore::new(pool.clone()));
@@ -205,23 +210,16 @@ impl Collaborators {
             clock.clone(),
             embedding_provider.clone(),
         ));
-        let session_memory_cache = SessionMemoryCache::new(
-            SESSION_MEMORY_CACHE_CAP,
-            Duration::from_secs(SESSION_MEMORY_CACHE_TTL_SECS),
-            clock.clone(),
-        );
         // One loader, two consumers — `AgentMemory` (system-prompt
         // assembly) and `MemoryToolDeps` (handle resolution inside the
-        // mutation tools). Sharing the loader is what keeps the
-        // contextual layer consistent across the two paths that write
-        // into the same `(session, agent)` cache key.
+        // mutation tools). Sharing the loader keeps both paths composing the
+        // same stable section, so resolved `M-NN` handles match what was
+        // rendered.
         let memory_loader = MemorySectionLoader::new(
             memory_store.clone(),
-            sessions.clone(),
             colleagues.clone(),
             roster_cache.clone(),
             embedding_provider.clone(),
-            session_memory_cache.clone(),
         );
         // Identity-side store + per-org language resolver. Built before
         // `AgentMemory` so the resolver can be cloned into it; the
@@ -292,9 +290,7 @@ impl Collaborators {
         // `send_message` system tool can hold them without a later
         // round-trip. The hub's publish/subscribe halves split between
         // `send_message` (human-receiver branch) and the SSE route.
-        let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
-        let queue: SharedPromptQueue = queue_impl.clone();
-        let leases: SharedLeaseManager = queue_impl;
+        let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
         let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
@@ -325,7 +321,7 @@ impl Collaborators {
         let builtin_tools = build_builtin_tools(BuiltinToolDeps {
             http,
             settings,
-            sessions: sessions.clone(),
+            threads: threads.clone(),
             queue: queue.clone(),
             dag: dag.clone(),
             agents: agents.clone(),
@@ -342,15 +338,15 @@ impl Collaborators {
             mcp_store: mcp_store.clone(),
         })?;
 
-        // `memory_store` and `session_memory_cache` are not held on
-        // `Collaborators`: they're cheap-clone handles already
-        // distributed to every consumer (AgentMemory and the memory
-        // tools) by the clones above. The reflection scheduler builds
+        // `memory_store` is not held on `Collaborators`: it's a cheap-clone
+        // handle already distributed to every consumer (AgentMemory and the
+        // memory tools) by the clones above. The reflection scheduler builds
         // its own handles from `pieces.pool` / `pieces.queue` later.
         Ok(Self {
             providers: build_provider_registry(settings)?,
             pool,
-            sessions,
+            threads,
+            background,
             agents,
             colleagues,
             memory,
@@ -358,7 +354,6 @@ impl Collaborators {
             clock,
             builtin_tools,
             queue,
-            leases,
             dag,
             sink,
             responses,
@@ -385,7 +380,8 @@ impl Collaborators {
 #[derive(Clone)]
 struct AgentFactoryPieces {
     providers: SharedProviderRegistry,
-    sessions: SharedSessionStore,
+    threads: crate::threads::SharedThreadStore,
+    background: crate::background::SharedBackgroundStore,
     memory: SharedMemory,
     clock: SharedClock,
     builtin_tools: ToolRegistry,
@@ -429,25 +425,22 @@ impl AgentFactoryPieces {
             patom.model = %model,
             patom.model.source = source,
         );
-        AgentBuilder::new(
-            self.providers.clone(),
-            self.sessions.clone(),
-            self.memory.clone(),
-            model,
-        )
-        .expect("invariant: limits constants are static and parse")
-        .with_tools(toolbox)
-        .with_hooks(HookChain::new())
-        .with_clock(self.clock.clone())
-        .with_tool_call_store(self.tool_call_store.clone())
-        .with_todos_store(self.todos_store.clone())
-        .with_turn_metrics(
-            self.turn_metrics_store.clone(),
-            record.id,
-            record.current_prompt_version_id,
-        )
-        .with_budget(self.budget.clone())
-        .build()
+        AgentBuilder::new(self.providers.clone(), self.memory.clone(), model)
+            .expect("invariant: limits constants are static and parse")
+            .with_tools(toolbox)
+            .with_hooks(HookChain::new())
+            .with_clock(self.clock.clone())
+            .with_thread_store(self.threads.clone())
+            .with_background_store(self.background.clone())
+            .with_tool_call_store(self.tool_call_store.clone())
+            .with_todos_store(self.todos_store.clone())
+            .with_turn_metrics(
+                self.turn_metrics_store.clone(),
+                record.id,
+                record.current_prompt_version_id,
+            )
+            .with_budget(self.budget.clone())
+            .build()
     }
 }
 
@@ -457,7 +450,7 @@ impl AgentFactoryPieces {
 struct BuiltinToolDeps<'a> {
     http: Client,
     settings: &'a Settings,
-    sessions: SharedSessionStore,
+    threads: crate::threads::SharedThreadStore,
     queue: SharedPromptQueue,
     dag: SharedDagBudget,
     agents: SharedAgentStore,
@@ -490,14 +483,13 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.settings.brave_search_api_key.clone(),
         )))
         .with(Arc::new(SendMessageTool::new(
-            deps.sessions.clone(),
+            deps.threads.clone(),
             deps.queue.clone(),
             deps.dag.clone(),
             deps.agents.clone(),
             deps.colleagues.clone(),
             deps.sink.clone(),
         )))
-        .with(Arc::new(GetSessionTool::new(deps.sessions.clone())))
         .with(Arc::new(MemoryWriteTool::new(deps.memory_tools.clone())))
         .with(Arc::new(MemoryUpdateTool::new(deps.memory_tools.clone())))
         .with(Arc::new(MemoryForgetTool::new(deps.memory_tools.clone())))
@@ -523,56 +515,50 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
         )))
         .with(Arc::new(ScheduleTaskTool::new(
             deps.scheduled_tasks.clone(),
-            deps.agents.clone(),
-            deps.sessions.clone(),
+            deps.threads.clone(),
             deps.default_tz,
             deps.clock,
         )))
         .with(Arc::new(ListScheduledTasksTool::new(
             deps.scheduled_tasks.clone(),
-            deps.sessions.clone(),
             deps.pool.clone(),
         )))
         .with(Arc::new(CancelScheduledTaskTool::new(
             deps.scheduled_tasks,
-            deps.sessions.clone(),
             deps.pool.clone(),
         )))
         .build())
 }
 
-/// Seed material for the per-org default agent in `language`.
+/// Seed material for the per-org preset recruiter in `language`.
 ///
-/// Exposed so the OAuth callback (`auth::callback`) can mint the default
-/// agent inside the just-created personal org. The role + description
+/// Exposed so the OAuth callback (`auth::callback`) can mint the recruiter
+/// inside the just-created personal org. The role + description
 /// bodies are pulled from the per-language [`Prompts`] registry — the
 /// `recruiter` an `org_id` with `default_language='vi'` ends up with is
 /// the Vietnamese-translated seed. Fails only if the registry bodies
 /// suddenly violate a newtype invariant (a startup-time guarantee in
 /// practice since `Prompts::load` panics on malformed input).
-pub fn default_agent_seed(
-    prompts: &Prompts,
-    language: Language,
-) -> Result<DefaultAgentSeed, AppError> {
+pub fn recruiter_seed(prompts: &Prompts, language: Language) -> Result<AgentSeed, AppError> {
     let set = prompts.set(language);
-    Ok(DefaultAgentSeed {
-        name: AgentName::try_from(DEFAULT_AGENT_NAME)?,
+    Ok(AgentSeed {
+        name: AgentName::try_from(RECRUITER_AGENT_NAME)?,
         system_prompt: AgentSystemPrompt::try_from(set.default_agent_role.as_ref())?,
         description: AgentDescription::try_from(set.default_agent_description.as_ref())?,
     })
 }
 
-/// Seed the default agent for `org_id`.
+/// Seed the preset recruiter for `org_id`.
 ///
 /// Idempotent — a second call for the same org returns the existing
-/// default's id. Called from the OAuth callback on first sign-up so the
-/// cookie minted immediately resolves to a usable workspace.
-pub async fn seed_default_agent_for_org(
+/// recruiter's id. Called from org creation so the fresh workspace has a
+/// usable agent immediately.
+pub async fn seed_recruiter_for_org(
     agents: &SharedAgentStore,
     org_id: OrgId,
-    seed: DefaultAgentSeed,
+    seed: AgentSeed,
 ) -> Result<crate::agents::AgentId, AgentStoreError> {
-    agents.seed_default(org_id, seed).await
+    agents.seed_preset(org_id, seed).await
 }
 
 /// Build a fully-wired [`Agent`] without the HTTP/worker stack.
@@ -595,7 +581,6 @@ fn build_agent_from(pieces: &Collaborators, settings: &Settings) -> Agent {
     );
     AgentBuilder::new(
         pieces.providers.clone(),
-        pieces.sessions.clone(),
         pieces.memory.clone(),
         settings.model,
     )
@@ -638,7 +623,8 @@ pub async fn build_server(
     ));
     let factory_pieces = AgentFactoryPieces {
         providers: pieces.providers.clone(),
-        sessions: pieces.sessions.clone(),
+        threads: pieces.threads.clone(),
+        background: pieces.background.clone(),
         memory: pieces.memory.clone(),
         clock: pieces.clock.clone(),
         builtin_tools: pieces.builtin_tools.clone(),
@@ -668,14 +654,10 @@ pub async fn build_server(
 
     let pool = WorkerPool::new(
         pieces.queue.clone(),
-        pieces.leases.clone(),
         pieces.sink.clone(),
         agents_registry,
-        pieces.sessions.clone(),
+        pieces.threads.clone(),
         pieces.dag.clone(),
-        pieces.pool.clone(),
-        pieces.memory_store.clone(),
-        pieces.clock.clone(),
         WorkerConfig::default(),
     );
     let workers = pool.spawn();
@@ -686,6 +668,7 @@ pub async fn build_server(
     let reflection_scheduler = ReflectionScheduler::spawn(
         pieces.pool.clone(),
         pieces.queue.clone(),
+        pieces.background.clone(),
         pieces.clock.clone(),
         cancel.clone(),
     );
@@ -696,6 +679,7 @@ pub async fn build_server(
         pieces.pool.clone(),
         pieces.memory_store.clone(),
         pieces.queue.clone(),
+        pieces.background.clone(),
         pieces.clock.clone(),
         cancel.clone(),
     );
@@ -706,6 +690,7 @@ pub async fn build_server(
     let scheduling_scheduler = ScheduledTaskScheduler::spawn(
         pieces.scheduled_tasks.clone(),
         pieces.queue.clone(),
+        pieces.threads.clone(),
         pieces.colleagues.clone(),
         pieces.clock.clone(),
         cancel.clone(),
@@ -789,7 +774,6 @@ pub async fn build_server(
                     workspaces: workspaces.clone(),
                     agents: pieces.agents.clone(),
                     poster: poster.clone(),
-                    threads: threads_store.clone(),
                     signing_secret: cfg.signing_secret.clone(),
                     connect_url_base: Arc::from(settings.auth.oauth_redirect_base.as_str()),
                     clock: pieces.clock.clone(),
@@ -801,13 +785,14 @@ pub async fn build_server(
                 BridgeDeps {
                     queue: pieces.queue.clone(),
                     agents: pieces.agents.clone(),
-                    sessions: pieces.sessions.clone(),
+                    thread_store: pieces.threads.clone(),
                     colleagues: pieces.colleagues.clone(),
                     workspaces: workspaces.clone(),
                     identities: identities.clone(),
                     threads: threads_store.clone(),
                     poster: poster.clone(),
                     stream_pump: pump_handle.clone(),
+                    pool: pieces.pool.clone(),
                     http: slack_http.clone(),
                 },
                 cancel.clone(),
@@ -853,9 +838,7 @@ pub async fn build_server(
 
     let state = AppState {
         queue: pieces.queue,
-        leases: pieces.leases,
         responses: pieces.responses,
-        sessions: pieces.sessions,
         agents: pieces.agents,
         colleagues: pieces.colleagues,
         dag: pieces.dag,

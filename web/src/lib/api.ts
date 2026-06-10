@@ -35,6 +35,7 @@ import type {
   TestConnectRequest,
   TestConnectResponse,
   ThreadMessage,
+  TagRef,
   ThreadSummary,
   ToolCallList,
   UpdateAgentRequest,
@@ -250,7 +251,6 @@ export const api = {
     name: string;
     system_prompt: string;
     description: string;
-    is_default?: boolean;
     allowed_mcp_tools?: Record<string, string[] | null>;
     model?: string | null;
     avatar_url?: string | null;
@@ -405,21 +405,33 @@ export const api = {
 
   // `channelId` selects the feed: a channel's threads when set, or the
   // caller's direct messages when null/omitted (BE: `channel_id IS NULL`).
-  threads: (channelId?: string | null) =>
-    request<ThreadSummary[]>(
-      channelId ? `/threads?channel_id=${encodeURIComponent(channelId)}` : "/threads",
-    ),
+  // In DM mode `counterpart` (the same satellite `{kind, id}` the tags wire
+  // uses) narrows to one pair's conversation.
+  threads: (channelId?: string | null, counterpart?: TagRef | null) => {
+    const params = new URLSearchParams();
+    if (channelId) params.set("channel_id", channelId);
+    else if (counterpart) {
+      params.set("counterpart_kind", counterpart.kind);
+      params.set("counterpart_id", counterpart.id);
+    }
+    const q = params.toString();
+    return request<ThreadSummary[]>(q ? `/threads?${q}` : "/threads");
+  },
 
-  threadMessages: (rootId: string) =>
-    request<ThreadMessage[]>(`/threads/${rootId}/messages`),
+  threadMessages: (threadId: string) =>
+    request<ThreadMessage[]>(`/threads/${threadId}/messages`),
 
   submitPrompt: (input: {
-    session_id?: string;
-    agent_id?: string;
-    /** Post the new thread into this channel. Omit for a direct message.
-     *  Ignored by the BE when `session_id` is set (a reply inherits its
-     *  root's location). */
+    /** Reply into an existing thread. Omit to start a new one. */
+    thread_id?: string;
+    /** Explicit @tags in message order; empty/omitted = a plain post. */
+    tags?: TagRef[];
+    /** Post the new thread into this channel. Ignored by the BE when
+     *  `thread_id` is set (a reply inherits its thread's location). */
     channel_id?: string;
+    /** Who a fresh DM root is with. Required when neither `thread_id` nor
+     *  `channel_id` is given. */
+    counterpart?: TagRef;
     content: string;
     idempotency_key: string;
   }) =>

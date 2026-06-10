@@ -25,10 +25,12 @@ export function forEachMention(
   }
 }
 
-/** Scan `text` for `@AgentName` mentions using the provided agent-name list.
- *  Names are sorted longest-first so multi-word names beat their prefixes.
- *  Returns [{name, start, end}] in order of appearance. */
-function findNamedMentions(
+/** Scan `text` for `@Name` mentions against a known-name list (humans and
+ *  agents alike). Names are sorted longest-first so multi-word names beat
+ *  their prefixes. Returns [{name, start, end}] in order of appearance. The
+ *  single source of truth for the matching rules — both the read side
+ *  (`renderMentions`) and the compose side (`MentionInput`) call it. */
+export function findNamedMentions(
   text: string,
   agentNames: string[],
 ): Array<{ name: string; start: number; end: number }> {
@@ -101,11 +103,4 @@ export function renderMentions(
   });
   if (last < text.length) out.push(text.slice(last));
   return <Fragment>{out}</Fragment>;
-}
-
-/** Prepend `@name ` to `text` unless it already starts with that mention. */
-export function prefixMention(text: string, name: string | null | undefined): string {
-  if (!name) return text;
-  if (text.startsWith(`@${name}`)) return text;
-  return `@${name} ${text}`;
 }

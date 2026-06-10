@@ -1,10 +1,15 @@
 //! Chat-thread endpoints used by the channel-feed UI.
 //!
-//! - `GET /threads`                       — channel feed (G1)
-//! - `GET /threads/{root}/messages`       — flat thread history (G2)
-//! - `GET /threads/{root}/stream`         — live DAG-wide SSE (G3)
+//! - `GET /threads`                          — channel / DM thread index (G1)
+//! - `GET /threads/{thread_id}/messages`     — canonical flat feed (G2)
+//! - `GET /threads/{thread_id}/stream`       — live SSE (G3)
 //!
-//! See `doc/backend_plan.md` for the full design.
+//! All three read the thread model via [`crate::threads::ThreadStore`]
+//! (`list_threads` / `feed` / `visible_to`). G3 subscribes the per-thread
+//! fan-in ([`crate::runtime::PgThreadStream`]) keyed by `thread_id`: every chunk
+//! published on any `prompt_requests` row in the thread (across the many DAGs a
+//! thread hosts) is forwarded. The stream is continuous — a `Done`/`Error`
+//! chunk is a per-turn marker, not a close.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -23,14 +28,13 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::agents::AgentId;
-use crate::auth::{AuthError, Principal, UserId, UserProfileLite};
+use crate::auth::{Caller, Principal, UserId, UserProfileLite};
+use crate::channels::ChannelId;
 use crate::colleagues::ColleagueId;
-use crate::runtime::{
-    DEFAULT_THREAD_HISTORY_LIMIT, DEFAULT_THREAD_LIST_LIMIT, MAX_THREAD_HISTORY_LIMIT,
-    MAX_THREAD_LIST_LIMIT, PromptRequestId, RequestStatus, ResponseChunk, THREAD_PREVIEW_MAX_CHARS,
-    ThreadStreamEvent, ThreadStreamItem,
+use crate::runtime::{PromptRequestId, ResponseChunk, ThreadStreamEvent, ThreadStreamItem};
+use crate::threads::{
+    DEFAULT_THREAD_FEED, MAX_THREAD_FEED, PgThreadStore, ThreadId, ThreadScope, ThreadStore,
 };
-use crate::session::SessionId;
 use crate::types::{MessageSender, Participant};
 
 use super::super::error::HttpError;
@@ -49,144 +53,49 @@ pub(super) fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 struct ListThreadsQuery {
-    #[serde(default)]
-    before: Option<DateTime<Utc>>,
-    #[serde(default)]
-    limit: Option<u32>,
     /// Feed selector. `Some(id)` returns that channel's threads (member-gated);
-    /// omitted returns the caller's direct messages (`channel_id IS NULL` roots
-    /// the caller started). See [`THREAD_LIST_SQL`].
+    /// omitted returns the caller's direct messages — threads they created or
+    /// are the counterpart of. Member-scoping + active-org pin live in
+    /// [`ThreadStore::list_threads`].
     #[serde(default)]
     channel_id: Option<Uuid>,
+    /// DM narrowing: only the conversation with this colleague (both
+    /// orientations), addressed by satellite id like the tags wire —
+    /// `counterpart_kind` ∈ {"agent","human"} + `counterpart_id` (an
+    /// `agents.id` / `users.id`). Ignored when `channel_id` is set.
+    #[serde(default)]
+    counterpart_kind: Option<String>,
+    #[serde(default)]
+    counterpart_id: Option<Uuid>,
 }
 
+/// Root-message summary on a G1 row — what the Slack-style timeline renders
+/// without a per-thread G2 round-trip.
 #[derive(Debug, Serialize)]
-struct ThreadAgentRef {
-    id: AgentId,
-    name: String,
+struct ThreadRootSummary {
+    /// First text block of the root posted message, SQL-capped.
+    snippet: String,
+    sender: MessageSender,
+    created_at: DateTime<Utc>,
+    /// Resolved display name of a *human* root sender (privileged user read);
+    /// `None` for agent / system senders.
+    sender_display_name: Option<String>,
+    sender_avatar_url: Option<String>,
 }
 
-/// The human who started a thread (the DAG-root prompt's sender). Carried
-/// on the wire so the feed shows the *real* author, not the viewer — the
-/// legacy single-human assumption stamped the current user onto every row.
-/// `name`/`avatar_url` are enriched after the RLS query from the
-/// privileged user store (the tenant tx can't read `users`; migration 14).
-#[derive(Debug, Serialize)]
-struct StarterRef {
-    user_id: UserId,
-    colleague_id: ColleagueId,
-    name: String,
-    avatar_url: Option<String>,
-}
-
+/// One row of the channel / DM thread index (G1). Carries the thread
+/// identity, location, and last activity, plus the root posted message's
+/// summary and the posted reply count so the timeline renders Slack-style
+/// without N feed fetches.
 #[derive(Debug, Serialize)]
 struct ThreadSummary {
-    root_request_id: PromptRequestId,
-    root_session_id: SessionId,
-    first_agent: ThreadAgentRef,
-    starter: StarterRef,
-    preview: String,
-    reply_count: i64,
+    thread_id: ThreadId,
+    channel_id: Option<ChannelId>,
     last_activity_at: DateTime<Utc>,
-    status: RequestStatus,
-    created_at: DateTime<Utc>,
+    /// `null` for a thread with no posted rows yet.
+    root: Option<ThreadRootSummary>,
+    reply_count: i64,
 }
-
-type ThreadRow = (
-    PromptRequestId,
-    SessionId,
-    AgentId,
-    String,
-    String,
-    i64,
-    DateTime<Utc>,
-    RequestStatus,
-    DateTime<Utc>,
-    // root human sender (colleague + user) — enriched to name/avatar below
-    ColleagueId,
-    UserId,
-);
-
-/// Channel-feed query. The cursor (`$2`) is optional — `NULL` skips the
-/// `last_activity_at < $2` predicate, so one parameterised query covers
-/// both the head and the cursor-bound page (CLAUDE.md §10 — still no
-/// string concatenation, just optional binds).
-///
-/// `thread_stats` is scoped to the human-rooted DAGs by joining `sessions`
-/// to `prompt_requests`, so the GROUP BY only walks sessions belonging to
-/// rows we'd return anyway — keeps the aggregate from sweeping every
-/// session in the database.
-///
-/// `reply_count` mirrors the FE's bubble fold (`web/src/lib/chatBody.ts` —
-/// `foldHistoryIntoBubbles`): one bubble per delivered `send_message` call.
-/// Plain assistant rows, system rows carrying tool_results, and the
-/// human's own prompt are conversation plumbing, not user-visible replies.
-//
-// Visibility (the load-bearing member-scoping; RLS is only defense-in-depth):
-// a root is visible when, in
-//   * channel mode (`$6` set): the root is stamped with that channel, the
-//     caller is a member, and the channel is not archived; or
-//   * DM mode (`$6` NULL): the root has no channel and the caller started it
-//     (`sessions.created_by_user_id = $5`), i.e. a private DM with an agent.
-// `begin_as` RLS isolates by *membership* (any org the caller belongs to), not
-// the *active* org, so `pr.org_id = $4` pins the feed to the active workspace.
-const THREAD_LIST_SQL: &str = "WITH visible_human_roots AS (
-    SELECT pr.id AS root_request_id, pr.session_id
-    FROM prompt_requests pr
-    JOIN sessions s ON s.id = pr.session_id
-    JOIN colleagues prc ON prc.id = pr.sender_colleague_id
-    WHERE pr.id = pr.root_request_id
-      AND prc.kind = 'human'
-      AND pr.org_id = $4
-      AND (
-        CASE WHEN $6::uuid IS NULL THEN
-            pr.channel_id IS NULL AND s.created_by_user_id = $5
-        ELSE
-            pr.channel_id = $6
-            AND EXISTS (SELECT 1 FROM channel_members cm
-                         WHERE cm.channel_id = pr.channel_id AND cm.user_id = $5)
-            AND EXISTS (SELECT 1 FROM channels c
-                         WHERE c.id = pr.channel_id AND c.archived_at IS NULL)
-        END
-      )
-),
-thread_stats AS (
-    SELECT s.root_request_id,
-           COUNT(*) FILTER (
-               WHERE sc.kind = 'agent'
-                 AND sm.body @? '$.contents[*] ? (@.kind == \"tool_call\" && @.value.name == \"send_message\")'
-           ) AS reply_count,
-           MAX(sm.created_at) AS last_msg_at
-    FROM sessions s
-    JOIN visible_human_roots hr ON hr.root_request_id = s.root_request_id
-    LEFT JOIN session_messages sm ON sm.session_id = s.id
-    LEFT JOIN colleagues sc ON sc.id = sm.sender_colleague_id
-    GROUP BY s.root_request_id
-)
-SELECT
-    pr.id,
-    pr.session_id,
-    a.id,
-    a.name,
-    LEFT(pr.content, $1)        AS preview,
-    COALESCE(ts.reply_count, 0) AS reply_count,
-    GREATEST(pr.created_at,
-             COALESCE(ts.last_msg_at, pr.created_at)) AS last_activity_at,
-    pr.status,
-    pr.created_at,
-    sc.id,
-    sc.user_id
-FROM prompt_requests pr
-JOIN visible_human_roots vhr ON vhr.root_request_id = pr.id
-JOIN colleagues rc ON rc.id = pr.receiver_colleague_id
-JOIN agents a ON a.id = rc.agent_id
-JOIN colleagues sc ON sc.id = pr.sender_colleague_id
-LEFT JOIN thread_stats ts ON ts.root_request_id = pr.id
-WHERE ($2::timestamptz IS NULL
-       OR GREATEST(pr.created_at,
-                   COALESCE(ts.last_msg_at, pr.created_at)) < $2)
-ORDER BY last_activity_at DESC
-LIMIT $3";
 
 #[tracing::instrument(skip_all, name = "thread.list", fields(patom.thread.list.size = tracing::field::Empty))]
 async fn list_threads(
@@ -194,92 +103,90 @@ async fn list_threads(
     principal: Principal,
     Query(q): Query<ListThreadsQuery>,
 ) -> Result<Json<Vec<ThreadSummary>>, HttpError> {
-    let limit = q
-        .limit
-        .unwrap_or(DEFAULT_THREAD_LIST_LIMIT)
-        .clamp(1, MAX_THREAD_LIST_LIMIT);
-    let preview_chars = i32::try_from(THREAD_PREVIEW_MAX_CHARS)
-        .expect("invariant: THREAD_PREVIEW_MAX_CHARS fits in i32");
-
-    // Tenant-scoped read: `begin_as` sets `app.user_id` so the RLS policies
-    // on `sessions` / `channel_members` / `channels` apply. The
-    // `visible_human_roots` CTE then does the load-bearing member-scoping
-    // explicitly (channel membership in channel mode, DM ownership in DM
-    // mode) and pins the active org — RLS alone gates membership in *any*
-    // org, so it can't be the only line of defense (see THREAD_LIST_SQL).
-    let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
-    let rows: Vec<ThreadRow> = sqlx::query_as(THREAD_LIST_SQL)
-        .bind(preview_chars)
-        .bind(q.before)
-        .bind(i64::from(limit))
-        .bind(principal.active_org_id)
-        .bind(principal.user_id)
-        .bind(q.channel_id)
-        .fetch_all(&mut *tx)
+    // Member-scoped (not single-creator) + active-org-pinned; the store owns
+    // the RLS-bound query (P7). A fresh `PgThreadStore` is a pair of `Arc`
+    // clones — the route's `pool`/`clock` are the inline seam (§ AppState.pool).
+    let caller = Caller::new(principal.user_id, principal.active_org_id);
+    let scope = match q.channel_id {
+        Some(channel) => ThreadScope::Channel(ChannelId::from(channel)),
+        None => ThreadScope::Dms {
+            counterpart: resolve_counterpart_filter(&state, &principal, &q).await?,
+        },
+    };
+    let store = PgThreadStore::new(state.pool.clone(), state.clock.clone());
+    let items = store
+        .list_threads(&caller, scope)
         .await
-        .map_err(AuthError::from)?;
-    tx.commit().await.map_err(AuthError::from)?;
+        .map_err(thread_store_error)?;
+    tracing::Span::current().record("patom.thread.list.size", items.len());
 
-    tracing::Span::current().record("patom.thread.list.size", rows.len());
+    // Enrich human root senders with name + avatar via the privileged store —
+    // the RLS read can't touch `users` (migration 14). Bounded by the list
+    // LIMIT (CLAUDE.md §5).
+    let sender_ids: Vec<UserId> = items
+        .iter()
+        .filter_map(|i| i.root.as_ref().and_then(|r| r.sender.user_id()))
+        .collect();
+    let profiles = state.users.read_profiles(&sender_ids).await?;
 
-    // Enrich each row's starter with name + avatar. Identity tables are
-    // REVOKEd from `patom_app` (migration 14), so the tenant tx above
-    // can't read `users` — resolve through the privileged store in one
-    // batch after it commits, the same pattern as `list_mcp_servers` /
-    // `list_agent_prompt_versions`. `rows` is `LIMIT`-bounded, so the id
-    // slice is bounded by `MAX_THREAD_LIST_LIMIT` (CLAUDE.md §5).
-    assert!(
-        rows.len() <= usize::try_from(MAX_THREAD_LIST_LIMIT).unwrap_or(usize::MAX),
-        "invariant: LIMIT enforces MAX_THREAD_LIST_LIMIT ceiling"
-    );
-    let starter_ids: Vec<UserId> = rows.iter().map(|r| r.10).collect();
-    let profiles = state.users.read_profiles(&starter_ids).await?;
-
-    let summaries = rows
+    let summaries = items
         .into_iter()
-        .map(|row| thread_row_to_summary(row, &profiles))
+        .map(|i| {
+            let root = i.root.map(|r| {
+                let (sender_display_name, sender_avatar_url) =
+                    r.sender.user_id().map_or((None, None), |uid| {
+                        resolve_profile(&profiles, uid).map_or((None, None), |(n, a)| (Some(n), a))
+                    });
+                ThreadRootSummary {
+                    snippet: r.snippet,
+                    sender: r.sender,
+                    created_at: r.created_at,
+                    sender_display_name,
+                    sender_avatar_url,
+                }
+            });
+            ThreadSummary {
+                thread_id: i.thread_id,
+                channel_id: i.channel_id,
+                last_activity_at: i.last_activity_at,
+                root,
+                reply_count: i.reply_count,
+            }
+        })
         .collect();
     Ok(Json(summaries))
 }
 
-fn thread_row_to_summary(
-    row: ThreadRow,
-    profiles: &HashMap<UserId, UserProfileLite>,
-) -> ThreadSummary {
-    let (
-        root_request_id,
-        root_session_id,
-        agent_id,
-        agent_name,
-        preview,
-        reply_count,
-        last_activity_at,
-        status,
-        created_at,
-        sender_colleague_id,
-        sender_user_id,
-    ) = row;
-    let (name, avatar_url) =
-        resolve_profile(profiles, sender_user_id).unwrap_or((String::new(), None));
-    ThreadSummary {
-        root_request_id,
-        root_session_id,
-        first_agent: ThreadAgentRef {
-            id: agent_id,
-            name: agent_name,
-        },
-        starter: StarterRef {
-            user_id: sender_user_id,
-            colleague_id: sender_colleague_id,
-            name,
-            avatar_url,
-        },
-        preview,
-        reply_count,
-        last_activity_at,
-        status,
-        created_at,
-    }
+/// Resolve the DM-narrowing query params to a colleague id. The wire speaks
+/// satellite ids (the same `{kind, id}` pair the tags wire uses); colleague
+/// resolution stays server-side. An unknown satellite is a stale-roster 400.
+async fn resolve_counterpart_filter(
+    state: &AppState,
+    principal: &Principal,
+    q: &ListThreadsQuery,
+) -> Result<Option<ColleagueId>, HttpError> {
+    let (Some(kind), Some(id)) = (q.counterpart_kind.as_deref(), q.counterpart_id) else {
+        return Ok(None);
+    };
+    let org = principal.active_org_id;
+    let colleague = match kind {
+        "agent" => state
+            .colleagues
+            .resolve_agent(org, crate::agents::AgentId::from(id))
+            .await
+            .map_err(|_| HttpError::BadRequest(format!("unknown counterpart agent {id}")))?,
+        "human" => state
+            .colleagues
+            .resolve_user(org, UserId::from(id))
+            .await
+            .map_err(|_| HttpError::BadRequest(format!("unknown counterpart human {id}")))?,
+        other => {
+            return Err(HttpError::BadRequest(format!(
+                "counterpart_kind must be \"agent\" or \"human\", got {other:?}"
+            )));
+        }
+    };
+    Ok(Some(colleague))
 }
 
 /// Look up a sender's resolved display name + avatar. `None` when the user
@@ -295,203 +202,123 @@ fn resolve_profile(
         .map(|p| (p.name.clone(), p.avatar_url.clone()))
 }
 
+/// Map a thread-store failure to an HTTP status. A read fault is internal —
+/// an invisible / missing thread surfaces as an empty page from the store's
+/// visibility gate, not an error, so there's no NotFound branch here.
+fn thread_store_error(e: crate::threads::ThreadError) -> HttpError {
+    tracing::error!(error = %e, "thread.store.error");
+    HttpError::Internal
+}
+
 // ─── G2 ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct ThreadMessagesQuery {
-    #[serde(default)]
-    before_ts: Option<DateTime<Utc>>,
+    /// Keyset cursor: return rows with `seq < before_seq` (page backwards).
+    /// Omitted ⇒ the most recent page.
     #[serde(default)]
     before_seq: Option<i64>,
     #[serde(default)]
     limit: Option<u32>,
 }
 
+/// One row of the canonical flat feed (G2). Unlike the legacy per-pair
+/// history, this exposes `kind` (posted chat vs. an agent's private
+/// reasoning / tool_use / … artifact, shown to all for transparency, §2),
+/// carries `owner_agent_id` for artifact rows, and a `sender` that may be
+/// any party ([`MessageSender::System`] on a system row) — not the viewer
+/// stamped onto every row. The store decodes both sides; the route only
+/// enriches the human display name.
 #[derive(Debug, Serialize)]
 struct ThreadMessage {
-    session_id: SessionId,
     seq: i64,
+    kind: &'static str,
     sender: MessageSender,
-    receiver: Participant,
+    owner_agent_id: Option<AgentId>,
+    receiver: Option<Participant>,
     body: serde_json::Value,
     created_at: DateTime<Utc>,
-    /// The prompt request that produced this row. Surfaced on the wire so
-    /// the FE can dedupe optimistic / live / persisted bubbles by identity.
-    request_id: PromptRequestId,
+    /// The producing turn for agent rows; `None` for plain human posts.
+    request_id: Option<PromptRequestId>,
+    /// Client dedupe key the posting submit carried — the FE reconciles its
+    /// optimistic bubble against this. `None` for agent-produced rows.
+    client_key: Option<String>,
     /// Resolved display name of a *human* sender, enriched from the
     /// privileged user store (the tenant tx can't read `users`). `None`
-    /// for agent / system rows — the FE resolves agent names from its own
-    /// roster and never labels system rows.
+    /// for agent / system rows.
     sender_display_name: Option<String>,
-    /// Avatar URL of a human sender; `None` when unset or non-human.
     sender_avatar_url: Option<String>,
 }
-
-/// `session_messages` row with both sides joined to `colleagues` so the
-/// satellite columns (`kind`, `user_id`, `agent_id`) come back in the same
-/// query — matches the decode path in [`crate::session::PgSessionStore`].
-type HistoryRow = (
-    SessionId,
-    i64,
-    // sender side (nullable colleague_id ⇒ System)
-    Option<crate::colleagues::ColleagueId>,
-    Option<crate::colleagues::ColleagueKind>,
-    Option<crate::auth::UserId>,
-    Option<AgentId>,
-    // receiver side (NOT NULL on session_messages)
-    crate::colleagues::ColleagueId,
-    crate::colleagues::ColleagueKind,
-    Option<crate::auth::UserId>,
-    Option<AgentId>,
-    serde_json::Value,
-    DateTime<Utc>,
-    PromptRequestId,
-);
-
-/// Thread-history query. As with G1, the `(before_ts, before_seq)` cursor
-/// is optional; passing both as `NULL` skips the lexicographic predicate.
-const THREAD_HISTORY_SQL: &str = "SELECT sm.session_id, sm.seq,
-        sm.sender_colleague_id, sc.kind, sc.user_id, sc.agent_id,
-        sm.receiver_colleague_id, rc.kind, rc.user_id, rc.agent_id,
-        sm.body, sm.created_at, sm.request_id
- FROM session_messages sm
- JOIN sessions s ON s.id = sm.session_id
- LEFT JOIN colleagues sc ON sc.id = sm.sender_colleague_id
- JOIN colleagues rc ON rc.id = sm.receiver_colleague_id
- WHERE s.root_request_id = $1
-   AND s.org_id = $5
-   AND ($2::timestamptz IS NULL
-        OR (sm.created_at, sm.seq) < ($2, $3))
- ORDER BY sm.created_at, sm.seq
- LIMIT $4";
 
 #[tracing::instrument(
     skip_all,
     name = "thread.history",
     fields(
-        patom.dag.root = %root,
+        patom.thread.id = %thread,
         patom.thread.history.size = tracing::field::Empty,
     ),
 )]
 async fn thread_messages(
     State(state): State<AppState>,
     principal: Principal,
-    Path(root): Path<Uuid>,
+    Path(thread): Path<Uuid>,
     Query(q): Query<ThreadMessagesQuery>,
 ) -> Result<Json<Vec<ThreadMessage>>, HttpError> {
-    let root = PromptRequestId::from(root);
-    let limit = q
-        .limit
-        .unwrap_or(DEFAULT_THREAD_HISTORY_LIMIT)
-        .clamp(1, MAX_THREAD_HISTORY_LIMIT);
+    let thread = ThreadId::from(thread);
+    let limit = q.limit.unwrap_or(DEFAULT_THREAD_FEED);
 
-    // Cursor: both fields go together — one without the other under-pins
-    // the row and would silently drop a tied (created_at, seq) pair.
-    let (before_ts, before_seq) = match (q.before_ts, q.before_seq) {
-        (Some(ts), Some(seq)) => (Some(ts), seq),
-        (None, None) => (None, 0),
-        _ => {
-            return Err(HttpError::BadRequest(
-                "before_ts and before_seq must be supplied together".into(),
-            ));
-        }
-    };
-
-    // Tenant-scoped read: `session_messages` is RLS-bound on `org_id`
-    // so the join through `sessions` filters to rows the caller can see.
-    // A cross-org `root` id therefore yields an empty result — the same
-    // shape as "root exists but has no messages yet" — rather than
-    // leaking a 404 vs 200 distinction across orgs.
-    let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
-    let rows: Vec<HistoryRow> = sqlx::query_as(THREAD_HISTORY_SQL)
-        .bind(root)
-        .bind(before_ts)
-        .bind(before_seq)
-        .bind(i64::from(limit))
-        .bind(principal.active_org_id)
-        .fetch_all(&mut *tx)
+    // The store runs the read RLS-scoped under the caller and gates thread
+    // visibility (channel membership / DM ownership) + active-org pin, so a
+    // thread the caller can't see yields an empty page rather than a leak.
+    let caller = Caller::new(principal.user_id, principal.active_org_id);
+    let store = PgThreadStore::new(state.pool.clone(), state.clock.clone());
+    let rows = store
+        .feed(&caller, thread, q.before_seq, limit)
         .await
-        .map_err(AuthError::from)?;
-    tx.commit().await.map_err(AuthError::from)?;
+        .map_err(thread_store_error)?;
 
     tracing::Span::current().record("patom.thread.history.size", rows.len());
 
     // Enrich human senders with name + avatar via the privileged store —
-    // same RLS rationale as the feed. Bounded by the `LIMIT` on the query
-    // (CLAUDE.md §5).
+    // the RLS read can't touch `users` (migration 14). Bounded by the feed
+    // LIMIT (CLAUDE.md §5).
     assert!(
-        rows.len() <= usize::try_from(MAX_THREAD_HISTORY_LIMIT).unwrap_or(usize::MAX),
-        "invariant: LIMIT enforces MAX_THREAD_HISTORY_LIMIT ceiling"
+        i64::try_from(rows.len()).unwrap_or(i64::MAX) <= MAX_THREAD_FEED,
+        "invariant: feed LIMIT enforces MAX_THREAD_FEED ceiling"
     );
-    let sender_ids: Vec<UserId> = rows.iter().filter_map(|r| r.4).collect();
+    let sender_ids: Vec<UserId> = rows.iter().filter_map(|m| m.sender.user_id()).collect();
     let profiles = state.users.read_profiles(&sender_ids).await?;
 
     let messages = rows
         .into_iter()
-        .map(|row| history_row_to_message(row, &profiles))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|m| feed_message_to_wire(m, &profiles))
+        .collect();
     Ok(Json(messages))
 }
 
-fn history_row_to_message(
-    row: HistoryRow,
+/// Project one store [`FeedMessage`] onto the G2 wire shape. The store already
+/// decoded both participant sides via the canonical parser, so the route only
+/// enriches the human sender's display name/avatar from the privileged store.
+fn feed_message_to_wire(
+    m: crate::threads::FeedMessage,
     profiles: &HashMap<UserId, UserProfileLite>,
-) -> Result<ThreadMessage, HttpError> {
-    let (
-        session_id,
-        seq,
-        sender_colleague_id,
-        sender_kind,
-        sender_user_id,
-        sender_agent_id,
-        receiver_colleague_id,
-        receiver_kind,
-        receiver_user_id,
-        receiver_agent_id,
-        body,
-        created_at,
-        request_id,
-    ) = row;
-    // The schema enforces these shapes, so a violation is a malformed-DB
-    // anomaly, not bad input — log it and degrade to a typed 500 rather than
-    // panicking the handler (§6/§12: no `expect` across the HTTP boundary).
-    let sender = Participant::try_from((
-        sender_colleague_id,
-        sender_kind,
-        sender_user_id,
-        sender_agent_id,
-    ))
-    .map(MessageSender::from)
-    .map_err(|e| {
-        tracing::error!(error = %e, "thread.history.decode_sender");
-        HttpError::Internal
-    })?;
-    let receiver = Participant::try_from((
-        Some(receiver_colleague_id),
-        Some(receiver_kind),
-        receiver_user_id,
-        receiver_agent_id,
-    ))
-    .map_err(|e| {
-        tracing::error!(error = %e, "thread.history.decode_receiver");
-        HttpError::Internal
-    })?;
-    // Only human senders carry a profile; agent rows resolve their name on
-    // the FE roster and system rows are never labelled.
-    let (sender_display_name, sender_avatar_url) = sender_user_id.map_or((None, None), |uid| {
+) -> ThreadMessage {
+    let (sender_display_name, sender_avatar_url) = m.sender.user_id().map_or((None, None), |uid| {
         resolve_profile(profiles, uid).map_or((None, None), |(n, a)| (Some(n), a))
     });
-    Ok(ThreadMessage {
-        session_id,
-        seq,
-        sender,
-        receiver,
-        body,
-        created_at,
-        request_id,
+    ThreadMessage {
+        seq: m.seq,
+        kind: m.kind.as_str(),
+        sender: m.sender,
+        owner_agent_id: m.owner_agent_id,
+        receiver: m.receiver,
+        body: m.body,
+        created_at: m.created_at,
+        request_id: m.request_id,
+        client_key: m.client_key,
         sender_display_name,
         sender_avatar_url,
-    })
+    }
 }
 
 // ─── G3 ─────────────────────────────────────────────────────────────────
@@ -499,65 +326,52 @@ fn history_row_to_message(
 async fn stream_thread(
     State(state): State<AppState>,
     principal: Principal,
-    Path(root): Path<Uuid>,
+    Path(id): Path<Uuid>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, HttpError> {
-    let root = PromptRequestId::from(root);
-    // Authorisation gate: only subscribe if the caller can see a session
-    // in this DAG *in their active org*. RLS isolates by membership (any
-    // org), so `org_id = $2` pins the gate to the active workspace — a
-    // multi-org caller must not stream a DAG from a non-active org. A miss
-    // returns None and we 404 cleanly without subscribing to the broadcast.
-    {
-        let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
-        let visible: Option<(SessionId,)> = sqlx::query_as(
-            "SELECT id FROM sessions WHERE root_request_id = $1 AND org_id = $2 LIMIT 1",
-        )
-        .bind(root)
-        .bind(principal.active_org_id)
-        .fetch_optional(&mut *tx)
+    let thread = ThreadId::from(id);
+    // Authorisation gate: only subscribe if the caller can see this thread in
+    // their active org (channel membership, or DM ownership; active-org pin in
+    // the store). RLS isolates by membership (any org), so a multi-org caller
+    // must not stream a thread from a non-active org. An invisible / missing
+    // thread returns `false` and we 404 cleanly without subscribing.
+    let caller = Caller::new(principal.user_id, principal.active_org_id);
+    let store = PgThreadStore::new(state.pool.clone(), state.clock.clone());
+    if !store
+        .visible_to(&caller, thread)
         .await
-        .map_err(AuthError::from)?;
-        tx.commit().await.map_err(AuthError::from)?;
-        if visible.is_none() {
-            return Err(HttpError::NotFound);
-        }
+        .map_err(thread_store_error)?
+    {
+        return Err(HttpError::NotFound);
     }
-    let inner = state.thread_stream.subscribe(root);
+    let inner = state.thread_stream.subscribe(thread);
 
     // Per-connection monotonic cursor for the SSE `id:` header. Lossy on
     // process restart by design (G3 in `doc/backend_plan.md`); FE refetches
     // G2 and dedupes by `(request_id, chunk_seq)`.
     let mut cursor: u64 = 0;
 
-    // `scan` forwards the terminal chunk emitted on DAG quiescence (worker's
-    // `maybe_emit_quiescence` publishes `Done` on the root) and ends the
-    // stream on the next call, so the FE sees the close signal.
-    let stream = inner
-        .scan(false, |closed, res| {
-            let stop = *closed;
-            if matches!(&res, Ok(ThreadStreamEvent::Item(item)) if item.chunk.is_terminal()) {
-                *closed = true;
+    // The thread feed is continuous — a `Done`/`Error` chunk is a per-turn
+    // marker (one DAG of many the thread hosts), NOT a stream close. So we do
+    // NOT close the SSE on a terminal chunk; we forward every event and the
+    // connection lives until the client disconnects.
+    let stream = inner.map(move |res| {
+        let event = match res {
+            Ok(ThreadStreamEvent::Item(item)) => item_to_sse(cursor, &item),
+            Ok(ThreadStreamEvent::Stalled) => synthetic_to_sse(cursor, &ResponseChunk::Stalled),
+            Err(e) => {
+                warn!(error = %e, "thread.stream.error");
+                synthetic_to_sse(
+                    cursor,
+                    &ResponseChunk::Error {
+                        reason: e.to_string(),
+                        code: "stream".to_owned(),
+                    },
+                )
             }
-            std::future::ready(if stop { None } else { Some(res) })
-        })
-        .map(move |res| {
-            let event = match res {
-                Ok(ThreadStreamEvent::Item(item)) => item_to_sse(cursor, &item),
-                Ok(ThreadStreamEvent::Stalled) => synthetic_to_sse(cursor, &ResponseChunk::Stalled),
-                Err(e) => {
-                    warn!(error = %e, "thread.stream.error");
-                    synthetic_to_sse(
-                        cursor,
-                        &ResponseChunk::Error {
-                            reason: e.to_string(),
-                            code: "stream".to_owned(),
-                        },
-                    )
-                }
-            };
-            cursor = cursor.saturating_add(1);
-            Ok::<_, Infallible>(event)
-        });
+        };
+        cursor = cursor.saturating_add(1);
+        Ok::<_, Infallible>(event)
+    });
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(SSE_KEEPALIVE_INTERVAL)))
 }

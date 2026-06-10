@@ -17,11 +17,16 @@ export type StreamStatus =
 export type LiveStatus = "streaming" | "done" | "error" | "stalled";
 
 export type PendingHuman = {
-  /** Client-minted; stable across the optimistic → confirmed transition. */
+  /** Client-minted; stable across the optimistic → confirmed transition,
+   *  and echoed back as the persisted row's `client_key` for the dedupe. */
   idempotency_key: string;
-  /** Server-assigned by /prompts. Set once the mutation resolves; until
-   *  then the bubble is unconfirmed (composer spinner / thinking placeholder). */
+  /** First trigger id from /prompts. `undefined` until the mutation
+   *  resolves; stays unset for an untagged post (no trigger exists). */
   request_id?: string;
+  /** Whether the submit woke any agent. Drives the "thinking…" placeholder
+   *  — an untagged post expects no reply, so no placeholder. `undefined`
+   *  while the mutation is in flight (optimistically treated as pending). */
+  triggered?: boolean;
   text: string;
   ts: string;
 };
@@ -57,10 +62,12 @@ type Store = {
   byThread: Map<string, ThreadState>;
 
   addPending: (rootId: string, p: PendingHuman) => void;
-  attachRequestId: (
+  /** Stamp the submit outcome onto the optimistic entry: the first trigger
+   *  id (if any) and whether any agent was woken. */
+  attachOutcome: (
     rootId: string,
     idempotencyKey: string,
-    requestId: string,
+    outcome: { request_id: string | null; triggered: boolean },
   ) => void;
   removePending: (rootId: string, idempotencyKey: string) => void;
   applyEnvelope: (rootId: string, env: ThreadStreamEnvelope) => void;
@@ -171,13 +178,17 @@ export const useThreadStore = create<Store>((set) => ({
     });
   },
 
-  attachRequestId(rootId, idempotencyKey, requestId) {
+  attachOutcome(rootId, idempotencyKey, outcome) {
     set((s) => {
       const next = update(s, rootId, (cur) => {
         const entry = cur.pending.get(idempotencyKey);
-        if (!entry || entry.request_id === requestId) return null;
+        if (!entry) return null;
         const pending = new Map(cur.pending);
-        pending.set(idempotencyKey, { ...entry, request_id: requestId });
+        pending.set(idempotencyKey, {
+          ...entry,
+          request_id: outcome.request_id ?? undefined,
+          triggered: outcome.triggered,
+        });
         return { ...cur, pending };
       });
       return next ?? s;

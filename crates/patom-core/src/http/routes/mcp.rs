@@ -1114,15 +1114,15 @@ struct OAuthStartRequest {
     #[serde(default)]
     scope: Option<String>,
     /// Resume context — populated by callers driving the start flow on
-    /// behalf of a live conversation. When both `session_id` and
-    /// `agent_id` are present, the OAuth callback enqueues a synthetic
-    /// continuation prompt into the session so the agent loop resumes
+    /// behalf of a live conversation. When both `thread_id` and
+    /// `agent_id` are present, the OAuth callback appends a synthetic
+    /// continuation prompt into the thread so the agent loop resumes
     /// without the user typing anything. Universal across channels
     /// (web UI, Slack adapter, future Lark / Teams).
     ///
     /// Both-or-neither: the handler returns 400 if exactly one is set.
     #[serde(default)]
-    session_id: Option<crate::session::SessionId>,
+    thread_id: Option<crate::threads::ThreadId>,
     #[serde(default)]
     agent_id: Option<AgentId>,
 }
@@ -1170,7 +1170,7 @@ async fn start_oauth(
         catalog_entry.default_scope.as_deref(),
     );
     let extras_owned = authorize_extras_owned(catalog_entry.authorize_extra_params.as_ref());
-    let resume_ctx = parse_resume_ctx(body.session_id, body.agent_id)?;
+    let resume_ctx = parse_resume_ctx(body.thread_id, body.agent_id)?;
     let redirect_uri = format!("{}{}", state.oauth_redirect_base, OAUTH_CALLBACK_PATH);
     let expires_at = state.clock.now_utc()
         + chrono::Duration::from_std(OAUTH_PENDING_TTL)
@@ -1216,21 +1216,21 @@ async fn start_oauth(
     Ok(Json(OAuthStartResponse { authorize_url }))
 }
 
-/// Both-or-neither parsing of the (session_id, agent_id) pair on the
+/// Both-or-neither parsing of the (thread_id, agent_id) pair on the
 /// OAuth-start request body. A half-populated payload would bypass the
 /// universal auto-continue silently — surface the misuse as a 400.
 fn parse_resume_ctx(
-    session_id: Option<crate::session::SessionId>,
+    thread_id: Option<crate::threads::ThreadId>,
     agent_id: Option<crate::agents::AgentId>,
 ) -> Result<Option<ResumeCtx>, HttpError> {
-    match (session_id, agent_id) {
-        (Some(session_id), Some(agent_id)) => Ok(Some(ResumeCtx {
-            session_id,
+    match (thread_id, agent_id) {
+        (Some(thread_id), Some(agent_id)) => Ok(Some(ResumeCtx {
+            thread_id,
             agent_id,
         })),
         (None, None) => Ok(None),
         _ => Err(HttpError::BadRequest(
-            "session_id and agent_id must both be present or both absent".into(),
+            "thread_id and agent_id must both be present or both absent".into(),
         )),
     }
 }
@@ -1485,19 +1485,20 @@ async fn do_auto_continue(
         super::prompts::SubmitPromptParams {
             user_id: pending.user_id,
             org_id: pending.org_id,
-            session_id: Some(resume.session_id),
-            agent_id: Some(resume.agent_id),
+            thread_id: Some(resume.thread_id),
+            tags: vec![super::prompts::TagTarget::Agent(resume.agent_id)],
             content,
             idempotency_key,
-            // OAuth-resume continues an existing session, so it's never a new
-            // channel root.
+            // OAuth-resume continues an existing thread, so it's never a new
+            // channel root / DM root.
             channel_id: None,
+            counterpart: None,
         },
     )
     .await
     {
         Ok(_) => tracing::info!(
-            patom.session.id = %resume.session_id.as_uuid(),
+            patom.thread.id = %resume.thread_id.as_uuid(),
             patom.agent.id = %resume.agent_id.as_uuid(),
             event = "mcp.oauth.callback.auto_continue_submitted",
         ),
@@ -1996,7 +1997,7 @@ async fn slack_connect_build_oauth_start(
         org_id,
         redirect_to: None,
         resume_ctx: Some(ResumeCtx {
-            session_id: claims.session_id,
+            thread_id: claims.thread_id,
             agent_id: claims.agent_id,
         }),
         slack_ctx: Some(SlackPingCtx {

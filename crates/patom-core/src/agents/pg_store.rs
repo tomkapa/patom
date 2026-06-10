@@ -27,8 +27,8 @@ use super::error::AgentStoreError;
 use super::prompt_versions::PromptVersionId;
 use super::store::{AgentStore, AgentUpdate, NewAgent};
 use super::types::{
-    AgentCard, AgentDescription, AgentId, AgentName, AgentRecord, AgentSystemPrompt,
-    AllowedMcpTools, DefaultAgentSeed,
+    AgentCard, AgentDescription, AgentId, AgentName, AgentRecord, AgentSeed, AgentSystemPrompt,
+    AllowedMcpTools,
 };
 use crate::types::AvatarUrl;
 
@@ -56,7 +56,7 @@ const AGENT_DEFAULT_SEED_LOCK_KEY: i64 = 0x6167_656E_745F_6473;
 /// explicit and lets the planner reuse the index scan across rows when
 /// the outer query lists every agent.
 const AGENT_SELECT: &str = "a.id, a.org_id, a.name, apv.system_prompt, a.description, \
-    a.is_default, a.allowed_mcp_tools, a.model, a.avatar_url, \
+    a.allowed_mcp_tools, a.model, a.avatar_url, \
     apv.id AS current_prompt_version_id, a.created_at, a.updated_at \
     FROM agents a \
     JOIN LATERAL ( \
@@ -99,13 +99,13 @@ impl PgAgentStore {
             .map_err(|e| AgentStoreError::Backend(format!("description embed: {e}")))
     }
 
-    /// See [`AgentStore::seed_default`]. Kept as an inherent method so
+    /// See [`AgentStore::seed_preset`]. Kept as an inherent method so
     /// tests that hold an `Arc<PgAgentStore>` can call it directly
     /// without coercing through the trait object.
-    pub async fn seed_default(
+    pub async fn seed_preset(
         &self,
         org_id: OrgId,
-        seed: DefaultAgentSeed,
+        seed: AgentSeed,
     ) -> Result<AgentId, AgentStoreError> {
         // Embed before opening the transaction so a slow embedding call
         // does not hold the advisory lock. On embed failure the seeder
@@ -124,11 +124,16 @@ impl PgAgentStore {
                 .execute(&mut **tx)
                 .await?;
 
-            let existing: Option<(AgentId,)> =
-                sqlx::query_as("SELECT id FROM agents WHERE is_default = TRUE AND org_id = $1")
-                    .bind(org_id)
-                    .fetch_optional(&mut **tx)
-                    .await?;
+            // Idempotency is by (org, name): the preset is "the agent named
+            // like the seed" — there is no default flag any more. Backed by
+            // the `agents_name_lower_unique (org_id, lower(name))` index.
+            let existing: Option<(AgentId,)> = sqlx::query_as(
+                "SELECT id FROM agents WHERE org_id = $1 AND lower(name) = lower($2)",
+            )
+            .bind(org_id)
+            .bind(seed.name.as_str())
+            .fetch_optional(&mut **tx)
+            .await?;
             if let Some((id,)) = existing {
                 return Ok(id);
             }
@@ -144,8 +149,8 @@ impl PgAgentStore {
             sqlx::query(
                 "INSERT INTO agents \
                      (id, org_id, name, description, description_embedding, \
-                      is_default, created_at, updated_at) \
-                 VALUES ($1, $2, $3, $4, $5::vector, TRUE, $6, $6)",
+                      created_at, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5::vector, $6, $6)",
             )
             .bind(id)
             .bind(org_id)
@@ -180,12 +185,12 @@ impl fmt::Debug for PgAgentStore {
 
 #[async_trait]
 impl AgentStore for PgAgentStore {
-    async fn seed_default(
+    async fn seed_preset(
         &self,
         org_id: OrgId,
-        seed: DefaultAgentSeed,
+        seed: AgentSeed,
     ) -> Result<AgentId, AgentStoreError> {
-        Self::seed_default(self, org_id, seed).await
+        Self::seed_preset(self, org_id, seed).await
     }
 
     async fn create(&self, payload: NewAgent) -> Result<AgentRecord, AgentStoreError> {
@@ -255,14 +260,6 @@ impl AgentStore for PgAgentStore {
             let existing = existing.ok_or(AgentStoreError::NotFound(id))?;
             let mut current = AgentRecord::try_from(existing)?;
 
-            // Demoting the only default in this org would leave the org
-            // without one, which breaks every session-create that omits
-            // `agent_id`. Reject it; the caller must promote another row
-            // first (which atomically demotes this one).
-            if matches!(payload.is_default, Some(false)) && current.is_default {
-                return Err(AgentStoreError::DefaultDeletionForbidden);
-            }
-
             if let Some(name) = payload.name {
                 current.name = name;
             }
@@ -277,21 +274,6 @@ impl AgentStore for PgAgentStore {
             }
             if let Some(avatar_url) = payload.avatar_url {
                 current.avatar_url = avatar_url;
-            }
-
-            // Promote: clear the old default in the *same org* in the same
-            // transaction, then set the flag on this row. No-op if this row
-            // is already the default.
-            if matches!(payload.is_default, Some(true)) && !current.is_default {
-                sqlx::query(
-                    "UPDATE agents SET is_default = FALSE, updated_at = $1 \
-                     WHERE is_default = TRUE AND org_id = $2",
-                )
-                .bind(now)
-                .bind(current.org_id)
-                .execute(&mut **tx)
-                .await?;
-                current.is_default = true;
             }
 
             // Prompt edit → INSERT a new `agent_prompt_versions` row in
@@ -325,15 +307,14 @@ impl AgentStore for PgAgentStore {
                 "UPDATE agents \
                  SET name = $2, description = $3, \
                      description_embedding = COALESCE($4::vector, description_embedding), \
-                     is_default = $5, allowed_mcp_tools = $6, model = $7, \
-                     avatar_url = $8, updated_at = $9 \
+                     allowed_mcp_tools = $5, model = $6, \
+                     avatar_url = $7, updated_at = $8 \
                  WHERE id = $1",
             )
             .bind(id)
             .bind(current.name.as_str())
             .bind(current.description.as_str())
             .bind(embedding_arg)
-            .bind(current.is_default)
             .bind(Json(&current.allowed_mcp_tools))
             .bind(current.model)
             .bind(current.avatar_url.as_ref().map(AvatarUrl::as_str))
@@ -348,20 +329,12 @@ impl AgentStore for PgAgentStore {
 
     async fn delete(&self, id: AgentId) -> Result<(), AgentStoreError> {
         run_privileged(&self.pool, async |tx| {
-            let row: Option<(bool,)> =
-                sqlx::query_as("SELECT is_default FROM agents WHERE id = $1 FOR UPDATE")
-                    .bind(id)
-                    .fetch_optional(&mut **tx)
-                    .await?;
-            let (is_default,) = row.ok_or(AgentStoreError::NotFound(id))?;
-            if is_default {
-                return Err(AgentStoreError::DefaultDeletionForbidden);
-            }
             match sqlx::query("DELETE FROM agents WHERE id = $1")
                 .bind(id)
                 .execute(&mut **tx)
                 .await
             {
+                Ok(done) if done.rows_affected() == 0 => Err(AgentStoreError::NotFound(id)),
                 Ok(_) => Ok(()),
                 Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23503") => {
                     Err(AgentStoreError::InUse(id))
@@ -370,20 +343,6 @@ impl AgentStore for PgAgentStore {
             }
         })
         .await
-    }
-
-    async fn default_id_for(&self, org_id: OrgId) -> Result<AgentId, AgentStoreError> {
-        let row = run_privileged::<Option<(AgentId,)>, AgentStoreError>(&self.pool, async |tx| {
-            Ok(
-                sqlx::query_as("SELECT id FROM agents WHERE is_default = TRUE AND org_id = $1")
-                    .bind(org_id)
-                    .fetch_optional(&mut **tx)
-                    .await?,
-            )
-        })
-        .await?;
-        let (id,) = row.ok_or(AgentStoreError::NoDefault)?;
-        Ok(id)
     }
 
     async fn read_by_name_for_viewer(
@@ -533,35 +492,19 @@ async fn create_in_tx(
     let embedding_literal = pg_vector::encode(embedding);
     let now = store.now();
 
-    // Promoting a new row to default first demotes the existing
-    // default in the same org so the partial unique index
-    // `agents_default_unique` on `(org_id) WHERE is_default` stays
-    // satisfied.
-    if payload.is_default {
-        sqlx::query(
-            "UPDATE agents SET is_default = FALSE, updated_at = $1 \
-                 WHERE is_default = TRUE AND org_id = $2",
-        )
-        .bind(now)
-        .bind(payload.org_id)
-        .execute(&mut **tx)
-        .await?;
-    }
-
     let id = AgentId::new();
     let insert = sqlx::query(
         "INSERT INTO agents \
                  (id, org_id, name, description, description_embedding, \
-                  is_default, allowed_mcp_tools, model, avatar_url, \
+                  allowed_mcp_tools, model, avatar_url, \
                   created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8, $9, $10, $10)",
+             VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8, $9, $9)",
     )
     .bind(id)
     .bind(payload.org_id)
     .bind(payload.name.as_str())
     .bind(payload.description.as_str())
     .bind(embedding_literal)
-    .bind(payload.is_default)
     .bind(Json(&payload.allowed_mcp_tools))
     .bind(payload.model)
     .bind(payload.avatar_url.as_ref().map(AvatarUrl::as_str))
@@ -592,7 +535,6 @@ async fn create_in_tx(
         name: payload.name,
         system_prompt: payload.system_prompt,
         description: payload.description,
-        is_default: payload.is_default,
         allowed_mcp_tools: payload.allowed_mcp_tools,
         model: payload.model,
         avatar_url: payload.avatar_url,
@@ -691,7 +633,6 @@ struct AgentRow {
     /// Joined from `agent_prompt_versions` (LATERAL on MAX(version)).
     system_prompt: String,
     description: String,
-    is_default: bool,
     allowed_mcp_tools: Json<AllowedMcpTools>,
     // `agents.model TEXT NULL`; the sqlx `Decode` impl on `Model` funnels
     // the string through the catalog smart constructor, so a row with an
@@ -720,7 +661,6 @@ impl TryFrom<AgentRow> for AgentRecord {
             name: AgentName::try_from(row.name)?,
             system_prompt: AgentSystemPrompt::try_from(row.system_prompt)?,
             description: AgentDescription::try_from(row.description)?,
-            is_default: row.is_default,
             allowed_mcp_tools: row.allowed_mcp_tools.0,
             model: row.model,
             avatar_url: row

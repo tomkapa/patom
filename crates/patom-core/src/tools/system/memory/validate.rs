@@ -130,8 +130,7 @@ impl Tool for MemoryValidateTool {
         check_cap(&self.deps.counter, ctx.request_id)?;
 
         let handle = MemoryHandle::try_from(parsed.handle.as_str()).map_err(parse_to_tool_err)?;
-        let memory_id =
-            resolve_handle(&self.deps, ctx.session_id, agent, &ctx.kind_payload, handle).await?;
+        let memory_id = resolve_handle(&self.deps, agent, &ctx.kind_payload, handle).await?;
         let evidence = MemoryEvidence::try_from(parsed.evidence).map_err(parse_to_tool_err)?;
 
         let row = self
@@ -148,7 +147,7 @@ impl Tool for MemoryValidateTool {
             .map_err(store_to_tool_err)?;
 
         debug!(
-            patom.session.id = %ctx.session_id,
+            patom.claim_key = %ctx.claim_key,
             patom.agent.id = %agent,
             patom.memory.id = %row.id,
             patom.memory.state = row.state.as_str(),

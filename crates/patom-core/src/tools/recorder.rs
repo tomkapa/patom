@@ -21,7 +21,7 @@ use crate::agents::AgentId;
 use crate::auth::OrgId;
 use crate::mcp::McpServerId;
 use crate::runtime::PromptRequestId;
-use crate::session::SessionId;
+use crate::threads::AgentThreadId;
 use crate::types::ToolName;
 
 crate::uuid_newtype! {
@@ -41,7 +41,9 @@ crate::uuid_newtype! {
 pub struct ToolCallRow {
     pub id: ToolCallRowId,
     pub org_id: OrgId,
-    pub session_id: SessionId,
+    /// FK to `agent_thread_state(id)` — the chat turn's participation id.
+    /// Sourced from `ToolCallContext.state_id`; background turns skip recording.
+    pub state_id: AgentThreadId,
     pub request_id: PromptRequestId,
     pub agent_id: AgentId,
     pub mcp_server_id: Option<McpServerId>,

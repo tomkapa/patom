@@ -1,11 +1,12 @@
-//! Fan-in subscriber for DAG-wide chat threads.
+//! Fan-in subscriber for chat threads.
 //!
 //! The single-process companion to [`super::pg_response::PgResponseHub`].
 //! Where the response hub keeps a per-request broadcast slot, this type
-//! demuxes Postgres `LISTEN/NOTIFY` deliveries into per-thread (per-DAG-root)
-//! broadcast slots. The HTTP handler at `GET /threads/{root}/stream`
-//! subscribes a single broadcast receiver and forwards every chunk emitted on
-//! any `prompt_requests` row in the DAG.
+//! demuxes Postgres `LISTEN/NOTIFY` deliveries into per-thread broadcast
+//! slots, keyed by the publishing request's `thread_id`. The HTTP handler at
+//! `GET /threads/{thread_id}/stream` subscribes a single broadcast receiver and
+//! forwards every chunk emitted on any `prompt_requests` row in that thread —
+//! across every DAG the thread hosts (one DAG per trigger).
 //!
 //! ```text
 //! pg_response.publish(req)  ──INSERT──►  prompt_response_chunks
@@ -13,9 +14,9 @@
 //!                                                                ▼
 //!                                             PgThreadStream::run_loop
 //!                                              ├─ fetch chunk by (req,seq)
-//!                                              └─ broadcast(root)
+//!                                              └─ broadcast(thread_id)
 //!                                                       │
-//!                                          GET /threads/{root}/stream
+//!                                          GET /threads/{thread_id}/stream
 //! ```
 //!
 //! Single LISTEN connection per process: the listener task drains
@@ -52,7 +53,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{debug, info, warn};
 
 use crate::agents::AgentId;
-use crate::session::SessionId;
+use crate::threads::ThreadId;
 
 use super::limits::{MAX_THREAD_CHUNK_BUFFER, MAX_THREAD_SLOTS, THREAD_NOTIFY_CHANNEL};
 use super::response::ResponseChunk;
@@ -72,11 +73,11 @@ pub enum ThreadStreamError {
 #[derive(Debug, Clone)]
 pub struct ThreadStreamItem {
     pub request_id: PromptRequestId,
-    /// Session the chunk belongs to. Identical to `prompt_requests.session_id`
-    /// — surfaced here so delivery surfaces (e.g. the Slack stream pump) can
-    /// route a chunk to the right `(agent, human)` surface without an extra
-    /// round-trip.
-    pub session_id: SessionId,
+    /// Thread the chunk belongs to — identical to the publishing
+    /// `prompt_requests.thread_id`. Surfaced here so delivery surfaces (e.g.
+    /// the Slack stream pump) route a chunk to the right Slack thread without
+    /// an extra round-trip.
+    pub thread_id: ThreadId,
     /// Authoring agent. For [`ResponseChunk::AgentMessage`] this is the
     /// chunk's own `from` (a deeper-DAG agent addressing the human); for
     /// every other chunk it is the request's `receiver_agent_id` — i.e. the
@@ -97,15 +98,15 @@ pub enum ThreadStreamEvent {
 
 /// Wire shape of the JSON payload published by [`super::pg_response::PgResponseHub`]
 /// on `LISTEN patom_thread_chunk`. Built from the `prompt_requests` row at
-/// publish time so the listener can route by `root_request_id` without an
-/// extra query. `chunk_seq` rides as a JSON number (Postgres BIGINT
-/// values up to 2^53 are safe in JSON; chunk sequences never approach that
-/// in practice).
+/// publish time so the listener can route by `thread_id` without an extra
+/// query. `thread_id` is `null` on a background-turn trigger (cognition has no
+/// SSE subscriber) — the listener skips those. `chunk_seq` rides as a JSON
+/// number (Postgres BIGINT values up to 2^53 are safe in JSON; chunk sequences
+/// never approach that in practice).
 #[derive(Debug, Deserialize)]
 struct NotifyPayload {
     request_id: PromptRequestId,
-    root_request_id: PromptRequestId,
-    session_id: SessionId,
+    thread_id: Option<ThreadId>,
     chunk_seq: u64,
 }
 
@@ -115,8 +116,8 @@ impl NotifyPayload {
     }
 }
 
-/// One per-root broadcast slot. Created lazily (on first subscribe or first
-/// notify routed to this root) and evicted under cap.
+/// One per-thread broadcast slot. Created lazily (on first subscribe or first
+/// notify routed to this thread) and evicted under cap.
 #[derive(Debug)]
 struct ThreadSlot {
     tx: broadcast::Sender<ThreadStreamEvent>,
@@ -131,9 +132,9 @@ impl ThreadSlot {
 
 #[derive(Debug)]
 struct SlotTable {
-    slots: HashMap<PromptRequestId, ThreadSlot>,
+    slots: HashMap<ThreadId, ThreadSlot>,
     /// Insertion order; drives eviction (no-receivers-first, oldest fallback).
-    order: VecDeque<PromptRequestId>,
+    order: VecDeque<ThreadId>,
 }
 
 impl SlotTable {
@@ -145,20 +146,20 @@ impl SlotTable {
     }
 }
 
-/// Touch the slot for `root`, creating it if needed. On creation, if the
+/// Touch the slot for `thread`, creating it if needed. On creation, if the
 /// table is at `slot_cap` we evict the oldest slot whose broadcast has no
 /// live receivers, falling back to the literal oldest entry.
-fn touch_slot(table: &mut SlotTable, root: PromptRequestId, slot_cap: usize) -> &mut ThreadSlot {
-    if !table.slots.contains_key(&root) {
+fn touch_slot(table: &mut SlotTable, thread: ThreadId, slot_cap: usize) -> &mut ThreadSlot {
+    if !table.slots.contains_key(&thread) {
         if table.slots.len() >= slot_cap {
             evict_one(table);
         }
-        table.slots.insert(root, ThreadSlot::new());
-        table.order.push_back(root);
+        table.slots.insert(thread, ThreadSlot::new());
+        table.order.push_back(thread);
     }
     table
         .slots
-        .get_mut(&root)
+        .get_mut(&thread)
         .expect("invariant: slot was just inserted or already present")
 }
 
@@ -235,21 +236,21 @@ impl PgThreadStream {
             .expect("invariant: thread-stream mutex never poisoned")
     }
 
-    /// Subscribe to live fan-in for `root`. The returned stream attaches to
-    /// the per-thread broadcast and yields one event per chunk emitted on
-    /// any request whose `root_request_id == root`. Backlog replay is *not*
-    /// performed here — the FE refetches `GET /threads/{root}/messages`
-    /// when (re)opening a thread, then dedupes by `(request_id, chunk_seq)`.
-    /// Lossy on process restart by design (G3 in `doc/backend_plan.md`).
+    /// Subscribe to live fan-in for `thread`. The returned stream attaches to
+    /// the per-thread broadcast and yields one event per chunk emitted on any
+    /// request whose `thread_id == thread`. Backlog replay is *not* performed
+    /// here — the FE refetches `GET /threads/{thread}/messages` when (re)opening
+    /// a thread, then dedupes by `(request_id, chunk_seq)`. Lossy on process
+    /// restart by design (G3 in `doc/backend_plan.md`).
     #[tracing::instrument(
         skip(self),
         name = "thread.stream.subscribe",
-        fields(patom.dag.root = %root),
+        fields(patom.thread.id = %thread),
     )]
-    pub fn subscribe(&self, root: PromptRequestId) -> ThreadStream {
+    pub fn subscribe(&self, thread: ThreadId) -> ThreadStream {
         let rx = {
             let mut guard = self.table();
-            let slot = touch_slot(&mut guard, root, self.slot_cap);
+            let slot = touch_slot(&mut guard, thread, self.slot_cap);
             slot.tx.subscribe()
         };
         let mapped = BroadcastStream::new(rx).map(|res| match res {
@@ -325,7 +326,15 @@ async fn handle_notification(pool: &PgPool, table: &Arc<Mutex<SlotTable>>, raw: 
             return;
         }
     };
-    let root = payload.root_request_id;
+    // A background-turn trigger has no `thread_id` (and no SSE subscriber) —
+    // there is nothing to route, so skip it.
+    let Some(thread) = payload.thread_id else {
+        debug!(
+            patom.request.id = %payload.request_id,
+            "thread.notify.skipped_no_thread",
+        );
+        return;
+    };
 
     // Skip the DB roundtrip when no subscriber is listening: the broadcast
     // would silently drop the event anyway, and we don't want to evict a
@@ -337,20 +346,20 @@ async fn handle_notification(pool: &PgPool, table: &Arc<Mutex<SlotTable>>, raw: 
             .expect("invariant: thread-stream mutex never poisoned");
         guard
             .slots
-            .get(&root)
+            .get(&thread)
             .filter(|s| s.tx.receiver_count() > 0)
             .map(|s| s.tx.clone())
     };
     let Some(sender) = sender else {
         debug!(
-            patom.dag.root = %root,
+            patom.thread.id = %thread,
             patom.request.id = %payload.request_id,
             "thread.notify.dropped_no_subscribers",
         );
         return;
     };
 
-    let item = match fetch_item(pool, &payload).await {
+    let item = match fetch_item(pool, &payload, thread).await {
         Ok(item) => item,
         Err(e) => {
             warn!(error = %e, "thread.notify.fetch_error");
@@ -364,10 +373,12 @@ async fn handle_notification(pool: &PgPool, table: &Arc<Mutex<SlotTable>>, raw: 
 }
 
 /// Fetch the chunk + receiver agent id for a (`request_id`, `chunk_seq`)
-/// tuple. Single round-trip — both columns come from the join.
+/// tuple. Single round-trip — both columns come from the join. `thread` is the
+/// resolved (non-null) thread the caller already routed by.
 async fn fetch_item(
     pool: &PgPool,
     payload: &NotifyPayload,
+    thread: ThreadId,
 ) -> Result<ThreadStreamItem, ThreadStreamError> {
     let chunk_seq = payload.chunk_seq();
     // Privileged: the listener task is process-global infrastructure
@@ -412,7 +423,7 @@ async fn fetch_item(
 
     Ok(ThreadStreamItem {
         request_id: payload.request_id,
-        session_id: payload.session_id,
+        thread_id: thread,
         from_agent,
         chunk_seq,
         chunk,

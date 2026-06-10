@@ -53,7 +53,7 @@ impl ToolCallStore for PgToolCallStore {
         skip_all,
         name = "tool_calls.record",
         fields(
-            patom.session.id = %row.session_id,
+            patom.state.id = %row.state_id,
             patom.agent.id = %row.agent_id,
             patom.tool = %row.tool_name,
             patom.mcp.server.id = row.mcp_server_id.map(tracing::field::display),
@@ -81,7 +81,7 @@ impl ToolCallStore for PgToolCallStore {
         run_privileged::<(), ToolCallStoreError>(&self.pool, async |tx| {
             sqlx::query(
                 "INSERT INTO tool_calls
-                     (id, org_id, session_id, request_id, agent_id,
+                     (id, org_id, state_id, request_id, agent_id,
                       mcp_server_id, tool_name,
                       started_at, duration_ms, is_error, error_message,
                       created_at)
@@ -89,7 +89,7 @@ impl ToolCallStore for PgToolCallStore {
             )
             .bind(row.id)
             .bind(row.org_id)
-            .bind(row.session_id)
+            .bind(row.state_id)
             .bind(row.request_id)
             .bind(row.agent_id)
             .bind(row.mcp_server_id)

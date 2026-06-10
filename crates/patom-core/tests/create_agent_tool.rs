@@ -3,7 +3,7 @@
 //! Exercises the tool through its public seam (`Tool::execute` with a wired
 //! `ToolCallContext`) against a real Postgres-backed `AgentStore` so the
 //! happy path, duplicate-name conflict, MCP allowlist passthrough, input
-//! validation, and `is_default` lockdown all land on the same code path the
+//! validation, and schema lockdown all land on the same code path the
 //! agent uses at runtime.
 
 #![allow(clippy::expect_used)]
@@ -11,16 +11,14 @@
 use patom::agents::{AgentName, AllowedMcpTools, SharedAgentStore, ToolScope};
 use patom::clock::SystemClock;
 use patom::mcp::McpCatalogId;
-use patom::runtime::{PromptRequestId, RequestKindPayload};
-use patom::session::{PgSessionStore, SharedSessionStore};
+use patom::runtime::{ClaimKey, PromptRequestId, RequestKindPayload};
 use patom::tools::system::CreateAgentTool;
 use patom::tools::{Tool, ToolCallContext, ToolError};
 use serde_json::{Value, json};
-use std::sync::Arc;
 use uuid::Uuid;
 
 mod common;
-use common::pg::{human_to_agent_session, seed_tenant, shared_agent_store};
+use common::pg::{seed_tenant, shared_agent_store};
 use sqlx::PgPool;
 
 struct Fixture {
@@ -35,19 +33,11 @@ struct Fixture {
 
 async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let agents = shared_agent_store(pool.clone(), SystemClock::shared());
-    let sessions: SharedSessionStore =
-        Arc::new(PgSessionStore::new(pool.clone(), SystemClock::shared()));
-    let session = human_to_agent_session(
-        pool,
-        sessions.as_ref(),
-        seed.agent_id,
-        seed.org_id,
-        seed.user_id,
-    )
-    .await;
     let request_id = PromptRequestId::new();
     let ctx = ToolCallContext {
-        session_id: session,
+        claim_key: ClaimKey::new(),
+        thread_id: None,
+        state_id: None,
         viewer: common::pg::agent_participant(pool, seed.org_id, seed.agent_id).await,
         root_request_id: request_id,
         request_id,
@@ -72,7 +62,9 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
 
 fn human_ctx(f: &Fixture) -> ToolCallContext {
     ToolCallContext {
-        session_id: f.ctx.session_id,
+        claim_key: f.ctx.claim_key,
+        thread_id: None,
+        state_id: None,
         viewer: patom::types::Participant::human(f.user_colleague_id, f.user_id),
         root_request_id: f.ctx.root_request_id,
         request_id: f.ctx.request_id,
@@ -93,7 +85,7 @@ fn valid_input(name: &str) -> Value {
 }
 
 #[sqlx::test]
-async fn happy_path_persists_record_with_is_default_false_and_empty_mcp(pool: PgPool) {
+async fn happy_path_persists_record_with_empty_mcp(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let f = fixture(&pool, &seed).await;
 
@@ -114,7 +106,6 @@ async fn happy_path_persists_record_with_is_default_false_and_empty_mcp(pool: Pg
         .await
         .expect("read");
     assert_eq!(record.id.as_uuid(), parsed_id);
-    assert!(!record.is_default);
     assert_eq!(record.allowed_mcp_tools, AllowedMcpTools::empty());
     assert!(
         record
@@ -301,10 +292,4 @@ async fn is_default_is_rejected_by_schema(pool: PgPool) {
             .await
             .is_err()
     );
-    let default = f
-        .agents
-        .default_id_for(f.org_id)
-        .await
-        .expect("default present");
-    assert_eq!(default, f.viewer_agent_id);
 }

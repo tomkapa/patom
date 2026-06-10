@@ -12,7 +12,7 @@ import {
 } from "../lib/foldHistory";
 import { useThreadHistory } from "./useThreads";
 import { useThreadStore, type StreamStatus } from "../stores/threadStore";
-import type { Agent } from "../types/api";
+import type { Mentionable } from "../types/api";
 
 export type ThreadView = {
   bubbles: Bubble[];
@@ -27,7 +27,7 @@ export type ThreadView = {
 
 export function useThreadView(
   rootId: string | null,
-  agents: Agent[],
+  roster: Mentionable[],
   poster: Poster,
 ): ThreadView {
   // History keeps a low-frequency poll only while we have unconfirmed
@@ -49,9 +49,15 @@ export function useThreadView(
   );
 
   return useMemo(() => {
-    const folded = foldHistory(history, agents, poster);
+    const folded = foldHistory(history, roster, poster);
     const persistedRequestIds = new Set(
       folded.bubbles.map((b) => b.request_id),
+    );
+    // Human rows echo the submit's idempotency key — the strongest identity
+    // for hiding the matching optimistic bubble (request ids don't exist on
+    // untagged posts).
+    const persistedClientKeys = new Set(
+      folded.bubbles.flatMap((b) => (b.client_key ? [b.client_key] : [])),
     );
 
     // Live agent bubbles whose request_id has not yet been echoed in
@@ -64,9 +70,11 @@ export function useThreadView(
           kind: "agent",
           key: `live:${lb.request_id}`,
           request_id: lb.request_id,
+          client_key: null,
           agent_id: lb.agent_id,
           agent_name:
-            agents.find((a) => a.id === lb.agent_id)?.name ?? null,
+            roster.find((m) => m.kind === "agent" && m.id === lb.agent_id)
+              ?.name ?? null,
           human_name: null,
           human_id: null,
           human_avatar_url: null,
@@ -89,11 +97,13 @@ export function useThreadView(
     const optimisticBubbles: Bubble[] = [];
     if (state) {
       for (const p of state.pending.values()) {
+        if (persistedClientKeys.has(p.idempotency_key)) continue;
         if (p.request_id && persistedRequestIds.has(p.request_id)) continue;
         optimisticBubbles.push({
           kind: "human",
           key: `opt:${p.idempotency_key}`,
           request_id: p.request_id ?? p.idempotency_key,
+          client_key: p.idempotency_key,
           agent_id: null,
           agent_name: null,
           human_name: poster.name,
@@ -115,9 +125,17 @@ export function useThreadView(
       ...optimisticBubbles,
     ].sort(byTs);
 
+    // "Thinking…" only when the trailing human message actually woke an
+    // agent (or its submit is still in flight — `triggered` not yet known).
+    // An untagged post expects no reply.
     const last = bubbles[bubbles.length - 1];
+    const lastPending =
+      last && last.client_key ? state?.pending.get(last.client_key) : undefined;
     const showThinking =
-      !!last && last.kind === "human" && last.phase !== "persisted";
+      !!last &&
+      last.kind === "human" &&
+      last.phase !== "persisted" &&
+      (lastPending?.triggered ?? true);
 
     return {
       bubbles,
@@ -126,7 +144,7 @@ export function useThreadView(
       isLoading: historyQ.isLoading,
       showThinking,
     };
-  }, [history, agents, poster, state, historyQ.isLoading]);
+  }, [history, roster, poster, state, historyQ.isLoading]);
 }
 
 function byTs(a: Bubble, b: Bubble): number {

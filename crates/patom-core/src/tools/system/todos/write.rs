@@ -142,7 +142,7 @@ impl Tool for TodoWriteTool {
         // span. Low-cardinality name, dynamic values on fields.
         let span = info_span!(
             "tool.todo_write",
-            patom.session.id = %ctx.session_id,
+            patom.claim_key = %ctx.claim_key,
             patom.request.id = %ctx.request_id,
             patom.todo.count = tracing::field::Empty,
         );
@@ -151,6 +151,17 @@ impl Tool for TodoWriteTool {
                 error!(event = "todo_write.invalid_json", error = ?e);
                 ToolError::from(e)
             })?;
+            // Todos are a chat-only capability: the table FKs `agent_thread_state`.
+            // On the background-cognition path there is no participation row, so
+            // the write is a no-op (the list echoes back empty/unchanged).
+            let Some(state_id) = ctx.state_id else {
+                let out = Output {
+                    items: TodoList::empty(),
+                    count: 0,
+                    note: "Todo list is unavailable on this turn (background cognition).",
+                };
+                return Ok(serde_json::to_string(&out)?);
+            };
             if let Err(e) = check_cap(&self.deps.counter, ctx.request_id) {
                 error!(event = "todo_write.cap_exceeded", error = ?e);
                 return Err(e);
@@ -166,7 +177,7 @@ impl Tool for TodoWriteTool {
                 .store
                 .replace(
                     ctx.acting_user_id,
-                    ctx.session_id,
+                    state_id,
                     ctx.org_id,
                     ctx.request_id,
                     list,

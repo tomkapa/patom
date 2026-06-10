@@ -35,10 +35,9 @@ use patom::http::{AppState, router};
 use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
 use patom::provider::{AssistantContent, ChatResponse, StopReason, ToolCall, ToolCallId};
 use patom::runtime::{
-    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedLeaseManager,
-    SharedPromptQueue, SharedResponseSource, SharedThreadStream,
+    PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedPromptQueue,
+    SharedResponseSource, SharedThreadStream,
 };
-use patom::session::{PgSessionStore, SharedSessionStore};
 use patom::slack::SlackAppState;
 use patom::slack::bridge::{self, BridgeDeps};
 use patom::slack::identity::{PgSlackIdentityStore, SharedSlackIdentityStore};
@@ -146,12 +145,9 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
 
     // Queue / session / response stores — the bridge enqueues into the
     // same Postgres the worker polls.
-    let queue_impl = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
-    let queue: SharedPromptQueue = queue_impl.clone();
-    let leases: SharedLeaseManager = queue_impl;
+    let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
     let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let responses: SharedResponseSource = hub;
-    let sessions: SharedSessionStore = Arc::new(PgSessionStore::new(pool.clone(), clock.clone()));
     let agents: SharedAgentStore = common::pg::shared_agent_store(pool.clone(), clock.clone());
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
@@ -182,6 +178,26 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         Arc::new(PgSlackIdentityStore::new(pool.clone(), clock.clone()));
     let slack_threads: SharedSlackThreadStore =
         Arc::new(PgSlackThreadStore::new(pool.clone(), clock.clone()));
+    let thread_store: patom::threads::SharedThreadStore = Arc::new(
+        patom::threads::PgThreadStore::new(pool.clone(), clock.clone()),
+    );
+
+    // An un-named `@Patom` mention routes to the org's preset recruiter
+    // (there is no default agent). The harness seed is named `test-default`,
+    // so rename it to the preset name the bridge resolves.
+    agents
+        .update(
+            h.default_agent_id,
+            patom::agents::AgentUpdate {
+                name: Some(
+                    patom::agents::AgentName::try_from(patom::app::RECRUITER_AGENT_NAME)
+                        .expect("recruiter name"),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("rename seed agent to recruiter");
 
     let principal =
         common::auth::principal_for_default_org(h.default_user_id, h.default_org_id, &jwt)
@@ -224,7 +240,6 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
             workspaces: workspaces.clone(),
             agents: agents.clone(),
             poster: poster.clone(),
-            threads: slack_threads.clone(),
             signing_secret: signing_secret.clone(),
             connect_url_base: Arc::from("https://patom.example"),
             clock: clock.clone(),
@@ -235,13 +250,14 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         BridgeDeps {
             queue: queue.clone(),
             agents: agents.clone(),
-            sessions: sessions.clone(),
+            thread_store: thread_store.clone(),
             colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             workspaces: workspaces.clone(),
             identities: identities.clone(),
             threads: slack_threads.clone(),
             poster: poster.clone(),
             stream_pump: pump.clone(),
+            pool: pool.clone(),
             http: http.clone(),
         },
         slack_cancel.clone(),
@@ -264,9 +280,7 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
 
     let state = AppState {
         queue: queue.clone(),
-        leases,
         responses,
-        sessions: sessions.clone(),
         agents: agents.clone(),
         colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
 

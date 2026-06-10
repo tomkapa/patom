@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::session::{SessionError, SessionId};
 use crate::types::ParseError;
 
 use super::types::{PromptRequestId, SeqOverflow};
@@ -25,26 +24,11 @@ pub enum LeaseTimingError {
 
 #[derive(Debug, Error)]
 pub enum PromptError {
-    #[error("session: {0}")]
-    Session(#[from] SessionError),
-
     #[error("parse: {0}")]
     Parse(#[from] ParseError),
 
-    #[error("session {session:?} has reached its pending cap of {max}")]
-    PendingCapExceeded { session: SessionId, max: u32 },
-
     #[error("request {0:?} not found")]
     RequestNotFound(PromptRequestId),
-
-    #[error("session {0:?} not found")]
-    SessionNotFound(SessionId),
-
-    /// `enqueue` was called with `sender == Participant::agent(receiver_agent_id)`
-    /// — a self-session has no representational shape. Caller should not have
-    /// reached the queue with this combination.
-    #[error("self-session: sender equals receiver")]
-    SelfSession,
 
     /// [`crate::runtime::DagBudget::bump_or_fail`] observed `turns_used >=
     /// turns_cap`. Caller (the `send_message` tool) rolls its insert back so
@@ -61,9 +45,6 @@ pub enum PromptError {
     /// error) does not look like a normal budget rejection.
     #[error("dag {0:?} not found")]
     DagNotFound(PromptRequestId),
-
-    #[error("lease for session {session:?} expired or superseded")]
-    LeaseStale { session: SessionId },
 
     #[error("sequence: {0}")]
     Sequence(#[from] SeqOverflow),

@@ -16,13 +16,13 @@
 use std::sync::Arc;
 
 use patom::agents::{
-    AgentDescription, AgentId, AgentName, AgentSystemPrompt, DefaultAgentSeed, PgAgentStore,
+    AgentDescription, AgentId, AgentName, AgentSeed, AgentSystemPrompt, PgAgentStore,
     SharedAgentStore,
 };
 use patom::auth::{OrgId, UserId};
 use patom::clock::{SharedClock, SystemClock};
 use patom::runtime::PromptRequestId;
-use patom::session::{SessionId, SessionStore};
+use patom::threads::AgentThreadId;
 use patom::types::Participant;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -90,9 +90,9 @@ pub async fn seed_tenant(pool: &PgPool) -> Seed {
     // org.
     let agents = agent_store(pool.clone(), SystemClock::shared());
     let agent_id = agents
-        .seed_default(
+        .seed_preset(
             org_id,
-            DefaultAgentSeed {
+            AgentSeed {
                 name: AgentName::try_from("test-default").expect("valid name"),
                 system_prompt: AgentSystemPrompt::try_from("test default prompt")
                     .expect("valid prompt"),
@@ -127,80 +127,49 @@ pub fn shared_agent_store(pool: PgPool, clock: SharedClock) -> SharedAgentStore 
     agent_store(pool, clock)
 }
 
-/// Mint a fresh human-to-`agent_id` session via the new
-/// [`SessionStore::resolve_or_create_for_pair`] API. Tests use this to obtain
-/// a session without going through the queue.
+/// Mint a thread + an `agent_thread_state` row for `agent_id`, returning the
+/// participation id (`agent_thread_state.id`) — the polymorphic chat turn scope
+/// (`state_id` / `ClaimKey`) the recorders and `session_todos` FK against.
 ///
-/// `org_id` / `user_id` pin the row to the seeded test tenant — every
-/// caller passes [`Seed::org_id`] / [`Seed::user_id`] because the seeded
-/// [`Seed::agent_id`] lives in that org and the trigger on `sessions` would
-/// reject a cross-org `(agent, org)` pair.
-///
-/// The synthetic `root_request_id` is generated locally; nothing dereferences
-/// it (no FK from `sessions.root_request_id` to `prompt_requests.id`), but
-/// integration tests that also exercise `prompt_requests` should mint a real
-/// request id and pass it in instead.
-pub async fn human_to_agent_session(
+/// Tests that insert `turn_metrics` / `tool_calls` / `session_todos` rows need a
+/// real `agent_thread_state` to satisfy the migration-63 FK + org-parity
+/// trigger.
+pub async fn seed_agent_thread_state(
     pool: &PgPool,
-    sessions: &dyn SessionStore,
-    agent_id: AgentId,
     org_id: OrgId,
-    user_id: UserId,
-) -> SessionId {
-    let root = PromptRequestId::new();
-    let (human, agent) = human_to_agent_pair(pool, org_id, user_id, agent_id).await;
-    sessions
-        .resolve_or_create_for_pair(root, human, agent, None, org_id, user_id)
-        .await
-        .expect("create human-to-agent session")
-}
-
-/// Mint an off-DAG `(agent, System)` session — the shape the reflection /
-/// resolution schedulers create. The counterpart is `System`, so driving a
-/// turn here exercises the self-audit append path.
-pub async fn agent_to_system_session(
-    pool: &PgPool,
-    sessions: &dyn SessionStore,
     agent_id: AgentId,
-    org_id: OrgId,
-    user_id: UserId,
-) -> SessionId {
-    let root = PromptRequestId::new();
-    let agent_colleague = patom::colleagues::resolve_agent_colleague(pool, org_id, agent_id)
+) -> AgentThreadId {
+    let now = chrono::Utc::now();
+    let thread_id = Uuid::new_v4();
+    let creator = patom::colleagues::resolve_agent_colleague(pool, org_id, agent_id)
         .await
         .expect("seed mints agent colleague");
-    sessions
-        .resolve_or_create_for_pair(
-            root,
-            Participant::agent(agent_colleague, agent_id),
-            Participant::system(),
-            None,
-            org_id,
-            user_id,
-        )
-        .await
-        .expect("create agent-to-system session")
-}
-
-/// Resolve a colleague-backed `(Human, Agent)` participant pair from a seeded
-/// tenant. Mirrors the boundary callers (HTTP / Slack / scheduler) — every
-/// participant a session stores must reference a colleague row.
-pub async fn human_to_agent_pair(
-    pool: &PgPool,
-    org_id: OrgId,
-    user_id: UserId,
-    agent_id: AgentId,
-) -> (Participant, Participant) {
-    let human_colleague = patom::colleagues::resolve_user_colleague(pool, org_id, user_id)
-        .await
-        .expect("seed mints human colleague");
-    let agent_colleague = patom::colleagues::resolve_agent_colleague(pool, org_id, agent_id)
-        .await
-        .expect("seed mints agent colleague");
-    (
-        Participant::human(human_colleague, user_id),
-        Participant::agent(agent_colleague, agent_id),
+    sqlx::query(
+        "INSERT INTO threads (id, org_id, channel_id, root_message_id, \
+                              created_by_colleague_id, created_at, last_activity_at) \
+         VALUES ($1, $2, NULL, NULL, $3, $4, $4)",
     )
+    .bind(thread_id)
+    .bind(org_id)
+    .bind(creator)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("seed thread");
+    let state_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO agent_thread_state (id, thread_id, agent_id, org_id, created_at) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(state_id)
+    .bind(thread_id)
+    .bind(agent_id)
+    .bind(org_id)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("seed agent_thread_state");
+    AgentThreadId::from(state_id)
 }
 
 /// Convenience: build just the human-side colleague-backed `Participant`.
@@ -268,54 +237,56 @@ pub async fn seed_period_usage(pool: &PgPool, org: OrgId, used: i64) {
     .expect("seed period usage");
 }
 
-/// Insert a stub `prompt_requests` row for a freshly minted session and
-/// return its id. `session_messages.request_id` is `NOT NULL REFERENCES
-/// prompt_requests(id)` — store-level tests that exercise `append` need a
-/// real request id to bind, even though they don't go through the queue.
+/// Insert a stub `prompt_requests` *trigger* row for a freshly minted
+/// `agent_thread_state` (`state_id`) and return its id. Audit-row tests
+/// (`turn_metrics`, `tool_calls`) and recorder tests need a real `request_id`
+/// to bind, even though they don't go through the worker claim path.
 ///
-/// All optional columns are filled with placeholders; the helper is for
-/// store contract tests, not queue tests.
+/// The row is shaped like a chat trigger: `state_id` set (so the claim-key XOR
+/// CHECK holds), `acting_user_id` denormalised, and `thread_id` joined from the
+/// participation row. All optional columns are placeholders.
 pub async fn seed_prompt_request(
     pool: &PgPool,
-    session: SessionId,
+    state_id: AgentThreadId,
     agent_id: AgentId,
     org_id: OrgId,
+    user_id: UserId,
 ) -> PromptRequestId {
     let id = PromptRequestId::new();
     let now = chrono::Utc::now();
-    // After migration 60 the participant columns are colleague-backed. The
-    // shared seed uses the freshly-seeded human's colleague as sender and
-    // the agent's colleague as receiver (both resolved by mint trigger from
-    // migration 58).
+    // Sender = the seeded human's colleague; receiver = the agent's colleague.
+    // `thread_id` is read from the `agent_thread_state` row so the trigger row's
+    // thread matches its participation scope.
     let result = sqlx::query(
         "INSERT INTO prompt_requests
-             (id, session_id, org_id, content, idempotency_key, status,
+             (id, org_id, content, idempotency_key, status,
               sender_colleague_id, receiver_colleague_id, root_request_id,
+              thread_id, state_id, acting_user_id,
               created_at, updated_at)
-         SELECT $1, $2, $3, 'test', $4, 'pending',
+         SELECT $1, $2, NULL, $3, 'pending',
                 hc.id, ac.id, $1,
-                $6, $6
-           FROM colleagues hc, colleagues ac
-          WHERE hc.org_id = $3 AND hc.user_id IS NOT NULL
-            AND ac.org_id = $3 AND ac.agent_id = $5
+                ats.thread_id, ats.id, $6,
+                $7, $7
+           FROM colleagues hc, colleagues ac, agent_thread_state ats
+          WHERE hc.org_id = $2 AND hc.user_id = $6
+            AND ac.org_id = $2 AND ac.agent_id = $4
+            AND ats.id = $5
           LIMIT 1",
     )
     .bind(id)
-    .bind(session)
     .bind(org_id)
     .bind(format!("k-{id}"))
     .bind(agent_id)
+    .bind(state_id)
+    .bind(user_id)
     .bind(now)
     .execute(pool)
     .await
     .expect("seed prompt_request");
-    // The `INSERT ... SELECT ... LIMIT 1` inserts zero rows if the seed
-    // colleagues are missing, yet would still return `id` — a silent
-    // dangling reference. Assert the row actually landed.
     assert_eq!(
         result.rows_affected(),
         1,
-        "seed_prompt_request inserted no row — seed colleagues (human + agent) must exist for org"
+        "seed_prompt_request inserted no row — seed colleagues + agent_thread_state must exist"
     );
     id
 }

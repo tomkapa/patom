@@ -14,7 +14,6 @@ use crate::auth::begin_as_user;
 use crate::scheduling::{
     ScheduleSpec, ScheduledTaskId, ScheduledTaskName, ScheduledTaskRecord, SharedScheduledTaskStore,
 };
-use crate::session::SharedSessionStore;
 use crate::tools::{Tool, ToolCallContext, ToolError};
 use crate::types::ToolName;
 
@@ -53,7 +52,6 @@ pub struct ListScheduledTasksTool {
     description: &'static str,
     input_schema: Arc<Value>,
     store: SharedScheduledTaskStore,
-    sessions: SharedSessionStore,
     pool: PgPool,
 }
 
@@ -66,11 +64,7 @@ impl std::fmt::Debug for ListScheduledTasksTool {
 
 impl ListScheduledTasksTool {
     #[must_use]
-    pub fn new(
-        store: SharedScheduledTaskStore,
-        sessions: SharedSessionStore,
-        pool: PgPool,
-    ) -> Self {
+    pub fn new(store: SharedScheduledTaskStore, pool: PgPool) -> Self {
         let name =
             ToolName::try_from(TOOL_NAME).expect("invariant: list_scheduled_tasks valid name");
         let input_schema = Arc::new(json!({
@@ -83,7 +77,6 @@ impl ListScheduledTasksTool {
             description: TOOL_DESCRIPTION,
             input_schema,
             store,
-            sessions,
             pool,
         }
     }
@@ -116,16 +109,12 @@ impl Tool for ListScheduledTasksTool {
         })?;
 
         // Tenant-side gate mirrors `cancel_scheduled_task`: confirm the
-        // owner agent itself is visible under the session principal's
-        // RLS view before delegating to the privileged-tx store, so a
-        // misrouted call against a cross-org agent returns an empty list
-        // rather than that agent's actual schedule.
-        let tenancy = self.sessions.tenancy(ctx.session_id).await.map_err(|e| {
-            warn!(error = %e, patom.session.id = %ctx.session_id,
-                "list_scheduled_tasks.session_lookup_failed");
-            ToolError::Backend(format!("list_scheduled_tasks: session lookup: {e}"))
-        })?;
-        let mut tx = begin_as_user(&self.pool, tenancy.created_by_user_id)
+        // owner agent itself is visible under the acting principal's RLS
+        // view (the human at the DAG root, off the tool-call context)
+        // before delegating to the privileged-tx store, so a misrouted
+        // call against a cross-org agent returns an empty list rather than
+        // that agent's actual schedule.
+        let mut tx = begin_as_user(&self.pool, ctx.acting_user_id)
             .await
             .map_err(|e| {
                 warn!(error = %e, "list_scheduled_tasks.begin_as_user_failed");

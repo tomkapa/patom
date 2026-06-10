@@ -37,6 +37,6 @@ pub use prompt_versions::{
 pub use registry::{AgentFactory, Agents, AgentsError, CachedAgents, SharedAgents};
 pub use store::{AgentStore, AgentUpdate, NewAgent, SharedAgentStore};
 pub use types::{
-    AgentCard, AgentDescription, AgentId, AgentName, AgentRecord, AgentSystemPrompt,
-    AllowedMcpTools, DefaultAgentSeed, ToolScope,
+    AgentCard, AgentDescription, AgentId, AgentName, AgentRecord, AgentSeed, AgentSystemPrompt,
+    AllowedMcpTools, ToolScope,
 };

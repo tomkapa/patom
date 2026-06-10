@@ -2,83 +2,84 @@
 // content. Lets the UI render the canonical "agent-ops" channel state from
 // the design reference even on a fresh database.
 
-import type {
-  Agent,
-  ThreadMessage,
-  ThreadSummary,
-} from "../types/api";
+import type { Mentionable, ThreadMessage, ThreadSummary } from "../types/api";
 
-export const DEMO_AGENTS: Agent[] = [
-  { id: "a-orion", name: "orion-research-v3", is_default: true },
-  { id: "a-helios", name: "helios-deploy", is_default: false },
-  { id: "a-atlas", name: "atlas-weather", is_default: false },
-  { id: "a-vega", name: "vega-incident-bot", is_default: false },
+export const DEMO_AGENTS: Mentionable[] = [
+  { kind: "agent", id: "a-orion", name: "orion-research-v3", avatar_url: null },
+  { kind: "agent", id: "a-helios", name: "helios-deploy", avatar_url: null },
+  { kind: "agent", id: "a-atlas", name: "atlas-weather", avatar_url: null },
+  { kind: "agent", id: "a-vega", name: "vega-incident-bot", avatar_url: null },
+];
+
+/** Composer/mention roster in demo mode: the demo humans + the agents —
+ *  one flat list, exactly like the live wire. */
+export const DEMO_ROSTER: Mentionable[] = [
+  { kind: "human", id: "user", name: "Tom Tran", avatar_url: null },
+  { kind: "human", id: "maya", name: "Maya Chen", avatar_url: null },
+  ...DEMO_AGENTS,
 ];
 
 const NOW = new Date();
 const ago = (mins: number) =>
   new Date(NOW.getTime() - mins * 60_000).toISOString();
 
-// Two demo humans so the fixtures exercise the multi-author feed: a thread
-// started by Maya must show Maya, not the logged-in viewer.
+// Demo human author for the fixtures — the feed stamps each human row with
+// its real sender so a thread shows that author, not the logged-in viewer.
 const TOM = {
   user_id: "user",
   colleague_id: "col-tom",
   name: "Tom Tran",
   avatar_url: null,
 };
-const MAYA = {
-  user_id: "u-maya",
-  colleague_id: "col-maya",
-  name: "Maya Patel",
-  avatar_url: null,
-};
+
+const demoRoot = (snippet: string, mins: number) => ({
+  snippet,
+  sender: {
+    kind: "human" as const,
+    colleague_id: TOM.colleague_id,
+    user_id: TOM.user_id,
+  },
+  created_at: ago(mins),
+  sender_display_name: TOM.name,
+  sender_avatar_url: TOM.avatar_url,
+});
 
 export const DEMO_THREADS: ThreadSummary[] = [
   {
-    root_request_id: "00000000-0000-0000-0000-000000000001",
-    root_session_id: "00000000-0000-0000-0000-000000000010",
-    first_agent: { id: "a-orion", name: "orion-research-v3" },
-    starter: TOM,
-    preview: "@orion how's the weather today in Tokyo? I'm flying in tomorrow.",
-    reply_count: 3,
+    thread_id: "00000000-0000-0000-0000-000000000001",
+    channel_id: null,
     last_activity_at: ago(0.2),
-    status: "processing",
-    created_at: ago(15),
+    root: demoRoot(
+      "@orion how's the weather today in Tokyo? I'm flying in tomorrow.",
+      15,
+    ),
+    reply_count: 3,
   },
   {
-    root_request_id: "00000000-0000-0000-0000-000000000002",
-    root_session_id: "00000000-0000-0000-0000-000000000020",
-    first_agent: { id: "a-helios", name: "helios-deploy" },
-    starter: MAYA,
-    preview: "ship v2.5.1 to canary; flag billing-rewrite to 5%",
-    reply_count: 6,
+    thread_id: "00000000-0000-0000-0000-000000000002",
+    channel_id: null,
     last_activity_at: ago(8),
-    status: "processing",
-    created_at: ago(40),
+    root: demoRoot("can someone summarize the standup notes?", 60),
+    reply_count: 1,
   },
   {
-    root_request_id: "00000000-0000-0000-0000-000000000003",
-    root_session_id: "00000000-0000-0000-0000-000000000030",
-    first_agent: { id: "a-atlas", name: "atlas-weather" },
-    starter: TOM,
-    preview: "regression suite — last green at sha 7c5af11",
-    reply_count: 2,
+    thread_id: "00000000-0000-0000-0000-000000000003",
+    channel_id: null,
     last_activity_at: ago(38),
-    status: "done",
-    created_at: ago(60),
+    root: demoRoot("kicking off the tokyo offsite plan 🎌", 240),
+    reply_count: 0,
   },
 ];
 
-const SESSION_PRIMARY = "00000000-0000-0000-0000-000000000010";
 const DEMO_REQ = (n: number) =>
   `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 
 export const DEMO_HISTORY: ThreadMessage[] = [
   {
-    session_id: SESSION_PRIMARY,
     seq: 1,
+    kind: "posted",
     sender: { kind: "human", colleague_id: TOM.colleague_id, user_id: TOM.user_id },
+    owner_agent_id: null,
     receiver: { kind: "agent", colleague_id: "col-orion", agent_id: "a-orion" },
     body: {
       role: "user",
@@ -86,13 +87,15 @@ export const DEMO_HISTORY: ThreadMessage[] = [
     },
     created_at: ago(15),
     request_id: DEMO_REQ(1),
+    client_key: null,
     sender_display_name: TOM.name,
     sender_avatar_url: TOM.avatar_url,
   },
   {
-    session_id: SESSION_PRIMARY,
     seq: 2,
+    kind: "posted",
     sender: { kind: "human", colleague_id: TOM.colleague_id, user_id: TOM.user_id },
+    owner_agent_id: null,
     receiver: { kind: "agent", colleague_id: "col-orion", agent_id: "a-orion" },
     body: {
       role: "user",
@@ -100,18 +103,18 @@ export const DEMO_HISTORY: ThreadMessage[] = [
     },
     created_at: ago(13),
     request_id: DEMO_REQ(2),
+    client_key: null,
     sender_display_name: TOM.name,
     sender_avatar_url: TOM.avatar_url,
   },
 ];
 
-const REPLY_SESSION = "00000000-0000-0000-0000-000000000011";
-
 export const DEMO_REPLIES: ThreadMessage[] = [
   {
-    session_id: REPLY_SESSION,
     seq: 1,
+    kind: "posted",
     sender: { kind: "agent", colleague_id: "col-orion", agent_id: "a-orion" },
+    owner_agent_id: "a-orion",
     receiver: { kind: "human", colleague_id: TOM.colleague_id, user_id: TOM.user_id },
     body: {
       role: "assistant",
@@ -119,13 +122,15 @@ export const DEMO_REPLIES: ThreadMessage[] = [
     },
     created_at: ago(14.5),
     request_id: DEMO_REQ(11),
+    client_key: null,
     sender_display_name: null,
     sender_avatar_url: null,
   },
   {
-    session_id: REPLY_SESSION,
     seq: 2,
+    kind: "posted",
     sender: { kind: "agent", colleague_id: "col-atlas", agent_id: "a-atlas" },
+    owner_agent_id: "a-atlas",
     receiver: { kind: "human", colleague_id: TOM.colleague_id, user_id: TOM.user_id },
     body: {
       role: "assistant",
@@ -134,13 +139,15 @@ export const DEMO_REPLIES: ThreadMessage[] = [
     },
     created_at: ago(14.4),
     request_id: DEMO_REQ(12),
+    client_key: null,
     sender_display_name: null,
     sender_avatar_url: null,
   },
   {
-    session_id: REPLY_SESSION,
     seq: 3,
+    kind: "posted",
     sender: { kind: "agent", colleague_id: "col-orion", agent_id: "a-orion" },
+    owner_agent_id: "a-orion",
     receiver: { kind: "human", colleague_id: TOM.colleague_id, user_id: TOM.user_id },
     body: {
       role: "assistant",
@@ -149,6 +156,7 @@ export const DEMO_REPLIES: ThreadMessage[] = [
     },
     created_at: ago(14.3),
     request_id: DEMO_REQ(13),
+    client_key: null,
     sender_display_name: null,
     sender_avatar_url: null,
   },
@@ -170,12 +178,12 @@ export const DEMO_REPLY_META: Record<
     expanded?: boolean;
   }
 > = {
-  "h:00000000-0000-0000-0000-000000000011:1": {
+  "h:1": {
     tools: [],
     tokens: 800,
     durationMs: 1200,
   },
-  "h:00000000-0000-0000-0000-000000000011:2": {
+  "h:2": {
     tools: [
       { name: "jma.observe", args: { city: "tokyo" }, durationMs: 600 },
       {
@@ -190,7 +198,7 @@ export const DEMO_REPLY_META: Record<
       "Caller asked for current weather in Tokyo. Need (1) live observation and (2) short forecast since the human flying in tomorrow. Selected jma.observe over openweather — JMA is canonical for Japan.",
     expanded: true,
   },
-  "h:00000000-0000-0000-0000-000000000011:3": {
+  "h:3": {
     tools: [],
     tokens: 1000,
     durationMs: 800,

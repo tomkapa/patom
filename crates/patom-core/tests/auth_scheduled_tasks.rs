@@ -35,6 +35,7 @@ use patom::scheduling::{
     ScheduledTaskName, ScheduledTaskScheduler, SharedScheduledTaskStore, TimeOfDay, Timezone,
     Weekdays,
 };
+use patom::threads::{PgThreadStore, SharedThreadStore};
 use sqlx::PgPool;
 
 mod common;
@@ -46,6 +47,7 @@ struct AuthSchedHarness {
     agents: SharedAgentStore,
     store: SharedScheduledTaskStore,
     queue: SharedPromptQueue,
+    threads: SharedThreadStore,
     colleagues: patom::colleagues::SharedColleagueStore,
     clock: patom::clock::SharedClock,
     default_agent_id: AgentId,
@@ -61,6 +63,7 @@ impl AuthSchedHarness {
         let store: SharedScheduledTaskStore =
             Arc::new(PgScheduledTaskStore::new(pool.clone(), clock.clone()));
         let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
+        let threads: SharedThreadStore = Arc::new(PgThreadStore::new(pool.clone(), clock.clone()));
         let colleagues: patom::colleagues::SharedColleagueStore =
             Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone()));
         Self {
@@ -68,6 +71,7 @@ impl AuthSchedHarness {
             agents,
             store,
             queue,
+            threads,
             colleagues,
             clock,
             default_agent_id: seed.agent_id,
@@ -87,7 +91,6 @@ impl AuthSchedHarness {
                 name: AgentName::try_from(name).expect("name"),
                 system_prompt: AgentSystemPrompt::try_from("scoped prompt").expect("prompt"),
                 description: AgentDescription::try_from(format!("agent {name}")).expect("desc"),
-                is_default: false,
                 allowed_mcp_tools: AllowedMcpTools::empty(),
                 model: None,
                 avatar_url: None,
@@ -109,6 +112,7 @@ impl AuthSchedHarness {
             owner_agent_id: owner,
             org_id,
             created_by_user_id: user_id,
+            channel_id: None,
             name: ScheduledTaskName::try_from(name).expect("name"),
             prompt: ScheduledPrompt::try_from("body").expect("prompt"),
             schedule: ScheduleSpec::Recurring {
@@ -266,6 +270,7 @@ async fn scheduler_fires_both_orgs_in_one_privileged_tick(pool: PgPool) {
     let scheduler = ScheduledTaskScheduler::spawn_with_cadence(
         h.store.clone(),
         h.queue.clone(),
+        h.threads.clone(),
         h.colleagues.clone(),
         h.clock.clone(),
         Duration::from_millis(50),
