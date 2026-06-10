@@ -841,8 +841,8 @@ pub async fn build_server(
     // Missing index.html (dev without a built SPA) produces an empty string;
     // the fallback handler returns an empty 200 which is acceptable in that
     // case since devs use `bun dev` directly.
-    let raw_html = std::fs::read_to_string(settings.web_dist.join("index.html"))
-        .unwrap_or_default();
+    let raw_html =
+        std::fs::read_to_string(settings.web_dist.join("index.html")).unwrap_or_default();
     let posthog_key = settings.posthog_key.as_deref().unwrap_or("");
     let posthog_host = settings
         .posthog_host

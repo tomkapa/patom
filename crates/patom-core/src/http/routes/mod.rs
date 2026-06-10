@@ -201,22 +201,17 @@ pub fn router(state: AppState) -> Router {
     // deep links. The HTML has `window.__PATOM_CONFIG__` already inline so
     // the SPA picks up runtime config without a network roundtrip.
     let html: Arc<str> = Arc::clone(&state.index_html);
-    let index_svc = tower::service_fn(
-        move |_req: axum::http::Request<axum::body::Body>| {
-            let html = Arc::clone(&html);
-            async move {
-                Ok::<_, std::convert::Infallible>(
-                    axum::http::Response::builder()
-                        .header(
-                            axum::http::header::CONTENT_TYPE,
-                            "text/html; charset=utf-8",
-                        )
-                        .body(axum::body::Body::from(html.as_bytes().to_vec()))
-                        .expect("invariant: response builder with known-valid header cannot fail"),
-                )
-            }
-        },
-    );
+    let index_svc = tower::service_fn(move |_req: axum::http::Request<axum::body::Body>| {
+        let html = Arc::clone(&html);
+        async move {
+            Ok::<_, std::convert::Infallible>(
+                axum::http::Response::builder()
+                    .header(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+                    .body(axum::body::Body::from(html.as_bytes().to_vec()))
+                    .expect("invariant: response builder with known-valid header cannot fail"),
+            )
+        }
+    });
     let spa_fallback = ServeDir::new(&state.web_dist).not_found_service(index_svc);
 
     Router::new()
