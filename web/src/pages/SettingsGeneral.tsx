@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { Save, LogOut, Trash2 } from "lucide-react";
+import { Save, LogOut, Trash2, FileText } from "lucide-react";
 import {
   SettingsBreadcrumb,
   SettingsLayout,
@@ -11,6 +11,8 @@ import { Button } from "../components/atoms/Button";
 import { Spinner } from "../components/atoms/Spinner";
 import { SectionCard } from "../components/molecules/SectionCard";
 import { SettingsField } from "../components/molecules/SettingsField";
+import { GutteredEditor } from "../components/organisms/GutteredEditor";
+import { PromptStatsFooter } from "../components/agentDetail/PromptStatsFooter";
 import { Modal, ModalFooter, ModalHeader } from "../components/molecules/Modal";
 import { Select } from "../components/molecules/Select";
 import { PrefixInput } from "../components/core/PrefixInput";
@@ -47,7 +49,9 @@ export function SettingsGeneral() {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [language, setLanguage] = useState<Language>("en");
+  const [rule, setRule] = useState("");
   const [slugError, setSlugError] = useState<string | null>(null);
+  const [ruleError, setRuleError] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [savedToast, setSavedToast] = useState<boolean>(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
@@ -59,24 +63,34 @@ export function SettingsGeneral() {
       setName(org.name);
       setSlug(org.slug);
       setLanguage(org.default_language);
+      setRule(org.default_rule ?? "");
     }
   }, [org?.id]);
+
+  // Owner/admin may edit the org rule; members get the read-only view.
+  // Positive predicate to match the sibling settings pages
+  // (SettingsMembers/SettingsBilling) — the backend is the authority.
+  const canEditRule = org?.role === "owner" || org?.role === "admin";
+  // Derived once so the dirty memo and onSave agree by construction.
+  const ruleChanged = !!org && rule.trim() !== (org.default_rule ?? "");
 
   const dirty = useMemo(() => {
     if (!org) return false;
     return (
       name !== org.name ||
       slug !== org.slug ||
-      language !== org.default_language
+      language !== org.default_language ||
+      ruleChanged
     );
-  }, [org, name, slug, language]);
+  }, [org, name, slug, language, ruleChanged]);
 
-  const canSave = dirty && !slugError;
+  const canSave = dirty && !slugError && !ruleError;
   const [langSaving, setLangSaving] = useState(false);
 
   const onSave = async () => {
     if (!org) return;
     setServerError(null);
+    setRuleError(null);
     const patch: { name?: string; slug?: string } = {};
     if (name !== org.name) patch.name = name.trim();
     if (slug !== org.slug) patch.slug = slug.trim();
@@ -84,6 +98,14 @@ export function SettingsGeneral() {
     try {
       if (patch.name !== undefined || patch.slug !== undefined) {
         await updateOrg.mutateAsync(patch);
+      }
+      if (ruleChanged) {
+        // Empty/whitespace clears the rule (server folds it to null). No
+        // auth-store mirror: unlike language, the rule doesn't drive live
+        // i18n, so the ORG_KEY invalidate + the org.id-keyed reset above
+        // converge dirty→false on refetch, same as name/slug.
+        await api.setOrgRule(rule.trim() || null);
+        qc.invalidateQueries({ queryKey: ORG_KEY });
       }
       if (langChanged) {
         setLangSaving(true);
@@ -110,6 +132,10 @@ export function SettingsGeneral() {
         const body = e.body ?? "";
         if (e.status === 409 && body.includes("org_slug.taken")) {
           setSlugError(t("settings.general.identity.slug.taken"));
+        } else if (e.status === 400 && body.includes("organization_rule")) {
+          // Over the 16 KiB byte cap. The editor has no client-side
+          // length limit, so the server is the sole authority here.
+          setRuleError(t("settings.general.rule.error.tooLong"));
         } else {
           setServerError(body || e.message);
         }
@@ -302,6 +328,55 @@ export function SettingsGeneral() {
               ariaLabel={t("settings.general.defaults.language")}
             />
           </SettingsField>
+        </SectionCard>
+
+        {/* ORGANIZATION RULE */}
+        <SectionCard
+          header={
+            <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper-2)] px-5 py-2.5">
+              <span className="font-[var(--font-mono)] text-[11px] font-bold tracking-[0.09em] text-[var(--color-muted-foreground)] uppercase">
+                {t("settings.general.rule.title")}
+              </span>
+              <span className="text-[12px] text-[var(--color-fg-muted)]">
+                {t("settings.general.rule.helper")}
+              </span>
+            </div>
+          }
+          bodyClassName="flex flex-col gap-3 px-5 py-5"
+        >
+          <p className="text-[12px] leading-snug text-[var(--color-muted-foreground)]">
+            {t("settings.general.rule.field.helper")}
+          </p>
+          {/* Same guttered editor the agent system-prompt view uses, so a
+           *  workspace rule and an agent prompt read identically. Members
+           *  get the read-only variant — the backend gates the write
+           *  (owner/admin), this just avoids a 403 surprise. */}
+          <GutteredEditor
+            value={rule}
+            onChange={(next) => {
+              setRule(next);
+              if (ruleError) setRuleError(null);
+            }}
+            readOnly={!canEditRule}
+            ariaLabel={t("settings.general.rule.aria")}
+            placeholder={t("settings.general.rule.placeholder")}
+            className="h-72"
+            header={{
+              icon: <FileText className="h-3.5 w-3.5" strokeWidth={1.75} />,
+              title: t("settings.general.rule.label"),
+            }}
+            footer={<PromptStatsFooter value={rule} />}
+          />
+          {!canEditRule ? (
+            <div className="font-[var(--font-mono)] text-[11px] tracking-[0.06em] text-[var(--color-muted-foreground)] uppercase">
+              {t("settings.general.rule.memberHint")}
+            </div>
+          ) : null}
+          {ruleError ? (
+            <div className="font-[var(--font-mono)] text-[11px] text-[var(--color-rose)]">
+              {ruleError}
+            </div>
+          ) : null}
         </SectionCard>
 
         {/* DANGER ZONE */}

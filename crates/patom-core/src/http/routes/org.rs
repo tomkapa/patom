@@ -78,6 +78,11 @@ struct OrgDetailsView {
     name: String,
     slug: String,
     default_language: Language,
+    /// Per-org rule body injected into every agent's system prompt as
+    /// `<organization-rule>...</organization-rule>`. `None` when the org
+    /// hasn't configured a rule; the FE editor seeds with this value on
+    /// load. Written via `PATCH /me/org/rule`.
+    default_rule: Option<String>,
     member_count: i64,
     created_at: chrono::DateTime<chrono::Utc>,
     role: Role,
@@ -95,6 +100,7 @@ impl OrgDetailsView {
             name: details.name,
             slug: details.slug.as_str().to_owned(),
             default_language: details.default_language,
+            default_rule: details.default_rule.as_ref().map(|r| r.as_str().to_owned()),
             member_count: details.member_count,
             created_at: details.created_at,
             role,

@@ -659,6 +659,18 @@ const vi: TranslationTable = {
   "settings.general.defaults.language": "Ngôn ngữ mặc định",
   "settings.general.defaults.language.helper":
     "Dùng khi agent không tự ghi đè.",
+  "settings.general.rule.title": "QUY TẮC TỔ CHỨC",
+  "settings.general.rule.helper": "Áp dụng cho mọi agent trong workspace.",
+  "settings.general.rule.label": "Quy tắc",
+  "settings.general.rule.field.helper":
+    "Một chỉ dẫn chung được chèn vào system prompt của mọi agent. Để trống nếu không dùng.",
+  "settings.general.rule.placeholder":
+    "ví dụ: Luôn trả lời ngắn gọn và trích dẫn tài liệu nội bộ khi liên quan.",
+  "settings.general.rule.aria": "Quy tắc tổ chức",
+  "settings.general.rule.memberHint":
+    "Chỉ chủ workspace và quản trị viên mới chỉnh sửa được quy tắc.",
+  "settings.general.rule.error.tooLong":
+    "Quy tắc quá dài. Tối đa là 16 KB.",
   "settings.general.danger.title": "VÙNG NGUY HIỂM",
   "settings.general.danger.helper": "Không thể hoàn tác.",
   "settings.general.danger.leave.title": "Rời workspace",

@@ -658,6 +658,18 @@ const en = {
   "settings.general.defaults.language": "Default language",
   "settings.general.defaults.language.helper":
     "Used when an agent doesn't override it.",
+  "settings.general.rule.title": "ORGANIZATION RULE",
+  "settings.general.rule.helper": "Applied to every agent in this workspace.",
+  "settings.general.rule.label": "Rule",
+  "settings.general.rule.field.helper":
+    "A general instruction injected into every agent's system prompt. Leave empty for none.",
+  "settings.general.rule.placeholder":
+    "e.g. Always respond concisely and cite internal docs when relevant.",
+  "settings.general.rule.aria": "Organization rule",
+  "settings.general.rule.memberHint":
+    "Only workspace owners and admins can edit the rule.",
+  "settings.general.rule.error.tooLong":
+    "Rule is too long. The maximum is 16 KB.",
   "settings.general.danger.title": "DANGER ZONE",
   "settings.general.danger.helper": "Cannot be undone.",
   "settings.general.danger.leave.title": "Leave workspace",

@@ -13,7 +13,7 @@ import { ImageUploader } from "../components/molecules/ImageUploader";
 import { PageTabHeader } from "../components/molecules/PageTabHeader";
 import { GutteredEditor } from "../components/organisms/GutteredEditor";
 import { ModelPickerRow } from "../components/agentDetail/ModelPickerRow";
-import { describePrompt } from "../components/agentDetail/promptStats";
+import { PromptStatsFooter } from "../components/agentDetail/PromptStatsFooter";
 import { useAgent, useUpdateAgent } from "../hooks/useAgents";
 import { useModels } from "../hooks/useModels";
 import { useT } from "../i18n";
@@ -87,8 +87,6 @@ export function AgentGeneral() {
     if (avatarUrl !== serverAvatar) patch.avatar_url = avatarUrl;
     updateAgent.mutate({ id: agent.id, patch });
   };
-
-  const stats = describePrompt(prompt);
 
   return (
     <AgentLayout agent={agent} active="general">
@@ -177,30 +175,7 @@ export function AgentGeneral() {
                   icon: <FileText className="h-3.5 w-3.5" strokeWidth={1.75} />,
                   title: t("agent.detail.general.prompt.title"),
                 }}
-                footer={
-                  <>
-                    <div className="flex items-center gap-5 font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
-                      <span>
-                        {t("agent.detail.general.prompt.lines", {
-                          n: stats.lines,
-                        })}
-                      </span>
-                      <span>
-                        {t("agent.detail.general.prompt.tokens", {
-                          n: stats.tokens.toLocaleString(),
-                        })}
-                      </span>
-                      <span>
-                        {t("agent.detail.general.prompt.chars", {
-                          n: stats.chars.toLocaleString(),
-                        })}
-                      </span>
-                    </div>
-                    <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-muted-foreground)]">
-                      {t("agent.detail.general.prompt.fontHint")}
-                    </span>
-                  </>
-                }
+                footer={<PromptStatsFooter value={prompt} />}
               />
             </div>
           </div>

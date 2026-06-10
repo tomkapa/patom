@@ -149,6 +149,17 @@ export const api = {
       body: JSON.stringify({ language }),
     }),
 
+  /** Owner/admin only — set or clear the active org's `default_rule`, the
+   *  `<organization-rule>` directive injected into every agent's system
+   *  prompt. `null` (or an all-whitespace string the server folds to
+   *  `null`) clears it. Server returns the stored value; over the 16 KiB
+   *  cap it 400s. Members get 403 — the FE hides the editor for them. */
+  setOrgRule: (rule: string | null) =>
+    request<{ default_rule: string | null }>("/me/org/rule", {
+      method: "PATCH",
+      body: JSON.stringify({ rule }),
+    }),
+
   // ─── Workspace settings (src/http/routes/org.rs) ────────────────────
   /** Read the General-tab payload for the active workspace. */
   org: () => request<OrgDetails>("/me/org"),
