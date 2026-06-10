@@ -23,8 +23,9 @@ mod types;
 
 pub use catalog::{
     CatalogUpsert, ClientSource, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName,
-    McpCatalogEntry, McpCatalogStore, OAuthAuthorizeExtra, OAuthAuthorizeExtras, PgMcpCatalogStore,
-    SharedMcpCatalogStore, platform_env_keys, platform_env_middle,
+    McpCatalogEntry, McpCatalogStore, OAuthAuthorizeExtra, OAuthAuthorizeExtras, OAuthClientId,
+    OAuthClientSecret, PgMcpCatalogStore, SharedMcpCatalogStore, UserOAuthClient,
+    platform_env_keys, platform_env_middle,
 };
 pub use client::McpClient;
 pub use credentials::{
@@ -38,8 +39,9 @@ pub use limits::{
     MCP_CATALOG_DESCRIPTION_MAX_LEN, MCP_CATALOG_DISPLAY_NAME_MAX_LEN, MCP_CATALOG_ID_MAX_LEN,
     MCP_CONNECT_TIMEOUT, MCP_CREDENTIAL_READ_TIMEOUT, MCP_DESCRIPTION_MAX_LEN,
     MCP_HEADER_NAME_MAX_LEN, MCP_HEADER_VALUE_MAX_LEN, MCP_LIST_TOOLS_TIMEOUT, MCP_MAX_HEADERS,
-    MCP_RESULT_RENDER_CAP, MCP_TEST_CONNECT_BUCKETS_MAX, MCP_TEST_CONNECT_PER_MIN,
-    MCP_TOOL_REMOTE_NAME_MAX_LEN, MCP_URL_MAX_LEN,
+    MCP_OAUTH_CLIENT_ID_MAX_LEN, MCP_OAUTH_CLIENT_SECRET_MAX_LEN, MCP_RESULT_RENDER_CAP,
+    MCP_TEST_CONNECT_BUCKETS_MAX, MCP_TEST_CONNECT_PER_MIN, MCP_TOOL_REMOTE_NAME_MAX_LEN,
+    MCP_URL_MAX_LEN,
 };
 pub use pg_credentials::PgMcpCredentialStore;
 pub use pg_store::PgMcpServerStore;

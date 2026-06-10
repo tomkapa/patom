@@ -125,6 +125,16 @@ const vi: TranslationTable = {
   "connections.modal.custom.authLabel": "Xác thực",
   "connections.modal.custom.authNone": "Không",
   "connections.modal.custom.authToken": "API token",
+  "connections.modal.custom.authOAuth": "OAuth",
+  "connections.modal.custom.oauthNote":
+    "Hầu hết máy chủ tự đăng ký client — chỉ cần URL là đủ. Chỉ nhập Client ID nếu máy chủ yêu cầu app đã đăng ký sẵn, như GitHub hoặc Slack.",
+  "connections.modal.custom.oauthClientIdLabel": "Client ID",
+  "connections.modal.custom.oauthClientIdPlaceholder": "client-id-oauth-của-bạn",
+  "connections.modal.custom.oauthClientIdHint":
+    "Tùy chọn. Để trống để đăng ký động.",
+  "connections.modal.custom.oauthClientSecretLabel": "Client secret",
+  "connections.modal.custom.oauthClientSecretHint":
+    "Tùy chọn. Chỉ dùng cho app bảo mật — để trống cho client công khai (PKCE).",
   "connections.modal.custom.warn":
     "Mọi agent admin bật sẽ có thể gọi URL này mà không cần thông tin xác thực. Chỉ dùng cho máy chủ nội bộ tin cậy.",
   "connections.modal.custom.cta": "Thêm máy chủ",

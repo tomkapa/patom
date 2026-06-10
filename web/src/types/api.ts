@@ -562,18 +562,31 @@ export type CredentialInput = {
   headers: Record<string, string>;
 };
 
+/** OAuth setup for a custom (full-form) connector. Presence of this field
+ *  marks the connector OAuth. `client_id` is optional: omit it for Dynamic
+ *  Client Registration (server registers a client automatically), or supply
+ *  it for the operator's pre-registered app (with `client_secret` for a
+ *  confidential app, omitted for a public/PKCE client). Mutually exclusive
+ *  with `credentials`; the token is obtained by the `oauth/start` flow. */
+export type OAuthClientInput = {
+  client_id?: string;
+  client_secret?: string;
+};
+
 /** Two shapes:
  *   * **Short form** — only `catalog_id`. Backend fills `config` from the
  *     catalog default. Drives the click-to-wire button on the connections
  *     page.
  *   * **Full form** — every field present. Lets operators with tenant-
- *     custom transport supply the whole payload. */
+ *     custom transport supply the whole payload, optionally with their own
+ *     OAuth client. */
 export type CreateMcpServerRequest = {
   catalog_id: string;
   config?: McpTransport;
   description?: string | null;
   enabled?: boolean;
   credentials?: CredentialInput;
+  oauth_client?: OAuthClientInput;
 };
 
 /** `catalog_id` is immutable post-create — to switch a connection's

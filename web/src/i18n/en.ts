@@ -129,6 +129,16 @@ const en = {
   "connections.modal.custom.authLabel": "Authentication",
   "connections.modal.custom.authNone": "None",
   "connections.modal.custom.authToken": "API token",
+  "connections.modal.custom.authOAuth": "OAuth",
+  "connections.modal.custom.oauthNote":
+    "Most servers register a client automatically — just the URL is enough. Fill in a Client ID only if the server requires a pre-registered app, like GitHub or Slack.",
+  "connections.modal.custom.oauthClientIdLabel": "Client ID",
+  "connections.modal.custom.oauthClientIdPlaceholder": "your-oauth-client-id",
+  "connections.modal.custom.oauthClientIdHint":
+    "Optional. Leave blank for dynamic registration.",
+  "connections.modal.custom.oauthClientSecretLabel": "Client secret",
+  "connections.modal.custom.oauthClientSecretHint":
+    "Optional. Only for a confidential app — leave blank for a public (PKCE) client.",
   "connections.modal.custom.warn":
     "Any agent your admins enable will be able to call this URL with no credentials. Only use this for trusted internal servers.",
   "connections.modal.custom.cta": "Add server",

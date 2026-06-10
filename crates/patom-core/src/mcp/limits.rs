@@ -52,6 +52,25 @@ pub const MCP_CATALOG_DESCRIPTION_MAX_LEN: usize = 1024;
 /// Description (operator-facing notes) cap; matches the schema CHECK.
 pub const MCP_DESCRIPTION_MAX_LEN: usize = 512;
 
+/// Cap on a user-supplied OAuth `client_id` stored on a custom catalog
+/// entry (`mcp_catalog.oauth_client_id`). Matches the schema CHECK.
+///
+/// Real client ids are short (GitHub ~20, Okta ~20) up to Google's
+/// `<digits>-<hash>.apps.googleusercontent.com` (~72). 512 bytes is ~7×
+/// the largest realistic id while staying trivially inline-able. The HTTP
+/// boundary and the DB enforce the same length (CLAUDE.md §5).
+pub const MCP_OAUTH_CLIENT_ID_MAX_LEN: usize = 512;
+
+/// Cap on a user-supplied OAuth `client_secret` before sealing into
+/// `mcp_catalog.oauth_client_secret_ciphertext`.
+///
+/// Secrets are opaque vendor strings — Google's are ~24, but confidential
+/// clients elsewhere issue longer high-entropy blobs. 1024 bytes covers
+/// every realistic secret with headroom; anything past this is misuse, not
+/// a real secret. Enforced at the parse boundary (CLAUDE.md §5) before the
+/// AEAD seal so an oversized plaintext never reaches the encryptor.
+pub const MCP_OAUTH_CLIENT_SECRET_MAX_LEN: usize = 1024;
+
 /// URL length cap on the `http` transport.
 pub const MCP_URL_MAX_LEN: usize = 2048;
 

@@ -256,11 +256,15 @@ impl Collaborators {
 
         let mcp_store: SharedMcpServerStore =
             Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
-        let mcp_catalog: SharedMcpCatalogStore = Arc::new(PgMcpCatalogStore::new(pool.clone()));
+        // Build the encryptor before the catalog store: a user-supplied OAuth
+        // client's secret is sealed on the org-scoped `mcp_catalog` row, so the
+        // store needs the shared encryptor (mirrors `PgMcpCredentialStore`).
         let encryptor = Arc::new(
             OrgEncryptor::from_settings(&settings.auth.master_kek)
                 .map_err(|e| AppError::Misconfigured(format!("PATOM_MASTER_KEK: {e}")))?,
         );
+        let mcp_catalog: SharedMcpCatalogStore =
+            Arc::new(PgMcpCatalogStore::new(pool.clone(), encryptor.clone()));
         let mcp_credentials: SharedMcpCredentialStore = Arc::new(PgMcpCredentialStore::new(
             pool.clone(),
             clock.clone(),

@@ -475,14 +475,18 @@ function isValidHttpUrl(value: string): boolean {
 function CustomUrlBody({ onClose }: { onClose: () => void }) {
   const { t } = useT();
   const create = useCreateMcpServer();
+  const startOAuth = useStartOAuth();
   const [catalogId, setCatalogId] = useState("");
   const [url, setUrl] = useState("https://");
-  const [auth, setAuth] = useState<"none" | "apiToken">("none");
+  const [auth, setAuth] = useState<"none" | "apiToken" | "oauth">("none");
   const [token, setToken] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
   const { errorText, setErrorText, run } = useAsyncSubmit();
 
   const catalogIdValid = useMemo(() => CATALOG_ID_RE.test(catalogId), [catalogId]);
   const urlValid = useMemo(() => isValidHttpUrl(url), [url]);
+  const submitting = create.isPending || startOAuth.isPending;
 
   const onAdd = () =>
     run(async () => {
@@ -494,10 +498,28 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
         setErrorText(t("connections.modal.custom.error.url"));
         return;
       }
+      const base = { catalog_id: catalogId, config: { type: "http", url } as const, enabled: true };
+      if (auth === "oauth") {
+        // Client ID is optional: blank → the server registers a client
+        // dynamically (DCR); filled → the operator's pre-registered app.
+        // Sending `oauth_client` (even empty) is what marks this OAuth. Then
+        // hand off to the same start→redirect flow the catalog connectors use.
+        const server = await create.mutateAsync({
+          ...base,
+          oauth_client: {
+            client_id: clientId.trim() || undefined,
+            client_secret: clientSecret.trim() || undefined,
+          },
+        });
+        const res = await startOAuth.mutateAsync({
+          id: server.id,
+          input: { redirect_to: callbackUrl(server.id) },
+        });
+        window.location.href = res.authorize_url;
+        return;
+      }
       await create.mutateAsync({
-        catalog_id: catalogId,
-        config: { type: "http", url },
-        enabled: true,
+        ...base,
         credentials:
           auth === "apiToken" && token.trim()
             ? {
@@ -546,7 +568,7 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
           </span>
         </Field>
         <Field label={t("connections.modal.custom.authLabel")}>
-          <div className="grid grid-cols-2 gap-0 border border-[var(--color-line)]">
+          <div className="grid grid-cols-3 gap-0 border border-[var(--color-line)]">
             <AuthTab
               active={auth === "none"}
               onClick={() => setAuth("none")}
@@ -556,6 +578,11 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
               active={auth === "apiToken"}
               onClick={() => setAuth("apiToken")}
               label={t("connections.modal.custom.authToken")}
+            />
+            <AuthTab
+              active={auth === "oauth"}
+              onClick={() => setAuth("oauth")}
+              label={t("connections.modal.custom.authOAuth")}
             />
           </div>
           {auth === "apiToken" ? (
@@ -568,6 +595,38 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
             />
           ) : null}
         </Field>
+        {auth === "oauth" ? (
+          <>
+            <p className="text-[11px] leading-[1.45] text-[var(--color-muted-foreground)]">
+              {t("connections.modal.custom.oauthNote")}
+            </p>
+            <Field label={t("connections.modal.custom.oauthClientIdLabel")}>
+              <input
+                value={clientId}
+                onChange={(e) => setClientId(e.target.value)}
+                placeholder={t("connections.modal.custom.oauthClientIdPlaceholder")}
+                data-testid="custom-oauth-client-id"
+                className="w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-2 font-[var(--font-mono)] text-[12.5px] text-[var(--color-ink)] outline-none focus:border-[var(--color-moss)]"
+              />
+              <span className="mt-1 block text-[11px] text-[var(--color-muted-foreground)]">
+                {t("connections.modal.custom.oauthClientIdHint")}
+              </span>
+            </Field>
+            <Field label={t("connections.modal.custom.oauthClientSecretLabel")}>
+              <input
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+                type="password"
+                placeholder="••••••••"
+                data-testid="custom-oauth-client-secret"
+                className="w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-2 font-[var(--font-mono)] text-[12.5px] text-[var(--color-ink)] outline-none focus:border-[var(--color-moss)]"
+              />
+              <span className="mt-1 block text-[11px] text-[var(--color-muted-foreground)]">
+                {t("connections.modal.custom.oauthClientSecretHint")}
+              </span>
+            </Field>
+          </>
+        ) : null}
         {auth === "none" ? (
           <Banner
             variant="amber"
@@ -585,7 +644,7 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
         <Button
           variant="primary"
           onClick={onAdd}
-          loading={create.isPending}
+          loading={submitting}
           data-testid="custom-add"
         >
           {t("connections.modal.custom.cta")}
