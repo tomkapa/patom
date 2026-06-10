@@ -166,18 +166,21 @@ export const DEMO_USER = { name: "Tom Tran", id: "user" };
 /** Demo channel poster — distinct from the logged-in user shown at the bottom. */
 export const DEMO_HUMAN_POSTER = { name: "Maya Chen", id: "maya" };
 
+/** Decoration for an agent reply card: the reasoning, display-only tool
+ *  calls, token + duration counters, and whether the meta panel opens by
+ *  default. Used by the static fixtures below and by the `/demo` scripted
+ *  playback (which supplies its own per-bubble map). */
+export type DemoReplyMeta = {
+  tools: { name: string; args: Record<string, string>; durationMs: number }[];
+  tokens: number;
+  durationMs: number;
+  reasoning?: string;
+  expanded?: boolean;
+};
+
 /** Seeds for the right-panel reply cards. Stable IDs make them addressable
  * from the ThreadPanel without coupling to live wire data. */
-export const DEMO_REPLY_META: Record<
-  string,
-  {
-    tools: { name: string; args: Record<string, string>; durationMs: number }[];
-    tokens: number;
-    durationMs: number;
-    reasoning?: string;
-    expanded?: boolean;
-  }
-> = {
+export const DEMO_REPLY_META: Record<string, DemoReplyMeta> = {
   "h:1": {
     tools: [],
     tokens: 800,

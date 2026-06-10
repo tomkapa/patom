@@ -20,6 +20,7 @@ export function Composer({
   channel,
   pending,
   disabled,
+  disabledHint,
   onSubmit,
 }: {
   /** Everyone taggable from this composer (channel members + agents). */
@@ -32,6 +33,10 @@ export function Composer({
   channel: string;
   pending?: boolean;
   disabled?: boolean;
+  /** When the composer is disabled, an optional hint revealed on hover —
+   *  the conversion nudge on the public demo ("Sign up to talk to agents").
+   *  Omitted in the live app, where `disabled` only means "roster loading". */
+  disabledHint?: string;
   onSubmit: (input: ComposerSubmit) => void;
 }) {
   const [value, setValue] = useState("");
@@ -53,7 +58,15 @@ export function Composer({
       : `Message #${channel} — @ to mention anyone`;
 
   return (
-    <div className="border-t border-[var(--color-line)] bg-[var(--color-paper)] px-4 md:px-8 pt-3 pb-4">
+    <div className="group/composer relative border-t border-[var(--color-line)] bg-[var(--color-paper)] px-4 md:px-8 pt-3 pb-4">
+      {disabled && disabledHint ? (
+        <div
+          role="note"
+          className="pointer-events-none absolute -top-2 left-1/2 z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap border border-[var(--color-line-strong)] bg-[var(--color-ink)] px-3 py-1.5 font-[var(--font-mono)] text-[11px] text-[var(--color-paper)] opacity-0 shadow-sm transition-opacity duration-150 group-hover/composer:opacity-100"
+        >
+          {disabledHint}
+        </div>
+      ) : null}
       <form
         onSubmit={(e) => {
           e.preventDefault();
