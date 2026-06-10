@@ -43,14 +43,20 @@ const SETTLE: &str = "
     SELECT up.used_micro_usd, b.monthly_cap_micro_usd, b.warn_threshold_bps
     FROM up LEFT JOIN org_billing b ON b.org_id = $1";
 
-/// Cap + current-period usage for the gate, in one round-trip. Driven from
-/// `org_billing`: an org with no row is unlimited, so the absent-row case (no
-/// cap) is exactly the pass case and the usage value is irrelevant there.
+/// Cap + current-period usage + credit balance for the gate, in **one**
+/// round-trip. Driven from a synthetic single row (like `READ_CONFIG`) so the
+/// result is always present: an absent `org_billing` row reads as unlimited
+/// (NULL cap), an absent usage row as zero spent, an absent `org_credits` row as
+/// zero balance — and under RLS a cross-tenant org argument leaves every join
+/// NULL rather than reading another org's row. The credit balance is read
+/// unconditionally (one extra indexed join) but only *consulted* when the credit
+/// gate is active, so the OSS path pays nothing it didn't already.
 const GATE_SNAPSHOT: &str = "
-    SELECT b.monthly_cap_micro_usd, u.used_micro_usd
-    FROM org_billing b
-    LEFT JOIN org_billing_usage u ON u.org_id = b.org_id AND u.period_start = $2
-    WHERE b.org_id = $1";
+    SELECT b.monthly_cap_micro_usd, u.used_micro_usd, c.balance_micro_usd
+    FROM (SELECT $1::uuid AS org_id) k
+    LEFT JOIN org_billing b ON b.org_id = k.org_id
+    LEFT JOIN org_billing_usage u ON u.org_id = k.org_id AND u.period_start = $2
+    LEFT JOIN org_credits c ON c.org_id = k.org_id";
 
 /// Set `warned_at` exactly once per period, the first time usage crosses the
 /// threshold. The `warned_at IS NULL` guard makes concurrent settles race-safe.
@@ -127,8 +133,9 @@ const READ_LEDGER: &str = "
     FROM org_credit_ledger WHERE org_id = $1
     ORDER BY created_at DESC LIMIT $2";
 
-/// One credit ledger entry, for the read API.
-#[derive(Debug, Clone)]
+/// One credit ledger entry, for the read API. Decoded straight from
+/// [`READ_LEDGER`] via `FromRow` — the column names match the field names.
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CreditLedgerEntry {
     pub id: CreditLedgerId,
     pub delta_micro_usd: i64,
@@ -313,43 +320,28 @@ impl UsageSnapshot {
     }
 }
 
-/// The org's materialized credit balance for the gate. An absent `org_credits`
-/// row reads as zero (see [`read_credit_balance`]).
-const CREDIT_BALANCE: &str = "SELECT balance_micro_usd FROM org_credits WHERE org_id = $1";
-
-/// Read the org's credit balance in micro-USD inside the open transaction. An
-/// absent `org_credits` row reads as **zero**, not unlimited: a credit-gated org
-/// with no grant (pre-grant or post-promo) is out of credit. Under `begin_as_user`
-/// the read is RLS-filtered, so a cross-tenant org argument also reads as zero.
-async fn read_credit_balance(
-    tx: &mut Transaction<'_, Postgres>,
-    org: OrgId,
-) -> Result<i64, sqlx::Error> {
-    let row: Option<(i64,)> = sqlx::query_as(CREDIT_BALANCE)
-        .bind(org)
-        .fetch_optional(&mut **tx)
-        .await?;
-    Ok(row.map_or(0, |(b,)| b))
-}
-
-/// Read the cap + current-period usage in one round-trip. An absent
-/// `org_billing` row means unlimited (so usage is irrelevant); an absent
-/// `org_billing_usage` row means zero spent.
+/// Read the cap + current-period usage + credit balance in one round-trip. An
+/// absent `org_billing` row means unlimited (so usage is irrelevant); an absent
+/// `org_billing_usage` row means zero spent; an absent `org_credits` row reads
+/// as **zero** balance (a credit-gated org with no grant is out of credit, not
+/// unlimited). Returns the snapshot plus the raw balance — the gate decides
+/// whether the balance matters.
 async fn read_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     org: OrgId,
     period: BillingPeriod,
-) -> Result<UsageSnapshot, sqlx::Error> {
-    let row: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(GATE_SNAPSHOT)
-        .bind(org)
-        .bind(period.start_date())
-        .fetch_optional(&mut **tx)
-        .await?;
-    let (cap, used) = row.map_or((None, None), |(c, u)| (c, u));
-    Ok(UsageSnapshot {
+) -> Result<(UsageSnapshot, i64), sqlx::Error> {
+    let (cap, used, balance): (Option<i64>, Option<i64>, Option<i64>) =
+        sqlx::query_as(GATE_SNAPSHOT)
+            .bind(org)
+            .bind(period.start_date())
+            .fetch_one(&mut **tx)
+            .await?;
+    let snapshot = UsageSnapshot {
         used_micro_usd: used.unwrap_or(0),
         cap_micro_usd: cap,
-    })
+    };
+    Ok((snapshot, balance.unwrap_or(0)))
 }
 
 /// Read one org's config (cap + warn threshold) plus the current period's usage
@@ -419,16 +411,12 @@ impl PgBillingService {
         mut tx: Transaction<'_, Postgres>,
     ) -> Result<(), BillingError> {
         let period = BillingPeriod::current(&self.clock);
-        let snapshot = read_snapshot(&mut tx, org, period).await?;
-        // Credit gate (#154): read + enforce only when policy says it is active
-        // for this org. Under the OSS default it never is, so this is skipped
-        // and the credit balance is never even read.
-        let credit_balance = if self.entitlements.credit_gate_active(org) {
-            Some(read_credit_balance(&mut tx, org).await?)
-        } else {
-            None
-        };
+        let (snapshot, balance) = read_snapshot(&mut tx, org, period).await?;
         tx.commit().await?;
+        // Credit gate (#154): consult the balance only when policy says it is
+        // active for this org. Under the OSS default it never is, so the balance
+        // (read for free in the snapshot) is simply ignored.
+        let credit_balance = self.entitlements.credit_gate_active(org).then_some(balance);
         // Cap first (→ 429 Exceeded), then credit exhaustion (→ 402 OutOfCredit):
         // two distinct failure modes, reported separately.
         snapshot.decide(org)?;
@@ -657,29 +645,16 @@ impl BillingService for PgBillingService {
             .bind(org)
             .fetch_optional(&mut *tx)
             .await?;
-        let rows: Vec<(CreditLedgerId, i64, LedgerKind, LedgerReason, DateTime<Utc>)> =
-            sqlx::query_as(READ_LEDGER)
-                .bind(org)
-                .bind(limit)
-                .fetch_all(&mut *tx)
-                .await?;
+        let recent: Vec<CreditLedgerEntry> = sqlx::query_as(READ_LEDGER)
+            .bind(org)
+            .bind(limit)
+            .fetch_all(&mut *tx)
+            .await?;
         tx.commit().await?;
         let (balance, granted, used) = totals.unwrap_or((0, 0, 0));
         // §6: an absent row reads as zero; a present one obeys the column CHECKs.
         assert!(granted >= 0, "invariant: granted_total non-negative");
         assert!(used >= 0, "invariant: used_total non-negative");
-        let recent = rows
-            .into_iter()
-            .map(
-                |(id, delta_micro_usd, kind, reason, created_at)| CreditLedgerEntry {
-                    id,
-                    delta_micro_usd,
-                    kind,
-                    reason,
-                    created_at,
-                },
-            )
-            .collect();
         Ok(CreditSummary {
             balance_micro_usd: balance,
             granted_total_micro_usd: granted,

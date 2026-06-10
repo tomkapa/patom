@@ -6,33 +6,13 @@
 use std::sync::Arc;
 
 use patom::auth::OrgId;
-use patom::billing::{BillingService, GrantAmount, LedgerReason, PgBillingService};
+use patom::billing::{BillingService, LedgerReason, PgBillingService};
 use patom::clock::SystemClock;
-use patom::runtime::IdempotencyKey;
 use sqlx::PgPool;
 
 mod common;
+use common::billing::{grant_amount as grant, idem_key as key, read_org_credits as read_credits};
 use common::pg::seed_tenant;
-
-fn grant(micros: i64) -> GrantAmount {
-    GrantAmount::try_from(micros).expect("positive grant")
-}
-
-fn key(s: &str) -> IdempotencyKey {
-    IdempotencyKey::try_from(s.to_owned()).expect("valid key")
-}
-
-/// Read the materialized balance + totals (RLS-bypassing, via the owner pool).
-async fn read_credits(pool: &PgPool, org: OrgId) -> Option<(i64, i64, i64)> {
-    sqlx::query_as(
-        "SELECT balance_micro_usd, granted_total_micro_usd, used_total_micro_usd \
-         FROM org_credits WHERE org_id = $1",
-    )
-    .bind(org)
-    .fetch_optional(pool)
-    .await
-    .expect("read credits")
-}
 
 async fn ledger_count(pool: &PgPool, org: OrgId) -> i64 {
     let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM org_credit_ledger WHERE org_id = $1")

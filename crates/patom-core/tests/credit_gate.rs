@@ -6,57 +6,16 @@
 
 #![allow(clippy::expect_used)]
 
-use std::sync::Arc;
-
 use axum::response::IntoResponse;
 use patom::auth::{OrgId, begin_privileged};
-use patom::billing::{BillingError, BillingService, GrantAmount, LedgerReason, PgBillingService};
+use patom::billing::{BillingError, BillingService, PgBillingService};
 use patom::clock::SystemClock;
-use patom::entitlements::{AgentLimit, Entitlements, Feature, SharedEntitlements};
 use patom::http::HttpError;
-use patom::runtime::IdempotencyKey;
 use sqlx::PgPool;
 
 mod common;
+use common::billing::{active_service, grant};
 use common::pg::seed_tenant;
-
-/// A policy with the credit gate **on** (the cloud shape) but no signup grant —
-/// so a fresh org starts at zero and is blocked until it is granted credit.
-#[derive(Debug)]
-struct ActiveCreditPolicy;
-
-impl Entitlements for ActiveCreditPolicy {
-    fn agent_limit(&self, _org: OrgId) -> AgentLimit {
-        AgentLimit::Unlimited
-    }
-    fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
-        true
-    }
-    fn credit_gate_active(&self, _org: OrgId) -> bool {
-        true
-    }
-    fn signup_grant(&self, _org: OrgId) -> Option<GrantAmount> {
-        None
-    }
-}
-
-fn active_service(pool: &PgPool) -> PgBillingService {
-    let policy: SharedEntitlements = Arc::new(ActiveCreditPolicy);
-    PgBillingService::with_entitlements(pool.clone(), SystemClock::shared(), policy)
-}
-
-async fn grant(service: &PgBillingService, org: OrgId, micros: i64, key: &str) {
-    service
-        .grant_credit(
-            org,
-            GrantAmount::try_from(micros).expect("positive"),
-            LedgerReason::Manual,
-            &IdempotencyKey::try_from(key.to_owned()).expect("valid key"),
-            None,
-        )
-        .await
-        .expect("grant");
-}
 
 #[sqlx::test]
 async fn active_gate_blocks_when_no_credit_row(pool: PgPool) {

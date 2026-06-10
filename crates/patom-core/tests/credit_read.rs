@@ -7,27 +7,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use patom::auth::OrgId;
-use patom::billing::{BillingService, GrantAmount, LedgerReason, PgBillingService};
+use patom::billing::{BillingService, PgBillingService};
 use patom::clock::{SharedClock, TestClock};
-use patom::runtime::IdempotencyKey;
 use sqlx::PgPool;
 
 mod common;
+use common::billing::grant;
 use common::pg::seed_tenant;
-
-async fn grant(service: &PgBillingService, org: OrgId, micros: i64, key: &str) {
-    service
-        .grant_credit(
-            org,
-            GrantAmount::try_from(micros).expect("positive"),
-            LedgerReason::Manual,
-            &IdempotencyKey::try_from(key.to_owned()).expect("key"),
-            None,
-        )
-        .await
-        .expect("grant");
-}
 
 #[sqlx::test]
 async fn read_credits_returns_balance_and_newest_first_ledger(pool: PgPool) {

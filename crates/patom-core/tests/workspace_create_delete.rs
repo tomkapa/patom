@@ -42,29 +42,6 @@ struct Harness {
     owner: SeededPrincipal,
 }
 
-/// Cloud-shaped entitlement policy that fires a `signup_micros` signup grant —
-/// stands in for `patom_cloud::CloudEntitlements` so org-creation can be tested
-/// without the cloud feature linked.
-#[derive(Debug)]
-struct SignupGrantPolicy {
-    signup_micros: i64,
-}
-
-impl patom::entitlements::Entitlements for SignupGrantPolicy {
-    fn agent_limit(&self, _org: patom::auth::OrgId) -> patom::entitlements::AgentLimit {
-        patom::entitlements::AgentLimit::Unlimited
-    }
-    fn allows(&self, _org: patom::auth::OrgId, _f: patom::entitlements::Feature) -> bool {
-        true
-    }
-    fn credit_gate_active(&self, _org: patom::auth::OrgId) -> bool {
-        true
-    }
-    fn signup_grant(&self, _org: patom::auth::OrgId) -> Option<patom::billing::GrantAmount> {
-        patom::billing::GrantAmount::try_from(self.signup_micros).ok()
-    }
-}
-
 impl Harness {
     /// `cloud` toggles the build-mode flag the create endpoint + org-less
     /// callback branch on. Uses the permissive `UnlimitedEntitlements` (no
@@ -507,26 +484,14 @@ async fn org_details_surface_default_rule_round_trip(pool: PgPool) {
 
 /// Read the materialized credit balance for an org (RLS-bypassed owner pool).
 async fn org_credits(pool: &PgPool, org: uuid::Uuid) -> Option<(i64, i64, i64)> {
-    sqlx::query_as(
-        "SELECT balance_micro_usd, granted_total_micro_usd, used_total_micro_usd \
-         FROM org_credits WHERE org_id = $1",
-    )
-    .bind(org)
-    .fetch_optional(pool)
-    .await
-    .expect("read org_credits")
+    common::billing::read_org_credits(pool, patom::auth::OrgId::from(org)).await
 }
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_org_fires_signup_grant_under_cloud_policy(pool: PgPool) {
-    let h = Harness::with_entitlements(
-        &pool,
-        true,
-        Arc::new(SignupGrantPolicy {
-            signup_micros: 2_000_000,
-        }),
-    )
-    .await;
+    let h =
+        Harness::with_entitlements(&pool, true, common::billing::signup_grant_policy(2_000_000))
+            .await;
     let (status, body) = h
         .create_org(&h.owner.cookie_header(), json!({ "name": "Funded Labs" }))
         .await;
@@ -560,14 +525,9 @@ async fn create_org_fires_signup_grant_under_cloud_policy(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn signup_grant_is_idempotent_on_replay(pool: PgPool) {
     // A retry of the grant (same deterministic key) must not double-credit.
-    let h = Harness::with_entitlements(
-        &pool,
-        true,
-        Arc::new(SignupGrantPolicy {
-            signup_micros: 2_000_000,
-        }),
-    )
-    .await;
+    let h =
+        Harness::with_entitlements(&pool, true, common::billing::signup_grant_policy(2_000_000))
+            .await;
     let (_, body) = h
         .create_org(&h.owner.cookie_header(), json!({ "name": "Retry Labs" }))
         .await;

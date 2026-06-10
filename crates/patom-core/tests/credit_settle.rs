@@ -5,86 +5,19 @@
 
 #![allow(clippy::expect_used)]
 
-use std::sync::Arc;
-
-use patom::auth::OrgId;
-use patom::billing::{BillingService, CostMicros, GrantAmount, LedgerReason, PgBillingService};
+use patom::billing::{BillingService, CostMicros, PgBillingService};
 use patom::clock::SystemClock;
-use patom::entitlements::{AgentLimit, Entitlements, Feature, SharedEntitlements};
-use patom::runtime::IdempotencyKey;
 use sqlx::PgPool;
 
 mod common;
+use common::billing::{active_service, cost, grant, read_org_credits as credits, usage_entries};
 use common::pg::seed_tenant;
-
-/// Credit gate ON (cloud shape), no auto signup grant.
-#[derive(Debug)]
-struct ActiveCreditPolicy;
-
-impl Entitlements for ActiveCreditPolicy {
-    fn agent_limit(&self, _org: OrgId) -> AgentLimit {
-        AgentLimit::Unlimited
-    }
-    fn allows(&self, _org: OrgId, _feature: Feature) -> bool {
-        true
-    }
-    fn credit_gate_active(&self, _org: OrgId) -> bool {
-        true
-    }
-    fn signup_grant(&self, _org: OrgId) -> Option<GrantAmount> {
-        None
-    }
-}
-
-fn active_service(pool: &PgPool) -> PgBillingService {
-    let policy: SharedEntitlements = Arc::new(ActiveCreditPolicy);
-    PgBillingService::with_entitlements(pool.clone(), SystemClock::shared(), policy)
-}
-
-fn cost(micros: i64) -> CostMicros {
-    CostMicros::try_from(micros).expect("non-negative cost")
-}
-
-async fn grant(service: &PgBillingService, org: OrgId, micros: i64) {
-    service
-        .grant_credit(
-            org,
-            GrantAmount::try_from(micros).expect("positive"),
-            LedgerReason::Manual,
-            &IdempotencyKey::try_from(format!("seed:{}", org.as_uuid())).expect("key"),
-            None,
-        )
-        .await
-        .expect("grant");
-}
-
-async fn credits(pool: &PgPool, org: OrgId) -> Option<(i64, i64, i64)> {
-    sqlx::query_as(
-        "SELECT balance_micro_usd, granted_total_micro_usd, used_total_micro_usd \
-         FROM org_credits WHERE org_id = $1",
-    )
-    .bind(org)
-    .fetch_optional(pool)
-    .await
-    .expect("read credits")
-}
-
-async fn usage_entries(pool: &PgPool, org: OrgId) -> Vec<i64> {
-    sqlx::query_scalar(
-        "SELECT delta_micro_usd FROM org_credit_ledger \
-         WHERE org_id = $1 AND kind = 'debit' AND reason = 'usage' ORDER BY created_at",
-    )
-    .bind(org)
-    .fetch_all(pool)
-    .await
-    .expect("read usage entries")
-}
 
 #[sqlx::test]
 async fn settle_debits_balance_and_appends_usage_entry(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let service = active_service(&pool);
-    grant(&service, seed.org_id, 1_000_000).await;
+    grant(&service, seed.org_id, 1_000_000, "seed").await;
 
     service
         .settle(seed.org_id, cost(300_000))
@@ -105,7 +38,7 @@ async fn settle_may_dip_balance_negative(pool: PgPool) {
     // the gate blocks the *next* turn.
     let seed = seed_tenant(&pool).await;
     let service = active_service(&pool);
-    grant(&service, seed.org_id, 100_000).await;
+    grant(&service, seed.org_id, 100_000, "seed").await;
 
     service
         .settle(seed.org_id, cost(150_000))
@@ -122,7 +55,7 @@ async fn inactive_gate_settle_leaves_credits_untouched(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     // Default service = UnlimitedEntitlements → credit gate inactive.
     let service = PgBillingService::new(pool.clone(), SystemClock::shared());
-    grant(&service, seed.org_id, 1_000_000).await;
+    grant(&service, seed.org_id, 1_000_000, "seed").await;
 
     service
         .settle(seed.org_id, cost(300_000))
@@ -139,7 +72,7 @@ async fn inactive_gate_settle_leaves_credits_untouched(pool: PgPool) {
 async fn zero_cost_settle_appends_no_usage_entry(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let service = active_service(&pool);
-    grant(&service, seed.org_id, 1_000_000).await;
+    grant(&service, seed.org_id, 1_000_000, "seed").await;
 
     service
         .settle(seed.org_id, CostMicros::ZERO)
