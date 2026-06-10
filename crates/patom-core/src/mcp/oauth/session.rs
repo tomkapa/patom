@@ -42,7 +42,7 @@ use rmcp::transport::auth::{
 use url::Url;
 
 use crate::config::PlatformOAuthClient;
-use crate::mcp::catalog::{ClientSource, McpCatalogEntry, platform_env_middle};
+use crate::mcp::catalog::{ClientSource, McpCatalogEntry, UserOAuthClient, platform_env_middle};
 use crate::mcp::credentials::SharedMcpCredentialStore;
 use crate::mcp::types::McpServerId;
 
@@ -102,6 +102,11 @@ pub struct StartCtx<'a> {
     pub authorize_extras: Vec<(String, String)>,
     pub redirect_uri: String,
     pub platform_clients: &'a HashMap<String, PlatformOAuthClient>,
+    /// The operator's own OAuth client, decrypted from the catalog row.
+    /// Required when `catalog.client_source == UserSupplied`, ignored
+    /// otherwise; the HTTP handler fetches it via
+    /// [`crate::mcp::McpCatalogStore::oauth_client`].
+    pub user_oauth_client: Option<UserOAuthClient>,
     pub credentials: SharedMcpCredentialStore,
     pub state_store: PatomStateStore,
     pub server_id: McpServerId,
@@ -132,6 +137,26 @@ pub async fn start_authorization(ctx: StartCtx<'_>) -> Result<String, OAuthError
                 "catalog `{id}` has client_source=none; OAuth flow not applicable",
                 id = ctx.catalog.id
             )));
+        }
+        ClientSource::UserSupplied => {
+            let client = ctx.user_oauth_client.as_ref().ok_or_else(|| {
+                OAuthError::Misconfigured(format!(
+                    "catalog `{id}` is user_supplied but no OAuth client was provided",
+                    id = ctx.catalog.id
+                ))
+            })?;
+            start_user_supplied(
+                client,
+                &ctx.server_url,
+                ctx.http,
+                &scope_refs,
+                &ctx.redirect_uri,
+                ctx.server_id,
+                ctx.org_id,
+                ctx.credentials,
+                ctx.state_store,
+            )
+            .await?
         }
         ClientSource::Platform => {
             start_platform(
@@ -217,6 +242,71 @@ async fn start_platform(
         manager.get_authorization_url(scopes),
     )
     .await
+}
+
+/// User-supplied branch: the operator's own `client_id` (+ optional
+/// `client_secret`) for a custom server URL, read from the encrypted
+/// `mcp_catalog` row. A near-clone of [`start_platform`] that reads the
+/// client from storage instead of env, and omits `with_client_secret`
+/// for a public/PKCE client.
+#[allow(clippy::too_many_arguments)]
+async fn start_user_supplied(
+    client: &UserOAuthClient,
+    server_url: &str,
+    http: reqwest::Client,
+    scopes: &[&str],
+    redirect_uri: &str,
+    server_id: McpServerId,
+    org_id: crate::auth::OrgId,
+    credentials: SharedMcpCredentialStore,
+    state_store: PatomStateStore,
+) -> Result<String, OAuthError> {
+    let mut manager = bounded(
+        "AuthorizationManager::new[start_user_supplied]",
+        AuthorizationManager::new(server_url),
+    )
+    .await?;
+    manager.with_client(http).map_err(OAuthError::from)?;
+    manager.set_credential_store(PatomCredentialStore::new(server_id, org_id, credentials));
+    manager.set_state_store(state_store);
+    let metadata = bounded(
+        "discover_metadata[start_user_supplied]",
+        manager.discover_metadata(),
+    )
+    .await?;
+    manager.set_metadata(metadata);
+    let config = user_supplied_client_config(client, redirect_uri, Some(scopes));
+    manager.configure_client(config).map_err(OAuthError::from)?;
+    bounded(
+        "get_authorization_url[user_supplied]",
+        manager.get_authorization_url(scopes),
+    )
+    .await
+}
+
+/// Build the rmcp client config for a user-supplied OAuth client. The
+/// secret is attached only for a confidential client; a public/PKCE client
+/// omits it (rmcp drives PKCE without a secret, same as the DCR path).
+///
+/// `scopes` is `Some` at authorize time and `None` for the callback's
+/// code exchange — the granted scopes are bound by the authorize step, so
+/// re-sending them on exchange is unnecessary.
+fn user_supplied_client_config(
+    client: &UserOAuthClient,
+    redirect_uri: &str,
+    scopes: Option<&[&str]>,
+) -> OAuthClientConfig {
+    let mut config = OAuthClientConfig::new(
+        client.client_id.as_str().to_owned(),
+        redirect_uri.to_owned(),
+    );
+    if let Some(scopes) = scopes {
+        config = config.with_scopes(scopes.iter().map(|s| (*s).to_owned()).collect());
+    }
+    if let Some(secret) = client.client_secret.as_ref() {
+        config = config.with_client_secret(secret.expose().to_owned());
+    }
+    config
 }
 
 /// DCR branch: rmcp's `OAuthState::new` registers a client dynamically
@@ -325,6 +415,7 @@ pub async fn handle_callback(
     state: &str,
     redirect_uri: &str,
     platform_clients: &HashMap<String, PlatformOAuthClient>,
+    user_oauth_client: Option<UserOAuthClient>,
     server_id: McpServerId,
     org_id: crate::auth::OrgId,
     credentials: SharedMcpCredentialStore,
@@ -352,6 +443,7 @@ pub async fn handle_callback(
         catalog,
         redirect_uri,
         platform_clients,
+        user_oauth_client.as_ref(),
         server_id,
         org_id,
         credentials,
@@ -376,6 +468,7 @@ async fn configure_client_for_callback(
     catalog: &McpCatalogEntry,
     redirect_uri: &str,
     platform_clients: &HashMap<String, PlatformOAuthClient>,
+    user_oauth_client: Option<&UserOAuthClient>,
     server_id: McpServerId,
     org_id: crate::auth::OrgId,
     credentials: SharedMcpCredentialStore,
@@ -385,6 +478,19 @@ async fn configure_client_for_callback(
             "catalog `{id}` has client_source=none; callback not applicable",
             id = catalog.id
         ))),
+        ClientSource::UserSupplied => {
+            // Rebuild the same client the start path configured: the
+            // operator's id (+ secret for confidential clients). Scopes
+            // aren't needed for the code exchange (see Platform arm).
+            let client = user_oauth_client.ok_or_else(|| {
+                OAuthError::Misconfigured(format!(
+                    "callback for user_supplied catalog `{id}` has no OAuth client",
+                    id = catalog.id
+                ))
+            })?;
+            let config = user_supplied_client_config(client, redirect_uri, None);
+            manager.configure_client(config).map_err(OAuthError::from)
+        }
         ClientSource::Platform => {
             let key_catalog_id = catalog
                 .platform_client_alias

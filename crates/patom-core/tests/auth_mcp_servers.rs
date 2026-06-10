@@ -14,8 +14,8 @@ use patom::auth::OrgId;
 use patom::clock::SystemClock;
 use patom::http::{AppState, router};
 use patom::mcp::{
-    ConnectionStatus, McpCatalogId, McpHttpUrl, McpRefresher, McpRegistry, McpServerCreate,
-    McpTransport, PgMcpServerStore, SharedMcpServerStore,
+    ClientSource, ConnectionStatus, McpAuthKind, McpCatalogId, McpHttpUrl, McpRefresher,
+    McpRegistry, McpServerCreate, McpTransport, PgMcpServerStore, SharedMcpServerStore,
 };
 use patom::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PgThreadStream, SharedDagBudget, SharedPromptQueue,
@@ -75,7 +75,10 @@ impl AuthMcpHarness {
         let primary = seed_principal(pool, &jwt).await;
 
         let mcp_catalog: patom::mcp::SharedMcpCatalogStore =
-            Arc::new(patom::mcp::PgMcpCatalogStore::new(pool.clone()));
+            Arc::new(patom::mcp::PgMcpCatalogStore::new(
+                pool.clone(),
+                ::std::sync::Arc::new(patom::crypto::OrgEncryptor::for_test([0u8; 32])),
+            ));
 
         let state = AppState {
             queue,
@@ -564,6 +567,299 @@ async fn create_with_credentials_seals_to_encrypted_table(pool: PgPool) {
     let row = arr.as_array().expect("array")[0].clone();
     assert_eq!(row["has_credentials"], serde_json::json!(true));
     assert_eq!(row["credentials_kind"], serde_json::json!("static_headers"));
+}
+
+/// Helper: POST /api/mcp-servers with the given JSON body, returning
+/// (status, parsed-body). Mirrors the inline pattern in the create tests.
+async fn post_create(
+    app: axum::Router,
+    h: &AuthMcpHarness,
+    body: serde_json::Value,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/mcp-servers")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+#[sqlx::test]
+async fn create_full_form_with_confidential_oauth_client_seals_on_catalog(pool: PgPool) {
+    // Full-form custom URL + a confidential BYO-OAuth client (id + secret).
+    // The auto-created catalog row is `user_supplied`/`oauth2`, the server
+    // parks in `auth_pending`, and the secret round-trips out of the store
+    // — but never appears in the HTTP response.
+    let h = AuthMcpHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let secret = "byo-oauth-secret-do-not-echo";
+    let (status, json) = post_create(
+        app,
+        &h,
+        serde_json::json!({
+            "catalog_id": "internal-oauth",
+            "config": {"type": "http", "url": "https://internal.example.test/mcp"},
+            "oauth_client": {"client_id": "byo-client-123", "client_secret": secret}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(json["connection_status"], serde_json::json!("auth_pending"));
+
+    // Response is secret-free.
+    let body_text = serde_json::to_string(&json).expect("ser");
+    assert!(
+        !body_text.contains(secret),
+        "response leaked the client secret"
+    );
+
+    // Catalog row carries the discriminators.
+    let id = McpCatalogId::try_from("internal-oauth").expect("valid id");
+    let entry = h
+        .state
+        .mcp_catalog
+        .get_for_org(h.primary.org_id, &id)
+        .await
+        .expect("get_for_org")
+        .expect("catalog row exists");
+    assert!(matches!(entry.client_source, ClientSource::UserSupplied));
+    assert!(matches!(entry.auth_kind, McpAuthKind::OAuth2));
+
+    // The dedicated decrypt seam returns the round-tripped client.
+    let client = h
+        .state
+        .mcp_catalog
+        .oauth_client(h.primary.org_id, &id)
+        .await
+        .expect("oauth_client")
+        .expect("user-supplied client present");
+    assert_eq!(client.client_id.as_str(), "byo-client-123");
+    assert_eq!(
+        client.client_secret.expect("secret present").expose(),
+        secret
+    );
+
+    // DB ciphertext on the catalog row is opaque.
+    let cipher: Vec<u8> = sqlx::query_scalar(
+        "SELECT oauth_client_secret_ciphertext FROM mcp_catalog WHERE id = $1 AND org_id = $2",
+    )
+    .bind("internal-oauth")
+    .bind(h.primary.org_id.as_uuid())
+    .fetch_one(&h.state.pool)
+    .await
+    .expect("ciphertext");
+    assert!(
+        !String::from_utf8_lossy(&cipher).contains(secret),
+        "catalog ciphertext is not opaque"
+    );
+}
+
+#[sqlx::test]
+async fn create_full_form_with_public_oauth_client_has_no_secret(pool: PgPool) {
+    // Public/PKCE client: client_id only, no secret.
+    let h = AuthMcpHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let (status, json) = post_create(
+        app,
+        &h,
+        serde_json::json!({
+            "catalog_id": "public-oauth",
+            "config": {"type": "http", "url": "https://public.example.test/mcp"},
+            "oauth_client": {"client_id": "public-client-xyz"}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(json["connection_status"], serde_json::json!("auth_pending"));
+
+    let id = McpCatalogId::try_from("public-oauth").expect("valid id");
+    let client = h
+        .state
+        .mcp_catalog
+        .oauth_client(h.primary.org_id, &id)
+        .await
+        .expect("oauth_client")
+        .expect("user-supplied client present");
+    assert_eq!(client.client_id.as_str(), "public-client-xyz");
+    assert!(
+        client.client_secret.is_none(),
+        "public client has no secret"
+    );
+}
+
+#[sqlx::test]
+async fn create_rejects_oauth_client_and_credentials_together(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let (status, _json) = post_create(
+        app,
+        &h,
+        serde_json::json!({
+            "catalog_id": "both-auth",
+            "config": {"type": "http", "url": "https://e.example.test/mcp"},
+            "oauth_client": {"client_id": "cid"},
+            "credentials": {"kind": "static_headers", "headers": {"authorization": "Bearer t"}}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test]
+async fn create_rejects_oauth_client_on_short_form(pool: PgPool) {
+    // No `config` → short form. An OAuth client needs a custom server URL.
+    let h = AuthMcpHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let (status, _json) = post_create(
+        app,
+        &h,
+        serde_json::json!({
+            "catalog_id": "gmail",
+            "oauth_client": {"client_id": "cid"}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test]
+async fn create_rejects_oversized_oauth_client_fields(pool: PgPool) {
+    let h = AuthMcpHarness::new(&pool).await;
+    let app = router(h.state.clone());
+
+    // Oversized client_id (cap is 512).
+    let big_id = "a".repeat(513);
+    let (status, _json) = post_create(
+        app.clone(),
+        &h,
+        serde_json::json!({
+            "catalog_id": "oversize-id",
+            "config": {"type": "http", "url": "https://e.example.test/mcp"},
+            "oauth_client": {"client_id": big_id}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+    // Oversized client_secret (cap is 1024).
+    let big_secret = "a".repeat(1025);
+    let (status, _json) = post_create(
+        app,
+        &h,
+        serde_json::json!({
+            "catalog_id": "oversize-secret",
+            "config": {"type": "http", "url": "https://e.example.test/mcp"},
+            "oauth_client": {"client_id": "cid", "client_secret": big_secret}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+/// Spawn a throwaway OAuth Authorization Server that only answers the
+/// `oauth-authorization-server` discovery probe — enough for rmcp's
+/// `discover_metadata()` to resolve an `authorization_endpoint` so the
+/// start flow can build the authorize URL. Returns its base URL.
+async fn spawn_mock_authorization_server() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock AS");
+    let base = format!("http://{}", listener.local_addr().expect("addr"));
+    let meta_base = base.clone();
+    let app = axum::Router::new().route(
+        "/.well-known/oauth-authorization-server",
+        axum::routing::get(move || {
+            let b = meta_base.clone();
+            async move {
+                axum::Json(serde_json::json!({
+                    "issuer": b,
+                    "authorization_endpoint": format!("{b}/authorize"),
+                    "token_endpoint": format!("{b}/token"),
+                    "response_types_supported": ["code"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "scopes_supported": ["read"],
+                }))
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve mock AS");
+    });
+    base
+}
+
+#[sqlx::test]
+async fn oauth_start_for_user_supplied_builds_authorize_url_with_supplied_client_id(pool: PgPool) {
+    // The automated boundary the issue calls out: a user-supplied server's
+    // `/oauth/start` returns an authorize URL whose `client_id` equals the
+    // operator's own id. Real authorize→callback→token is a manual check.
+    let h = AuthMcpHarness::new(&pool).await;
+    let as_base = spawn_mock_authorization_server().await;
+
+    // Create the custom OAuth server pointed at the mock AS.
+    let app = router(h.state.clone());
+    let (status, created) = post_create(
+        app,
+        &h,
+        serde_json::json!({
+            "catalog_id": "mock-oauth",
+            "config": {"type": "http", "url": as_base},
+            "oauth_client": {"client_id": "byo-client-123", "client_secret": "sekret"}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    let server_id = created["id"].as_str().expect("server id");
+
+    // Kick off the browser flow.
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/api/mcp-servers/{server_id}/oauth/start"))
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({"scope": "read"}).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let authorize_url = json["authorize_url"].as_str().expect("authorize_url");
+
+    // The authorize URL targets the mock AS's authorization_endpoint and
+    // carries the operator's own client_id.
+    let parsed = url::Url::parse(authorize_url).expect("valid authorize url");
+    assert!(
+        authorize_url.starts_with(&format!("{as_base}/authorize")),
+        "authorize URL should target the discovered endpoint, got: {authorize_url}"
+    );
+    let client_id = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "client_id")
+        .map(|(_, v)| v.into_owned());
+    assert_eq!(client_id.as_deref(), Some("byo-client-123"));
 }
 
 #[sqlx::test]

@@ -18,7 +18,10 @@ mod common;
 use common::pg::seed_tenant;
 
 fn store(pool: &PgPool) -> Arc<PgMcpCatalogStore> {
-    Arc::new(PgMcpCatalogStore::new(pool.clone()))
+    Arc::new(PgMcpCatalogStore::new(
+        pool.clone(),
+        ::std::sync::Arc::new(patom::crypto::OrgEncryptor::for_test([0u8; 32])),
+    ))
 }
 
 fn cat(s: &str) -> McpCatalogId {

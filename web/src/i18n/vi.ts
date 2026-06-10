@@ -125,12 +125,19 @@ const vi: TranslationTable = {
   "connections.modal.custom.authLabel": "Xác thực",
   "connections.modal.custom.authNone": "Không",
   "connections.modal.custom.authToken": "API token",
+  "connections.modal.custom.authOAuth": "OAuth",
+  "connections.modal.custom.oauthClientIdLabel": "Client ID",
+  "connections.modal.custom.oauthClientIdPlaceholder": "client-id-oauth-của-bạn",
+  "connections.modal.custom.oauthClientSecretLabel": "Client secret",
+  "connections.modal.custom.oauthClientSecretHint":
+    "Tùy chọn. Để trống cho client công khai (PKCE).",
   "connections.modal.custom.warn":
     "Mọi agent admin bật sẽ có thể gọi URL này mà không cần thông tin xác thực. Chỉ dùng cho máy chủ nội bộ tin cậy.",
   "connections.modal.custom.cta": "Thêm máy chủ",
   "connections.modal.custom.error.alias":
     "Dùng chữ thường, chữ số, _ hoặc -, tối đa 16 ký tự.",
   "connections.modal.custom.error.url": "Nhập URL http:// hoặc https:// hợp lệ.",
+  "connections.modal.custom.error.clientId": "Nhập OAuth client ID.",
   "connections.callback.eyebrow.connecting": "OAuth · Bước 2 / 3",
   "connections.callback.eyebrow.authorized": "OAuth · Bước 3 / 3",
   "connections.callback.eyebrow.failed": "OAuth · Thất bại",

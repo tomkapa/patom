@@ -46,7 +46,10 @@ async fn build(pool: &PgPool) -> (AppState, SeededPrincipal) {
     let mcp_store: SharedMcpServerStore =
         Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
     let mcp_catalog: patom::mcp::SharedMcpCatalogStore =
-        Arc::new(patom::mcp::PgMcpCatalogStore::new(pool.clone()));
+        Arc::new(patom::mcp::PgMcpCatalogStore::new(
+            pool.clone(),
+            ::std::sync::Arc::new(patom::crypto::OrgEncryptor::for_test([0u8; 32])),
+        ));
     let mcp_registry = McpRegistry::new(mcp_store.clone(), clock.clone());
     let (_refresher, mcp_refresh) = McpRefresher::spawn(mcp_registry);
 

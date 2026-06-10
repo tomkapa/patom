@@ -14,12 +14,14 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::auth::OrgId;
+use crate::crypto::{EncryptedBlob, SharedOrgEncryptor};
 use crate::types::ParseError;
 
 use super::error::McpError;
 use super::limits::{
     MCP_CATALOG_AUTHORIZE_EXTRA_PARAM_BYTES_MAX, MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_MAX,
-    MCP_CATALOG_DESCRIPTION_MAX_LEN, MCP_CATALOG_DISPLAY_NAME_MAX_LEN,
+    MCP_CATALOG_DESCRIPTION_MAX_LEN, MCP_CATALOG_DISPLAY_NAME_MAX_LEN, MCP_OAUTH_CLIENT_ID_MAX_LEN,
+    MCP_OAUTH_CLIENT_SECRET_MAX_LEN,
 };
 use super::types::{McpCatalogId, McpTransport};
 
@@ -45,13 +47,125 @@ crate::str_enum! {
     ///   Registration. The resolver registers a fresh client on the first
     ///   `/oauth/start` and persists it inside the same encrypted
     ///   `mcp_server_credentials` envelope as the access token.
+    /// * `UserSupplied` — BYO vendor where the operator pastes their own
+    ///   `client_id` (+ optional `client_secret`) for a custom server URL.
+    ///   The id lives plaintext and the secret sealed on the org-scoped
+    ///   `mcp_catalog` row (NOT in `mcp_server_credentials`, which the
+    ///   callback overwrites with the token). Read back via
+    ///   [`McpCatalogStore::oauth_client`] in the start/callback paths.
     /// * `None` — no OAuth (`auth_kind = 'none'` rows). Only here so the
     ///   resolver's `match` is exhaustive.
     pub enum ClientSource {
-        Platform => "platform",
-        Dcr      => "dcr",
-        None     => "none",
+        Platform     => "platform",
+        Dcr          => "dcr",
+        UserSupplied => "user_supplied",
+        None         => "none",
     }
+}
+
+/// A user-supplied OAuth `client_id` for a custom catalog entry. Bounded
+/// at the parse boundary; stored plaintext (it is not a secret) in
+/// `mcp_catalog.oauth_client_id`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OAuthClientId(Arc<str>);
+
+impl OAuthClientId {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for OAuthClientId {
+    type Error = ParseError;
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        if raw.is_empty() {
+            return Err(ParseError::Empty {
+                field: "mcp_catalog.oauth_client_id",
+            });
+        }
+        if raw.len() > MCP_OAUTH_CLIENT_ID_MAX_LEN {
+            return Err(ParseError::TooLong {
+                field: "mcp_catalog.oauth_client_id",
+                max: MCP_OAUTH_CLIENT_ID_MAX_LEN,
+                got: raw.len(),
+            });
+        }
+        Ok(Self(Arc::from(raw)))
+    }
+}
+
+impl TryFrom<String> for OAuthClientId {
+    type Error = ParseError;
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        Self::try_from(raw.as_str())
+    }
+}
+
+impl fmt::Debug for OAuthClientId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("OAuthClientId").field(&&*self.0).finish()
+    }
+}
+
+/// A user-supplied OAuth `client_secret`.
+///
+/// Redacts in `Debug`/`Display` (§2 — it travels through tracing spans) and
+/// exposes its bytes only via [`OAuthClientSecret::expose`] at the precise
+/// call site that seals it or hands it to rmcp's `OAuthClientConfig`.
+#[derive(Clone)]
+pub struct OAuthClientSecret(String);
+
+impl OAuthClientSecret {
+    /// Borrow the secret bytes. Avoid copying through `to_string` — that
+    /// defeats the type.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for OAuthClientSecret {
+    type Error = ParseError;
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        if raw.is_empty() {
+            return Err(ParseError::Empty {
+                field: "mcp_catalog.oauth_client_secret",
+            });
+        }
+        if raw.len() > MCP_OAUTH_CLIENT_SECRET_MAX_LEN {
+            return Err(ParseError::TooLong {
+                field: "mcp_catalog.oauth_client_secret",
+                max: MCP_OAUTH_CLIENT_SECRET_MAX_LEN,
+                got: raw.len(),
+            });
+        }
+        Ok(Self(raw))
+    }
+}
+
+impl fmt::Debug for OAuthClientSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("OAuthClientSecret(***)")
+    }
+}
+
+impl fmt::Display for OAuthClientSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("***")
+    }
+}
+
+/// A user-supplied OAuth client for a custom catalog entry.
+///
+/// The public `client_id`, plus an optional `client_secret` (absent →
+/// public/PKCE client). Read out of `mcp_catalog` only in the OAuth
+/// start/callback paths via [`McpCatalogStore::oauth_client`]; never
+/// surfaced on the `Serialize`-derived [`McpCatalogEntry`].
+#[derive(Debug, Clone)]
+pub struct UserOAuthClient {
+    pub client_id: OAuthClientId,
+    pub client_secret: Option<OAuthClientSecret>,
 }
 
 /// Env-var names that source a `ClientSource::Platform` catalog entry's
@@ -377,6 +491,20 @@ pub trait McpCatalogStore: fmt::Debug + Send + Sync {
     /// surface: the former has no operator-facing place to set it
     /// today; the latter goes through the dedicated icon upload route.
     async fn ensure_org_scoped(&self, payload: CatalogUpsert<'_>) -> Result<McpAuthKind, McpError>;
+
+    /// Read back the user-supplied OAuth client (`client_id` + optional
+    /// decrypted `client_secret`) for `(org_id, id)`. Returns `Ok(None)`
+    /// when the resolved row carries no `oauth_client_id` (i.e. it is not a
+    /// `UserSupplied` connector).
+    ///
+    /// Called only from the OAuth start/callback paths — the secret is
+    /// **never** surfaced on [`McpCatalogEntry`] (which flows to HTTP
+    /// responses); this dedicated reader is the only decrypt seam.
+    async fn oauth_client(
+        &self,
+        org_id: OrgId,
+        id: &McpCatalogId,
+    ) -> Result<Option<UserOAuthClient>, McpError>;
 }
 
 /// Borrowed input for [`McpCatalogStore::ensure_org_scoped`]. Bundles
@@ -390,6 +518,15 @@ pub struct CatalogUpsert<'a> {
     pub description: &'a McpCatalogDescription,
     pub default_transport: &'a McpTransport,
     pub auth_kind: McpAuthKind,
+    /// Where this entry's OAuth client comes from. Non-OAuth entries pass
+    /// [`ClientSource::Dcr`] to preserve the historical DB default (the
+    /// resolver never reads it for `static_headers`/`none` auth kinds); a
+    /// BYO-OAuth custom entry passes [`ClientSource::UserSupplied`].
+    pub client_source: ClientSource,
+    /// The user-supplied OAuth client to seal onto the row. `Some` only on
+    /// the `UserSupplied` path; the secret (if any) is sealed with the org
+    /// KEK before it touches the DB.
+    pub oauth_client: Option<UserOAuthClient>,
     pub now: DateTime<Utc>,
 }
 
@@ -400,12 +537,16 @@ pub type SharedMcpCatalogStore = Arc<dyn McpCatalogStore>;
 /// not need to add `WHERE org_id …` clauses.
 pub struct PgMcpCatalogStore {
     pool: PgPool,
+    /// Seals/opens the user-supplied OAuth client secret stored on
+    /// org-scoped rows. Shared with the credential store so both encrypt
+    /// under the same per-org KEK.
+    enc: SharedOrgEncryptor,
 }
 
 impl PgMcpCatalogStore {
     #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, enc: SharedOrgEncryptor) -> Self {
+        Self { pool, enc }
     }
 }
 
@@ -488,6 +629,69 @@ fn decode_authorize_extra_params(
     Ok(Some(extras))
 }
 
+/// `sqlx` reader for the four user-supplied-OAuth columns. Kept private
+/// and separate from [`CatalogRow`] so the sealed secret can never ride the
+/// `Serialize`-derived [`McpCatalogEntry`].
+// Field names mirror the `mcp_catalog` column names exactly so
+// `sqlx::FromRow` maps them; the shared `oauth_client` prefix is the
+// schema's, not a smell.
+#[allow(clippy::struct_field_names)]
+#[derive(sqlx::FromRow)]
+struct OAuthClientRow {
+    oauth_client_id: Option<String>,
+    oauth_client_secret_ciphertext: Option<Vec<u8>>,
+    oauth_client_secret_nonce: Option<Vec<u8>>,
+    oauth_client_secret_key_version: Option<i16>,
+}
+
+impl OAuthClientRow {
+    /// Decode + decrypt into a [`UserOAuthClient`]. `None` when the row has
+    /// no `oauth_client_id`. The secret triple is all-or-none (migration
+    /// 67's CHECK); a partial triple is a corrupted row and crashes the
+    /// request with a backend error rather than guessing.
+    fn into_client(
+        self,
+        enc: &SharedOrgEncryptor,
+        org_id: OrgId,
+    ) -> Result<Option<UserOAuthClient>, McpError> {
+        let Some(client_id_raw) = self.oauth_client_id else {
+            return Ok(None);
+        };
+        let client_id = OAuthClientId::try_from(client_id_raw)?;
+        let client_secret = match (
+            self.oauth_client_secret_ciphertext,
+            self.oauth_client_secret_nonce,
+            self.oauth_client_secret_key_version,
+        ) {
+            (Some(ciphertext), Some(nonce_bytes), Some(key_version)) => {
+                let nonce: [u8; crate::crypto::NONCE_BYTES] =
+                    nonce_bytes.as_slice().try_into().map_err(|_| {
+                        McpError::Backend("oauth secret nonce: wrong byte length".into())
+                    })?;
+                let blob = EncryptedBlob {
+                    key_version,
+                    nonce,
+                    ciphertext,
+                };
+                let plaintext = enc.open(org_id, &blob)?;
+                let raw = String::from_utf8(plaintext.as_slice().to_vec())
+                    .map_err(|e| McpError::Backend(format!("oauth secret not utf8: {e}")))?;
+                Some(OAuthClientSecret::try_from(raw)?)
+            }
+            (None, None, None) => None,
+            _ => {
+                return Err(McpError::Backend(
+                    "oauth_client secret triple partially populated".into(),
+                ));
+            }
+        };
+        Ok(Some(UserOAuthClient {
+            client_id,
+            client_secret,
+        }))
+    }
+}
+
 #[async_trait]
 impl McpCatalogStore for PgMcpCatalogStore {
     async fn list_for_org(&self, org_id: OrgId) -> Result<Vec<McpCatalogEntry>, McpError> {
@@ -558,10 +762,24 @@ impl McpCatalogStore for PgMcpCatalogStore {
             description,
             default_transport,
             auth_kind,
+            client_source,
+            oauth_client,
             now,
         } = payload;
         let transport_json = serde_json::to_value(default_transport)
             .map_err(|e| McpError::Backend(format!("serialize transport: {e}")))?;
+        // Seal the secret (if any) before opening the tx — the AEAD op needs
+        // no DB and an oversized plaintext was already rejected at the parse
+        // boundary (§5). `oauth_client_id` rides plaintext; the secret triple
+        // is all-or-none, matching migration 67's CHECK.
+        let oauth_client_id: Option<String> = oauth_client
+            .as_ref()
+            .map(|c| c.client_id.as_str().to_owned());
+        let sealed: Option<EncryptedBlob> =
+            match oauth_client.as_ref().and_then(|c| c.client_secret.as_ref()) {
+                Some(secret) => Some(self.enc.seal(org_id, secret.expose().as_bytes())?),
+                None => None,
+            };
         let id_for_err = id.clone();
         crate::auth::run_privileged::<McpAuthKind, McpError>(&self.pool, async |tx| {
             let global_exists: Option<(String,)> =
@@ -575,8 +793,10 @@ impl McpCatalogStore for PgMcpCatalogStore {
             sqlx::query(
                 "INSERT INTO mcp_catalog \
                     (id, org_id, display_name, description, default_transport, \
-                     auth_kind, created_at, updated_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7) \
+                     auth_kind, client_source, oauth_client_id, \
+                     oauth_client_secret_ciphertext, oauth_client_secret_nonce, \
+                     oauth_client_secret_key_version, created_at, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12) \
                  ON CONFLICT (org_id, id) WHERE org_id IS NOT NULL DO NOTHING",
             )
             .bind(id_for_err.as_str())
@@ -585,6 +805,11 @@ impl McpCatalogStore for PgMcpCatalogStore {
             .bind(description.as_str())
             .bind(&transport_json)
             .bind(auth_kind.as_str())
+            .bind(client_source.as_str())
+            .bind(oauth_client_id.as_deref())
+            .bind(sealed.as_ref().map(|b| b.ciphertext.as_slice()))
+            .bind(sealed.as_ref().map(|b| &b.nonce[..]))
+            .bind(sealed.as_ref().map(|b| b.key_version))
             .bind(now)
             .execute(&mut **tx)
             .await?;
@@ -627,6 +852,30 @@ impl McpCatalogStore for PgMcpCatalogStore {
         .await?;
         row.map(McpCatalogEntry::try_from).transpose()
     }
+
+    async fn oauth_client(
+        &self,
+        org_id: OrgId,
+        id: &McpCatalogId,
+    ) -> Result<Option<UserOAuthClient>, McpError> {
+        // Resolve the same row `get_for_org` would (tenant shadows global),
+        // then decrypt the sealed secret. Only org-scoped `UserSupplied`
+        // rows carry an `oauth_client_id`; global rows yield `None`.
+        let row: Option<OAuthClientRow> = sqlx::query_as::<_, OAuthClientRow>(
+            "SELECT oauth_client_id, oauth_client_secret_ciphertext, \
+                    oauth_client_secret_nonce, oauth_client_secret_key_version \
+               FROM mcp_catalog \
+              WHERE id = $1 \
+                AND (org_id IS NULL OR org_id = $2) \
+              ORDER BY (org_id IS NULL) ASC \
+              LIMIT 1",
+        )
+        .bind(id.as_str())
+        .bind(org_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map_or_else(|| Ok(None), |row| row.into_client(&self.enc, org_id))
+    }
 }
 
 #[cfg(test)]
@@ -659,5 +908,52 @@ mod tests {
             json.len(),
             MCP_CATALOG_AUTHORIZE_EXTRA_PARAMS_DB_BYTES_MAX,
         );
+    }
+
+    /// The secret must never leak through `Debug`/`Display` — it is
+    /// carried on `StartCtx` and logged-adjacent in the OAuth spans (§2).
+    #[test]
+    fn oauth_client_secret_redacts() {
+        let s = OAuthClientSecret::try_from("super-secret-value".to_string())
+            .expect("non-empty under cap");
+        assert_eq!(format!("{s:?}"), "OAuthClientSecret(***)");
+        assert_eq!(format!("{s}"), "***");
+        assert_eq!(s.expose(), "super-secret-value");
+    }
+
+    /// A `UserOAuthClient`'s `Debug` (derived) must inherit the secret's
+    /// redaction while still showing the non-secret `client_id`.
+    #[test]
+    fn user_oauth_client_debug_redacts_secret_keeps_id() {
+        let client = UserOAuthClient {
+            client_id: OAuthClientId::try_from("client-abc").expect("valid id"),
+            client_secret: Some(
+                OAuthClientSecret::try_from("hunter2".to_string()).expect("non-empty"),
+            ),
+        };
+        let rendered = format!("{client:?}");
+        assert!(
+            rendered.contains("client-abc"),
+            "client_id should show: {rendered}"
+        );
+        assert!(
+            !rendered.contains("hunter2"),
+            "secret must not leak: {rendered}"
+        );
+    }
+
+    #[test]
+    fn oauth_client_id_rejects_empty_and_oversized() {
+        assert!(OAuthClientId::try_from("").is_err());
+        let oversized = "a".repeat(MCP_OAUTH_CLIENT_ID_MAX_LEN + 1);
+        assert!(OAuthClientId::try_from(oversized.as_str()).is_err());
+        assert!(OAuthClientId::try_from("a").is_ok());
+    }
+
+    #[test]
+    fn oauth_client_secret_rejects_empty_and_oversized() {
+        assert!(OAuthClientSecret::try_from(String::new()).is_err());
+        let oversized = "a".repeat(MCP_OAUTH_CLIENT_SECRET_MAX_LEN + 1);
+        assert!(OAuthClientSecret::try_from(oversized).is_err());
     }
 }

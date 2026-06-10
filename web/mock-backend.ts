@@ -24,7 +24,7 @@ type Server = {
   created_by_user_id: string;
   has_credentials: boolean;
   credentials_kind: "static_headers" | "oauth2" | null;
-  connection_status: "ok" | "reconnect_required" | "error";
+  connection_status: "ok" | "reconnect_required" | "error" | "auth_pending";
   created_at: string;
   updated_at: string;
 };
@@ -1808,18 +1808,23 @@ const server = Bun.serve({
     }
 
     if (path === "/mcp-servers" && method === "POST") {
+      // The FE sends `catalog_id` (the catalog FK), not `alias`.
       const body = (await req.json()) as {
-        alias: string;
+        catalog_id: string;
         config: { type: "http"; url: string };
         description?: string | null;
         enabled?: boolean;
         credentials?: { kind: "static_headers"; headers: Record<string, string> };
+        oauth_client?: { client_id: string; client_secret?: string };
       };
       const id = `mock-${crypto.randomUUID()}`;
       const now = new Date().toISOString();
+      // A BYO-OAuth connector parks in `auth_pending` until the follow-up
+      // `oauth/start` → callback flow completes (mirrors the real backend).
+      const isOAuth = Boolean(body.oauth_client);
       const created: Server = {
         id,
-        alias: body.alias,
+        alias: body.catalog_id,
         enabled: body.enabled ?? true,
         config: body.config,
         description: body.description ?? null,
@@ -1828,8 +1833,12 @@ const server = Bun.serve({
         discovered_tools: null,
         created_by_user_id: USER_ID,
         has_credentials: Boolean(body.credentials),
-        credentials_kind: body.credentials ? "static_headers" : null,
-        connection_status: "ok",
+        credentials_kind: isOAuth
+          ? "oauth2"
+          : body.credentials
+            ? "static_headers"
+            : null,
+        connection_status: isOAuth ? "auth_pending" : "ok",
         created_at: now,
         updated_at: now,
       };

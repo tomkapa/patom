@@ -15,8 +15,9 @@ use chrono::Utc;
 use patom::auth::{OrgId, UserId};
 use patom::clock::SystemClock;
 use patom::mcp::{
-    CatalogUpsert, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName, McpCatalogId,
-    McpCatalogStore, McpError, McpHttpUrl, McpTransport, PgMcpCatalogStore,
+    CatalogUpsert, ClientSource, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName,
+    McpCatalogId, McpCatalogStore, McpError, McpHttpUrl, McpTransport, OAuthClientId,
+    OAuthClientSecret, PgMcpCatalogStore, UserOAuthClient,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -26,7 +27,10 @@ use common::pg::seed_tenant;
 
 fn store(pool: &PgPool) -> Arc<PgMcpCatalogStore> {
     let _ = SystemClock::shared();
-    Arc::new(PgMcpCatalogStore::new(pool.clone()))
+    Arc::new(PgMcpCatalogStore::new(
+        pool.clone(),
+        ::std::sync::Arc::new(patom::crypto::OrgEncryptor::for_test([0u8; 32])),
+    ))
 }
 
 fn cat(s: &str) -> McpCatalogId {
@@ -105,6 +109,8 @@ async fn ensure_inserts_new_org_scoped_row(pool: PgPool) {
             description: &description("Local Pencil MCP via SSE bridge."),
             default_transport: &http_transport("http://localhost:8000/sse"),
             auth_kind: McpAuthKind::None,
+            client_source: ClientSource::Dcr,
+            oauth_client: None,
             now,
         })
         .await
@@ -144,6 +150,8 @@ async fn ensure_does_not_mutate_existing_row(pool: PgPool) {
             description: &description("first"),
             default_transport: &http_transport("http://localhost:8000/sse"),
             auth_kind: McpAuthKind::None,
+            client_source: ClientSource::Dcr,
+            oauth_client: None,
             now: t0,
         })
         .await
@@ -159,6 +167,8 @@ async fn ensure_does_not_mutate_existing_row(pool: PgPool) {
             description: &description("second"),
             default_transport: &http_transport("http://127.0.0.1:8080/sse"),
             auth_kind: McpAuthKind::StaticHeaders,
+            client_source: ClientSource::Dcr,
+            oauth_client: None,
             now: t1,
         })
         .await
@@ -196,6 +206,8 @@ async fn ensure_rejects_collision_with_global_id(pool: PgPool) {
             description: &description("Our mirror."),
             default_transport: &http_transport("http://localhost:9000/"),
             auth_kind: McpAuthKind::None,
+            client_source: ClientSource::Dcr,
+            oauth_client: None,
             now: Utc::now(),
         })
         .await
@@ -224,6 +236,8 @@ async fn ensure_isolates_orgs(pool: PgPool) {
             description: &description("default"),
             default_transport: &http_transport("http://localhost:9000/"),
             auth_kind: McpAuthKind::None,
+            client_source: ClientSource::Dcr,
+            oauth_client: None,
             now,
         })
         .await
@@ -236,6 +250,8 @@ async fn ensure_isolates_orgs(pool: PgPool) {
             description: &description("rival"),
             default_transport: &http_transport("http://localhost:9001/"),
             auth_kind: McpAuthKind::None,
+            client_source: ClientSource::Dcr,
+            oauth_client: None,
             now,
         })
         .await
@@ -380,5 +396,132 @@ async fn builtin_github_entry_has_no_authorize_extra_params(pool: PgPool) {
         github.authorize_extra_params.is_none(),
         "github authorize_extra_params must be NULL, got: {:?}",
         github.authorize_extra_params
+    );
+}
+
+#[sqlx::test]
+async fn ensure_round_trips_confidential_user_oauth_client(pool: PgPool) {
+    // A BYO-OAuth custom connector seals its client_secret on the
+    // org-scoped catalog row. `oauth_client(...)` decrypts it back; the
+    // secret must NOT be reachable via the Serialize-derived entry.
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let id = cat("internal-oauth");
+
+    let stored = store
+        .ensure_org_scoped(CatalogUpsert {
+            org_id: seed.org_id,
+            id: &id,
+            display_name: &name("Internal OAuth"),
+            description: &description("BYO OAuth connector."),
+            default_transport: &http_transport("https://internal.example.test/mcp"),
+            auth_kind: McpAuthKind::OAuth2,
+            client_source: ClientSource::UserSupplied,
+            oauth_client: Some(UserOAuthClient {
+                client_id: OAuthClientId::try_from("client-abc-123").expect("valid id"),
+                client_secret: Some(
+                    OAuthClientSecret::try_from("s3cr3t-value".to_string()).expect("non-empty"),
+                ),
+            }),
+            now: Utc::now(),
+        })
+        .await
+        .expect("ensure user-supplied oauth");
+    assert!(matches!(stored, McpAuthKind::OAuth2));
+
+    // The entry that flows to HTTP responses carries the discriminator
+    // but no secret field exists on it at all.
+    let entry = store
+        .get_for_org(seed.org_id, &id)
+        .await
+        .expect("get_for_org")
+        .expect("row exists");
+    assert!(matches!(entry.client_source, ClientSource::UserSupplied));
+    assert!(matches!(entry.auth_kind, McpAuthKind::OAuth2));
+
+    // The dedicated decrypt seam returns the round-tripped client.
+    let client = store
+        .oauth_client(seed.org_id, &id)
+        .await
+        .expect("oauth_client")
+        .expect("user-supplied client present");
+    assert_eq!(client.client_id.as_str(), "client-abc-123");
+    assert_eq!(
+        client
+            .client_secret
+            .expect("confidential secret present")
+            .expose(),
+        "s3cr3t-value"
+    );
+}
+
+#[sqlx::test]
+async fn ensure_round_trips_public_user_oauth_client(pool: PgPool) {
+    // A public/PKCE client supplies only a client_id; the secret triple
+    // stays NULL and `oauth_client(...)` returns `client_secret = None`.
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let id = cat("public-oauth");
+
+    store
+        .ensure_org_scoped(CatalogUpsert {
+            org_id: seed.org_id,
+            id: &id,
+            display_name: &name("Public OAuth"),
+            description: &description("Public PKCE connector."),
+            default_transport: &http_transport("https://public.example.test/mcp"),
+            auth_kind: McpAuthKind::OAuth2,
+            client_source: ClientSource::UserSupplied,
+            oauth_client: Some(UserOAuthClient {
+                client_id: OAuthClientId::try_from("public-client-xyz").expect("valid id"),
+                client_secret: None,
+            }),
+            now: Utc::now(),
+        })
+        .await
+        .expect("ensure public oauth");
+
+    let client = store
+        .oauth_client(seed.org_id, &id)
+        .await
+        .expect("oauth_client")
+        .expect("user-supplied client present");
+    assert_eq!(client.client_id.as_str(), "public-client-xyz");
+    assert!(
+        client.client_secret.is_none(),
+        "public client must have no secret"
+    );
+}
+
+#[sqlx::test]
+async fn oauth_client_is_none_for_non_user_supplied_entry(pool: PgPool) {
+    // A plain (None-auth) custom entry carries no oauth_client_id, so the
+    // decrypt seam yields None rather than erroring.
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+    let id = cat("plain-custom");
+
+    store
+        .ensure_org_scoped(CatalogUpsert {
+            org_id: seed.org_id,
+            id: &id,
+            display_name: &name("Plain Custom"),
+            description: &description("No auth."),
+            default_transport: &http_transport("https://plain.example.test/mcp"),
+            auth_kind: McpAuthKind::None,
+            client_source: ClientSource::Dcr,
+            oauth_client: None,
+            now: Utc::now(),
+        })
+        .await
+        .expect("ensure plain custom");
+
+    let client = store
+        .oauth_client(seed.org_id, &id)
+        .await
+        .expect("oauth_client");
+    assert!(
+        client.is_none(),
+        "non-user-supplied entry has no oauth client"
     );
 }

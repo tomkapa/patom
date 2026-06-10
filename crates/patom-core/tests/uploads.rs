@@ -110,7 +110,10 @@ impl UploadsHarness {
         let users = common::auth::user_store(pool.clone());
         let primary = seed_principal(&pool, &jwt).await;
 
-        let mcp_catalog: SharedMcpCatalogStore = Arc::new(PgMcpCatalogStore::new(pool.clone()));
+        let mcp_catalog: SharedMcpCatalogStore = Arc::new(PgMcpCatalogStore::new(
+            pool.clone(),
+            ::std::sync::Arc::new(patom::crypto::OrgEncryptor::for_test([0u8; 32])),
+        ));
 
         let state = AppState {
             queue,

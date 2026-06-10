@@ -29,11 +29,11 @@ use crate::mcp::oauth::{
     start_authorization,
 };
 use crate::mcp::{
-    CatalogUpsert, ConnectionStatus, CredentialPayload, DiscoveredTool,
+    CatalogUpsert, ClientSource, ConnectionStatus, CredentialPayload, DiscoveredTool,
     MCP_CREDENTIAL_READ_TIMEOUT, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName,
     McpCatalogId, McpClient, McpCredentialWrite, McpDescription, McpError, McpServerCreate,
     McpServerId, McpServerRecord, McpServerUpdate, McpTransport, OAUTH2_KIND_LABEL,
-    OAuthAuthorizeExtras,
+    OAuthAuthorizeExtras, OAuthClientId, OAuthClientSecret, UserOAuthClient,
 };
 use crate::tools::{DEFAULT_TOOL_CALLS_PAGE, MAX_TOOL_CALLS_PAGE, ToolCallRowId};
 
@@ -236,6 +236,40 @@ struct CreateMcpServerRequest {
     /// Defaults to the `catalog_id` when omitted.
     #[serde(default)]
     display_name: Option<String>,
+    /// BYO-OAuth client for a custom (full-form) server. When present the
+    /// auto-created catalog row is marked `auth_kind = oauth2`,
+    /// `client_source = user_supplied`, and the client identity is sealed
+    /// on the row. Mutually exclusive with `credentials`; invalid on the
+    /// short form (it needs a custom URL). The token is obtained by the
+    /// follow-up `oauth/start` flow, never inline here.
+    #[serde(default)]
+    oauth_client: Option<OAuthClientInput>,
+}
+
+/// Wire shape of a user-supplied OAuth client on the create path. Parsed
+/// to a [`UserOAuthClient`] via the newtypes' `TryFrom` (length caps →
+/// HTTP 400). `client_secret` is optional: a confidential client supplies
+/// it, a public/PKCE client omits it.
+#[derive(Debug, Deserialize)]
+struct OAuthClientInput {
+    client_id: String,
+    #[serde(default)]
+    client_secret: Option<String>,
+}
+
+impl OAuthClientInput {
+    fn into_user_client(self) -> Result<UserOAuthClient, HttpError> {
+        let client_id = OAuthClientId::try_from(self.client_id).map_err(HttpError::Parse)?;
+        let client_secret = self
+            .client_secret
+            .map(OAuthClientSecret::try_from)
+            .transpose()
+            .map_err(HttpError::Parse)?;
+        Ok(UserOAuthClient {
+            client_id,
+            client_secret,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -284,6 +318,24 @@ async fn create_mcp_server(
         }
         None => None,
     };
+    // Parse the BYO-OAuth client at the boundary (length caps → 400).
+    let oauth_client = payload
+        .oauth_client
+        .map(OAuthClientInput::into_user_client)
+        .transpose()?;
+    let is_full_form = payload.config.is_some();
+    // A request carries at most one auth method, and an OAuth client only
+    // makes sense for a custom server URL (the full form).
+    if oauth_client.is_some() && credentials_payload.is_some() {
+        return Err(HttpError::Mcp(McpError::InvalidConfig(
+            "choose one auth method: an OAuth client or inline credentials, not both".into(),
+        )));
+    }
+    if oauth_client.is_some() && !is_full_form {
+        return Err(HttpError::Mcp(McpError::InvalidConfig(
+            "OAuth client is only valid for a custom server URL".into(),
+        )));
+    }
 
     let (config, catalog_auth_kind) = resolve_catalog_for_create(
         &state,
@@ -292,6 +344,7 @@ async fn create_mcp_server(
         payload.config,
         payload.display_name.as_deref(),
         credentials_payload.as_ref(),
+        oauth_client,
     )
     .await?;
     reject_oauth_with_inline_credentials(catalog_auth_kind, credentials_payload.as_ref())?;
@@ -349,6 +402,7 @@ async fn resolve_catalog_for_create(
     config: Option<McpTransport>,
     display_name: Option<&str>,
     credentials_payload: Option<&CredentialPayload>,
+    oauth_client: Option<UserOAuthClient>,
 ) -> Result<(McpTransport, McpAuthKind), HttpError> {
     if let Some(c) = config {
         let auth_kind = register_custom_catalog_entry(
@@ -358,6 +412,7 @@ async fn resolve_catalog_for_create(
             display_name,
             &c,
             credentials_payload,
+            oauth_client,
         )
         .await?;
         return Ok((c, auth_kind));
@@ -436,15 +491,21 @@ async fn persist_inline_credentials(
 /// from [`create_mcp_server`]; factored out to keep that handler under
 /// the 70-line ceiling.
 ///
-/// `auth_kind` for a freshly-inserted row is derived from the request:
-/// any inline credential is necessarily `static_headers` (the
-/// `CredentialInput` wire shape excludes OAuth — those flow through
-/// the dedicated `oauth/start` route), and a row with no credentials
-/// starts as `none`. OAuth-style custom servers have no wiring path
-/// here today. For a pre-existing row, the stored value wins; the
-/// store's insert-if-absent semantics guarantee the row's metadata
-/// can't be mutated by a request that's about to 409 on the server
-/// uniqueness check.
+/// `auth_kind` / `client_source` for a freshly-inserted row are derived
+/// from the request:
+///   * `oauth_client` present → `oauth2` / `user_supplied`. The client
+///     identity is sealed on the row; the token arrives via the follow-up
+///     `oauth/start` route, never inline.
+///   * an inline credential → `static_headers` (the `CredentialInput` wire
+///     shape excludes OAuth). `client_source` is irrelevant for this auth
+///     kind, so it keeps the historical DB default (`dcr`).
+///   * neither → `none` / `dcr`.
+///
+/// `oauth_client` and `credentials_payload` are mutually exclusive — the
+/// caller rejects the both-present combo before reaching here. For a
+/// pre-existing row, the stored value wins; the store's insert-if-absent
+/// semantics guarantee the row's metadata can't be mutated by a request
+/// that's about to 409 on the server uniqueness check.
 async fn register_custom_catalog_entry(
     state: &AppState,
     org_id: crate::auth::OrgId,
@@ -452,15 +513,18 @@ async fn register_custom_catalog_entry(
     display_name: Option<&str>,
     config: &McpTransport,
     credentials_payload: Option<&CredentialPayload>,
+    oauth_client: Option<UserOAuthClient>,
 ) -> Result<McpAuthKind, HttpError> {
     let display_name = McpCatalogDisplayName::try_from(display_name.unwrap_or(catalog_id.as_str()))
         .map_err(HttpError::Parse)?;
     let description =
         McpCatalogDescription::try_from("Custom MCP server.").map_err(HttpError::Parse)?;
-    let auth_kind = if credentials_payload.is_some() {
-        McpAuthKind::StaticHeaders
+    let (auth_kind, client_source) = if oauth_client.is_some() {
+        (McpAuthKind::OAuth2, ClientSource::UserSupplied)
+    } else if credentials_payload.is_some() {
+        (McpAuthKind::StaticHeaders, ClientSource::Dcr)
     } else {
-        McpAuthKind::None
+        (McpAuthKind::None, ClientSource::Dcr)
     };
     let stored_auth_kind = state
         .mcp_catalog
@@ -471,6 +535,8 @@ async fn register_custom_catalog_entry(
             description: &description,
             default_transport: config,
             auth_kind,
+            client_source,
+            oauth_client,
             now: state.clock.now_utc(),
         })
         .await?;
@@ -1197,6 +1263,17 @@ async fn start_oauth(
         HttpError::Internal
     })?;
 
+    // A user-supplied connector carries its own OAuth client on the
+    // catalog row; decrypt it here and inject it into the start context.
+    let user_oauth_client = if matches!(catalog_entry.client_source, ClientSource::UserSupplied) {
+        state
+            .mcp_catalog
+            .oauth_client(principal.active_org_id, &catalog_entry.id)
+            .await?
+    } else {
+        None
+    };
+
     let authorize_url = start_authorization(StartCtx {
         catalog: &catalog_entry,
         server_url,
@@ -1205,6 +1282,7 @@ async fn start_oauth(
         authorize_extras: extras_owned,
         redirect_uri,
         platform_clients: &state.platform_oauth_clients,
+        user_oauth_client,
         credentials: state.mcp_credentials.clone(),
         state_store: writer,
         server_id,
@@ -1374,6 +1452,27 @@ async fn callback_flow(
     let reader = state.mcp_oauth_pending.clone().reader();
     let now = state.clock.now_utc();
 
+    // Re-fetch the user-supplied client so the callback rebuilds the exact
+    // same OAuth client identity the start path configured.
+    let user_oauth_client = if matches!(catalog.client_source, ClientSource::UserSupplied) {
+        match state
+            .mcp_catalog
+            .oauth_client(pending.org_id, &catalog.id)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(event = "mcp.oauth.callback.oauth_client_lookup_failed", error = ?e);
+                return Err(CallbackFail {
+                    redirect_to: pending.redirect_to.clone(),
+                    reason: "internal_error",
+                });
+            }
+        }
+    } else {
+        None
+    };
+
     if let Err(e) = handle_callback(
         &catalog,
         &server_url,
@@ -1382,6 +1481,7 @@ async fn callback_flow(
         state_val,
         &redirect_uri,
         &state.platform_oauth_clients,
+        user_oauth_client,
         pending.server_id,
         pending.org_id,
         state.mcp_credentials.clone(),
@@ -2021,6 +2121,9 @@ async fn slack_connect_build_oauth_start(
         authorize_extras: extras_owned,
         redirect_uri,
         platform_clients: &state.platform_oauth_clients,
+        // Slack-connect wires pre-seeded catalog connectors (Gmail, …),
+        // never user-supplied custom URLs.
+        user_oauth_client: None,
         credentials: state.mcp_credentials.clone(),
         state_store: writer,
         server_id,
