@@ -61,6 +61,9 @@ pub enum AgentError {
     #[error("org {org} has exhausted its monthly spend budget")]
     BillingExceeded { org: OrgId },
 
+    #[error("org {org} is out of platform credit")]
+    OutOfCredit { org: OrgId },
+
     #[error("agent cancelled")]
     Cancelled,
 }

@@ -639,9 +639,12 @@ pub async fn build_server(
         Arc::new(crate::agents::StaticAgentModelResolver::new(settings.model));
     // Per-org spend budget — a thin (pool, clock) wrapper, built here so every
     // agent the factory materialises shares one handle (CLAUDE.md §9).
-    let billing: crate::billing::SharedBillingService = Arc::new(
-        crate::billing::PgBillingService::new(pieces.pool.clone(), pieces.clock.clone()),
-    );
+    let billing: crate::billing::SharedBillingService =
+        Arc::new(crate::billing::PgBillingService::with_entitlements(
+            pieces.pool.clone(),
+            pieces.clock.clone(),
+            entitlements.clone(),
+        ));
     let factory_pieces = AgentFactoryPieces {
         providers: pieces.providers.clone(),
         threads: pieces.threads.clone(),

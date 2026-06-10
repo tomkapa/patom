@@ -17,6 +17,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::auth::{OrgId, UserId, begin_as_user, begin_privileged};
 use crate::clock::SharedClock;
+use crate::entitlements::{SharedEntitlements, UnlimitedEntitlements};
 use crate::runtime::IdempotencyKey;
 
 use super::error::BillingError;
@@ -177,17 +178,40 @@ pub trait BillingService: fmt::Debug + Send + Sync {
 /// Cheap-clone handle held by the admission gate and the agent worker.
 pub type SharedBillingService = Arc<dyn BillingService>;
 
-/// Postgres-backed [`BillingService`]. Holds the [`SharedClock`] so the billing
-/// period is deterministic under a `TestClock` (CLAUDE.md §11).
+/// Postgres-backed [`BillingService`].
+///
+/// Holds the [`SharedClock`] so the billing period is deterministic under a
+/// `TestClock` (CLAUDE.md §11), and the [`SharedEntitlements`] policy so the
+/// gate knows whether the free-credit gate is active for an org (#154).
 pub struct PgBillingService {
     pool: PgPool,
     clock: SharedClock,
+    entitlements: SharedEntitlements,
 }
 
 impl PgBillingService {
+    /// Build a service whose credit gate is **inactive** (the OSS / self-host
+    /// default). The cap gate still applies; the credit balance is ignored.
+    /// Production wires the real policy via [`Self::with_entitlements`].
     #[must_use]
-    pub const fn new(pool: PgPool, clock: SharedClock) -> Self {
-        Self { pool, clock }
+    pub fn new(pool: PgPool, clock: SharedClock) -> Self {
+        Self::with_entitlements(pool, clock, Arc::new(UnlimitedEntitlements))
+    }
+
+    /// Build a service with an explicit entitlement policy — the cloud path,
+    /// where `entitlements.credit_gate_active` decides whether a zero balance
+    /// blocks a turn.
+    #[must_use]
+    pub fn with_entitlements(
+        pool: PgPool,
+        clock: SharedClock,
+        entitlements: SharedEntitlements,
+    ) -> Self {
+        Self {
+            pool,
+            clock,
+            entitlements,
+        }
     }
 }
 
@@ -231,6 +255,25 @@ impl UsageSnapshot {
         span.record("patom.billing.outcome", "ok");
         Ok(())
     }
+}
+
+/// The org's materialized credit balance for the gate. An absent `org_credits`
+/// row reads as zero (see [`read_credit_balance`]).
+const CREDIT_BALANCE: &str = "SELECT balance_micro_usd FROM org_credits WHERE org_id = $1";
+
+/// Read the org's credit balance in micro-USD inside the open transaction. An
+/// absent `org_credits` row reads as **zero**, not unlimited: a credit-gated org
+/// with no grant (pre-grant or post-promo) is out of credit. Under `begin_as_user`
+/// the read is RLS-filtered, so a cross-tenant org argument also reads as zero.
+async fn read_credit_balance(
+    tx: &mut Transaction<'_, Postgres>,
+    org: OrgId,
+) -> Result<i64, sqlx::Error> {
+    let row: Option<(i64,)> = sqlx::query_as(CREDIT_BALANCE)
+        .bind(org)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row.map_or(0, |(b,)| b))
 }
 
 /// Read the cap + current-period usage in one round-trip. An absent
@@ -310,6 +353,8 @@ impl PgBillingService {
             patom.billing.outcome = tracing::field::Empty,
             patom.billing.used_micro = tracing::field::Empty,
             patom.billing.cap_micro = tracing::field::Empty,
+            patom.credit.balance = tracing::field::Empty,
+            patom.credit.outcome = tracing::field::Empty,
         ),
     )]
     async fn gate(
@@ -319,8 +364,31 @@ impl PgBillingService {
     ) -> Result<(), BillingError> {
         let period = BillingPeriod::current(&self.clock);
         let snapshot = read_snapshot(&mut tx, org, period).await?;
+        // Credit gate (#154): read + enforce only when policy says it is active
+        // for this org. Under the OSS default it never is, so this is skipped
+        // and the credit balance is never even read.
+        let credit_balance = if self.entitlements.credit_gate_active(org) {
+            Some(read_credit_balance(&mut tx, org).await?)
+        } else {
+            None
+        };
         tx.commit().await?;
-        snapshot.decide(org)
+        // Cap first (→ 429 Exceeded), then credit exhaustion (→ 402 OutOfCredit):
+        // two distinct failure modes, reported separately.
+        snapshot.decide(org)?;
+        if let Some(balance) = credit_balance {
+            let span = tracing::Span::current();
+            span.record("patom.credit.balance", balance);
+            if balance <= 0 {
+                span.record("patom.credit.outcome", "out_of_credit");
+                return Err(BillingError::OutOfCredit {
+                    org,
+                    balance_micro_usd: balance,
+                });
+            }
+            span.record("patom.credit.outcome", "ok");
+        }
+        Ok(())
     }
 }
 

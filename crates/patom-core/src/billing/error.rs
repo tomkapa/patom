@@ -17,6 +17,14 @@ pub enum BillingError {
         cap_micro_usd: i64,
     },
 
+    /// The org's free-credit balance is exhausted (#154) and the credit gate is
+    /// active for it. Carries the (signed) balance so the caller — and the `402`
+    /// it maps to — can report the shortfall. Distinct from [`Self::Exceeded`]:
+    /// a zero balance means "out of platform credit" (top up / bring your own
+    /// key), not "over a configured monthly cap".
+    #[error("org {org} is out of credit: balance {balance_micro_usd} micro-USD")]
+    OutOfCredit { org: OrgId, balance_micro_usd: i64 },
+
     /// A Postgres failure on a gate read or the settle upsert.
     #[error(transparent)]
     Db(#[from] sqlx::Error),

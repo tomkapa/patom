@@ -62,7 +62,7 @@ pub enum HttpError {
     Auth(#[from] AuthError),
 
     #[error("billing: {0}")]
-    Budget(#[from] BillingError),
+    Billing(#[from] BillingError),
 
     /// Inner failure on the per-turn detail route. 4xx variants (NotFound /
     /// MetricsMissing / PromptVersionMissing) are bridged to `Self::NotFound`
@@ -117,10 +117,15 @@ impl IntoResponse for HttpError {
                 (StatusCode::NOT_FOUND, self.to_string())
             }
             Self::Mcp(McpError::ServerCapExceeded { .. })
-            | Self::Budget(BillingError::Exceeded { .. }) => {
+            | Self::Billing(BillingError::Exceeded { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, self.to_string())
             }
-            Self::Budget(BillingError::Db(_)) => (
+            // Out of platform credit → 402, the same code the agent-cap license
+            // gate uses. Distinct from the 429 monthly-cap case above.
+            Self::Billing(BillingError::OutOfCredit { .. }) => {
+                (StatusCode::PAYMENT_REQUIRED, self.to_string())
+            }
+            Self::Billing(BillingError::Db(_)) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "billing store error".into(),
             ),

@@ -38,6 +38,7 @@ fn error_label(err: &AgentError) -> &'static str {
         AgentError::MaxTurnsExceeded(_) => "max_turns",
         AgentError::EmptyReply => "empty_reply",
         AgentError::BillingExceeded { .. } => "billing_exceeded",
+        AgentError::OutOfCredit { .. } => "out_of_credit",
         AgentError::HookDenied(_) => "hook_denied",
         AgentError::Hook(_) => "hook_error",
         AgentError::Internal(_) => "internal_error",

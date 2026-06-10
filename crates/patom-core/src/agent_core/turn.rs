@@ -520,6 +520,7 @@ impl Agent {
         match budget.check_or_fail(org).await {
             Ok(()) => Ok(()),
             Err(BillingError::Exceeded { .. }) => Err(AgentError::BillingExceeded { org }),
+            Err(BillingError::OutOfCredit { .. }) => Err(AgentError::OutOfCredit { org }),
             Err(BillingError::Db(e)) => {
                 tracing::error!(
                     error = ?e,

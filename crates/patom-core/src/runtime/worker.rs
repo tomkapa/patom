@@ -493,6 +493,7 @@ impl Worker {
             AgentError::ProviderTimeout | AgentError::TodosLoadTimeout => FailureReason::Timeout,
             AgentError::HookDenied(d) => FailureReason::Hook(d.0),
             AgentError::BillingExceeded { .. } => FailureReason::BillingExceeded,
+            AgentError::OutOfCredit { .. } => FailureReason::OutOfCredit,
             e @ (AgentError::Provider(_)
             | AgentError::Internal(_)
             | AgentError::Thread(_)
