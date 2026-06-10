@@ -49,7 +49,7 @@ async fn settle_accumulates_atomically_under_concurrency(pool: PgPool) {
         let svc = service.clone();
         let org = seed.org_id;
         handles.push(tokio::spawn(async move {
-            svc.settle(org, cost(1000)).await.expect("settle");
+            svc.settle(org, cost(1000), None).await.expect("settle");
         }));
     }
     for h in handles {
@@ -67,7 +67,7 @@ async fn gate_blocks_at_cap_and_passes_below(pool: PgPool) {
     set_billing(&pool, seed.org_id, Some(5_000), 8000).await;
 
     service
-        .settle(seed.org_id, cost(3_000))
+        .settle(seed.org_id, cost(3_000), None)
         .await
         .expect("settle 1");
     service
@@ -76,7 +76,7 @@ async fn gate_blocks_at_cap_and_passes_below(pool: PgPool) {
         .expect("under cap passes");
 
     service
-        .settle(seed.org_id, cost(2_500))
+        .settle(seed.org_id, cost(2_500), None)
         .await
         .expect("settle 2");
     let err = service
@@ -99,7 +99,7 @@ async fn gate_unlimited_without_configured_cap(pool: PgPool) {
     let service = PgBillingService::new(pool.clone(), SystemClock::shared());
     // No org_billing row at all → unlimited.
     service
-        .settle(seed.org_id, cost(1_000_000_000))
+        .settle(seed.org_id, cost(1_000_000_000), None)
         .await
         .expect("settle");
     service
@@ -121,7 +121,7 @@ async fn period_rollover_starts_a_fresh_counter(pool: PgPool) {
 
     // Month A: spend over the cap → blocked.
     service
-        .settle(seed.org_id, cost(4_000))
+        .settle(seed.org_id, cost(4_000), None)
         .await
         .expect("settle A");
     assert!(service.check_or_fail(seed.org_id).await.is_err());
@@ -154,7 +154,7 @@ async fn warn_fires_once_per_period(pool: PgPool) {
     set_billing(&pool, seed.org_id, Some(100_000), 8000).await;
 
     service
-        .settle(seed.org_id, cost(50_000))
+        .settle(seed.org_id, cost(50_000), None)
         .await
         .expect("settle 1");
     let (_, warned) = read_usage(&pool, seed.org_id).await.expect("row");
@@ -162,7 +162,7 @@ async fn warn_fires_once_per_period(pool: PgPool) {
 
     test_clock.advance(Duration::from_secs(10));
     service
-        .settle(seed.org_id, cost(40_000))
+        .settle(seed.org_id, cost(40_000), None)
         .await
         .expect("settle 2");
     let (used, warned_first) = read_usage(&pool, seed.org_id).await.expect("row");
@@ -172,7 +172,7 @@ async fn warn_fires_once_per_period(pool: PgPool) {
     // A later settle in the same period must NOT move warned_at (fires once).
     test_clock.advance(Duration::from_secs(10));
     service
-        .settle(seed.org_id, cost(5_000))
+        .settle(seed.org_id, cost(5_000), None)
         .await
         .expect("settle 3");
     let (_, warned_again) = read_usage(&pool, seed.org_id).await.expect("row");
@@ -191,7 +191,7 @@ async fn tenant_gate_is_rls_isolated(pool: PgPool) {
     let service = PgBillingService::new(pool.clone(), SystemClock::shared());
     set_billing(&pool, a.org_id, Some(1_000), 8000).await;
     service
-        .settle(a.org_id, cost(2_000))
+        .settle(a.org_id, cost(2_000), None)
         .await
         .expect("settle A over cap");
 

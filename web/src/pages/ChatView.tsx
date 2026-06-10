@@ -201,7 +201,7 @@ export function ChatView() {
     // surface the top-up / bring-your-own-key prompt inline.
     if (e instanceof ApiError && e.status === 402) {
       setComposerError(t("chat.error.out_of_credit"));
-      track("budget_warning_shown");
+      track("out_of_credit_shown");
       return true;
     }
     return false;

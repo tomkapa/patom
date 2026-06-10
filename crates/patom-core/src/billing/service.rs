@@ -97,16 +97,31 @@ const INSERT_LEDGER_ENTRY: &str = "
     ON CONFLICT (idempotency_key) DO NOTHING
     RETURNING id";
 
-/// Debit the materialized balance by a turn's cost and read the new totals back
-/// for the `balance == granted − used` invariant (§6). Affects no row (returns
-/// nothing) when the org has no `org_credits` row.
+/// Append a `usage` debit and move the materialized balance, **idempotently and
+/// atomically**, in one statement. The `INSERT` is the dedup gate: it writes the
+/// ledger row only when the org has an `org_credits` row (`WHERE EXISTS`) and the
+/// `idempotency_key` is new (`ON CONFLICT DO NOTHING`). The `UPDATE` then debits
+/// only the org the insert actually wrote (`FROM ins`), so a replayed settle
+/// (same key) and a no-credits-row org both no-op — never a double-debit or an
+/// orphan ledger entry. A NULL key never conflicts (the non-idempotent path).
+/// `RETURNING` yields the new totals only when a debit happened.
+/// Binds: $1 = ledger id, $2 = org, $3 = cost (positive), $4 = usage key, $5 = now.
 const SETTLE_DEBIT_CREDITS: &str = "
-    UPDATE org_credits
-       SET balance_micro_usd    = balance_micro_usd - $2,
-           used_total_micro_usd = used_total_micro_usd + $2,
-           updated_at           = $3
-     WHERE org_id = $1
-     RETURNING balance_micro_usd, granted_total_micro_usd, used_total_micro_usd";
+    WITH ins AS (
+        INSERT INTO org_credit_ledger
+            (id, org_id, delta_micro_usd, kind, reason, idempotency_key, actor, created_at)
+        SELECT $1, $2, -$3, 'debit', 'usage', $4, NULL, $5
+        WHERE EXISTS (SELECT 1 FROM org_credits WHERE org_id = $2)
+        ON CONFLICT (idempotency_key) DO NOTHING
+        RETURNING org_id
+    )
+    UPDATE org_credits c
+       SET balance_micro_usd    = c.balance_micro_usd - $3,
+           used_total_micro_usd = c.used_total_micro_usd + $3,
+           updated_at           = $5
+      FROM ins
+     WHERE c.org_id = ins.org_id
+     RETURNING c.balance_micro_usd, c.granted_total_micro_usd, c.used_total_micro_usd";
 
 /// Move the materialized balance by a grant: create the row on first credit or
 /// add to the existing balance, and read the new totals back so the caller can
@@ -186,8 +201,16 @@ pub trait BillingService: fmt::Debug + Send + Sync {
     ) -> Result<(), BillingError>;
 
     /// Post-paid settle (privileged, worker-side). Adds `cost` to the current
-    /// period atomically and fires the soft-warn alert once per period.
-    async fn settle(&self, org: OrgId, cost: CostMicros) -> Result<(), BillingError>;
+    /// period atomically and fires the soft-warn alert once per period. When the
+    /// credit gate is active it also debits the credit balance; `usage_key`, when
+    /// present, makes that debit idempotent so a retried settle of the same turn
+    /// never double-debits (pass `None` for a non-idempotent settle).
+    async fn settle(
+        &self,
+        org: OrgId,
+        cost: CostMicros,
+        usage_key: Option<&IdempotencyKey>,
+    ) -> Result<(), BillingError>;
 
     /// Idempotently grant `amount` credit to `org` (privileged). Appends a
     /// `grant` ledger entry keyed by `key` and moves the materialized balance,
@@ -444,41 +467,38 @@ impl PgBillingService {
     }
 
     /// Debit this turn's `cost` from the org's credit balance inside the open
-    /// settle transaction, and append the matching `usage` ledger entry — but
-    /// only when the credit gate is active for the org and the turn cost a
-    /// nonzero amount. A missing `org_credits` row (a pre-grant / OSS org) is a
-    /// no-op. Usage debits carry a NULL idempotency key (not deduped); the gate
-    /// already bounds the single-turn overrun, so a post-paid dip is acceptable.
+    /// settle transaction, appending the matching `usage` ledger entry in the
+    /// same statement — but only when the credit gate is active for the org and
+    /// the turn cost a nonzero amount. A missing `org_credits` row (a pre-grant /
+    /// OSS org) is a no-op. `usage_key`, when present, makes the debit
+    /// **idempotent** (a retried settle of the same turn never double-debits); a
+    /// `None` key debits unconditionally. The single-turn post-paid dip the gate
+    /// allows is acceptable.
     async fn debit_credits(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         org: OrgId,
         cost: CostMicros,
         now: DateTime<Utc>,
+        usage_key: Option<&IdempotencyKey>,
     ) -> Result<(), BillingError> {
         if !self.entitlements.credit_gate_active(org) || cost.get() == 0 {
             return Ok(());
         }
+        // One statement appends the usage entry (deduped by key) and debits the
+        // balance only for a genuinely new entry — see SETTLE_DEBIT_CREDITS.
         let debited: Option<(i64, i64, i64)> = sqlx::query_as(SETTLE_DEBIT_CREDITS)
+            .bind(CreditLedgerId::new())
             .bind(org)
             .bind(cost.get())
+            .bind(usage_key.map(IdempotencyKey::as_str))
             .bind(now)
             .fetch_optional(&mut **tx)
             .await?;
         let Some((balance, granted, used)) = debited else {
+            // No-op: replayed key, or the org has no credits row.
             return Ok(());
         };
-        sqlx::query(INSERT_LEDGER_ENTRY)
-            .bind(CreditLedgerId::new())
-            .bind(org)
-            .bind(LedgerDelta::from(cost).get())
-            .bind(LedgerKind::Debit.as_str())
-            .bind(LedgerReason::Usage.as_str())
-            .bind(None::<&str>)
-            .bind(None::<UserId>)
-            .bind(now)
-            .execute(&mut **tx)
-            .await?;
         // §6: the column CHECKs keep the totals non-negative; assert the balance
         // identity so a corrupt materialization crashes here.
         assert!(granted >= 0, "invariant: granted_total non-negative");
@@ -526,7 +546,12 @@ impl BillingService for PgBillingService {
             patom.billing.warned = tracing::field::Empty,
         ),
     )]
-    async fn settle(&self, org: OrgId, cost: CostMicros) -> Result<(), BillingError> {
+    async fn settle(
+        &self,
+        org: OrgId,
+        cost: CostMicros,
+        usage_key: Option<&IdempotencyKey>,
+    ) -> Result<(), BillingError> {
         let period = BillingPeriod::current(&self.clock);
         let now = self.clock.now_utc();
         let mut tx = begin_privileged(&self.pool).await?;
@@ -543,7 +568,8 @@ impl BillingService for PgBillingService {
         let warned = fire_warn_once(&mut tx, org, period, used, cap, bps, now).await?;
         // Credit debit (#154) in the *same* tx, so the cap usage and the credit
         // balance move atomically. Inert under the OSS default (gate inactive).
-        self.debit_credits(&mut tx, org, cost, now).await?;
+        self.debit_credits(&mut tx, org, cost, now, usage_key)
+            .await?;
         tx.commit().await?;
         let span = tracing::Span::current();
         span.record("patom.billing.used_micro", used);

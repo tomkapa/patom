@@ -37,7 +37,8 @@ export type AnalyticsEvent =
   | "agent_invoked"
   | "invite_sent"
   | "org_switched"
-  | "budget_warning_shown";
+  | "budget_warning_shown"
+  | "out_of_credit_shown";
 
 // The live client, set once the dynamic import in `init()` resolves.
 let client: PostHog | null = null;

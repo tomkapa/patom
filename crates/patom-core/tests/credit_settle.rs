@@ -7,6 +7,7 @@
 
 use patom::billing::{BillingService, CostMicros, PgBillingService};
 use patom::clock::SystemClock;
+use patom::runtime::IdempotencyKey;
 use sqlx::PgPool;
 
 mod common;
@@ -20,7 +21,7 @@ async fn settle_debits_balance_and_appends_usage_entry(pool: PgPool) {
     grant(&service, seed.org_id, 1_000_000, "seed").await;
 
     service
-        .settle(seed.org_id, cost(300_000))
+        .settle(seed.org_id, cost(300_000), None)
         .await
         .expect("settle");
 
@@ -41,7 +42,7 @@ async fn settle_may_dip_balance_negative(pool: PgPool) {
     grant(&service, seed.org_id, 100_000, "seed").await;
 
     service
-        .settle(seed.org_id, cost(150_000))
+        .settle(seed.org_id, cost(150_000), None)
         .await
         .expect("settle");
 
@@ -58,7 +59,7 @@ async fn inactive_gate_settle_leaves_credits_untouched(pool: PgPool) {
     grant(&service, seed.org_id, 1_000_000, "seed").await;
 
     service
-        .settle(seed.org_id, cost(300_000))
+        .settle(seed.org_id, cost(300_000), None)
         .await
         .expect("settle");
 
@@ -75,7 +76,7 @@ async fn zero_cost_settle_appends_no_usage_entry(pool: PgPool) {
     grant(&service, seed.org_id, 1_000_000, "seed").await;
 
     service
-        .settle(seed.org_id, CostMicros::ZERO)
+        .settle(seed.org_id, CostMicros::ZERO, None)
         .await
         .expect("settle");
 
@@ -86,6 +87,34 @@ async fn zero_cost_settle_appends_no_usage_entry(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn settle_is_idempotent_under_same_usage_key(pool: PgPool) {
+    // A retried settle of the same turn (same usage key) must debit exactly once
+    // — no double-charge on a worker resume.
+    let seed = seed_tenant(&pool).await;
+    let service = active_service(&pool);
+    grant(&service, seed.org_id, 1_000_000, "seed").await;
+    let key = IdempotencyKey::try_from("usage:req-1:0".to_owned()).expect("key");
+
+    service
+        .settle(seed.org_id, cost(300_000), Some(&key))
+        .await
+        .expect("settle 1");
+    service
+        .settle(seed.org_id, cost(300_000), Some(&key))
+        .await
+        .expect("settle 2 (replay)");
+
+    let (balance, _granted, used) = credits(&pool, seed.org_id).await.expect("credits row");
+    assert_eq!(balance, 700_000, "debited exactly once");
+    assert_eq!(used, 300_000);
+    assert_eq!(
+        usage_entries(&pool, seed.org_id).await,
+        vec![-300_000],
+        "one usage ledger entry for the repeated key"
+    );
+}
+
+#[sqlx::test]
 async fn settle_without_credits_row_is_a_noop(pool: PgPool) {
     // Active gate but no grant yet → no org_credits row. Settle must not crash
     // or create a row; the cap-usage path still runs.
@@ -93,7 +122,7 @@ async fn settle_without_credits_row_is_a_noop(pool: PgPool) {
     let service = active_service(&pool);
 
     service
-        .settle(seed.org_id, cost(300_000))
+        .settle(seed.org_id, cost(300_000), None)
         .await
         .expect("settle");
 

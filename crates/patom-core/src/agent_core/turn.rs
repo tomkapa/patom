@@ -17,7 +17,7 @@ use crate::provider::{
     ChatMessage, ChatRequest, ChatResponse, StopReason, ToolCall, ToolCallId, ToolResult,
     UserContent,
 };
-use crate::runtime::{PromptRequestId, RequestKind, RequestKindPayload};
+use crate::runtime::{IdempotencyKey, PromptRequestId, RequestKind, RequestKindPayload};
 use crate::threads::{AgentThreadId, MessageKind, NewMessage, ThreadId};
 use crate::tools::{
     SharedTool, TOOL_RESULT_MAX_BYTES, ToolBox, ToolCallContext, ToolCallRow, ToolCallRowId,
@@ -82,7 +82,8 @@ impl Agent {
             &response,
         )
         .await;
-        self.billing_settle(caller.org_id, &response).await;
+        self.billing_settle(caller.org_id, request_id, ctx.turn_index, &response)
+            .await;
         self.hooks()
             .after_turn(ctx, &response)
             .await?
@@ -364,7 +365,8 @@ impl Agent {
             &response,
         )
         .await;
-        self.billing_settle(caller.org_id, &response).await;
+        self.billing_settle(caller.org_id, request_id, ctx.turn_index, &response)
+            .await;
         self.hooks()
             .after_turn(ctx, &response)
             .await?
@@ -536,12 +538,23 @@ impl Agent {
     /// period. Fail-open — a settle failure is logged and the turn proceeds (the
     /// user already received the answer); `turn_metrics` is the reconciliation
     /// ledger (CLAUDE.md §6). No-op when no budget service is wired.
-    async fn billing_settle(&self, org: OrgId, response: &ChatResponse) {
+    async fn billing_settle(
+        &self,
+        org: OrgId,
+        request_id: PromptRequestId,
+        turn_index: TurnIndex,
+        response: &ChatResponse,
+    ) {
         let Some(budget) = self.billing() else {
             return;
         };
         let cost = turn_cost(price_for(self.model()), &response.usage);
-        if let Err(e) = budget.settle(org, cost).await {
+        // Stable per-turn key so a retried settle (worker resume) never
+        // double-debits credits: `(request_id, turn_index)` is the same across
+        // re-runs of the same turn, unlike the provider's response id.
+        let usage_key =
+            IdempotencyKey::try_from(format!("usage:{request_id}:{}", turn_index.get())).ok();
+        if let Err(e) = budget.settle(org, cost, usage_key.as_ref()).await {
             tracing::error!(
                 error = ?e,
                 patom.org.id = %org,
