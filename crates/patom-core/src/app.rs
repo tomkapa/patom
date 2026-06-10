@@ -593,6 +593,23 @@ fn build_agent_from(pieces: &Collaborators, settings: &Settings) -> Agent {
     .build()
 }
 
+/// Inline `window.__PATOM_CONFIG__` into the SPA shell so the client reads
+/// runtime analytics config synchronously, with no network roundtrip. The JSON
+/// is built with `serde_json` (correct escaping of quotes/backslashes) and `</`
+/// is escaped so an operator-supplied value can't close the `<script>` early.
+/// Returns `raw_html` unchanged when it has no `</head>` (e.g. an empty shell).
+fn inject_runtime_config(raw_html: &str, posthog_key: &str, posthog_host: &str) -> String {
+    let config_json = serde_json::to_string(&serde_json::json!({
+        "posthogKey": posthog_key,
+        "posthogHost": posthog_host,
+    }))
+    .expect("invariant: static config object serializes");
+    // Escape `</` so a value containing `</script>` can't close the tag early.
+    let config_json = config_json.replace("</", "<\\/");
+    let config_script = format!("<script>window.__PATOM_CONFIG__={config_json};</script>");
+    raw_html.replace("</head>", &format!("{config_script}</head>"))
+}
+
 /// Build the full HTTP + worker pool composition. The returned [`Server`] is ready to
 /// hand to `axum::serve` and a graceful-shutdown loop.
 #[allow(clippy::too_many_lines)] // composition root: configuration + binding, not branching
@@ -838,26 +855,28 @@ pub async fn build_server(
 
     // Inject runtime config into index.html once at startup (GitLab pattern).
     // The SPA reads `window.__PATOM_CONFIG__` synchronously — no roundtrip.
-    // Missing index.html (dev without a built SPA) produces an empty string;
-    // the fallback handler returns an empty 200 which is acceptable in that
-    // case since devs use `bun dev` directly.
-    let raw_html =
-        std::fs::read_to_string(settings.web_dist.join("index.html")).unwrap_or_default();
+    // A missing/unreadable index.html means the frontend wasn't built (an
+    // API-only or `bun dev` backend, or a broken image); we warn and serve an
+    // empty shell rather than fail boot, so the BE still runs in those cases.
+    let index_path = settings.web_dist.join("index.html");
+    let raw_html = match std::fs::read_to_string(&index_path) {
+        Ok(html) => html,
+        Err(error) => {
+            warn!(
+                ?error,
+                path = %index_path.display(),
+                "index.html unreadable; serving empty SPA shell (frontend not built?)"
+            );
+            String::new()
+        }
+    };
     let posthog_key = settings.posthog_key.as_deref().unwrap_or("");
     let posthog_host = settings
         .posthog_host
         .as_deref()
         .unwrap_or("https://eu.i.posthog.com");
-    let config_json = serde_json::to_string(&serde_json::json!({
-        "posthogKey": posthog_key,
-        "posthogHost": posthog_host,
-    }))
-    .expect("invariant: static config object serializes");
-    // Escape `</` to prevent an early `</script>` tag close in the HTML context.
-    let config_json = config_json.replace("</", "<\\/");
-    let config_script = format!("<script>window.__PATOM_CONFIG__={config_json};</script>");
     let index_html: Arc<str> =
-        Arc::from(raw_html.replace("</head>", &format!("{config_script}</head>")));
+        Arc::from(inject_runtime_config(&raw_html, posthog_key, posthog_host));
 
     let state = AppState {
         queue: pieces.queue,
@@ -1024,4 +1043,45 @@ async fn connect_pool(settings: &Settings) -> Result<PgPool, AppError> {
         .connect(settings.database_url.expose())
         .await
         .map_err(|source| AppError::DbConnect { source })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inject_runtime_config_inserts_script_inside_head() {
+        let out = inject_runtime_config(
+            "<html><head><title>x</title></head><body></body></html>",
+            "phc_abc",
+            "https://eu.i.posthog.com",
+        );
+        assert!(out.contains(
+            r#"window.__PATOM_CONFIG__={"posthogKey":"phc_abc","posthogHost":"https://eu.i.posthog.com"}"#
+        ));
+        // Injected before `</head>`, so the script lands inside `<head>`.
+        let script_at = out.find("__PATOM_CONFIG__").expect("script present");
+        let head_close = out.find("</head>").expect("head close present");
+        assert!(script_at < head_close, "config script must precede </head>");
+    }
+
+    #[test]
+    fn inject_runtime_config_escapes_script_breakout() {
+        // A stray `</script>` in a value must not close the tag early.
+        let out = inject_runtime_config("<head></head>", "</script><b>", "https://x.example");
+        assert!(
+            !out.contains(r#""</script><b>""#),
+            "raw breakout must be escaped, got: {out}"
+        );
+        assert!(out.contains("<\\/script>"), "`</` should escape to `<\\/`");
+    }
+
+    #[test]
+    fn inject_runtime_config_without_head_is_unchanged() {
+        let raw = "<html><body>no head here</body></html>";
+        assert_eq!(
+            inject_runtime_config(raw, "phc_x", "https://x.example"),
+            raw
+        );
+    }
 }
