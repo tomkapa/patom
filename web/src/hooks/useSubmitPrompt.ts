@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { uuidv7 } from "../lib/utils";
+import { track } from "../lib/analytics";
 import type { TagRef } from "../types/api";
 
 type Vars = {
@@ -28,8 +29,23 @@ export function useSubmitPrompt() {
         ...v,
         idempotency_key: v.idempotency_key ?? uuidv7(),
       }),
-    onSuccess: () => {
+    onSuccess: (data, v) => {
       qc.invalidateQueries({ queryKey: ["threads"] });
+      // North-star action. Properties are non-PII shape only — never the
+      // message content, just its length and routing. `has_agent` reflects
+      // intent (an agent was @-tagged).
+      const agentTagged = v.tags?.some((tag) => tag.kind === "agent") ?? false;
+      track("message_sent", {
+        is_reply: Boolean(v.thread_id),
+        has_agent: agentTagged,
+        has_channel: Boolean(v.channel_id),
+        content_len: v.content.length,
+      });
+      // `agent_invoked` is the actual outcome — the agents the backend woke,
+      // not merely those tagged (a tag may not trigger).
+      for (const agentId of data.triggered_agent_ids) {
+        track("agent_invoked", { agent_id: agentId });
+      }
     },
   });
 }

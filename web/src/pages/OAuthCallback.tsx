@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, RefreshCw, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/atoms/Button";
@@ -13,6 +13,7 @@ import {
 import { useT } from "../i18n";
 import type { McpCatalogEntry } from "../types/api";
 import { cn } from "../lib/utils";
+import { track } from "../lib/analytics";
 
 type View = "connecting" | "authorized" | "failed";
 type DiagramState = "pending" | "ok" | "error";
@@ -71,6 +72,21 @@ export function OAuthCallback() {
     ? catalogLookup(polling.data.catalog_id)
     : undefined;
   const name = entry?.display_name ?? polling.data?.catalog_id ?? "the provider";
+
+  // Terminal outcome of the connections funnel — fire exactly once when the
+  // view leaves "connecting". `vendor` is the catalog id once the server row
+  // has loaded; `null` on an immediate failure with no server_id to poll.
+  const outcomeFired = useRef(false);
+  useEffect(() => {
+    if (view === "connecting" || outcomeFired.current) return;
+    outcomeFired.current = true;
+    const vendor = polling.data?.catalog_id ?? null;
+    if (view === "authorized") {
+      track("connection_oauth_completed", { vendor });
+    } else {
+      track("connection_oauth_failed", { vendor, reason: reason ?? "unknown" });
+    }
+  }, [view, polling.data, reason]);
 
   if (view === "failed") {
     return (

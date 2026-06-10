@@ -20,6 +20,7 @@ import {
 } from "../../data/teamPresets";
 import { useAuthStore } from "../../stores/authStore";
 import { api } from "../../lib/api";
+import { track } from "../../lib/analytics";
 import { ApiError } from "../../lib/errors";
 import { LucideByName } from "./LucideByName";
 
@@ -61,6 +62,9 @@ export function StepChooseTeam({
             model: a.model,
             allowed_mcp_tools: {},
           });
+          // One event per genuinely-created agent. The 409 path below is a
+          // resume over an already-hired agent, so it must not re-count.
+          track("agent_created");
         } catch (err) {
           if (err instanceof ApiError && err.status === 409) {
             // Already hired on a previous attempt — skip and continue.
