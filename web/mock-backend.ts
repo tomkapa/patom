@@ -180,6 +180,8 @@ const orgState = {
   name: "Acme Robotics",
   slug: "acme-robotics",
   default_language: "en" as "en" | "vi",
+  // Org-wide agent rule (`<organization-rule>`); `null` = unconfigured.
+  default_rule: null as string | null,
   created_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(),
   // `false` simulates a freshly seeded org that still needs the
   // /onboarding wizard; the FE gate routes there. The `?fresh=1` URL
@@ -227,6 +229,23 @@ function budgetView() {
   };
 }
 
+// `GET`/`PATCH /me/org` return the same General-tab payload — one builder
+// so a new field is added in a single place. Mirrors `OrgDetailsView`.
+function orgDetailsView() {
+  return {
+    id: orgState.id,
+    name: orgState.name,
+    slug: orgState.slug,
+    default_language: orgState.default_language,
+    default_rule: orgState.default_rule,
+    member_count: MEMBERS.length,
+    created_at: orgState.created_at,
+    role: me.role,
+    avatar_url: null,
+    onboarded: orgState.onboarded,
+  };
+}
+
 const me = {
   user: {
     id: USER_ID,
@@ -246,6 +265,9 @@ const me = {
       role: "owner" as const,
       get default_language() {
         return orgState.default_language;
+      },
+      get default_rule() {
+        return orgState.default_rule;
       },
       avatar_url: null as string | null,
       get onboarded() {
@@ -1915,17 +1937,7 @@ const server = Bun.serve({
     // ─── Workspace settings ───────────────────────────────────────────
     // Mirrors src/http/routes/org.rs.
     if (path === "/me/org" && method === "GET") {
-      return json({
-        id: orgState.id,
-        name: orgState.name,
-        slug: orgState.slug,
-        default_language: orgState.default_language,
-        member_count: MEMBERS.length,
-        created_at: orgState.created_at,
-        role: me.role,
-        avatar_url: null,
-        onboarded: orgState.onboarded,
-      });
+      return json(orgDetailsView());
     }
     // src/http/routes/me.rs::create_org. Creates a workspace and switches
     // the session into it (fresh, not-yet-onboarded). We mirror that by
@@ -1979,17 +1991,7 @@ const server = Bun.serve({
       if (body.onboarded === true) {
         orgState.onboarded = true;
       }
-      return json({
-        id: orgState.id,
-        name: orgState.name,
-        slug: orgState.slug,
-        default_language: orgState.default_language,
-        member_count: MEMBERS.length,
-        created_at: orgState.created_at,
-        role: me.role,
-        avatar_url: null,
-        onboarded: orgState.onboarded,
-      });
+      return json(orgDetailsView());
     }
     if (path === "/me/org/language" && method === "PATCH") {
       const body = (await req.json()) as { language?: unknown };
@@ -1998,6 +2000,22 @@ const server = Bun.serve({
       }
       orgState.default_language = body.language;
       return json({ default_language: body.language });
+    }
+    // src/http/routes/me.rs::set_org_rule. Empty/whitespace clears the
+    // rule; over the 16 KiB BYTE cap → 400 (count bytes, not UTF-16
+    // units, to match the backend's MAX_ORG_RULE_BYTES).
+    if (path === "/me/org/rule" && method === "PATCH") {
+      const body = (await req.json()) as { rule?: unknown };
+      const raw = typeof body.rule === "string" ? body.rule.trim() : "";
+      if (raw.length === 0) {
+        orgState.default_rule = null;
+        return json({ default_rule: null });
+      }
+      if (new TextEncoder().encode(raw).length > 16 * 1024) {
+        return json({ error: "organization_rule too long" }, 400);
+      }
+      orgState.default_rule = raw;
+      return json({ default_rule: raw });
     }
     // ─── Spend budget (src/http/routes/org.rs) ────────────────────────
     if (path === "/me/org/budget" && method === "GET") {

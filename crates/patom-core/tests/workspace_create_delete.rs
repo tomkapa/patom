@@ -407,3 +407,54 @@ async fn org_less_session_me_is_orgless_but_org_scoped_route_401s(pool: PgPool) 
     let (status, _) = h.get(ORG_PATH, &cookie).await;
     assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
 }
+
+const ORG_RULE_PATH: &str = "/api/me/org/rule";
+
+/// `GET /me/org` surfaces the org's `default_rule` so the settings editor
+/// can seed itself from the same payload it already reads (parity with
+/// `default_language`). The round-trip also covers the `set_org_rule`
+/// write route, which had no integration coverage before.
+#[sqlx::test(migrations = "./migrations")]
+async fn org_details_surface_default_rule_round_trip(pool: PgPool) {
+    let h = Harness::new(&pool, true).await;
+    let cookie = h.owner.cookie_header();
+
+    // No rule configured yet → the field is present and null.
+    let (status, body) = h.get(ORG_PATH, &cookie).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "body = {body}");
+    assert_eq!(body.get("default_rule"), Some(&Value::Null));
+
+    // Owner sets a rule.
+    let (status, _) = h
+        .send(
+            "PATCH",
+            ORG_RULE_PATH,
+            &cookie,
+            Some(json!({ "rule": "Be concise." })),
+        )
+        .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // GET /me/org now echoes it back, ready to seed the textarea.
+    let (status, body) = h.get(ORG_PATH, &cookie).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "body = {body}");
+    assert_eq!(
+        body.get("default_rule").and_then(Value::as_str),
+        Some("Be concise.")
+    );
+
+    // A whitespace-only body clears the rule back to null.
+    let (status, _) = h
+        .send(
+            "PATCH",
+            ORG_RULE_PATH,
+            &cookie,
+            Some(json!({ "rule": "   " })),
+        )
+        .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    let (status, body) = h.get(ORG_PATH, &cookie).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "body = {body}");
+    assert_eq!(body.get("default_rule"), Some(&Value::Null));
+}

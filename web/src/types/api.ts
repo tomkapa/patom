@@ -54,6 +54,10 @@ export type OrgDetails = {
   name: string;
   slug: string;
   default_language: Language;
+  /** Org-wide agent rule injected as `<organization-rule>` into every
+   *  agent's system prompt. `null` when unconfigured. Edited via
+   *  `PATCH /me/org/rule` (owner/admin only; members 403). */
+  default_rule: string | null;
   member_count: number;
   created_at: string;
   role: Role;

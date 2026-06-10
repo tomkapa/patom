@@ -21,7 +21,9 @@ use super::store::{
     OrgDetails, OrgStore, OrgUpdate,
 };
 use crate::auth;
-use crate::auth::{Email, InviteId, InviteToken, Language, OrgId, OrgName, OrgSlug, Role, UserId};
+use crate::auth::{
+    Email, InviteId, InviteToken, Language, OrgId, OrgName, OrgSlug, OrganizationRule, Role, UserId,
+};
 use crate::types::AvatarUrl;
 
 #[derive(Debug)]
@@ -63,7 +65,7 @@ async fn fetch_org_details_priv(
     org_id: OrgId,
 ) -> Result<OrgDetails, OrgError> {
     let row = sqlx::query(
-        "SELECT o.id, o.name, o.slug::text AS slug, o.default_language, o.created_at,
+        "SELECT o.id, o.name, o.slug::text AS slug, o.default_language, o.default_rule, o.created_at,
                 o.avatar_url, o.onboarded_at,
                 (SELECT COUNT(*)::bigint FROM org_members m WHERE m.org_id = o.id) AS member_count
          FROM organizations o
@@ -79,6 +81,10 @@ async fn fetch_org_details_priv(
         name: row.get("name"),
         slug: OrgSlug::try_from(row.get::<String, _>("slug"))?,
         default_language: row.get::<Language, _>("default_language"),
+        default_rule: row
+            .get::<Option<String>, _>("default_rule")
+            .map(OrganizationRule::try_from)
+            .transpose()?,
         created_at: row.get("created_at"),
         member_count: row.get("member_count"),
         avatar_url: row

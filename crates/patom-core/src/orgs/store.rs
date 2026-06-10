@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use super::error::OrgError;
-use crate::auth::{Email, InviteId, InviteToken, Language, OrgId, OrgName, OrgSlug, Role, UserId};
+use crate::auth::{
+    Email, InviteId, InviteToken, Language, OrgId, OrgName, OrgSlug, OrganizationRule, Role, UserId,
+};
 use crate::types::AvatarUrl;
 
 pub type SharedOrgStore = Arc<dyn OrgStore>;
@@ -18,6 +20,11 @@ pub struct OrgDetails {
     pub name: String,
     pub slug: OrgSlug,
     pub default_language: Language,
+    /// Org-wide agent rule injected as `<organization-rule>` into every
+    /// agent's system prompt. `None` when unconfigured. Surfaced here so
+    /// the General-tab editor seeds from the same payload that already
+    /// carries `default_language`.
+    pub default_rule: Option<OrganizationRule>,
     pub created_at: DateTime<Utc>,
     pub member_count: i64,
     /// Public asset URL, or `None` → FE renders the default tile.
