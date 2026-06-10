@@ -27,5 +27,6 @@ pub use error::BillingError;
 pub use pricing::{price_for, turn_cost};
 pub use service::{BillingConfig, BillingService, PgBillingService, SharedBillingService};
 pub use types::{
-    BillingPeriod, CostMicros, MicroUsdPerMtok, MonthlyCapMicros, Price, WarnThresholdBps,
+    BillingPeriod, CostMicros, GrantAmount, LedgerDelta, LedgerKind, LedgerReason, MicroUsdPerMtok,
+    MonthlyCapMicros, Price, WarnThresholdBps,
 };

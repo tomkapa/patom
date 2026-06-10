@@ -80,6 +80,146 @@ impl TryFrom<i64> for MonthlyCapMicros {
     }
 }
 
+/// A credit grant in micro-USD — strictly positive.
+///
+/// The input to [`crate::billing::BillingService::grant_credit`]. A grant only
+/// ever *adds* balance, so zero or negative is a programmer error rejected at
+/// the boundary (a "reversal" is a separate `Adjustment`/`Refund` entry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GrantAmount(i64);
+
+impl GrantAmount {
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for GrantAmount {
+    type Error = ParseError;
+    fn try_from(raw: i64) -> Result<Self, Self::Error> {
+        if raw <= 0 {
+            return Err(ParseError::OutOfRange {
+                field: "grant_amount_micro_usd",
+                detail: "must be > 0",
+            });
+        }
+        Ok(Self(raw))
+    }
+}
+
+/// A signed movement on the credit ledger in micro-USD: grants are positive,
+/// debits negative. The stored `org_credit_ledger.delta_micro_usd`.
+///
+/// Carries no positivity invariant (sign *is* the meaning), so the only bound
+/// is the `i64` range — but it is still a newtype so a raw `i64` can never be
+/// mistaken for a delta when appending an entry (§1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LedgerDelta(i64);
+
+impl LedgerDelta {
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl From<GrantAmount> for LedgerDelta {
+    /// A grant is a positive delta.
+    fn from(g: GrantAmount) -> Self {
+        Self(g.0)
+    }
+}
+
+impl From<CostMicros> for LedgerDelta {
+    /// A usage debit is a negative delta. `CostMicros` is `>= 0`, so negating
+    /// it can never overflow `i64`.
+    fn from(c: CostMicros) -> Self {
+        Self(-c.get())
+    }
+}
+
+/// The kind of a ledger entry. Maps 1:1 to the `org_credit_ledger.kind` text
+/// column via an allowlist (§10) — never an interpolated value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LedgerKind {
+    Grant,
+    Debit,
+    Adjustment,
+}
+
+impl LedgerKind {
+    /// The exact text stored in `org_credit_ledger.kind`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Grant => "grant",
+            Self::Debit => "debit",
+            Self::Adjustment => "adjustment",
+        }
+    }
+}
+
+impl TryFrom<&str> for LedgerKind {
+    type Error = ParseError;
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        match raw {
+            "grant" => Ok(Self::Grant),
+            "debit" => Ok(Self::Debit),
+            "adjustment" => Ok(Self::Adjustment),
+            _ => Err(ParseError::Malformed {
+                field: "ledger_kind",
+                detail: "unknown kind",
+            }),
+        }
+    }
+}
+
+/// Why a ledger entry exists. Maps 1:1 to `org_credit_ledger.reason` via an
+/// allowlist (§10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LedgerReason {
+    SignupBonus,
+    Promo,
+    Referral,
+    Manual,
+    Refund,
+    Usage,
+}
+
+impl LedgerReason {
+    /// The exact text stored in `org_credit_ledger.reason`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SignupBonus => "signup_bonus",
+            Self::Promo => "promo",
+            Self::Referral => "referral",
+            Self::Manual => "manual",
+            Self::Refund => "refund",
+            Self::Usage => "usage",
+        }
+    }
+}
+
+impl TryFrom<&str> for LedgerReason {
+    type Error = ParseError;
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        match raw {
+            "signup_bonus" => Ok(Self::SignupBonus),
+            "promo" => Ok(Self::Promo),
+            "referral" => Ok(Self::Referral),
+            "manual" => Ok(Self::Manual),
+            "refund" => Ok(Self::Refund),
+            "usage" => Ok(Self::Usage),
+            _ => Err(ParseError::Malformed {
+                field: "ledger_reason",
+                detail: "unknown reason",
+            }),
+        }
+    }
+}
+
 /// A token price as micro-USD per **million** tokens.
 ///
 /// This is the conventional vendor pricing unit. Keeping the rate per-million
@@ -239,6 +379,55 @@ mod tests {
                 .get(),
             10_000
         );
+    }
+
+    #[test]
+    fn grant_amount_rejects_non_positive() {
+        assert!(GrantAmount::try_from(0_i64).is_err());
+        assert!(GrantAmount::try_from(-1_i64).is_err());
+        assert_eq!(
+            GrantAmount::try_from(2_000_000_i64).expect("valid").get(),
+            2_000_000
+        );
+    }
+
+    #[test]
+    fn ledger_delta_signs_grant_positive_and_cost_negative() {
+        let grant = GrantAmount::try_from(2_000_000_i64).expect("valid");
+        assert_eq!(LedgerDelta::from(grant).get(), 2_000_000);
+
+        let cost = CostMicros::try_from(1_500_i64).expect("valid");
+        assert_eq!(LedgerDelta::from(cost).get(), -1_500);
+
+        // The zero-cost turn maps to a zero delta, not a panic.
+        assert_eq!(LedgerDelta::from(CostMicros::ZERO).get(), 0);
+    }
+
+    #[test]
+    fn ledger_kind_round_trips_through_str() {
+        for kind in [LedgerKind::Grant, LedgerKind::Debit, LedgerKind::Adjustment] {
+            assert_eq!(LedgerKind::try_from(kind.as_str()).expect("known"), kind);
+        }
+        assert!(LedgerKind::try_from("nonsense").is_err());
+    }
+
+    #[test]
+    fn ledger_reason_round_trips_through_str() {
+        for reason in [
+            LedgerReason::SignupBonus,
+            LedgerReason::Promo,
+            LedgerReason::Referral,
+            LedgerReason::Manual,
+            LedgerReason::Refund,
+            LedgerReason::Usage,
+        ] {
+            assert_eq!(
+                LedgerReason::try_from(reason.as_str()).expect("known"),
+                reason
+            );
+        }
+        assert_eq!(LedgerReason::SignupBonus.as_str(), "signup_bonus");
+        assert!(LedgerReason::try_from("bribe").is_err());
     }
 
     #[test]
