@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use sqlx::{PgPool, Postgres, Transaction};
-use tracing::warn;
+use tracing::{info, warn};
 
 use chrono::{DateTime, NaiveDate, Utc};
 
@@ -437,6 +437,14 @@ impl PgBillingService {
             span.record("patom.credit.balance", balance);
             if balance <= 0 {
                 span.record("patom.credit.outcome", "out_of_credit");
+                // Exhaustion counter (#154): one event per blocked turn. The
+                // `patom.credit.outcome` span field carries the same signal for
+                // trace-side aggregation; no PII.
+                info!(
+                    event = "credit.exhausted",
+                    patom.org.id = %org,
+                    patom.credit.balance = balance,
+                );
                 return Err(BillingError::OutOfCredit {
                     org,
                     balance_micro_usd: balance,
@@ -491,6 +499,14 @@ impl PgBillingService {
             balance,
             granted - used,
             "invariant: balance == granted - used"
+        );
+        // Balance gauge (#154): the post-debit balance is the latest value for a
+        // per-org "credit remaining" gauge; the debit amount is the spend rate.
+        info!(
+            event = "credit.debit",
+            patom.org.id = %org,
+            patom.credit.debit_micro = cost.get(),
+            patom.credit.balance = balance,
         );
         Ok(())
     }
@@ -615,6 +631,16 @@ impl BillingService for PgBillingService {
         };
         tx.commit().await?;
         tracing::Span::current().record("patom.billing.granted", granted);
+        // Grant counter by reason (#154): one event per grant, dimensioned by
+        // `reason` so promo/referral/signup volume is separable. `applied=false`
+        // means the idempotency key already existed (a replay). No PII.
+        info!(
+            event = "credit.grant",
+            patom.org.id = %org,
+            patom.credit.reason = reason.as_str(),
+            patom.credit.amount_micro = amount.get(),
+            patom.credit.applied = granted,
+        );
         Ok(())
     }
 
