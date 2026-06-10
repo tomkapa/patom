@@ -29,11 +29,23 @@ ENV CARGO_TERM_COLOR=never
 # `migrations/` is embedded at COMPILE time by sqlx::migrate!("./migrations"), so
 # the runtime image omits it. tests/ are excluded via .dockerignore, so editing a
 # test does not bust this layer.
+# Cargo features to enable, space-separated. Empty (the default) builds the
+# OSS / self-host binary that links no cloud code — this is what the public
+# `ghcr.io/tomkapa/patom` image ships. The SaaS image is built with
+# `FEATURES=cloud`, which pulls in `patom-cloud` and flips `AppState.cloud`
+# (cfg!(feature = "cloud")) on, enabling self-service workspace creation
+# (`POST /me/orgs`). Keep this empty here so a plain `docker build` stays OSS.
+ARG FEATURES=""
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# `--features` is package-scoped in a virtual workspace, so always select the
+# binary's package (`-p patom-server`); the feature flag is appended only when
+# FEATURES is non-empty. The target cache is keyed on FEATURES so the OSS and
+# cloud variants don't evict each other's incremental artifacts.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    cargo build --release --locked --bin patom \
+    --mount=type=cache,target=/app/target,id=patom-target-${FEATURES} \
+    cargo build --release --locked -p patom-server --bin patom \
+      ${FEATURES:+--features "${FEATURES}"} \
  && cp /app/target/release/patom /usr/local/bin/patom
 
 ###########################  Stage 3: runtime  ##########################
