@@ -769,32 +769,59 @@ async fn create_rejects_oversized_oauth_client_fields(pool: PgPool) {
     assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
 }
 
-/// Spawn a throwaway OAuth Authorization Server that only answers the
-/// `oauth-authorization-server` discovery probe — enough for rmcp's
-/// `discover_metadata()` to resolve an `authorization_endpoint` so the
-/// start flow can build the authorize URL. Returns its base URL.
+/// The `client_id` the mock AS hands out from its Dynamic Client
+/// Registration endpoint.
+const MOCK_DCR_CLIENT_ID: &str = "dcr-registered-007";
+
+/// Spawn a throwaway OAuth Authorization Server for the start-flow tests.
+/// It answers the `oauth-authorization-server` discovery probe (so rmcp's
+/// `discover_metadata()` resolves an `authorization_endpoint`) and the RFC
+/// 7591 registration endpoint (so the DCR path can register a client).
+/// Returns its base URL.
 async fn spawn_mock_authorization_server() -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind mock AS");
     let base = format!("http://{}", listener.local_addr().expect("addr"));
     let meta_base = base.clone();
-    let app = axum::Router::new().route(
-        "/.well-known/oauth-authorization-server",
-        axum::routing::get(move || {
-            let b = meta_base.clone();
-            async move {
-                axum::Json(serde_json::json!({
-                    "issuer": b,
-                    "authorization_endpoint": format!("{b}/authorize"),
-                    "token_endpoint": format!("{b}/token"),
-                    "response_types_supported": ["code"],
-                    "code_challenge_methods_supported": ["S256"],
-                    "scopes_supported": ["read"],
-                }))
-            }
-        }),
-    );
+    let app = axum::Router::new()
+        .route(
+            "/.well-known/oauth-authorization-server",
+            axum::routing::get(move || {
+                let b = meta_base.clone();
+                async move {
+                    axum::Json(serde_json::json!({
+                        "issuer": b,
+                        "authorization_endpoint": format!("{b}/authorize"),
+                        "token_endpoint": format!("{b}/token"),
+                        "registration_endpoint": format!("{b}/register"),
+                        "response_types_supported": ["code"],
+                        "code_challenge_methods_supported": ["S256"],
+                        "scopes_supported": ["read"],
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/register",
+            axum::routing::post(
+                |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    // Echo the requested redirect_uris (rmcp requires the field
+                    // on the response) and hand back a fixed client_id.
+                    let redirect_uris = body
+                        .get("redirect_uris")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!([]));
+                    (
+                        axum::http::StatusCode::CREATED,
+                        axum::Json(serde_json::json!({
+                            "client_id": MOCK_DCR_CLIENT_ID,
+                            "redirect_uris": redirect_uris,
+                        })),
+                    )
+                },
+            ),
+        );
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve mock AS");
     });
@@ -860,6 +887,120 @@ async fn oauth_start_for_user_supplied_builds_authorize_url_with_supplied_client
         .find(|(k, _)| k == "client_id")
         .map(|(_, v)| v.into_owned());
     assert_eq!(client_id.as_deref(), Some("byo-client-123"));
+}
+
+#[sqlx::test]
+async fn create_full_form_oauth_via_dcr_needs_no_client(pool: PgPool) {
+    // The common case: a custom OAuth server with no operator-supplied
+    // client. The catalog row is `oauth2` / `dcr` (the server registers a
+    // client dynamically), the server parks in `auth_pending`, and there is
+    // no user-supplied client to read back.
+    let h = AuthMcpHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let (status, json) = post_create(
+        app,
+        &h,
+        serde_json::json!({
+            "catalog_id": "dcr-oauth",
+            "config": {"type": "http", "url": "https://dcr.example.test/mcp"},
+            "oauth_client": {}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(json["connection_status"], serde_json::json!("auth_pending"));
+
+    let id = McpCatalogId::try_from("dcr-oauth").expect("valid id");
+    let entry = h
+        .state
+        .mcp_catalog
+        .get_for_org(h.primary.org_id, &id)
+        .await
+        .expect("get_for_org")
+        .expect("catalog row exists");
+    assert!(matches!(entry.client_source, ClientSource::Dcr));
+    assert!(matches!(entry.auth_kind, McpAuthKind::OAuth2));
+    assert!(
+        h.state
+            .mcp_catalog
+            .oauth_client(h.primary.org_id, &id)
+            .await
+            .expect("oauth_client")
+            .is_none(),
+        "a DCR connector carries no user-supplied client"
+    );
+}
+
+#[sqlx::test]
+async fn create_rejects_oauth_secret_without_client_id(pool: PgPool) {
+    // A client_secret only applies to a pre-registered app — without a
+    // client_id it is a misconfiguration, not a DCR request.
+    let h = AuthMcpHarness::new(&pool).await;
+    let app = router(h.state.clone());
+    let (status, _json) = post_create(
+        app,
+        &h,
+        serde_json::json!({
+            "catalog_id": "secret-no-id",
+            "config": {"type": "http", "url": "https://e.example.test/mcp"},
+            "oauth_client": {"client_secret": "orphan-secret"}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test]
+async fn oauth_start_for_dcr_registers_client_dynamically(pool: PgPool) {
+    // URL-only OAuth: `/oauth/start` registers a client via the AS's RFC
+    // 7591 endpoint and builds an authorize URL carrying that registered
+    // client_id — the operator supplied no client.
+    let h = AuthMcpHarness::new(&pool).await;
+    let as_base = spawn_mock_authorization_server().await;
+
+    let app = router(h.state.clone());
+    let (status, created) = post_create(
+        app,
+        &h,
+        serde_json::json!({
+            "catalog_id": "mock-dcr",
+            "config": {"type": "http", "url": as_base},
+            "oauth_client": {}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    let server_id = created["id"].as_str().expect("server id");
+
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/api/mcp-servers/{server_id}/oauth/start"))
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({"scope": "read"}).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let authorize_url = json["authorize_url"].as_str().expect("authorize_url");
+
+    let parsed = url::Url::parse(authorize_url).expect("valid authorize url");
+    let client_id = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "client_id")
+        .map(|(_, v)| v.into_owned());
+    assert_eq!(client_id.as_deref(), Some(MOCK_DCR_CLIENT_ID));
 }
 
 #[sqlx::test]

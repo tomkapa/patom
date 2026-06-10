@@ -495,16 +495,14 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
       }
       const base = { catalog_id: catalogId, config: { type: "http", url } as const, enabled: true };
       if (auth === "oauth") {
-        if (!clientId.trim()) {
-          setErrorText(t("connections.modal.custom.error.clientId"));
-          return;
-        }
-        // Create the connector with its own OAuth client, then hand off to
-        // the same start→redirect flow the catalog OAuth connectors use.
+        // Client ID is optional: blank → the server registers a client
+        // dynamically (DCR); filled → the operator's pre-registered app.
+        // Sending `oauth_client` (even empty) is what marks this OAuth. Then
+        // hand off to the same start→redirect flow the catalog connectors use.
         const server = await create.mutateAsync({
           ...base,
           oauth_client: {
-            client_id: clientId.trim(),
+            client_id: clientId.trim() || undefined,
             client_secret: clientSecret.trim() || undefined,
           },
         });
@@ -594,6 +592,9 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
         </Field>
         {auth === "oauth" ? (
           <>
+            <p className="text-[11px] leading-[1.45] text-[var(--color-muted-foreground)]">
+              {t("connections.modal.custom.oauthNote")}
+            </p>
             <Field label={t("connections.modal.custom.oauthClientIdLabel")}>
               <input
                 value={clientId}
@@ -602,6 +603,9 @@ function CustomUrlBody({ onClose }: { onClose: () => void }) {
                 data-testid="custom-oauth-client-id"
                 className="w-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-2 font-[var(--font-mono)] text-[12.5px] text-[var(--color-ink)] outline-none focus:border-[var(--color-moss)]"
               />
+              <span className="mt-1 block text-[11px] text-[var(--color-muted-foreground)]">
+                {t("connections.modal.custom.oauthClientIdHint")}
+              </span>
             </Field>
             <Field label={t("connections.modal.custom.oauthClientSecretLabel")}>
               <input

@@ -130,11 +130,15 @@ const en = {
   "connections.modal.custom.authNone": "None",
   "connections.modal.custom.authToken": "API token",
   "connections.modal.custom.authOAuth": "OAuth",
+  "connections.modal.custom.oauthNote":
+    "Most servers register a client automatically — just the URL is enough. Fill in a Client ID only if the server requires a pre-registered app, like GitHub or Slack.",
   "connections.modal.custom.oauthClientIdLabel": "Client ID",
   "connections.modal.custom.oauthClientIdPlaceholder": "your-oauth-client-id",
+  "connections.modal.custom.oauthClientIdHint":
+    "Optional. Leave blank for dynamic registration.",
   "connections.modal.custom.oauthClientSecretLabel": "Client secret",
   "connections.modal.custom.oauthClientSecretHint":
-    "Optional. Leave blank for a public (PKCE) client.",
+    "Optional. Only for a confidential app — leave blank for a public (PKCE) client.",
   "connections.modal.custom.warn":
     "Any agent your admins enable will be able to call this URL with no credentials. Only use this for trusted internal servers.",
   "connections.modal.custom.cta": "Add server",
@@ -142,7 +146,6 @@ const en = {
     "Use lowercase letters, digits, _ or -, up to 16 characters.",
   "connections.modal.custom.error.url":
     "Enter a valid http:// or https:// URL.",
-  "connections.modal.custom.error.clientId": "Enter the OAuth client ID.",
   "connections.callback.eyebrow.connecting": "OAuth · Step 2 of 3",
   "connections.callback.eyebrow.authorized": "OAuth · Step 3 of 3",
   "connections.callback.eyebrow.failed": "OAuth · Failed",

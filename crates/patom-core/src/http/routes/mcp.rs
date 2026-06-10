@@ -236,39 +236,72 @@ struct CreateMcpServerRequest {
     /// Defaults to the `catalog_id` when omitted.
     #[serde(default)]
     display_name: Option<String>,
-    /// BYO-OAuth client for a custom (full-form) server. When present the
-    /// auto-created catalog row is marked `auth_kind = oauth2`,
-    /// `client_source = user_supplied`, and the client identity is sealed
-    /// on the row. Mutually exclusive with `credentials`; invalid on the
-    /// short form (it needs a custom URL). The token is obtained by the
-    /// follow-up `oauth/start` flow, never inline here.
+    /// OAuth setup for a custom (full-form) server. Its presence marks the
+    /// auto-created catalog row `auth_kind = oauth2`; an empty object uses
+    /// Dynamic Client Registration (`client_source = dcr`), while a supplied
+    /// `client_id` uses the operator's pre-registered app
+    /// (`client_source = user_supplied`, sealed on the row). Mutually
+    /// exclusive with `credentials`; invalid on the short form. The token is
+    /// obtained by the follow-up `oauth/start` flow, never inline here.
     #[serde(default)]
     oauth_client: Option<OAuthClientInput>,
 }
 
-/// Wire shape of a user-supplied OAuth client on the create path. Parsed
-/// to a [`UserOAuthClient`] via the newtypes' `TryFrom` (length caps →
-/// HTTP 400). `client_secret` is optional: a confidential client supplies
-/// it, a public/PKCE client omits it.
+/// Wire shape of the OAuth setup for a custom connector. Its presence on
+/// the create request signals "authenticate this custom URL via OAuth"; the
+/// fields inside pick *how*:
+///   * both `client_id` and `client_secret` absent → Dynamic Client
+///     Registration (RFC 7591). The server registers a client on the first
+///     `oauth/start`; the operator supplies nothing but the URL. This is the
+///     common case for modern remote MCP servers.
+///   * `client_id` present → the operator's own pre-registered app
+///     (`client_secret` for a confidential app like GitHub/Slack, omitted
+///     for a public/PKCE client).
+///
+/// `client_secret` without `client_id` is rejected — a secret only applies
+/// to a pre-registered app.
 #[derive(Debug, Deserialize)]
 struct OAuthClientInput {
-    client_id: String,
+    #[serde(default)]
+    client_id: Option<String>,
     #[serde(default)]
     client_secret: Option<String>,
 }
 
+/// How a custom OAuth connector obtains its OAuth client. Maps onto
+/// [`ClientSource`] at the catalog layer.
+#[derive(Debug)]
+enum CustomOAuth {
+    /// Dynamic Client Registration — URL only, no operator-supplied client.
+    Dcr,
+    /// The operator's own pre-registered client (id + optional secret).
+    UserSupplied(UserOAuthClient),
+}
+
 impl OAuthClientInput {
-    fn into_user_client(self) -> Result<UserOAuthClient, HttpError> {
-        let client_id = OAuthClientId::try_from(self.client_id).map_err(HttpError::Parse)?;
-        let client_secret = self
-            .client_secret
-            .map(OAuthClientSecret::try_from)
-            .transpose()
-            .map_err(HttpError::Parse)?;
-        Ok(UserOAuthClient {
-            client_id,
-            client_secret,
-        })
+    fn into_choice(self) -> Result<CustomOAuth, HttpError> {
+        // Treat blank strings as absent so an empty form field reads as "no
+        // pre-registered app" rather than an invalid zero-length id.
+        let client_id = self.client_id.filter(|s| !s.trim().is_empty());
+        let client_secret = self.client_secret.filter(|s| !s.trim().is_empty());
+        match client_id {
+            Some(id) => {
+                let client_id = OAuthClientId::try_from(id).map_err(HttpError::Parse)?;
+                let client_secret = client_secret
+                    .map(OAuthClientSecret::try_from)
+                    .transpose()
+                    .map_err(HttpError::Parse)?;
+                Ok(CustomOAuth::UserSupplied(UserOAuthClient {
+                    client_id,
+                    client_secret,
+                }))
+            }
+            None if client_secret.is_some() => Err(HttpError::Mcp(McpError::InvalidConfig(
+                "client_secret requires a client_id — leave both blank for dynamic registration"
+                    .into(),
+            ))),
+            None => Ok(CustomOAuth::Dcr),
+        }
     }
 }
 
@@ -318,22 +351,23 @@ async fn create_mcp_server(
         }
         None => None,
     };
-    // Parse the BYO-OAuth client at the boundary (length caps → 400).
-    let oauth_client = payload
+    // Parse the OAuth setup at the boundary (DCR vs pre-registered app;
+    // length caps → 400).
+    let oauth = payload
         .oauth_client
-        .map(OAuthClientInput::into_user_client)
+        .map(OAuthClientInput::into_choice)
         .transpose()?;
     let is_full_form = payload.config.is_some();
-    // A request carries at most one auth method, and an OAuth client only
-    // makes sense for a custom server URL (the full form).
-    if oauth_client.is_some() && credentials_payload.is_some() {
+    // A request carries at most one auth method, and OAuth only makes sense
+    // for a custom server URL (the full form).
+    if oauth.is_some() && credentials_payload.is_some() {
         return Err(HttpError::Mcp(McpError::InvalidConfig(
-            "choose one auth method: an OAuth client or inline credentials, not both".into(),
+            "choose one auth method: OAuth or inline credentials, not both".into(),
         )));
     }
-    if oauth_client.is_some() && !is_full_form {
+    if oauth.is_some() && !is_full_form {
         return Err(HttpError::Mcp(McpError::InvalidConfig(
-            "OAuth client is only valid for a custom server URL".into(),
+            "OAuth is only valid for a custom server URL".into(),
         )));
     }
 
@@ -344,7 +378,7 @@ async fn create_mcp_server(
         payload.config,
         payload.display_name.as_deref(),
         credentials_payload.as_ref(),
-        oauth_client,
+        oauth,
     )
     .await?;
     reject_oauth_with_inline_credentials(catalog_auth_kind, credentials_payload.as_ref())?;
@@ -402,7 +436,7 @@ async fn resolve_catalog_for_create(
     config: Option<McpTransport>,
     display_name: Option<&str>,
     credentials_payload: Option<&CredentialPayload>,
-    oauth_client: Option<UserOAuthClient>,
+    oauth: Option<CustomOAuth>,
 ) -> Result<(McpTransport, McpAuthKind), HttpError> {
     if let Some(c) = config {
         let auth_kind = register_custom_catalog_entry(
@@ -412,7 +446,7 @@ async fn resolve_catalog_for_create(
             display_name,
             &c,
             credentials_payload,
-            oauth_client,
+            oauth,
         )
         .await?;
         return Ok((c, auth_kind));
@@ -493,19 +527,21 @@ async fn persist_inline_credentials(
 ///
 /// `auth_kind` / `client_source` for a freshly-inserted row are derived
 /// from the request:
-///   * `oauth_client` present → `oauth2` / `user_supplied`. The client
-///     identity is sealed on the row; the token arrives via the follow-up
-///     `oauth/start` route, never inline.
+///   * OAuth via DCR (`oauth` present, no client) → `oauth2` / `dcr`. The
+///     server registers a client on the first `oauth/start`.
+///   * OAuth with a pre-registered app (`oauth` present, client supplied) →
+///     `oauth2` / `user_supplied`. The client identity is sealed on the row;
+///     the token arrives via the follow-up `oauth/start` route, never inline.
 ///   * an inline credential → `static_headers` (the `CredentialInput` wire
 ///     shape excludes OAuth). `client_source` is irrelevant for this auth
 ///     kind, so it keeps the historical DB default (`dcr`).
 ///   * neither → `none` / `dcr`.
 ///
-/// `oauth_client` and `credentials_payload` are mutually exclusive — the
-/// caller rejects the both-present combo before reaching here. For a
-/// pre-existing row, the stored value wins; the store's insert-if-absent
-/// semantics guarantee the row's metadata can't be mutated by a request
-/// that's about to 409 on the server uniqueness check.
+/// `oauth` and `credentials_payload` are mutually exclusive — the caller
+/// rejects the both-present combo before reaching here. For a pre-existing
+/// row, the stored value wins; the store's insert-if-absent semantics
+/// guarantee the row's metadata can't be mutated by a request that's about
+/// to 409 on the server uniqueness check.
 async fn register_custom_catalog_entry(
     state: &AppState,
     org_id: crate::auth::OrgId,
@@ -513,18 +549,23 @@ async fn register_custom_catalog_entry(
     display_name: Option<&str>,
     config: &McpTransport,
     credentials_payload: Option<&CredentialPayload>,
-    oauth_client: Option<UserOAuthClient>,
+    oauth: Option<CustomOAuth>,
 ) -> Result<McpAuthKind, HttpError> {
     let display_name = McpCatalogDisplayName::try_from(display_name.unwrap_or(catalog_id.as_str()))
         .map_err(HttpError::Parse)?;
     let description =
         McpCatalogDescription::try_from("Custom MCP server.").map_err(HttpError::Parse)?;
-    let (auth_kind, client_source) = if oauth_client.is_some() {
-        (McpAuthKind::OAuth2, ClientSource::UserSupplied)
-    } else if credentials_payload.is_some() {
-        (McpAuthKind::StaticHeaders, ClientSource::Dcr)
-    } else {
-        (McpAuthKind::None, ClientSource::Dcr)
+    let (auth_kind, client_source, oauth_client) = match oauth {
+        Some(CustomOAuth::UserSupplied(client)) => (
+            McpAuthKind::OAuth2,
+            ClientSource::UserSupplied,
+            Some(client),
+        ),
+        Some(CustomOAuth::Dcr) => (McpAuthKind::OAuth2, ClientSource::Dcr, None),
+        None if credentials_payload.is_some() => {
+            (McpAuthKind::StaticHeaders, ClientSource::Dcr, None)
+        }
+        None => (McpAuthKind::None, ClientSource::Dcr, None),
     };
     let stored_auth_kind = state
         .mcp_catalog

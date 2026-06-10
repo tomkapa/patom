@@ -558,12 +558,14 @@ export type CredentialInput = {
   headers: Record<string, string>;
 };
 
-/** Bring-your-own OAuth client for a custom (full-form) connector. The
- *  `client_secret` is optional: a confidential client supplies it, a
- *  public/PKCE client omits it. Mutually exclusive with `credentials`;
- *  the access token is obtained by the follow-up `oauth/start` flow. */
+/** OAuth setup for a custom (full-form) connector. Presence of this field
+ *  marks the connector OAuth. `client_id` is optional: omit it for Dynamic
+ *  Client Registration (server registers a client automatically), or supply
+ *  it for the operator's pre-registered app (with `client_secret` for a
+ *  confidential app, omitted for a public/PKCE client). Mutually exclusive
+ *  with `credentials`; the token is obtained by the `oauth/start` flow. */
 export type OAuthClientInput = {
-  client_id: string;
+  client_id?: string;
   client_secret?: string;
 };
 
