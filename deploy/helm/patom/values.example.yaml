@@ -73,6 +73,10 @@ secret:
     # HONEYCOMB_API_KEY: "CHANGE_ME"
     # LANGFUSE_PUBLIC_KEY: "CHANGE_ME"
     # LANGFUSE_SECRET_KEY: "CHANGE_ME"
+    # PostHog product analytics — injected into index.html at startup; no build step.
+    # Leave unset (default) for the hard no-op / OSS / self-host case.
+    # PATOM_POSTHOG_KEY: "phc_CHANGE_ME"
+    # PATOM_POSTHOG_HOST: "https://eu.i.posthog.com"   # EU endpoint (default)
     # Per-vendor MCP OAuth clients (one ID/SECRET pair per vendor, e.g. MICROSOFT_365):
     # PATOM_MICROSOFT_365_CLIENT_ID: "CHANGE_ME"
     # PATOM_MICROSOFT_365_CLIENT_SECRET: "CHANGE_ME"

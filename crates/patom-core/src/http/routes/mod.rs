@@ -23,13 +23,16 @@ mod threads;
 pub(super) mod turns;
 mod uploads;
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::http::{HeaderName, HeaderValue, Method, header};
 use axum::middleware;
+use tower::util::BoxCloneSyncService;
 use tower_http::classify::{ServerErrorsAsFailures, SharedClassifier};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 use tower_http::trace::{MakeSpan, TraceLayer};
 
 use super::auth_layer::{require_principal, require_user};
@@ -195,12 +198,9 @@ pub fn router(state: AppState) -> Router {
         None => private,
     };
 
-    // Misses fall to `index.html` so React Router resolves deep links.
-    // Missing files at boot are intentionally not validated — surfacing
-    // as 404s catches a broken deploy at the smoke test instead of at
-    // startup, and lets the BE run without a built FE in dev.
-    let index_html = state.web_dist.join("index.html");
-    let spa_fallback = ServeDir::new(&state.web_dist).not_found_service(ServeFile::new(index_html));
+    // Real files from `web_dist`; the runtime-config-injected `index_html` for
+    // `/` and every SPA deep link (see [`build_spa_fallback`]).
+    let spa_fallback = build_spa_fallback(&state.web_dist, Arc::clone(&state.index_html));
 
     Router::new()
         .merge(public)
@@ -209,6 +209,48 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(REQUEST_BODY_LIMIT_BYTES))
         .layer(trace_layer())
+}
+
+/// SPA fallback service: serves real files from `web_dist`, and the
+/// runtime-config-injected `index_html` (HTTP 200) for `/` and every
+/// client-side route.
+///
+/// Two load-bearing choices:
+/// - `append_index_html_on_directories(false)`: by default `ServeDir` serves
+///   `web_dist/index.html` for `GET /` directly, which bypasses `index_html`
+///   and ships the SPA *without* `window.__PATOM_CONFIG__` — so the canonical
+///   root load would silently miss analytics config while only deep links got
+///   it. Disabling it routes `/` through the fallback too.
+/// - `.fallback()` (not `.not_found_service()`): the latter wraps the fallback
+///   in `SetStatus(404)`, so the SPA shell would be served with a 404 status on
+///   `/` and every deep link. `.fallback()` preserves the 200 the shell sets,
+///   which is the correct status for an SPA entry document.
+fn build_spa_fallback(
+    web_dist: &std::path::Path,
+    index_html: Arc<str>,
+) -> ServeDir<
+    BoxCloneSyncService<
+        axum::http::Request<axum::body::Body>,
+        axum::http::Response<axum::body::Body>,
+        std::convert::Infallible,
+    >,
+> {
+    let index_svc = BoxCloneSyncService::new(tower::service_fn(
+        move |_req: axum::http::Request<axum::body::Body>| {
+            let html = Arc::clone(&index_html);
+            async move {
+                Ok::<_, std::convert::Infallible>(
+                    axum::http::Response::builder()
+                        .header(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+                        .body(axum::body::Body::from(html.as_bytes().to_vec()))
+                        .expect("invariant: response builder with known-valid header cannot fail"),
+                )
+            }
+        },
+    ));
+    ServeDir::new(web_dist)
+        .append_index_html_on_directories(false)
+        .fallback(index_svc)
 }
 
 #[cfg(test)]
@@ -370,5 +412,87 @@ mod tests {
     fn empty_allowlist_disables_cors() {
         assert!(build_cors_layer(&[]).is_none());
         assert!(build_cors_layer(&["https://patom.app".to_string()]).is_some());
+    }
+
+    async fn body_string(res: axum::http::Response<Body>) -> String {
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .expect("collect body");
+        String::from_utf8(bytes.to_vec()).expect("utf8 body")
+    }
+
+    // Regression: `GET /` must serve the runtime-config-INJECTED shell, not the
+    // raw on-disk index.html. `ServeDir` serves `index.html` for `/` by
+    // default, which would silently ship the SPA without
+    // `window.__PATOM_CONFIG__` (analytics off for every root load). The
+    // `append_index_html_on_directories(false)` in `build_spa_fallback` is what
+    // routes `/` — and every SPA deep link — through the injected shell, while
+    // real asset files are still served straight from disk.
+    #[tokio::test]
+    async fn root_and_deep_links_serve_injected_shell_not_disk_index() {
+        let dir = std::env::temp_dir().join(format!("patom_spa_fallback_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mk tmp dir");
+        std::fs::write(
+            dir.join("index.html"),
+            "<html><head></head><body>RAW_DISK</body></html>",
+        )
+        .expect("write index.html");
+        std::fs::write(dir.join("app.js"), "console.log('real asset');").expect("write asset");
+
+        let injected: Arc<str> = Arc::from(
+            "<html><head><script>window.__PATOM_CONFIG__={\"posthogKey\":\"phc_x\"};\
+             </script></head><body>INJECTED</body></html>",
+        );
+        let app = Router::new().fallback_service(build_spa_fallback(&dir, injected));
+
+        // `/` → injected shell, never the disk file.
+        let root = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("req"),
+            )
+            .await
+            .expect("resp");
+        assert_eq!(root.status(), StatusCode::OK);
+        let root = body_string(root).await;
+        assert!(
+            root.contains("__PATOM_CONFIG__"),
+            "root must serve injected shell: {root}"
+        );
+        assert!(
+            !root.contains("RAW_DISK"),
+            "root must not serve the raw disk index.html: {root}"
+        );
+
+        // SPA deep link (no such file) → injected shell.
+        let deep = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/threads/abc")
+                    .body(Body::empty())
+                    .expect("req"),
+            )
+            .await
+            .expect("resp");
+        assert!(body_string(deep).await.contains("__PATOM_CONFIG__"));
+
+        // A real asset file → served from disk by ServeDir, not the shell.
+        let asset = app
+            .oneshot(
+                Request::builder()
+                    .uri("/app.js")
+                    .body(Body::empty())
+                    .expect("req"),
+            )
+            .await
+            .expect("resp");
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert!(body_string(asset).await.contains("real asset"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
