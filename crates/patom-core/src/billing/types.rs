@@ -144,84 +144,27 @@ impl From<CostMicros> for LedgerDelta {
     }
 }
 
-/// The kind of a ledger entry. Maps 1:1 to the `org_credit_ledger.kind` text
-/// column via an allowlist (§10) — never an interpolated value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LedgerKind {
-    Grant,
-    Debit,
-    Adjustment,
-}
-
-impl LedgerKind {
-    /// The exact text stored in `org_credit_ledger.kind`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Grant => "grant",
-            Self::Debit => "debit",
-            Self::Adjustment => "adjustment",
-        }
+crate::str_enum! {
+    /// The kind of a ledger entry. The label is the single source of truth for
+    /// the `org_credit_ledger.kind` CHECK constraint, the JSON wire format, and
+    /// tracing attributes (§10).
+    pub enum LedgerKind {
+        Grant      => "grant",
+        Debit      => "debit",
+        Adjustment => "adjustment",
     }
 }
 
-impl TryFrom<&str> for LedgerKind {
-    type Error = ParseError;
-    fn try_from(raw: &str) -> Result<Self, Self::Error> {
-        match raw {
-            "grant" => Ok(Self::Grant),
-            "debit" => Ok(Self::Debit),
-            "adjustment" => Ok(Self::Adjustment),
-            _ => Err(ParseError::Malformed {
-                field: "ledger_kind",
-                detail: "unknown kind",
-            }),
-        }
-    }
-}
-
-/// Why a ledger entry exists. Maps 1:1 to `org_credit_ledger.reason` via an
-/// allowlist (§10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LedgerReason {
-    SignupBonus,
-    Promo,
-    Referral,
-    Manual,
-    Refund,
-    Usage,
-}
-
-impl LedgerReason {
-    /// The exact text stored in `org_credit_ledger.reason`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SignupBonus => "signup_bonus",
-            Self::Promo => "promo",
-            Self::Referral => "referral",
-            Self::Manual => "manual",
-            Self::Refund => "refund",
-            Self::Usage => "usage",
-        }
-    }
-}
-
-impl TryFrom<&str> for LedgerReason {
-    type Error = ParseError;
-    fn try_from(raw: &str) -> Result<Self, Self::Error> {
-        match raw {
-            "signup_bonus" => Ok(Self::SignupBonus),
-            "promo" => Ok(Self::Promo),
-            "referral" => Ok(Self::Referral),
-            "manual" => Ok(Self::Manual),
-            "refund" => Ok(Self::Refund),
-            "usage" => Ok(Self::Usage),
-            _ => Err(ParseError::Malformed {
-                field: "ledger_reason",
-                detail: "unknown reason",
-            }),
-        }
+crate::str_enum! {
+    /// Why a ledger entry exists. The label drives the `org_credit_ledger.reason`
+    /// CHECK constraint and the JSON wire format (§10).
+    pub enum LedgerReason {
+        SignupBonus => "signup_bonus",
+        Promo       => "promo",
+        Referral    => "referral",
+        Manual      => "manual",
+        Refund      => "refund",
+        Usage       => "usage",
     }
 }
 
@@ -410,29 +353,19 @@ mod tests {
 
     #[test]
     fn ledger_kind_round_trips_through_str() {
-        for kind in [LedgerKind::Grant, LedgerKind::Debit, LedgerKind::Adjustment] {
-            assert_eq!(LedgerKind::try_from(kind.as_str()).expect("known"), kind);
+        for kind in LedgerKind::ALL.iter().copied() {
+            assert_eq!(LedgerKind::parse(kind.as_str()).expect("known"), kind);
         }
-        assert!(LedgerKind::try_from("nonsense").is_err());
+        assert!(LedgerKind::parse("nonsense").is_none());
     }
 
     #[test]
     fn ledger_reason_round_trips_through_str() {
-        for reason in [
-            LedgerReason::SignupBonus,
-            LedgerReason::Promo,
-            LedgerReason::Referral,
-            LedgerReason::Manual,
-            LedgerReason::Refund,
-            LedgerReason::Usage,
-        ] {
-            assert_eq!(
-                LedgerReason::try_from(reason.as_str()).expect("known"),
-                reason
-            );
+        for reason in LedgerReason::ALL.iter().copied() {
+            assert_eq!(LedgerReason::parse(reason.as_str()).expect("known"), reason);
         }
         assert_eq!(LedgerReason::SignupBonus.as_str(), "signup_bonus");
-        assert!(LedgerReason::try_from("bribe").is_err());
+        assert!(LedgerReason::parse("bribe").is_none());
     }
 
     #[test]

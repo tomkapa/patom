@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 use crate::auth::{
     AuthError, Email, InviteId, Language, OrgName, OrgSlug, Principal, Role, UserId,
 };
-use crate::billing::{BillingConfig, MonthlyCapMicros, WarnThresholdBps};
+use crate::billing::limits::MAX_LEDGER_READ;
+use crate::billing::{BillingConfig, CreditSummary, MonthlyCapMicros, WarnThresholdBps};
 use crate::orgs::{
     INVITE_TTL, MAX_INVITE_BATCH, MAX_MEMBERS_PER_PAGE, MemberFilter, MemberRow, MemberStatus,
     OrgError, OrgUpdate,
@@ -36,6 +37,7 @@ pub(super) fn router() -> Router<AppState> {
             get(read_org).patch(update_org).delete(delete_org),
         )
         .route("/me/org/billing", get(read_billing).put(set_billing))
+        .route("/me/org/credits", get(read_credits))
         .route("/me/org/members", get(list_members))
         .route("/me/org/members/{user_id}", delete(remove_member))
         .route("/me/org/members/{user_id}/role", patch(change_role))
@@ -251,6 +253,61 @@ async fn read_billing(
         .get_config(principal.user_id, principal.active_org_id)
         .await?;
     Ok(Json(BillingView::new(config, role)).into_response())
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// GET /me/org/credits — free-credit balance + recent ledger (#154).
+// ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct LedgerEntryView {
+    id: uuid::Uuid,
+    /// Signed micro-USD: grants positive, debits negative.
+    delta_micro_usd: i64,
+    kind: crate::billing::LedgerKind,
+    reason: crate::billing::LedgerReason,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct CreditsView {
+    balance_micro_usd: i64,
+    granted_total_micro_usd: i64,
+    used_total_micro_usd: i64,
+    recent: Vec<LedgerEntryView>,
+}
+
+impl From<CreditSummary> for CreditsView {
+    fn from(s: CreditSummary) -> Self {
+        Self {
+            balance_micro_usd: s.balance_micro_usd,
+            granted_total_micro_usd: s.granted_total_micro_usd,
+            used_total_micro_usd: s.used_total_micro_usd,
+            recent: s
+                .recent
+                .into_iter()
+                .map(|e| LedgerEntryView {
+                    id: e.id.as_uuid(),
+                    delta_micro_usd: e.delta_micro_usd,
+                    kind: e.kind,
+                    reason: e.reason,
+                    created_at: e.created_at,
+                })
+                .collect(),
+        }
+    }
+}
+
+async fn read_credits(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<Response, HttpError> {
+    // Any member may read the workspace's credit balance (no role gate).
+    let summary = state
+        .billing
+        .read_credits(principal.user_id, principal.active_org_id, MAX_LEDGER_READ)
+        .await?;
+    Ok(Json(CreditsView::from(summary)).into_response())
 }
 
 #[derive(Debug, Deserialize)]

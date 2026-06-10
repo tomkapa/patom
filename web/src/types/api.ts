@@ -84,6 +84,31 @@ export type OrgBilling = {
   role: Role;
 };
 
+/** One free-credit ledger entry (#154). */
+export type CreditLedgerEntry = {
+  id: string;
+  /** Signed micro-USD: grants positive, debits negative. */
+  delta_micro_usd: number;
+  kind: "grant" | "debit" | "adjustment";
+  reason:
+    | "signup_bonus"
+    | "promo"
+    | "referral"
+    | "manual"
+    | "refund"
+    | "usage";
+  /** RFC 3339 timestamp. */
+  created_at: string;
+};
+
+/** The workspace's free-credit balance + recent ledger (#154). */
+export type OrgCredits = {
+  balance_micro_usd: number;
+  granted_total_micro_usd: number;
+  used_total_micro_usd: number;
+  recent: CreditLedgerEntry[];
+};
+
 /** Status of a row on the Members tab. */
 export type MemberStatus = "active" | "invited" | "expired";
 

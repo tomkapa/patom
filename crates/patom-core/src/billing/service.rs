@@ -115,6 +115,38 @@ const GRANT_UPSERT_CREDITS: &str = "
             updated_at              = EXCLUDED.updated_at
     RETURNING balance_micro_usd, granted_total_micro_usd, used_total_micro_usd";
 
+/// The org's materialized credit totals for the read API. Absent row → all zero.
+const READ_CREDITS: &str = "
+    SELECT balance_micro_usd, granted_total_micro_usd, used_total_micro_usd
+    FROM org_credits WHERE org_id = $1";
+
+/// The org's recent ledger entries, newest first, capped by `$2`
+/// ([`super::limits::MAX_LEDGER_READ`]). Uses the `(org_id, created_at DESC)` index.
+const READ_LEDGER: &str = "
+    SELECT id, delta_micro_usd, kind, reason, created_at
+    FROM org_credit_ledger WHERE org_id = $1
+    ORDER BY created_at DESC LIMIT $2";
+
+/// One credit ledger entry, for the read API.
+#[derive(Debug, Clone)]
+pub struct CreditLedgerEntry {
+    pub id: CreditLedgerId,
+    pub delta_micro_usd: i64,
+    pub kind: LedgerKind,
+    pub reason: LedgerReason,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One org's credit balance + recent ledger, for the read API. An org that has
+/// never been granted credit reads as all-zero with an empty ledger.
+#[derive(Debug, Clone)]
+pub struct CreditSummary {
+    pub balance_micro_usd: i64,
+    pub granted_total_micro_usd: i64,
+    pub used_total_micro_usd: i64,
+    pub recent: Vec<CreditLedgerEntry>,
+}
+
 /// One org's budget configuration plus its current-period spend.
 ///
 /// For the admin read API. `cap_micro_usd == None` is the unlimited case;
@@ -164,6 +196,18 @@ pub trait BillingService: fmt::Debug + Send + Sync {
         key: &IdempotencyKey,
         actor: Option<UserId>,
     ) -> Result<(), BillingError>;
+
+    /// Tenant-scoped read of the org's credit balance + recent ledger (#154).
+    /// Opens `begin_as_user` so the read is RLS-filtered to the acting
+    /// principal's org. `limit` caps the ledger slice
+    /// ([`super::limits::MAX_LEDGER_READ`]). An org never granted credit reads
+    /// as all-zero with an empty ledger.
+    async fn read_credits(
+        &self,
+        acting_user_id: UserId,
+        org: OrgId,
+        limit: i64,
+    ) -> Result<CreditSummary, BillingError>;
 
     /// Tenant-scoped read for the admin GET. Opens `begin_as_user` so the read
     /// is RLS-filtered to the acting principal's org. Returns the configured cap
@@ -572,6 +616,50 @@ impl BillingService for PgBillingService {
         tx.commit().await?;
         tracing::Span::current().record("patom.billing.granted", granted);
         Ok(())
+    }
+
+    #[tracing::instrument(skip_all, name = "billing.read_credits", fields(patom.org.id = %org))]
+    async fn read_credits(
+        &self,
+        acting_user_id: UserId,
+        org: OrgId,
+        limit: i64,
+    ) -> Result<CreditSummary, BillingError> {
+        assert!(limit > 0, "invariant: ledger read limit is positive");
+        let mut tx = begin_as_user(&self.pool, acting_user_id).await?;
+        let totals: Option<(i64, i64, i64)> = sqlx::query_as(READ_CREDITS)
+            .bind(org)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let rows: Vec<(CreditLedgerId, i64, LedgerKind, LedgerReason, DateTime<Utc>)> =
+            sqlx::query_as(READ_LEDGER)
+                .bind(org)
+                .bind(limit)
+                .fetch_all(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        let (balance, granted, used) = totals.unwrap_or((0, 0, 0));
+        // §6: an absent row reads as zero; a present one obeys the column CHECKs.
+        assert!(granted >= 0, "invariant: granted_total non-negative");
+        assert!(used >= 0, "invariant: used_total non-negative");
+        let recent = rows
+            .into_iter()
+            .map(
+                |(id, delta_micro_usd, kind, reason, created_at)| CreditLedgerEntry {
+                    id,
+                    delta_micro_usd,
+                    kind,
+                    reason,
+                    created_at,
+                },
+            )
+            .collect();
+        Ok(CreditSummary {
+            balance_micro_usd: balance,
+            granted_total_micro_usd: granted,
+            used_total_micro_usd: used,
+            recent,
+        })
     }
 
     #[tracing::instrument(skip_all, name = "billing.get_config", fields(patom.org.id = %org))]

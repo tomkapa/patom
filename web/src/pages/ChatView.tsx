@@ -197,6 +197,13 @@ export function ChatView() {
       track("budget_warning_shown");
       return true;
     }
+    // 402 from POST /prompts means the workspace is out of free credit (#154) —
+    // surface the top-up / bring-your-own-key prompt inline.
+    if (e instanceof ApiError && e.status === 402) {
+      setComposerError(t("chat.error.out_of_credit"));
+      track("budget_warning_shown");
+      return true;
+    }
     return false;
   };
 

@@ -12,6 +12,7 @@ import { ProgressBar } from "../components/atoms/ProgressBar";
 import { SectionCard } from "../components/molecules/SectionCard";
 import { SettingsField } from "../components/molecules/SettingsField";
 import { useOrgBilling, useUpdateOrgBilling } from "../hooks/useOrgBilling";
+import { useOrgCredits } from "../hooks/useOrgCredits";
 import { formatUSD, microToUsd, usdToMicro } from "../lib/currency";
 import { useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
@@ -24,6 +25,11 @@ export function SettingsBilling() {
   const budgetQuery = useOrgBilling();
   const updateBudget = useUpdateOrgBilling();
   const budget = budgetQuery.data;
+
+  // Free credit (#154). Only shown when the workspace actually has credit
+  // tracking (cloud) — a self-host org reads all-zero and the card stays hidden.
+  const credits = useOrgCredits().data;
+  const hasCredits = !!credits && credits.granted_total_micro_usd > 0;
 
   const canEdit = budget?.role === "owner" || budget?.role === "admin";
 
@@ -140,6 +146,34 @@ export function SettingsBilling() {
         ) : null}
 
         <div className="flex flex-col gap-6">
+          {/* FREE CREDIT (#154) — cloud workspaces only */}
+          {hasCredits && credits ? (
+            <SectionCard
+              header={
+                <SectionCardHeader
+                  titleKey="settings.credits.title"
+                  helperKey="settings.credits.helper"
+                />
+              }
+            >
+              <div className="flex flex-col gap-1 px-4 py-3">
+                <div className="text-[20px] font-semibold text-[var(--color-ink)]">
+                  {t("settings.credits.remaining", {
+                    amount: formatUSD(
+                      Math.max(0, credits.balance_micro_usd),
+                    ),
+                  })}
+                </div>
+                <div className="text-[12px] text-[var(--color-rail)]">
+                  {t("settings.credits.granted")}{" "}
+                  {formatUSD(credits.granted_total_micro_usd)} ·{" "}
+                  {t("settings.credits.used")}{" "}
+                  {formatUSD(credits.used_total_micro_usd)}
+                </div>
+              </div>
+            </SectionCard>
+          ) : null}
+
           {/* CURRENT PERIOD */}
           <SectionCard
             header={

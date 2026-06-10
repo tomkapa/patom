@@ -25,7 +25,10 @@ pub mod types;
 
 pub use error::BillingError;
 pub use pricing::{price_for, turn_cost};
-pub use service::{BillingConfig, BillingService, PgBillingService, SharedBillingService};
+pub use service::{
+    BillingConfig, BillingService, CreditLedgerEntry, CreditSummary, PgBillingService,
+    SharedBillingService,
+};
 pub use types::{
     BillingPeriod, CostMicros, CreditLedgerId, GrantAmount, LedgerDelta, LedgerKind, LedgerReason,
     MicroUsdPerMtok, MonthlyCapMicros, Price, WarnThresholdBps,

@@ -38,8 +38,16 @@ pub const FALLBACK_PRICE: Price = Price::new(
 /// pool). Used only for documentation/asserts, not on the hot path.
 pub const MAX_SINGLE_TURN_COST_MICROS: i64 = 100_000_000; // $100
 
+/// Cap on the number of recent ledger entries the credits read API returns (#154).
+///
+/// The "credit remaining" panel shows a short activity list, not the full
+/// history — bounding the read keeps the response small and the query indexed
+/// (`org_credit_ledger (org_id, created_at DESC)`).
+pub const MAX_LEDGER_READ: i64 = 50;
+
 // §5: the default threshold must parse cleanly through its newtype. Pinned at
 // compile time so a future bump cannot silently fall out of range.
 const _: () = assert!(DEFAULT_WARN_BPS > 0);
 const _: () = assert!(DEFAULT_WARN_BPS <= 10_000);
 const _: () = assert!(MAX_SINGLE_TURN_COST_MICROS > 0);
+const _: () = assert!(MAX_LEDGER_READ > 0);

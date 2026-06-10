@@ -638,6 +638,16 @@ const vi: TranslationTable = {
   // Chat — budget exceeded
   "chat.error.billing_exceeded":
     "Workspace này đã vượt ngân sách chi tiêu hằng tháng. Chủ sở hữu có thể nâng giới hạn trong Cài đặt → Thanh toán.",
+  "chat.error.out_of_credit":
+    "Workspace này đã hết tín dụng miễn phí. Thêm khóa nhà cung cấp hoặc nạp thêm trong Cài đặt → Thanh toán.",
+
+  // Settings — free credit (#154)
+  "settings.credits.title": "TÍN DỤNG MIỄN PHÍ",
+  "settings.credits.helper": "Tín dụng nền tảng cho việc dùng AI",
+  "settings.credits.remaining": "Còn lại {amount}",
+  "settings.credits.granted": "Đã cấp",
+  "settings.credits.used": "Đã dùng",
+  "settings.credits.empty": "Chưa có hoạt động tín dụng.",
 
   // General tab
   "settings.general.title": "Chung",
