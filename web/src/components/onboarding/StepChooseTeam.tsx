@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import {
   TEAM_PRESETS,
+  VISIBLE_PRESET_COUNT,
   findPreset,
   renderPrompt,
   type PresetAgent,
@@ -60,7 +61,10 @@ export function StepChooseTeam({
             description: a.description,
             system_prompt: renderPrompt(a.system_prompt, workspaceName),
             model: a.model,
-            allowed_mcp_tools: {},
+            // The role's declared connections. Catalogs the org hasn't
+            // wired are inert until the owner connects them; the
+            // Recruiter's first-contact orientation surfaces the prompts.
+            allowed_mcp_tools: a.allowed_mcp_tools,
           });
           // One event per genuinely-created agent. The 409 path below is a
           // resume over an already-hired agent, so it must not re-count.
@@ -108,7 +112,7 @@ export function StepChooseTeam({
           aria-label="Team presets"
           data-testid="preset-list"
         >
-          {TEAM_PRESETS.slice(0, 4).map((p) => (
+          {TEAM_PRESETS.slice(0, VISIBLE_PRESET_COUNT).map((p) => (
             <PresetRow
               key={p.id}
               preset={p}

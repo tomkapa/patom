@@ -639,6 +639,14 @@ const vi: TranslationTable = {
   "chat.error.budget_exceeded":
     "Workspace này đã vượt ngân sách chi tiêu hằng tháng. Chủ sở hữu có thể nâng giới hạn trong Cài đặt → Thanh toán.",
 
+  // Chat — first-contact welcome (empty #general after onboarding)
+  "chat.welcome.title": "Chào {name}, chào mừng đến với Patom",
+  "chat.welcome.body":
+    "Đội ngũ của bạn đã được tuyển và đang chờ. Bạn muốn họ tự giới thiệu và cho biết cần kết nối những gì không? Chúng tôi sẽ soạn sẵn một tin nhắn gửi Recruiter vào ô bên dưới — bạn xem lại rồi bấm gửi.",
+  "chat.welcome.cta": "Giới thiệu tôi với đội ngũ",
+  "chat.welcome.prefill":
+    "@recruiter Chào bạn! Bạn giới thiệu giúp tôi về đội ngũ — ai làm gì và họ phối hợp ra sao — và cho tôi biết tôi nên thiết lập những kết nối nào nhé?",
+
   // General tab
   "settings.general.title": "Chung",
   "settings.general.subtitle":

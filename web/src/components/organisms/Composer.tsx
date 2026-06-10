@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AtSign, Code, Hash, Paperclip, Send, Smile } from "lucide-react";
 import { Button } from "../atoms/Button";
 import { MentionInput, matchMentions } from "../molecules/MentionInput";
@@ -21,6 +21,7 @@ export function Composer({
   pending,
   disabled,
   disabledHint,
+  prefill,
   onSubmit,
 }: {
   /** Everyone taggable from this composer (channel members + agents). */
@@ -37,10 +38,32 @@ export function Composer({
    *  the conversion nudge on the public demo ("Sign up to talk to agents").
    *  Omitted in the live app, where `disabled` only means "roster loading". */
   disabledHint?: string;
+  /** Drop text into the input from outside without submitting — the
+   *  user reviews and sends. `nonce` distinguishes repeat fills of the
+   *  same text (e.g. clicking the welcome CTA twice). Null = no fill. */
+  prefill?: { text: string; nonce: number } | null;
   onSubmit: (input: ComposerSubmit) => void;
 }) {
   const [value, setValue] = useState("");
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Load externally-supplied text into the box (welcome CTA, retry, …)
+  // and place the caret at the end so the user can edit or just hit send.
+  // Keyed on `nonce` so the same text can be re-dropped on demand.
+  const prefillNonce = prefill?.nonce;
+  useEffect(() => {
+    if (!prefill) return;
+    setValue(prefill.text);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (!el) return;
+      el.focus();
+      const end = prefill.text.length;
+      el.setSelectionRange(end, end);
+    });
+    // Intentionally keyed on the nonce only — re-running on `prefill.text`
+    // identity would clobber the user's edits on unrelated re-renders.
+  }, [prefillNonce]);
 
   const trimmed = value.trim();
 
