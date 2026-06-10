@@ -290,3 +290,16 @@ pub async fn seed_prompt_request(
     );
     id
 }
+
+/// BYO provider-credential store for tests that construct an [`AppState`] but
+/// don't exercise the routes — a one-liner so the inline `AppState { … }`
+/// literals stay within clippy's function-length budget (#141).
+pub fn provider_credentials_store(
+    pool: PgPool,
+) -> patom::provider::SharedOrgProviderCredentialStore {
+    Arc::new(patom::provider::PgOrgProviderCredentialStore::new(
+        pool,
+        SystemClock::shared(),
+        Arc::new(patom::crypto::OrgEncryptor::for_test([0u8; 32])),
+    ))
+}

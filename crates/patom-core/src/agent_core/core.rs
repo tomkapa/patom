@@ -3,13 +3,13 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug};
 
-use crate::auth::Caller;
+use crate::auth::{Caller, OrgId};
 use crate::background::{BackgroundTurnId, SharedBackgroundStore};
 use crate::billing::SharedBillingService;
 use crate::clock::SharedClock;
 use crate::hook::{HookChain, TurnContext};
 use crate::memory::SharedMemory;
-use crate::provider::{Model, SharedProviderRegistry};
+use crate::provider::{Model, OrgProviderOverlay, SharedProvider, SharedProviderRegistry};
 use crate::runtime::{ClaimKey, PromptRequestId, RequestKindPayload};
 use crate::threads::{AgentThreadId, SharedThreadStore, ThreadId};
 use crate::tools::system::todos::SharedSessionTodoStore;
@@ -37,6 +37,13 @@ pub(super) const fn send_message_tool_name() -> &'static str {
 #[derive(Debug, Clone)]
 pub struct Agent {
     providers: SharedProviderRegistry,
+    /// Owning org of the agent this runtime serves. Routing key into
+    /// [`Self::overlay`] for the per-turn BYO-vs-platform decision (#141).
+    org_id: OrgId,
+    /// Per-org BYO provider overlay. Consulted live on every turn (not baked
+    /// at build): a key saved after this `Agent` was cached still routes the
+    /// next turn, honoring "immediate activation" (#141).
+    overlay: OrgProviderOverlay,
     memory: SharedMemory,
     clock: SharedClock,
     tools: ToolBox,
@@ -84,6 +91,8 @@ impl Agent {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         providers: SharedProviderRegistry,
+        org_id: OrgId,
+        overlay: OrgProviderOverlay,
         memory: SharedMemory,
         clock: SharedClock,
         tools: ToolBox,
@@ -102,6 +111,8 @@ impl Agent {
     ) -> Self {
         Self {
             providers,
+            org_id,
+            overlay,
             memory,
             clock,
             tools,
@@ -120,23 +131,35 @@ impl Agent {
         }
     }
 
-    /// Routing-time provider lookup. Returns the [`crate::provider::SharedProvider`]
-    /// that serves [`Self::model`]'s `provider()` discriminant. The
-    /// `expect` documents the invariant: the workspace default's provider is
-    /// validated at startup
-    /// (`SettingsError::DefaultModelProviderNotConfigured`), and
-    /// [`crate::agents::StaticAgentModelResolver`] degrades any per-agent
-    /// pin whose provider has since been dropped from config back to that
-    /// default — so by the time a `Model` reaches this getter, its provider
-    /// is known to be in the registry. A `None` here means that invariant
-    /// was bypassed (custom resolver, in-memory mutation) and is an
-    /// operational fault we surface immediately.
-    pub(super) fn provider(&self) -> &crate::provider::SharedProvider {
-        self.providers.get(self.model.provider()).expect(
-            "invariant: registry contains the provider for every Model that reaches \
-             call_provider — upheld by startup config validation + the resolver's \
-             graceful-degrade fallback to the workspace default",
-        )
+    /// Resolve this turn's provider client **and** its BYO flag in a single,
+    /// **live** overlay read (#141).
+    ///
+    /// Returns `(client, is_byo)`: the org's BYO client + `true` when the
+    /// overlay holds a usable key for [`Self::model`]'s provider, otherwise the
+    /// platform registry client + `false`. Reading the overlay here (rather than
+    /// baking the choice at build time) is what makes a newly-saved key route
+    /// this already-cached `Agent`'s next turn — "immediate activation". The
+    /// turn loop calls this **once** so routing (the client used for the send)
+    /// and metering (the BYO gate/settle skip) can never disagree, even if the
+    /// overlay swaps mid-turn.
+    ///
+    /// The client is an owned `Arc` clone (the overlay snapshot is swappable, so
+    /// we cannot hand out a borrow into it). The platform-side `expect`
+    /// documents the invariant: the workspace default's provider is validated at
+    /// startup (`SettingsError::DefaultModelProviderNotConfigured`), and the
+    /// resolver degrades any pin whose provider is neither configured nor
+    /// BYO-keyed back to a routable default — so by the time a `Model` reaches
+    /// here, either the org holds a BYO key for it or it is in the registry.
+    pub(super) fn route(&self) -> (SharedProvider, bool) {
+        if let Some(byo) = self.overlay.get(self.org_id, self.model.provider()) {
+            return (byo, true);
+        }
+        let platform = self.providers.get(self.model.provider()).cloned().expect(
+            "invariant: a Model that reaches call_provider is served either by an org \
+                 BYO key or the platform registry — upheld by startup config validation + \
+                 the resolver's graceful-degrade fallback",
+        );
+        (platform, false)
     }
     pub(super) fn memory(&self) -> &SharedMemory {
         &self.memory
@@ -212,7 +235,7 @@ impl Agent {
             patom.state.id = %claim_key,
             patom.viewer = %viewer,
             patom.request.kind = kind_payload.kind().as_str(),
-            patom.provider = self.provider().name(),
+            patom.provider = self.model.provider().as_str(),
             patom.model = %self.model,
             patom.max_turns = self.max_turns.get(),
             patom.outcome = tracing::field::Empty,
@@ -326,7 +349,7 @@ impl Agent {
             patom.background.turn.id = %turn,
             patom.viewer = %viewer,
             patom.request.kind = kind_payload.kind().as_str(),
-            patom.provider = self.provider().name(),
+            patom.provider = self.model.provider().as_str(),
             patom.model = %self.model,
             patom.outcome = tracing::field::Empty,
         ),

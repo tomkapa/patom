@@ -109,6 +109,37 @@ export type OrgCredits = {
   recent: CreditLedgerEntry[];
 };
 
+/** One per-org BYO LLM provider key (#141). Mirrors
+ *  `http/routes/provider_credentials.rs::ProviderCredentialView`. The key
+ *  itself is never returned — only a masked suffix. */
+export type ProviderCredentialView = {
+  /** `"anthropic" | "openai" | "deepseek"`. */
+  provider: string;
+  /** `"active"` once a key is stored (routes immediately), else `"not_set"`. */
+  status: "active" | "not_set";
+  /** Masked suffix (e.g. `••••••••1234`); `null` when not set. */
+  masked_key: string | null;
+  /** Non-secret endpoint override, if configured. */
+  base_url: string | null;
+  /** Last successful live validation, ISO 8601; `null` if never. */
+  last_validated_at: string | null;
+};
+
+/** Request body for `PUT /me/org/provider-credentials/{provider}`. */
+export type ProviderCredentialInput = {
+  api_key: string;
+  base_url?: string | null;
+  /** Honored only when this is the org's first stored key. */
+  default_model?: string | null;
+};
+
+/** `POST /me/org/provider-credentials/{provider}/validate` response —
+ *  a single discriminant the FE renders as pass/fail. */
+export type ProviderValidateResult =
+  | { outcome: "ok" }
+  | { outcome: "invalid"; error: string }
+  | { outcome: "error"; error: string };
+
 /** Status of a row on the Members tab. */
 export type MemberStatus = "active" | "invited" | "expired";
 

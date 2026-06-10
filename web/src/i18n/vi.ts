@@ -607,6 +607,7 @@ const vi: TranslationTable = {
   "settings.nav.general": "Chung",
   "settings.nav.members": "Thành viên",
   "settings.nav.billing": "Thanh toán",
+  "settings.nav.providerKeys": "Khóa nhà cung cấp",
   "settings.nav.integrations": "Tích hợp",
   "settings.nav.notifications": "Thông báo",
   "settings.comingSoon.title": "{label}",
@@ -648,6 +649,34 @@ const vi: TranslationTable = {
   "settings.credits.granted": "Đã cấp",
   "settings.credits.used": "Đã dùng",
   "settings.credits.empty": "Chưa có hoạt động tín dụng.",
+
+  // Settings — khóa nhà cung cấp tự mang (#141)
+  "settings.providerKeys.subtitle":
+    "Dùng khóa API nhà cung cấp LLM của riêng bạn. Lưu lượng của nhà cung cấp đã có khóa sẽ chạy trên tài khoản của bạn và ngừng dùng tín dụng nền tảng.",
+  "settings.providerKeys.sectionTitle": "KHÓA NHÀ CUNG CẤP",
+  "settings.providerKeys.sectionHelper": "Mỗi nhà cung cấp một khóa — thêm, xoay vòng hoặc gỡ",
+  "settings.providerKeys.outOfCredit":
+    "Workspace này đã hết tín dụng miễn phí. Thêm khóa nhà cung cấp bên dưới để các agent tiếp tục chạy.",
+  "settings.providerKeys.status.active": "Đang hoạt động",
+  "settings.providerKeys.status.notSet": "Chưa đặt",
+  "settings.providerKeys.add": "Thêm khóa",
+  "settings.providerKeys.rotate": "Xoay vòng",
+  "settings.providerKeys.remove": "Gỡ",
+  "settings.providerKeys.save": "Lưu khóa",
+  "settings.providerKeys.cancel": "Hủy",
+  "settings.providerKeys.validate": "Kiểm tra khóa",
+  "settings.providerKeys.apiKeyPlaceholder": "Dán khóa API của bạn",
+  "settings.providerKeys.baseUrlPlaceholder": "URL cơ sở tùy chỉnh (tùy chọn)",
+  "settings.providerKeys.defaultModelLabel": "Mô hình mặc định",
+  "settings.providerKeys.defaultModelHelper":
+    "Được chọn khi bạn thêm khóa đầu tiên. Agent có nhà cung cấp chưa có khóa sẽ dùng mô hình này.",
+  "settings.providerKeys.lastValidated": "Đã kiểm tra {when}",
+  "settings.providerKeys.neverValidated": "Chưa kiểm tra",
+  "settings.providerKeys.validateOk": "Khóa hợp lệ.",
+  "settings.providerKeys.validateInvalid": "Nhà cung cấp đã từ chối khóa này.",
+  "settings.providerKeys.validateError": "Không kết nối được tới nhà cung cấp. Thử lại.",
+  "settings.providerKeys.memberHint": "Chỉ chủ sở hữu hoặc quản trị viên mới quản lý được khóa nhà cung cấp.",
+  "settings.providerKeys.saveError": "Không lưu được khóa. Thử lại.",
 
   // Chat — first-contact welcome (empty #general after onboarding)
   "chat.welcome.title": "Chào {name}, chào mừng đến với Patom",

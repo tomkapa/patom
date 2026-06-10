@@ -25,6 +25,9 @@ import type {
   OrgBilling,
   OrgCredits,
   OrgDetails,
+  ProviderCredentialInput,
+  ProviderCredentialView,
+  ProviderValidateResult,
   PromptVersionList,
   RestorePromptVersionResponse,
   ScheduledTask,
@@ -202,6 +205,30 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  /** List BYO provider keys (masked), one per provider (#141). Any member. */
+  providerCredentials: () =>
+    request<ProviderCredentialView[]>("/me/org/provider-credentials"),
+  /** Add or rotate the key for `provider`. Owner/admin only. 204. */
+  putProviderCredentials: (provider: string, body: ProviderCredentialInput) =>
+    request<void>(
+      `/me/org/provider-credentials/${encodeURIComponent(provider)}`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  /** Remove the key for `provider`. Owner/admin only. 204. */
+  deleteProviderCredentials: (provider: string) =>
+    request<void>(
+      `/me/org/provider-credentials/${encodeURIComponent(provider)}`,
+      { method: "DELETE" },
+    ),
+  /** Test a candidate key against the live provider before/after save. */
+  validateProviderCredentials: (
+    provider: string,
+    body: ProviderCredentialInput,
+  ) =>
+    request<ProviderValidateResult>(
+      `/me/org/provider-credentials/${encodeURIComponent(provider)}/validate`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   members: (q: ListMembersQuery = {}) => {
     const search = new URLSearchParams();
     if (q.q) search.set("q", q.q);

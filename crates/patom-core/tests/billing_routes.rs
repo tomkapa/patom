@@ -94,6 +94,8 @@ impl BillingHarness {
             mcp_store,
             mcp_catalog,
             mcp_refresh,
+            provider_credentials: common::pg::provider_credentials_store(pool.clone()),
+            provider_refresh: patom::provider::ProviderRefreshTrigger::disconnected(),
             mcp_credentials: Arc::new(patom::mcp::PgMcpCredentialStore::new(
                 pool.clone(),
                 clock.clone(),

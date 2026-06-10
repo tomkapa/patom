@@ -18,6 +18,7 @@ mod memory;
 mod models;
 mod org;
 pub(super) mod prompts;
+mod provider_credentials;
 mod scheduling;
 mod threads;
 pub(super) mod turns;
@@ -147,6 +148,7 @@ pub fn router(state: AppState) -> Router {
         .merge(turns::router())
         .merge(me::router())
         .merge(org::router())
+        .merge(provider_credentials::router())
         .merge(uploads::router())
         // Slack install endpoint — signed-in user only.
         .merge(crate::slack::oauth::private_router())

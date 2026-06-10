@@ -99,6 +99,9 @@ pub struct Server {
     pub state: AppState,
     pub workers: WorkerPoolHandle,
     pub mcp_refresher: McpRefresher,
+    /// Owning coordinator task for the BYO provider-overlay refresh (#141).
+    /// `run_server` joins on its `shutdown()` after HTTP exits.
+    pub provider_refresher: crate::provider::ProviderRefresher,
     pub reflection_scheduler: ReflectionScheduler,
     pub librarian_scheduler: LibrarianScheduler,
     pub scheduling_scheduler: ScheduledTaskScheduler,
@@ -135,6 +138,11 @@ struct Collaborators {
     platform_oauth_clients: Arc<HashMap<String, crate::config::PlatformOAuthClient>>,
     mcp_encryptor: crate::crypto::SharedOrgEncryptor,
     mcp_registry: McpRegistry,
+    /// BYO provider-credential store + per-org overlay (#141). The store backs
+    /// the HTTP CRUD/validate routes; the overlay is the synchronous per-turn
+    /// read the agent factory routes through. Both reuse `mcp_encryptor`.
+    provider_credentials: crate::provider::SharedOrgProviderCredentialStore,
+    provider_overlay: crate::provider::OrgProviderOverlay,
     scheduled_tasks: SharedScheduledTaskStore,
     /// Per-session todo store. Held here so `AgentFactoryPieces` can
     /// thread it into every spawned `Agent` (the per-turn context
@@ -285,6 +293,18 @@ impl Collaborators {
             clock.clone(),
         );
 
+        // BYO provider credentials (#141): same envelope encryptor as MCP. The
+        // overlay starts empty; `build_server` runs the first refresh before the
+        // worker pool begins so the first turn already sees keyed providers.
+        let provider_credentials: crate::provider::SharedOrgProviderCredentialStore =
+            Arc::new(crate::provider::PgOrgProviderCredentialStore::new(
+                pool.clone(),
+                clock.clone(),
+                encryptor.clone(),
+            ));
+        let provider_overlay =
+            crate::provider::OrgProviderOverlay::new(provider_credentials.clone());
+
         let scheduled_tasks: SharedScheduledTaskStore =
             Arc::new(PgScheduledTaskStore::new(pool.clone(), clock.clone()));
         let default_tz =
@@ -368,6 +388,8 @@ impl Collaborators {
             platform_oauth_clients,
             mcp_encryptor: encryptor,
             mcp_registry,
+            provider_credentials,
+            provider_overlay,
             scheduled_tasks,
             todos_store,
             users,
@@ -391,6 +413,10 @@ struct AgentFactoryPieces {
     builtin_tools: ToolRegistry,
     mcp_registry: McpRegistry,
     model_resolver: crate::agents::SharedModelResolver,
+    /// Per-org BYO provider overlay (#141). Threaded into every spawned
+    /// `Agent` so its turns route to the org's BYO client when one is keyed,
+    /// and consulted here for org-key-aware model resolution.
+    provider_overlay: crate::provider::OrgProviderOverlay,
     tool_call_store: crate::tools::SharedToolCallStore,
     todos_store: SharedSessionTodoStore,
     turn_metrics_store: crate::agent_core::turn_metrics::SharedTurnMetricsStore,
@@ -409,7 +435,9 @@ impl AgentFactoryPieces {
             &catalog_to_server,
         ));
         let toolbox = ToolBox::new(self.builtin_tools.clone(), dynamic);
-        let model = self.model_resolver.resolve(record, self.providers.as_ref());
+        let model =
+            self.model_resolver
+                .resolve(record, self.providers.as_ref(), &self.provider_overlay);
         // Routed-provider attribution lands as a structured event so dashboards
         // can break down per-agent model selection over time. `patom.model.source`
         // is `"agent"` only when the resolved model matches the row's pin —
@@ -422,15 +450,24 @@ impl AgentFactoryPieces {
         } else {
             "default"
         };
+        // `patom.byo` records whether this org will route the resolved model's
+        // provider through its own key — the same overlay read the Agent makes
+        // live each turn (#141). Snapshot here for the resolution event; the
+        // per-turn decision is re-read live by `Agent::is_byo`.
+        let byo = self
+            .provider_overlay
+            .has_key(record.org_id, model.provider());
         tracing::info!(
             event = "agent.model.resolved",
             patom.agent.id = %record.id,
             patom.provider = model.provider().as_str(),
             patom.model = %model,
             patom.model.source = source,
+            patom.byo = byo,
         );
         AgentBuilder::new(self.providers.clone(), self.memory.clone(), model)
             .expect("invariant: limits constants are static and parse")
+            .with_org_routing(record.org_id, self.provider_overlay.clone())
             .with_tools(toolbox)
             .with_hooks(HookChain::new())
             .with_clock(self.clock.clone())
@@ -654,6 +691,7 @@ pub async fn build_server(
         builtin_tools: pieces.builtin_tools.clone(),
         mcp_registry: pieces.mcp_registry.clone(),
         model_resolver,
+        provider_overlay: pieces.provider_overlay.clone(),
         tool_call_store,
         todos_store: pieces.todos_store.clone(),
         turn_metrics_store,
@@ -673,8 +711,15 @@ pub async fn build_server(
     if let Err(e) = pieces.mcp_registry.refresh().await {
         warn!(error = %e, "mcp.refresh.startup_failed");
     }
+    // BYO provider overlay (#141): same best-effort startup refresh so the
+    // first turn already routes keyed providers.
+    if let Err(e) = pieces.provider_overlay.refresh().await {
+        warn!(error = %e, "provider.overlay.refresh.startup_failed");
+    }
 
     let (mcp_refresher, mcp_refresh) = McpRefresher::spawn(pieces.mcp_registry.clone());
+    let (provider_refresher, provider_refresh) =
+        crate::provider::ProviderRefresher::spawn(pieces.provider_overlay.clone());
 
     let pool = WorkerPool::new(
         pieces.queue.clone(),
@@ -897,6 +942,8 @@ pub async fn build_server(
         mcp_catalog: pieces.mcp_catalog,
         mcp_credentials: pieces.mcp_credentials,
         mcp_refresh,
+        provider_credentials: pieces.provider_credentials,
+        provider_refresh,
         mcp_test_rate,
         platform_oauth_clients: pieces.platform_oauth_clients,
         mcp_oauth_pending: pieces.mcp_oauth_pending,
@@ -937,6 +984,7 @@ pub async fn build_server(
         state,
         workers,
         mcp_refresher,
+        provider_refresher,
         reflection_scheduler,
         librarian_scheduler,
         scheduling_scheduler,
@@ -953,6 +1001,7 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
         state,
         workers,
         mcp_refresher,
+        provider_refresher,
         reflection_scheduler,
         librarian_scheduler,
         scheduling_scheduler,
@@ -987,6 +1036,8 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
     info!("scheduling_scheduler.shutdown.complete");
     mcp_refresher.shutdown().await;
     info!("mcp.refresher.shutdown.complete");
+    provider_refresher.shutdown().await;
+    info!("provider.overlay.refresher.shutdown.complete");
     if let Some(bridge) = slack_bridge {
         bridge.shutdown().await;
         info!("slack.bridge.shutdown.complete");
