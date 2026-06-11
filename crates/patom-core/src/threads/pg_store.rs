@@ -797,11 +797,13 @@ fn decode_participant(
 ///   guarantees `owner == viewer`'s agent); the stored body is already in the
 ///   owner's perspective (Assistant for reasoning/tool_use, User for
 ///   tool_result/system_note), so it passes through unchanged.
-/// - `Posted` rows authored by `viewer` pass through (Assistant).
-/// - `Posted` rows authored by anyone else become `User` content.
-///
-/// TODO(P8/P10): prepend an author label (`[name]: …`) on others' posted rows
-/// once the participant roster / privileged name read is wired.
+/// - `Posted` rows are stored in a neutral `User` perspective by every writer
+///   (`send_message`, the HTTP prompt route, the Slack bridge). This function
+///   re-tags them to the viewer's perspective: a post authored by `viewer`
+///   becomes `Assistant` (the viewer's own speech); a post by anyone else stays
+///   `User`, attributed to its sender. Re-tagging the viewer's own posts is
+///   load-bearing — without it the agent re-reads its own send_message output
+///   as a `User` turn mid-turn and starts replying to itself.
 fn map_row_for_viewer(
     kind: MessageKind,
     sender: Option<ColleagueId>,
@@ -813,7 +815,12 @@ fn map_row_for_viewer(
         return stored;
     }
     if sender == Some(viewer) {
-        return stored;
+        // The viewer authored this post — render it as their own speech
+        // regardless of the neutral storage perspective.
+        return match stored {
+            ChatMessage::Assistant(blocks) => ChatMessage::Assistant(blocks),
+            ChatMessage::User(blocks) => ChatMessage::Assistant(user_to_assistant_blocks(blocks)),
+        };
     }
     // A peer's post becomes a User message attributed to its sender, so the
     // agent can tell speakers apart in a multi-party thread. The agent's own
@@ -846,6 +853,19 @@ fn assistant_to_user_blocks(blocks: Vec<AssistantContent>) -> Vec<UserContent> {
         .filter_map(|b| match b {
             AssistantContent::Text(t) => Some(UserContent::Text(t)),
             AssistantContent::Reasoning(_) | AssistantContent::ToolCall(_) => None,
+        })
+        .collect()
+}
+
+/// Lift the viewer's own posted blocks from the neutral `User` storage
+/// perspective into Assistant content. Posted messages are text; a tool-result
+/// block never appears on a `posted` row, so it is dropped defensively.
+fn user_to_assistant_blocks(blocks: Vec<UserContent>) -> Vec<AssistantContent> {
+    blocks
+        .into_iter()
+        .filter_map(|b| match b {
+            UserContent::Text(t) => Some(AssistantContent::Text(t)),
+            UserContent::ToolResult(_) => None,
         })
         .collect()
 }

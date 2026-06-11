@@ -222,9 +222,14 @@ async fn context_filters_private_rows_by_owner(pool: PgPool) {
         .expect("participation b");
 
     // Feed: human post, A's post, A's private reasoning, B's private reasoning.
+    // Every production writer (`send_message`, the HTTP prompt route, the Slack
+    // bridge) stores a `posted` body in the neutral `User` perspective — so A's
+    // OWN post is seeded as `User` here too. `context_for_agent` must re-tag it
+    // to `Assistant` for A, or A re-reads its own send_message output as a user
+    // turn and starts replying to itself.
     for m in [
         posted(col_h, Some(col_a), "hello", false),
-        posted(col_a, None, "hi from A", true),
+        posted(col_a, None, "hi from A", false),
         reasoning(col_a, agent_a, "A thinking"),
         reasoning(col_b, agent_b, "B thinking"),
     ] {
