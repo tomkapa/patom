@@ -168,7 +168,7 @@ impl AgentMemory {
     async fn roster_block(
         &self,
         viewer: ColleagueId,
-        thread: Option<ThreadId>,
+        overrides: &std::collections::HashMap<ColleagueId, crate::colleagues::ColleagueName>,
     ) -> Result<String, ColleagueError> {
         let org = self.colleagues.read(viewer).await?.org_id();
         let roster = self.roster_cache.get_or_load(org, &self.colleagues).await?;
@@ -179,14 +179,9 @@ impl AgentMemory {
             patom.org.id = %org,
             "colleagues.roster.size"
         );
-        // Per-platform name labels for this thread (e.g. Slack handles).
-        // Empty for web / background turns → canonical colleague names. The
-        // roster cache stays canonical and shared; overrides apply per render.
-        let overrides = match thread {
-            Some(t) => self.display_names.overrides_for_thread(t).await,
-            None => std::collections::HashMap::new(),
-        };
-        Ok(render_roster_block(&roster, viewer, &overrides))
+        // The roster cache stays canonical and shared; per-platform labels
+        // (e.g. Slack handles) apply per render, keyed by colleague id.
+        Ok(render_roster_block(&roster, viewer, overrides))
     }
 }
 
@@ -201,7 +196,7 @@ impl Memory for AgentMemory {
     async fn system_prompt_for_thread(
         &self,
         viewer: Participant,
-        thread: Option<ThreadId>,
+        overrides: &std::collections::HashMap<ColleagueId, crate::colleagues::ColleagueName>,
         kind_payload: &RequestKindPayload,
     ) -> Result<Arc<str>, MemoryError> {
         let agent_id = viewer.agent_id().ok_or_else(|| {
@@ -223,7 +218,7 @@ impl Memory for AgentMemory {
         // rehomed onto the thread feed (degrades empty; enrichment, not
         // load-bearing). The `<colleagues>` roster still renders.
         let memory_section = self.loader.load_stable(agent_id, kind_payload).await?;
-        let roster = match self.roster_block(viewer_colleague, thread).await {
+        let roster = match self.roster_block(viewer_colleague, overrides).await {
             Ok(block) => block,
             Err(e) => {
                 tracing::warn!(error = %e, "colleagues.roster.error");
@@ -245,6 +240,16 @@ impl Memory for AgentMemory {
             directive.as_ref(),
             memory_section.text(),
         ))
+    }
+
+    async fn display_overrides(
+        &self,
+        thread: Option<ThreadId>,
+    ) -> std::collections::HashMap<ColleagueId, crate::colleagues::ColleagueName> {
+        match thread {
+            Some(t) => self.display_names.overrides_for_thread(t).await,
+            None => std::collections::HashMap::new(),
+        }
     }
 }
 

@@ -283,13 +283,17 @@ impl Agent {
         let viewer_colleague = viewer.colleague_id().ok_or_else(|| {
             AgentError::Internal("build_thread_request agent viewer has no colleague".to_string())
         })?;
+        // Resolve per-platform display labels (e.g. Slack handles) once, so
+        // the feed (sender attribution) and the system prompt (roster) name
+        // people identically. Empty for web/background threads.
+        let overrides = self.memory().display_overrides(Some(thread)).await;
         // The feed read and the system-prompt compose hit independent stores;
         // run them concurrently so the turn pays one round-trip latency, not two.
         let (messages, memory_system) = tokio::join!(
             self.threads()
-                .context_for_agent(thread, agent_id, viewer_colleague),
+                .context_for_agent(thread, agent_id, viewer_colleague, &overrides),
             self.memory()
-                .system_prompt_for_thread(viewer, Some(thread), kind_payload),
+                .system_prompt_for_thread(viewer, &overrides, kind_payload),
         );
         let messages = messages?;
         let memory_system = memory_system?;
@@ -502,9 +506,10 @@ impl Agent {
             "background turn must have a seeded prompt to read"
         );
         tracing::Span::current().record("patom.history.count", messages.len());
+        // Background cognition has no feed/thread → no platform labels.
         let system = self
             .memory()
-            .system_prompt_for_thread(viewer, None, kind_payload)
+            .system_prompt_for_thread(viewer, &std::collections::HashMap::new(), kind_payload)
             .await?;
         let tools = self.tools().specs_for(kind_payload.kind());
         Ok(ChatRequest {

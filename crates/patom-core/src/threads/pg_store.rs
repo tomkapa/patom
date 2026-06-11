@@ -11,11 +11,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
+use std::collections::HashMap;
+
 use crate::agents::AgentId;
 use crate::auth::{Caller, UserId, run_as_user, run_privileged};
 use crate::channels::ChannelId;
 use crate::clock::SharedClock;
-use crate::colleagues::{ColleagueId, ColleagueKind};
+use crate::colleagues::{ColleagueId, ColleagueKind, ColleagueName};
 use crate::provider::{AssistantContent, ChatMessage, UserContent};
 use crate::runtime::PromptRequestId;
 use crate::types::{MessageSender, Participant};
@@ -52,8 +54,16 @@ impl fmt::Debug for PgThreadStore {
 
 /// Context read: a `posted` row from anyone, or one of `agent`'s own private
 /// artifacts. `$1` thread, `$2` agent. Ordered by the per-thread feed seq.
-const CONTEXT_SQL: &str = "SELECT m.kind, m.sender_colleague_id, m.body \
+/// Resolves the sender's canonical display name (agent name / user
+/// display name / email local-part) so the feed can attribute speakers in
+/// a multi-party thread; the platform-label override is applied in Rust.
+const CONTEXT_SQL: &str = "SELECT m.kind, m.sender_colleague_id, \
+            COALESCE(sa.name, su.display_name, split_part(su.email, '@', 1)) AS sender_name, \
+            m.body \
      FROM thread_messages m \
+     LEFT JOIN colleagues sc ON sc.id = m.sender_colleague_id \
+     LEFT JOIN agents sa ON sa.id = sc.agent_id \
+     LEFT JOIN users  su ON su.id = sc.user_id \
      WHERE m.thread_id = $1 AND (m.kind = 'posted' OR m.owner_agent_id = $2) \
      ORDER BY m.seq ASC";
 
@@ -563,8 +573,14 @@ impl ThreadStore for PgThreadStore {
         thread: ThreadId,
         agent: AgentId,
         viewer: ColleagueId,
+        overrides: &HashMap<ColleagueId, ColleagueName>,
     ) -> Result<Vec<ChatMessage>, ThreadError> {
-        type Row = (MessageKind, Option<ColleagueId>, serde_json::Value);
+        type Row = (
+            MessageKind,
+            Option<ColleagueId>,
+            Option<String>,
+            serde_json::Value,
+        );
         let rows: Vec<Row> = run_privileged::<Vec<Row>, ThreadError>(&self.pool, async |tx| {
             Ok(sqlx::query_as(CONTEXT_SQL)
                 .bind(thread)
@@ -576,10 +592,19 @@ impl ThreadStore for PgThreadStore {
         tracing::Span::current().record("patom.history.count", rows.len());
 
         let mut mapped: Vec<(MessageKind, ChatMessage)> = Vec::with_capacity(rows.len());
-        for (kind, sender, body) in rows {
+        for (kind, sender, sender_name, body) in rows {
             let stored: ChatMessage = serde_json::from_value(body)
                 .map_err(|e| ThreadError::Backend(format!("deserialize message: {e}")))?;
-            mapped.push((kind, map_row_for_viewer(kind, sender, stored, viewer)));
+            // Platform label wins over the canonical sender name; both are
+            // display-only — addressing/identity stays on the colleague id.
+            let label = sender
+                .and_then(|s| overrides.get(&s))
+                .map(|n| n.as_str().to_owned())
+                .or(sender_name);
+            mapped.push((
+                kind,
+                map_row_for_viewer(kind, sender, label, stored, viewer),
+            ));
         }
         Ok(repair_tool_pairs(mapped))
     }
@@ -778,6 +803,7 @@ fn decode_participant(
 fn map_row_for_viewer(
     kind: MessageKind,
     sender: Option<ColleagueId>,
+    sender_label: Option<String>,
     stored: ChatMessage,
     viewer: ColleagueId,
 ) -> ChatMessage {
@@ -787,10 +813,26 @@ fn map_row_for_viewer(
     if sender == Some(viewer) {
         return stored;
     }
-    match stored {
-        ChatMessage::User(blocks) => ChatMessage::User(blocks),
-        ChatMessage::Assistant(blocks) => ChatMessage::User(assistant_to_user_blocks(blocks)),
-    }
+    // A peer's post becomes a User message attributed to its sender, so the
+    // agent can tell speakers apart in a multi-party thread. The agent's own
+    // posts (filtered above) are never prefixed.
+    let blocks = match stored {
+        ChatMessage::User(blocks) => blocks,
+        ChatMessage::Assistant(blocks) => assistant_to_user_blocks(blocks),
+    };
+    ChatMessage::User(prefix_sender_label(sender_label, blocks))
+}
+
+/// Prepend a `"{label}: "` text block so a peer's message reads as theirs.
+/// No-op when the sender name is unknown.
+fn prefix_sender_label(label: Option<String>, blocks: Vec<UserContent>) -> Vec<UserContent> {
+    let Some(label) = label.filter(|s| !s.is_empty()) else {
+        return blocks;
+    };
+    let mut out = Vec::with_capacity(blocks.len() + 1);
+    out.push(UserContent::Text(format!("{label}: ")));
+    out.extend(blocks);
+    out
 }
 
 /// Fold another agent's posted Assistant blocks into User content. Posted
