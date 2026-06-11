@@ -48,7 +48,7 @@ use super::modal::{
     AGENT_ACTION_ID, AGENT_BLOCK_ID, COMPOSE_CALLBACK_ID, PROMPT_ACTION_ID, PROMPT_BLOCK_ID,
     build_compose_modal,
 };
-use super::types::{SlackBotToken, SlackChannelId, SlackTeamId, SlackUserId};
+use super::types::{SlackBotToken, SlackChannelId, SlackTeamId, SlackThreadTs, SlackUserId};
 
 /// Command literal Slack sends in `command` for the `/patom`
 /// invocation. Must match the value registered in the Slack app
@@ -129,6 +129,39 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
         }
     }
 
+    // Slash `/patom` carries no thread context (Slack omits `thread_ts`
+    // from the slash form), so a new top-level thread is started.
+    open_compose_modal(
+        &state,
+        slack,
+        &workspace,
+        &parsed.trigger_id,
+        &team_id,
+        &channel_id,
+        &user_id,
+        &parsed.user_name,
+        None,
+    )
+    .await
+}
+
+/// Resolve the agent roster and open the compose modal via `views.open`,
+/// stashing routing context (incl. optional `thread_ts`) in
+/// `private_metadata`. Shared by `/patom` and the "Ask Patom" message
+/// shortcut. Returns the `200`/error response the interactivity request
+/// should ack with.
+#[allow(clippy::too_many_arguments)]
+async fn open_compose_modal(
+    state: &AppState,
+    slack: &super::SlackAppState,
+    workspace: &super::workspace::WorkspaceWithToken,
+    trigger_id: &str,
+    team_id: &SlackTeamId,
+    channel_id: &SlackChannelId,
+    user_id: &SlackUserId,
+    user_name: &str,
+    thread_ts: Option<&SlackThreadTs>,
+) -> Response {
     let agents = match state.agents.list_for_org(workspace.org_id).await {
         Ok(rows) => rows,
         Err(e) => {
@@ -136,10 +169,9 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
             return ephemeral_message("Couldn't load the agent roster. Try again in a moment.");
         }
     };
-
-    let metadata = build_private_metadata(&team_id, &channel_id, &user_id, &parsed.user_name);
+    let metadata = build_private_metadata(team_id, channel_id, user_id, user_name, thread_ts);
     if metadata.len() > MAX_PRIVATE_METADATA_BYTES {
-        // Impossible in practice (three short ids), but assert at the
+        // Impossible in practice (short ids + one ts), but assert at the
         // boundary so a future field addition cannot silently overflow.
         warn!(
             len = metadata.len(),
@@ -148,17 +180,9 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     let modal = build_compose_modal(&agents, &metadata);
-    // Modals cannot ride back in the slash command response body —
-    // Slack only opens them via `views.open` with a fresh `trigger_id`
-    // (valid for 3 seconds from the original invocation).
-    if let Err(e) = open_view(
-        &slack.http,
-        &workspace.bot_token,
-        &parsed.trigger_id,
-        &modal,
-    )
-    .await
-    {
+    // Modals open only via `views.open` with a fresh `trigger_id` (valid
+    // ~3 s) — they cannot ride back in the interactivity response body.
+    if let Err(e) = open_view(&slack.http, &workspace.bot_token, trigger_id, &modal).await {
         warn!(error = ?e, event = "slack.commands.views_open_failed");
         return ephemeral_message(
             "Couldn't open the Patom composer. Check your Slack app permissions, then try again.",
@@ -265,6 +289,10 @@ async fn handle_interaction(state: State<AppState>, headers: HeaderMap, body: By
             tracing::Span::current().record("payload_type", "view_submission");
             handle_view_submission(state, view).await
         }
+        InteractionEnvelope::MessageAction(action) => {
+            tracing::Span::current().record("payload_type", "message_action");
+            handle_message_action(state, action).await
+        }
         InteractionEnvelope::Other => {
             tracing::Span::current().record("payload_type", "other");
             // Ack any forward-compatible interactivity type we don't
@@ -324,6 +352,89 @@ async fn handle_view_submission(state: State<AppState>, view: ViewSubmission) ->
     (StatusCode::OK, Json(json!({ "response_action": "clear" }))).into_response()
 }
 
+/// Handle the "Ask Patom" message shortcut: open the compose modal from
+/// inside a Slack thread, carrying the message's `thread_ts` so the
+/// submission posts into that thread (issue #41, point 2). Gated on a
+/// linked identity, like `/patom`. Inert unless the operator added the
+/// shortcut to the app manifest with [`ASK_PATOM_SHORTCUT_ID`].
+async fn handle_message_action(state: State<AppState>, action: MessageAction) -> Response {
+    if action.callback_id != super::modal::ASK_PATOM_SHORTCUT_ID {
+        return StatusCode::OK.into_response();
+    }
+    let Some(slack) = state.slack.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let (team_id, channel_id, user_id) =
+        match parse_ids(&action.team.id, &action.channel.id, &action.user.id) {
+            Ok(ids) => ids,
+            Err(status) => return status.into_response(),
+        };
+    // Anchor on the message's thread (or the message itself if top-level).
+    let anchor_raw = action
+        .message
+        .thread_ts
+        .as_deref()
+        .unwrap_or(action.message.ts.as_str());
+    let thread_ts = SlackThreadTs::try_from(anchor_raw).ok();
+
+    let workspace = match slack.workspaces.read_by_team(&team_id).await {
+        Ok(w) => w,
+        Err(e) => {
+            warn!(error = ?e, event = "slack.shortcut.unknown_workspace");
+            return StatusCode::OK.into_response();
+        }
+    };
+    match slack.identities.lookup(&team_id, &user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            // No response_url is rendered for a message_action body, so
+            // nudge via an ephemeral post instead.
+            nudge_link_via_ephemeral(slack, &workspace, &channel_id, &user_id).await;
+            return StatusCode::OK.into_response();
+        }
+        Err(e) => {
+            warn!(error = ?e, event = "slack.shortcut.identity_lookup_failed");
+            return StatusCode::OK.into_response();
+        }
+    }
+    open_compose_modal(
+        &state,
+        slack,
+        &workspace,
+        &action.trigger_id,
+        &team_id,
+        &channel_id,
+        &user_id,
+        &action.user.username,
+        thread_ts.as_ref(),
+    )
+    .await
+}
+
+/// Best-effort ephemeral "connect your account" nudge for the shortcut
+/// path (where a slash-style ephemeral response body is not rendered).
+async fn nudge_link_via_ephemeral(
+    slack: &super::SlackAppState,
+    workspace: &super::workspace::WorkspaceWithToken,
+    channel_id: &SlackChannelId,
+    user_id: &SlackUserId,
+) {
+    let req = super::poster::PostRequest {
+        token: workspace.bot_token.clone(),
+        channel: channel_id.clone(),
+        thread_ts: None,
+        body: super::poster::PostBody::Text(
+            "Connect your Patom account first — run `/patom` in this channel.".to_owned(),
+        ),
+        username: "Patom".to_owned(),
+        icon_url: None,
+        ephemeral_to: Some(user_id.clone()),
+    };
+    if let Err(e) = slack.poster.post(req).await {
+        warn!(error = ?e, event = "slack.shortcut.nudge_failed");
+    }
+}
+
 /// Parse the chosen agent + prompt + routing metadata out of the
 /// `view.state.values` map. Returns a list of `(block_id, message)`
 /// errors when fields are missing or malformed; Slack re-opens the
@@ -376,6 +487,10 @@ fn build_submit(view: &ViewSubmission) -> Result<SlashCommandSubmit, Vec<(&'stat
 
     let agent_id = agent_id.expect("invariant: errors empty implies agent_id present");
     let prompt = prompt.expect("invariant: errors empty implies prompt present");
+    let thread_ts = routing
+        .thread_ts
+        .as_deref()
+        .and_then(|s| SlackThreadTs::try_from(s).ok());
     Ok(SlashCommandSubmit {
         team_id,
         channel_id,
@@ -384,6 +499,7 @@ fn build_submit(view: &ViewSubmission) -> Result<SlashCommandSubmit, Vec<(&'stat
         agent_id,
         prompt,
         view_id: view.view.id.clone(),
+        thread_ts,
     })
 }
 
@@ -435,15 +551,25 @@ fn ephemeral_message(text: &str) -> Response {
 fn parse_slash_ids(
     parsed: &SlashPayload,
 ) -> Result<(SlackTeamId, SlackChannelId, SlackUserId), StatusCode> {
-    let team_id = SlackTeamId::try_from(parsed.team_id.as_str()).map_err(|e| {
+    parse_ids(&parsed.team_id, &parsed.channel_id, &parsed.user_id)
+}
+
+/// Parse the three Slack ids from raw strings, mapping any malformed value
+/// to `400`. Shared by the slash and message-shortcut entry points.
+fn parse_ids(
+    team: &str,
+    channel: &str,
+    user: &str,
+) -> Result<(SlackTeamId, SlackChannelId, SlackUserId), StatusCode> {
+    let team_id = SlackTeamId::try_from(team).map_err(|e| {
         warn!(error = %e, event = "slack.commands.bad_team_id");
         StatusCode::BAD_REQUEST
     })?;
-    let channel_id = SlackChannelId::try_from(parsed.channel_id.as_str()).map_err(|e| {
+    let channel_id = SlackChannelId::try_from(channel).map_err(|e| {
         warn!(error = %e, event = "slack.commands.bad_channel_id");
         StatusCode::BAD_REQUEST
     })?;
-    let user_id = SlackUserId::try_from(parsed.user_id.as_str()).map_err(|e| {
+    let user_id = SlackUserId::try_from(user).map_err(|e| {
         warn!(error = %e, event = "slack.commands.bad_user_id");
         StatusCode::BAD_REQUEST
     })?;
@@ -511,12 +637,16 @@ fn build_private_metadata(
     channel_id: &SlackChannelId,
     user_id: &SlackUserId,
     user_name: &str,
+    thread_ts: Option<&SlackThreadTs>,
 ) -> String {
     json!({
         "team_id": team_id.as_str(),
         "channel_id": channel_id.as_str(),
         "user_id": user_id.as_str(),
         "user_name": user_name,
+        // Present only for the message-shortcut path, so view_submission
+        // continues the existing thread rather than starting a new one.
+        "thread_ts": thread_ts.map(SlackThreadTs::as_str),
     })
     .to_string()
 }
@@ -601,8 +731,42 @@ impl SlashPayload {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum InteractionEnvelope {
     ViewSubmission(ViewSubmission),
+    MessageAction(MessageAction),
     #[serde(other)]
     Other,
+}
+
+/// A message shortcut invocation ("Ask Patom" on a message). Carries the
+/// originating message so the modal can continue that Slack thread.
+#[derive(Debug, Deserialize)]
+struct MessageAction {
+    callback_id: String,
+    trigger_id: String,
+    team: IdField,
+    channel: IdField,
+    user: ShortcutUser,
+    message: ShortcutMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct IdField {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShortcutUser {
+    id: String,
+    #[serde(default)]
+    username: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShortcutMessage {
+    ts: String,
+    /// Set when the shortcut is used on a threaded reply; absent on a
+    /// top-level message (then `ts` itself anchors the thread).
+    #[serde(default)]
+    thread_ts: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -647,6 +811,10 @@ struct PrivateMetadata {
     /// label on the synthetic prompt-mirror post; required so the
     /// post reads as that user rather than the raw `U…` id.
     user_name: String,
+    /// `Some` only when the modal was opened from a message shortcut in a
+    /// thread — the message's `thread_ts`. Drives in-thread continuation.
+    #[serde(default)]
+    thread_ts: Option<String>,
 }
 
 #[cfg(test)]
@@ -688,13 +856,22 @@ mod tests {
         let team = SlackTeamId::try_from("T123").expect("ok");
         let chan = SlackChannelId::try_from("C456").expect("ok");
         let user = SlackUserId::try_from("U789").expect("ok");
-        let s = build_private_metadata(&team, &chan, &user, "tomkapa");
+        // Slash path: no thread context.
+        let s = build_private_metadata(&team, &chan, &user, "tomkapa", None);
         let parsed: PrivateMetadata = serde_json::from_str(&s).expect("decode");
         assert_eq!(parsed.team_id, "T123");
         assert_eq!(parsed.channel_id, "C456");
         assert_eq!(parsed.user_id, "U789");
         assert_eq!(parsed.user_name, "tomkapa");
+        assert_eq!(parsed.thread_ts, None);
         assert!(s.len() <= MAX_PRIVATE_METADATA_BYTES);
+
+        // Shortcut path: the message thread_ts round-trips so the
+        // submission continues that thread.
+        let ts = SlackThreadTs::try_from("1700000000.000200").expect("ok");
+        let s2 = build_private_metadata(&team, &chan, &user, "tomkapa", Some(&ts));
+        let parsed2: PrivateMetadata = serde_json::from_str(&s2).expect("decode");
+        assert_eq!(parsed2.thread_ts.as_deref(), Some("1700000000.000200"));
     }
 
     #[test]
@@ -708,5 +885,51 @@ mod tests {
         let v = extract_payload(&body).expect("decode");
         assert_eq!(v["type"], "view_submission");
         assert_eq!(v["view"]["id"], "V1");
+    }
+
+    #[test]
+    fn message_action_envelope_parses_thread_context() {
+        // A realistic Slack message_action payload (trimmed to the fields
+        // we route on). `message.thread_ts` is what drives in-thread
+        // continuation.
+        let raw = r#"{
+            "type": "message_action",
+            "callback_id": "patom_ask_in_thread",
+            "trigger_id": "T.123",
+            "team": {"id": "T0TEAM"},
+            "channel": {"id": "C0CHAN"},
+            "user": {"id": "U0USER", "username": "tomkapa"},
+            "message": {"ts": "1700000000.000100", "thread_ts": "1700000000.000050"}
+        }"#;
+        let env: InteractionEnvelope = serde_json::from_str(raw).expect("decode");
+        let InteractionEnvelope::MessageAction(a) = env else {
+            panic!("expected MessageAction");
+        };
+        assert_eq!(a.callback_id, "patom_ask_in_thread");
+        assert_eq!(a.channel.id, "C0CHAN");
+        assert_eq!(a.user.username, "tomkapa");
+        assert_eq!(a.message.thread_ts.as_deref(), Some("1700000000.000050"));
+    }
+
+    #[test]
+    fn message_action_without_thread_ts_anchors_on_message_ts() {
+        // Shortcut used on a top-level message: no thread_ts, so the
+        // handler anchors on `message.ts`.
+        let raw = r#"{
+            "type": "message_action",
+            "callback_id": "patom_ask_in_thread",
+            "trigger_id": "T.1",
+            "team": {"id": "T0TEAM"},
+            "channel": {"id": "C0CHAN"},
+            "user": {"id": "U0USER"},
+            "message": {"ts": "1700000000.000100"}
+        }"#;
+        let env: InteractionEnvelope = serde_json::from_str(raw).expect("decode");
+        let InteractionEnvelope::MessageAction(a) = env else {
+            panic!("expected MessageAction");
+        };
+        assert_eq!(a.message.thread_ts, None);
+        assert_eq!(a.message.ts, "1700000000.000100");
+        assert_eq!(a.user.username, "", "username defaults when absent");
     }
 }

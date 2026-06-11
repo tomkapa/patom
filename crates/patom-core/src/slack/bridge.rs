@@ -555,6 +555,12 @@ pub struct SlashCommandSubmit {
     /// idempotency key so a re-submission of the same modal collapses
     /// into a single prompt at the queue.
     pub view_id: String,
+    /// `Some` when the compose modal was opened from a **message
+    /// shortcut** inside an existing Slack thread — the message's
+    /// `thread_ts`. The prompt mirror then posts into that thread and
+    /// continues (or creates) its binding instead of starting a new
+    /// top-level thread. `None` for the `/patom` slash entry.
+    pub thread_ts: Option<SlackThreadTs>,
 }
 
 /// Drive the slash command path.
@@ -619,39 +625,25 @@ pub async fn enqueue_from_slash(
     let caller = Caller::new(user_id, org_id);
     let human_colleague = resolve_human_colleague(deps, org_id, user_id).await?;
 
-    let prompt_post = post_prompt_mirror(
-        deps,
-        &workspace,
-        &submit.channel_id,
-        &submit.slack_user_id,
-        &submit.slack_user_name,
-        &prompt_text,
-        &agent.name,
-    )
-    .await?;
-    let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
-
-    // A slash command starts a fresh conversation → new Patom *channel*
-    // thread (multi-human, multi-agent), bound to the mirror's Slack
-    // thread. The chosen agent joins via `resolve_participation`.
+    // Mirror the Slack channel + add the human, then resolve the target
+    // thread (a fresh top-level one for `/patom`, or the existing thread
+    // for a message shortcut). Extracted to keep this fn within the
+    // length ceiling (§4).
     let channel_id = deps
         .channels_map
         .ensure_channel(org_id, &submit.team_id, &submit.channel_id, user_id)
         .await?;
-    let thread_id = deps
-        .thread_store
-        .create_thread(&caller, Some(channel_id), None, human_colleague, None)
-        .await
-        .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
-    deps.threads
-        .bind(
-            org_id,
-            &submit.team_id,
-            &submit.channel_id,
-            &anchor,
-            thread_id,
-        )
-        .await?;
+    let (thread_id, anchor) = resolve_slash_thread(
+        deps,
+        &workspace,
+        &submit,
+        channel_id,
+        &caller,
+        human_colleague,
+        &prompt_text,
+        &agent.name,
+    )
+    .await?;
 
     submit_to_thread(
         deps,
@@ -677,8 +669,90 @@ pub async fn enqueue_from_slash(
     .await
 }
 
-/// Post the synthetic prompt-mirror message as a channel-top-level
-/// post and return the Slack `ts` it lands under.
+/// Resolve the Patom thread + Slack anchor for a slash / shortcut submit,
+/// posting the prompt mirror in the right place.
+///
+/// - **`/patom` (no `thread_ts`):** post the mirror top-level; its `ts`
+///   anchors a fresh channel thread.
+/// - **message shortcut (`thread_ts` set):** post the mirror *into* that
+///   thread and continue its existing binding, or create + bind a channel
+///   thread anchored there if this is the first Patom touch on it.
+#[allow(clippy::too_many_arguments)]
+async fn resolve_slash_thread(
+    deps: &BridgeDeps,
+    workspace: &crate::slack::workspace::WorkspaceWithToken,
+    submit: &SlashCommandSubmit,
+    channel_id: crate::channels::ChannelId,
+    caller: &Caller,
+    human_colleague: ColleagueId,
+    prompt_text: &str,
+    agent_name: &AgentName,
+) -> Result<(ThreadId, SlackThreadTs), SlackError> {
+    let org_id = caller.org_id;
+    if let Some(existing) = submit.thread_ts.clone() {
+        let thread_id = if let Some(mapping) = deps
+            .threads
+            .lookup_by_thread(&submit.team_id, &submit.channel_id, &existing)
+            .await?
+        {
+            mapping.thread_id
+        } else {
+            let t = deps
+                .thread_store
+                .create_thread(caller, Some(channel_id), None, human_colleague, None)
+                .await
+                .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
+            deps.threads
+                .bind(org_id, &submit.team_id, &submit.channel_id, &existing, t)
+                .await?;
+            t
+        };
+        post_prompt_mirror(
+            deps,
+            workspace,
+            &submit.channel_id,
+            &submit.slack_user_id,
+            &submit.slack_user_name,
+            prompt_text,
+            agent_name,
+            Some(&existing),
+        )
+        .await?;
+        return Ok((thread_id, existing));
+    }
+    let prompt_post = post_prompt_mirror(
+        deps,
+        workspace,
+        &submit.channel_id,
+        &submit.slack_user_id,
+        &submit.slack_user_name,
+        prompt_text,
+        agent_name,
+        None,
+    )
+    .await?;
+    let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
+    let thread_id = deps
+        .thread_store
+        .create_thread(caller, Some(channel_id), None, human_colleague, None)
+        .await
+        .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
+    deps.threads
+        .bind(
+            org_id,
+            &submit.team_id,
+            &submit.channel_id,
+            &anchor,
+            thread_id,
+        )
+        .await?;
+    Ok((thread_id, anchor))
+}
+
+/// Post the synthetic prompt-mirror message and return the Slack `ts` it
+/// lands under. `reply_in_thread` is `Some(anchor)` to post the mirror as
+/// a reply inside an existing Slack thread (message-shortcut path), or
+/// `None` to post it as a channel-top-level message (slash path).
 ///
 /// Body is a Block Kit envelope so the parent message renders the
 /// prompt *and* a small "→ @agent" attribution line — without it the
@@ -690,6 +764,7 @@ pub async fn enqueue_from_slash(
 /// failing the prompt over a profile lookup hiccup.
 const SLACK_USERS_INFO_URL: &str = "https://slack.com/api/users.info";
 
+#[allow(clippy::too_many_arguments)]
 async fn post_prompt_mirror(
     deps: &BridgeDeps,
     workspace: &crate::slack::workspace::WorkspaceWithToken,
@@ -698,6 +773,7 @@ async fn post_prompt_mirror(
     slack_user_name: &str,
     prompt_text: &str,
     agent_name: &AgentName,
+    reply_in_thread: Option<&SlackThreadTs>,
 ) -> Result<SlackTs, SlackError> {
     let profile =
         fetch_user_profile(&deps.http, &workspace.bot_token, slack_user_id.as_str()).await;
@@ -712,7 +788,7 @@ async fn post_prompt_mirror(
         .post(super::poster::PostRequest {
             token: workspace.bot_token.clone(),
             channel: channel_id.clone(),
-            thread_ts: None,
+            thread_ts: reply_in_thread.cloned(),
             body: super::poster::PostBody::Blocks {
                 fallback_text: prompt_text.to_owned(),
                 blocks,

@@ -21,6 +21,15 @@ use super::limits::{MAX_AGENTS_IN_PICKER, SLACK_SLASH_PROMPT_MAX_CHARS};
 /// envelope. Must match the dispatcher branch in [`super::interactions`].
 pub const COMPOSE_CALLBACK_ID: &str = "patom_compose";
 
+/// `callback_id` of the "Ask Patom" message shortcut.
+///
+/// Opens the compose modal from inside a Slack thread. Must match the
+/// shortcut the operator adds to the Slack app manifest (Interactivity →
+/// Shortcuts → "On messages"); without that manifest entry Slack never
+/// sends the `message_action`, so this path stays inert. See
+/// [`super::interactions`].
+pub const ASK_PATOM_SHORTCUT_ID: &str = "patom_ask_in_thread";
+
 /// `block_id` on the agent select block. The submit handler reads
 /// `view.state.values["agent"]["pick"].selected_option.value`.
 pub const AGENT_BLOCK_ID: &str = "agent";
