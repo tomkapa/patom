@@ -12,10 +12,9 @@
 //! 2. If the event's user is the bot itself, drop. The bot's own
 //!    `chat.postMessage` posts fire `message` events; we are not
 //!    subscribed to those, but defending here is cheap.
-//! 3. Resolve identity: `slack_identities` lookup → linked user. Miss
-//!    falls back to the workspace's `installed_by_user_id` (Phase 1
-//!    simplification; Phase 2 turns the miss into an ephemeral "link
-//!    your account" prompt — issue #41).
+//! 3. Resolve identity: `slack_identities` lookup → linked user. A miss
+//!    drops the event and posts an ephemeral nudge to run `/patom` to
+//!    connect the account — there is no installer fallback (issue #41).
 //! 4. Choose the anchor `thread_ts`. For replies Slack sets
 //!    `event.thread_ts`; for a mention on a top-level message we use
 //!    `event.ts` so the reply auto-creates a thread.
@@ -209,7 +208,12 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
     if workspace.bot_user_id.as_str() == event.user_id.as_str() {
         return Ok(());
     }
-    let user_id = resolve_user_id(deps, &event, &workspace).await?;
+    let Some(user_id) = resolve_user_id(deps, &event, &workspace).await? else {
+        // Unlinked Slack user — there is no installer fallback in Phase 2.
+        // Nudge them to the `/patom` onboarding entry and drop the event.
+        nudge_unlinked(deps, &workspace, &event).await;
+        return Ok(());
+    };
     let org_id = workspace.org_id;
     let caller = Caller::new(user_id, org_id);
     let anchor = match event.thread_ts.clone() {
@@ -434,25 +438,54 @@ async fn resolve_human_colleague(
         .map_err(|e| SlackError::Internal(format!("resolve human colleague: {e}")))
 }
 
-/// Slack user → Patom user. Phase 1 falls back to the workspace
-/// installer when no explicit `slack_identities` row exists.
+/// Slack user → Patom user. `Ok(None)` for an unlinked Slack user: Phase
+/// 2 has no installer fallback, so the caller nudges them to `/patom`
+/// rather than silently bridging as the installer.
 async fn resolve_user_id(
     deps: &BridgeDeps,
     event: &InboundEvent,
     workspace: &crate::slack::workspace::WorkspaceWithToken,
-) -> Result<crate::auth::UserId, SlackError> {
+) -> Result<Option<crate::auth::UserId>, SlackError> {
     let linked = deps
         .identities
         .lookup(&event.team_id, &event.user_id)
         .await?;
     let Some(linked) = linked else {
-        return Ok(workspace.installed_by_user_id);
+        return Ok(None);
     };
     assert_eq!(
         linked.org_id, workspace.org_id,
         "invariant: slack_identities + slack_workspaces FK keeps these aligned"
     );
-    Ok(linked.user_id)
+    Ok(Some(linked.user_id))
+}
+
+/// Post an ephemeral "connect your account" nudge to an unlinked Slack
+/// user, routing them to the `/patom` onboarding entry. Best-effort: a
+/// failed post is logged, not propagated — the event is dropped either
+/// way. Ephemeral, so it never clutters the channel for anyone else.
+async fn nudge_unlinked(
+    deps: &BridgeDeps,
+    workspace: &crate::slack::workspace::WorkspaceWithToken,
+    event: &InboundEvent,
+) {
+    let req = super::poster::PostRequest {
+        token: workspace.bot_token.clone(),
+        channel: event.channel_id.clone(),
+        thread_ts: event.thread_ts.clone(),
+        body: super::poster::PostBody::Text(
+            "👋 To chat with Patom agents here, connect your account first — \
+             run `/patom` in this channel."
+                .to_owned(),
+        ),
+        username: "Patom".to_owned(),
+        icon_url: None,
+        ephemeral_to: Some(event.user_id.clone()),
+    };
+    match deps.poster.post(req).await {
+        Ok(_) => info!(event = "slack.bridge.unlinked_nudged"),
+        Err(e) => warn!(error = ?e, event = "slack.bridge.nudge_post_failed"),
+    }
 }
 
 /// Resolve `@AgentName` (if any) against the org. Falls back to the org's
@@ -691,6 +724,7 @@ async fn post_prompt_mirror(
             // name + avatar makes the mirror read as them at a glance.
             username: display_name,
             icon_url,
+            ephemeral_to: None,
         })
         .await
 }

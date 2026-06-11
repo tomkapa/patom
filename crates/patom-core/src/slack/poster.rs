@@ -36,7 +36,7 @@ use super::error::SlackError;
 use super::limits::{
     SLACK_POST_BODY_TIMEOUT, SLACK_POST_MAX_RETRIES, SLACK_POST_TIMEOUT, SLACK_RETRY_AFTER_CAP_SECS,
 };
-use super::types::{SlackBotToken, SlackChannelId, SlackThreadTs, SlackTs};
+use super::types::{SlackBotToken, SlackChannelId, SlackThreadTs, SlackTs, SlackUserId};
 
 /// What the caller posts.
 ///
@@ -94,6 +94,11 @@ pub struct PostRequest {
     /// Slack does not fall back to the app default); `None` elsewhere
     /// (agent posts have no avatar yet — issue #43).
     pub icon_url: Option<String>,
+    /// When `Some(user)`, the message is posted via `chat.postEphemeral`
+    /// and is visible only to that Slack user (it is never persisted in
+    /// the channel). Used for the "connect your account" nudge to an
+    /// unlinked user. `None` is the normal `chat.postMessage` path.
+    pub ephemeral_to: Option<SlackUserId>,
 }
 
 #[async_trait]
@@ -109,6 +114,7 @@ pub type SharedSlackPoster = Arc<dyn SlackPoster>;
 // ──────────────────────────────────────────────────────────────────────
 
 const SLACK_POST_URL: &str = "https://slack.com/api/chat.postMessage";
+const SLACK_POST_EPHEMERAL_URL: &str = "https://slack.com/api/chat.postEphemeral";
 
 pub struct HttpSlackPoster {
     http: Client,
@@ -132,6 +138,10 @@ struct WirePostBody<'a> {
     channel: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     thread_ts: Option<&'a str>,
+    /// `chat.postEphemeral` requires the target `user`; omitted for the
+    /// normal `chat.postMessage` path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<&'a str>,
     text: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     blocks: Option<&'a Value>,
@@ -145,8 +155,12 @@ struct WirePostBody<'a> {
 #[derive(Deserialize)]
 struct WirePostResponse {
     ok: bool,
+    /// `chat.postMessage` returns `ts`; `chat.postEphemeral` returns
+    /// `message_ts`. We accept either so both paths resolve a `SlackTs`.
     #[serde(default)]
     ts: Option<String>,
+    #[serde(default)]
+    message_ts: Option<String>,
     #[serde(default)]
     error: Option<String>,
 }
@@ -167,6 +181,7 @@ impl SlackPoster for HttpSlackPoster {
                 .thread_ts
                 .as_ref()
                 .map(super::types::SlackThreadTs::as_str),
+            user: req.ephemeral_to.as_ref().map(SlackUserId::as_str),
             text,
             blocks,
             username: &req.username,
@@ -176,12 +191,17 @@ impl SlackPoster for HttpSlackPoster {
             unfurl_links: false,
             unfurl_media: false,
         };
+        let url = if req.ephemeral_to.is_some() {
+            SLACK_POST_EPHEMERAL_URL
+        } else {
+            SLACK_POST_URL
+        };
 
         let mut attempt: u8 = 0;
         loop {
             let send = self
                 .http
-                .post(SLACK_POST_URL)
+                .post(url)
                 .bearer_auth(req.token.expose())
                 .json(&body)
                 .send();
@@ -252,8 +272,8 @@ impl SlackPoster for HttpSlackPoster {
                     body: parsed.error.unwrap_or_else(|| "unknown".to_owned()),
                 });
             }
-            let ts_str = parsed.ts.ok_or_else(|| {
-                SlackError::Internal("chat.postMessage 200 without ts".to_owned())
+            let ts_str = parsed.ts.or(parsed.message_ts).ok_or_else(|| {
+                SlackError::Internal("chat.post* 200 without ts/message_ts".to_owned())
             })?;
             return Ok(SlackTs::try_from(ts_str)?);
         }
@@ -392,6 +412,7 @@ mod tests {
                 body: PostBody::Text("hello".to_owned()),
                 username: "researcher".to_owned(),
                 icon_url: None,
+                ephemeral_to: None,
             })
             .await
             .expect("post");
@@ -403,6 +424,7 @@ mod tests {
                 body: PostBody::Text("world".to_owned()),
                 username: "critic".to_owned(),
                 icon_url: None,
+                ephemeral_to: None,
             })
             .await
             .expect("post");
@@ -429,6 +451,7 @@ mod tests {
             },
             username: "recruiter".to_owned(),
             icon_url: None,
+            ephemeral_to: None,
         })
         .await
         .expect("post");
@@ -459,6 +482,7 @@ mod tests {
         let text_body = WirePostBody {
             channel: "C1",
             thread_ts: None,
+            user: None,
             text: "hello",
             blocks: None,
             username: "agent",
@@ -471,11 +495,16 @@ mod tests {
             json.get("blocks").is_none(),
             "text-only wire should omit blocks"
         );
+        assert!(
+            json.get("user").is_none(),
+            "non-ephemeral wire should omit user"
+        );
 
         let blocks_val = json!([{"type": "section"}]);
         let blocks_body = WirePostBody {
             channel: "C1",
             thread_ts: None,
+            user: None,
             text: "fallback",
             blocks: Some(&blocks_val),
             username: "agent",
@@ -492,6 +521,50 @@ mod tests {
         assert!(
             json["blocks"].is_array(),
             "wire-body blocks must be a JSON array, not an object"
+        );
+    }
+
+    #[test]
+    fn wire_body_serialises_user_only_for_ephemeral() {
+        let ephemeral = WirePostBody {
+            channel: "C1",
+            thread_ts: None,
+            user: Some("U0USER1"),
+            text: "connect your account",
+            blocks: None,
+            username: "Patom",
+            icon_url: None,
+            unfurl_links: false,
+            unfurl_media: false,
+        };
+        let json = serde_json::to_value(&ephemeral).expect("ser");
+        assert_eq!(
+            json["user"], "U0USER1",
+            "chat.postEphemeral requires the target user on the wire"
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_poster_records_ephemeral_target() {
+        let p = FakeSlackPoster::new();
+        let user = SlackUserId::try_from("U0USER1").expect("valid");
+        p.post(PostRequest {
+            token: token(),
+            channel: channel(),
+            thread_ts: None,
+            body: PostBody::Text("run /patom".to_owned()),
+            username: "Patom".to_owned(),
+            icon_url: None,
+            ephemeral_to: Some(user.clone()),
+        })
+        .await
+        .expect("post");
+        let captured = p.captured();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(
+            captured[0].ephemeral_to.as_ref().map(SlackUserId::as_str),
+            Some(user.as_str()),
+            "fake must preserve the ephemeral target for assertions"
         );
     }
 }

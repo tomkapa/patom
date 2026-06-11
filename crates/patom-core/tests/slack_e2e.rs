@@ -40,7 +40,7 @@ use patom::runtime::{
 };
 use patom::slack::SlackAppState;
 use patom::slack::bridge::{self, BridgeDeps};
-use patom::slack::identity::{PgSlackIdentityStore, SharedSlackIdentityStore};
+use patom::slack::identity::{LinkedVia, PgSlackIdentityStore, SharedSlackIdentityStore};
 use patom::slack::poster::{FakeSlackPoster, PostRequest, SharedSlackPoster};
 use patom::slack::stream_pump::{self, PumpDeps};
 use patom::slack::thread_map::{PgSlackThreadStore, SharedSlackThreadStore};
@@ -222,6 +222,20 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         .await
         .expect("seed slack workspace");
 
+    // Phase 2: the bridge no longer falls back to the installer for an
+    // unlinked Slack user, so the acting user must have an explicit
+    // `slack_identities` link or the mention would be dropped + nudged.
+    identities
+        .link_with_org(
+            h.default_user_id,
+            h.default_org_id,
+            &SlackTeamId::try_from(TEAM_ID).expect("team id"),
+            &SlackUserId::try_from(HUMAN_USER).expect("human id"),
+            LinkedVia::SlackOauth,
+        )
+        .await
+        .expect("seed slack identity link");
+
     // Outbound poster fake + the live NOTIFY thread stream the pump rides.
     let fake = Arc::new(FakeSlackPoster::new());
     let poster: SharedSlackPoster = fake.clone();
@@ -271,6 +285,7 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         client_id: Arc::from("test-client-id"),
         client_secret: SecretString::try_from("test-client-secret".to_owned()).expect("secret"),
         redirect_url: Arc::from("https://patom.example/slack/oauth/callback"),
+        public_base_url: Arc::from("https://patom.example"),
         workspaces: workspaces.clone(),
         identities: identities.clone(),
         threads: slack_threads.clone(),

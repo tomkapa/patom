@@ -872,6 +872,7 @@ pub async fn build_server(
                 client_id: Arc::from(cfg.client_id.as_str()),
                 client_secret: cfg.client_secret.clone(),
                 redirect_url: Arc::from(cfg.redirect_url.as_str()),
+                public_base_url: Arc::from(settings.auth.oauth_redirect_base.as_str()),
                 workspaces,
                 identities,
                 threads: threads_store,

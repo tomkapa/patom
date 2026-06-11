@@ -93,28 +93,11 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
         );
         return StatusCode::NOT_FOUND.into_response();
     }
-    let team_id = match SlackTeamId::try_from(parsed.team_id.as_str()) {
-        Ok(t) => t,
-        Err(e) => {
-            warn!(error = %e, event = "slack.commands.bad_team_id");
-            return StatusCode::BAD_REQUEST.into_response();
-        }
+    let (team_id, channel_id, user_id) = match parse_slash_ids(&parsed) {
+        Ok(ids) => ids,
+        Err(status) => return status.into_response(),
     };
     tracing::Span::current().record("patom.slack.team", tracing::field::display(&team_id));
-    let channel_id = match SlackChannelId::try_from(parsed.channel_id.as_str()) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(error = %e, event = "slack.commands.bad_channel_id");
-            return StatusCode::BAD_REQUEST.into_response();
-        }
-    };
-    let user_id = match SlackUserId::try_from(parsed.user_id.as_str()) {
-        Ok(u) => u,
-        Err(e) => {
-            warn!(error = %e, event = "slack.commands.bad_user_id");
-            return StatusCode::BAD_REQUEST.into_response();
-        }
-    };
 
     let workspace = match slack.workspaces.read_by_team(&team_id).await {
         Ok(w) => w,
@@ -130,6 +113,21 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
         "patom.tenant.id",
         tracing::field::display(workspace.org_id.as_uuid()),
     );
+
+    // Gate the composer on a linked identity: `/patom` acts *as* the
+    // invoking user, so we need to know who they are (issue #41). An
+    // unlinked user gets a "Set up Patom" button instead of the picker.
+    match slack.identities.lookup(&team_id, &user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            info!(event = "slack.commands.unlinked_prompted");
+            return link_prompt(slack, &team_id, &user_id);
+        }
+        Err(e) => {
+            warn!(error = ?e, event = "slack.commands.identity_lookup_failed");
+            return ephemeral_message("Couldn't check your Patom account. Try again in a moment.");
+        }
+    }
 
     let agents = match state.agents.list_for_org(workspace.org_id).await {
         Ok(rows) => rows,
@@ -422,6 +420,81 @@ fn ephemeral_message(text: &str) -> Response {
     (
         StatusCode::OK,
         Json(json!({ "response_type": "ephemeral", "text": text })),
+    )
+        .into_response()
+}
+
+/// Parse the three Slack ids off a slash payload, returning a
+/// `400`-shaped response on any malformed value. Extracted so
+/// `handle_slash` stays within the function-length ceiling (§4).
+fn parse_slash_ids(
+    parsed: &SlashPayload,
+) -> Result<(SlackTeamId, SlackChannelId, SlackUserId), StatusCode> {
+    let team_id = SlackTeamId::try_from(parsed.team_id.as_str()).map_err(|e| {
+        warn!(error = %e, event = "slack.commands.bad_team_id");
+        StatusCode::BAD_REQUEST
+    })?;
+    let channel_id = SlackChannelId::try_from(parsed.channel_id.as_str()).map_err(|e| {
+        warn!(error = %e, event = "slack.commands.bad_channel_id");
+        StatusCode::BAD_REQUEST
+    })?;
+    let user_id = SlackUserId::try_from(parsed.user_id.as_str()).map_err(|e| {
+        warn!(error = %e, event = "slack.commands.bad_user_id");
+        StatusCode::BAD_REQUEST
+    })?;
+    Ok((team_id, channel_id, user_id))
+}
+
+/// Ephemeral slash response inviting an unlinked user to connect their
+/// Patom account. The button is a `url`-type Block Kit action pointing at
+/// `GET /slack/identity/start` with a signed link token bound to this
+/// `(team, user)` — Slack opens it in the browser, where the user logs in
+/// and the completion route writes the link. Ephemeral, so it is visible
+/// only to the invoking user.
+fn link_prompt(
+    slack: &super::SlackAppState,
+    team_id: &SlackTeamId,
+    user_id: &SlackUserId,
+) -> Response {
+    let exp = slack.clock.now_unix_secs() + super::link_token::LINK_TOKEN_TTL_SECS;
+    let token = super::link_token::sign_link(
+        slack.signing_secret.expose().as_bytes(),
+        &super::link_token::SlackLinkClaims {
+            team_id: team_id.clone(),
+            slack_user_id: user_id.clone(),
+        },
+        exp,
+    );
+    let url = format!(
+        "{}/slack/identity/start?token={token}",
+        slack.public_base_url
+    );
+    let blocks = json!([
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "Connect your Patom account to chat with agents from Slack. \
+                         This links your Slack identity so agents know it's you.",
+            },
+        },
+        {
+            "type": "actions",
+            "elements": [{
+                "type": "button",
+                "style": "primary",
+                "text": { "type": "plain_text", "text": "Set up Patom" },
+                "url": url,
+            }],
+        },
+    ]);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "response_type": "ephemeral",
+            "text": "Connect your Patom account to get started.",
+            "blocks": blocks,
+        })),
     )
         .into_response()
 }

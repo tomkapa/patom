@@ -1698,6 +1698,7 @@ async fn do_slack_ping(state: &AppState, pending: &PatomPendingCtx, display_name
             body: crate::slack::poster::PostBody::Text(format!("✓ Connected — {display_name}")),
             username: "Patom".to_owned(),
             icon_url: None,
+            ephemeral_to: None,
         })
         .await
     {
