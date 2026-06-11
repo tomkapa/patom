@@ -123,10 +123,11 @@ impl SlackChannelStore for PgSlackChannelStore {
 }
 
 /// Create the Patom channel (idempotent on the active-name unique index)
-/// and the `slack_channels` mapping, returning the authoritative mapped
-/// `ChannelId`. The final re-read of the mapping is the source of truth so
-/// a concurrent first-touch that won the mapping PK resolves to one
-/// channel for both callers.
+/// and the `slack_channels` mapping, returning the channel id. Only reached
+/// when no mapping exists yet (the caller gated on that), so a concurrent
+/// first-touch resolves the same channel for both callers: the active-name
+/// unique index makes both compute the same `cid` from the shared slug, and
+/// the mapping insert binds that same `cid` — no re-read needed.
 async fn create_channel_and_mapping(
     tx: &mut crate::auth::PrivilegedTx<'_>,
     org_id: OrgId,
@@ -166,14 +167,5 @@ async fn create_channel_and_mapping(
     .bind(now)
     .execute(&mut **tx)
     .await?;
-    let (mapped,): (ChannelId,) = sqlx::query_as(
-        "SELECT channel_id FROM slack_channels \
-         WHERE org_id = $1 AND team_id = $2 AND slack_channel_id = $3",
-    )
-    .bind(org_id)
-    .bind(team)
-    .bind(slack_chan)
-    .fetch_one(&mut **tx)
-    .await?;
-    Ok(mapped)
+    Ok(cid)
 }

@@ -170,24 +170,31 @@ async fn complete_followups(
     claims: &super::link_token::SlackLinkClaims,
     bot_token: &super::types::SlackBotToken,
 ) {
-    // A `users.info` miss leaves the label NULL (renderer falls back to the
-    // canonical colleague name).
-    if let Some(name) = crate::slack::bridge::fetch_slack_display_name(
-        &slack.http,
-        bot_token,
-        claims.slack_user_id.as_str(),
-    )
-    .await
-        && let Err(e) = slack
-            .identities
-            .set_display_name(&claims.team_id, &claims.slack_user_id, &name)
-            .await
-    {
-        warn!(error = ?e, event = "slack.identity.display_name_store_failed");
-    }
-    if !claims.response_url.is_empty() {
-        replace_slack_prompt(&slack.http, &claims.response_url).await;
-    }
+    // Two independent best-effort network round-trips on the path the user
+    // is waiting on — run them concurrently.
+    let store_name = async {
+        // A `users.info` miss leaves the label NULL (renderer falls back to
+        // the canonical colleague name).
+        if let Some(name) = crate::slack::bridge::fetch_slack_display_name(
+            &slack.http,
+            bot_token,
+            claims.slack_user_id.as_str(),
+        )
+        .await
+            && let Err(e) = slack
+                .identities
+                .set_display_name(&claims.team_id, &claims.slack_user_id, &name)
+                .await
+        {
+            warn!(error = ?e, event = "slack.identity.display_name_store_failed");
+        }
+    };
+    let replace = async {
+        if !claims.response_url.is_empty() {
+            replace_slack_prompt(&slack.http, &claims.response_url).await;
+        }
+    };
+    tokio::join!(store_name, replace);
 }
 
 /// `POST` the slash `response_url` with `replace_original: true` to turn

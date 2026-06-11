@@ -250,12 +250,15 @@ impl Collaborators {
             clock.clone(),
         ));
 
-        // Per-platform roster name labels. The Slack impl harmlessly
-        // returns no overrides for non-Slack threads (empty `slack_channels`),
-        // so it is wired unconditionally — a thread only gets Slack names
-        // when it is actually mirrored from a Slack channel.
-        let display_names: crate::colleagues::SharedThreadDisplayNames =
-            Arc::new(crate::slack::display_overrides::PgSlackThreadDisplayNames::new(pool.clone()));
+        // Per-platform roster name labels. Only the Slack-enabled build pays
+        // the per-turn `slack_channels` lookup; everything else gets the
+        // no-op so the agent-core path stays free of the Slack adapter.
+        let display_names: crate::colleagues::SharedThreadDisplayNames = if settings.slack.is_some()
+        {
+            Arc::new(crate::slack::display_overrides::PgSlackThreadDisplayNames::new(pool.clone()))
+        } else {
+            Arc::new(crate::colleagues::NoThreadDisplayNames)
+        };
         let memory: SharedMemory = Arc::new(AgentMemory::new(
             agents.clone(),
             cache,

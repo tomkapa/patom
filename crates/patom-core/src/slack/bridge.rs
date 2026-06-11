@@ -688,24 +688,19 @@ async fn resolve_slash_thread(
     prompt_text: &str,
     agent_name: &AgentName,
 ) -> Result<(ThreadId, SlackThreadTs), SlackError> {
-    let org_id = caller.org_id;
     if let Some(existing) = submit.thread_ts.clone() {
-        let thread_id = if let Some(mapping) = deps
+        // Message-shortcut path: continue the message's thread (or create +
+        // bind it), then post the mirror into that thread.
+        let thread_id = match deps
             .threads
             .lookup_by_thread(&submit.team_id, &submit.channel_id, &existing)
             .await?
         {
-            mapping.thread_id
-        } else {
-            let t = deps
-                .thread_store
-                .create_thread(caller, Some(channel_id), None, human_colleague, None)
-                .await
-                .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
-            deps.threads
-                .bind(org_id, &submit.team_id, &submit.channel_id, &existing, t)
-                .await?;
-            t
+            Some(mapping) => mapping.thread_id,
+            None => {
+                create_and_bind(deps, caller, channel_id, human_colleague, submit, &existing)
+                    .await?
+            }
         };
         post_prompt_mirror(
             deps,
@@ -720,6 +715,7 @@ async fn resolve_slash_thread(
         .await?;
         return Ok((thread_id, existing));
     }
+    // Slash path: post the mirror top-level; its `ts` anchors a fresh thread.
     let prompt_post = post_prompt_mirror(
         deps,
         workspace,
@@ -732,6 +728,21 @@ async fn resolve_slash_thread(
     )
     .await?;
     let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
+    let thread_id =
+        create_and_bind(deps, caller, channel_id, human_colleague, submit, &anchor).await?;
+    Ok((thread_id, anchor))
+}
+
+/// Create a channel thread and bind it to the Slack `(team, channel,
+/// anchor)` — the shared tail of both the slash and shortcut paths.
+async fn create_and_bind(
+    deps: &BridgeDeps,
+    caller: &Caller,
+    channel_id: crate::channels::ChannelId,
+    human_colleague: ColleagueId,
+    submit: &SlashCommandSubmit,
+    anchor: &SlackThreadTs,
+) -> Result<ThreadId, SlackError> {
     let thread_id = deps
         .thread_store
         .create_thread(caller, Some(channel_id), None, human_colleague, None)
@@ -739,14 +750,14 @@ async fn resolve_slash_thread(
         .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
     deps.threads
         .bind(
-            org_id,
+            caller.org_id,
             &submit.team_id,
             &submit.channel_id,
-            &anchor,
+            anchor,
             thread_id,
         )
         .await?;
-    Ok((thread_id, anchor))
+    Ok(thread_id)
 }
 
 /// Post the synthetic prompt-mirror message and return the Slack `ts` it

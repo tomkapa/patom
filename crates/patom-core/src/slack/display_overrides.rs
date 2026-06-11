@@ -34,7 +34,9 @@ impl PgSlackThreadDisplayNames {
 #[async_trait]
 impl ThreadDisplayNames for PgSlackThreadDisplayNames {
     async fn overrides_for_thread(&self, thread: ThreadId) -> HashMap<ColleagueId, ColleagueName> {
-        let rows: Result<Vec<(ColleagueId, String)>, SlackError> =
+        // Infallible by contract: a query failure logs and yields no
+        // overrides (the renderer falls back to canonical names).
+        let rows =
             run_privileged::<Vec<(ColleagueId, String)>, SlackError>(&self.pool, async move |tx| {
                 Ok(sqlx::query_as(
                     "SELECT c.id, si.display_name \
@@ -52,25 +54,19 @@ impl ThreadDisplayNames for PgSlackThreadDisplayNames {
                 .fetch_all(&mut **tx)
                 .await?)
             })
-            .await;
-        match rows {
-            Ok(rows) => rows
-                .into_iter()
-                .filter_map(|(id, name)| {
-                    // A stored name that no longer satisfies the colleague
-                    // newtype is dropped (renderer falls back) rather than
-                    // failing the whole turn.
-                    ColleagueName::try_from(name.as_str()).ok().map(|n| (id, n))
-                })
-                .collect(),
-            Err(e) => {
+            .await
+            .unwrap_or_else(|e| {
                 tracing::error!(
                     error = ?e,
                     patom.thread.id = %thread.as_uuid(),
                     event = "slack.display_overrides.query_failed",
                 );
-                HashMap::new()
-            }
-        }
+                Vec::new()
+            });
+        // A stored name that no longer satisfies the colleague newtype is
+        // dropped (renderer falls back) rather than failing the turn.
+        rows.into_iter()
+            .filter_map(|(id, name)| ColleagueName::try_from(name.as_str()).ok().map(|n| (id, n)))
+            .collect()
     }
 }

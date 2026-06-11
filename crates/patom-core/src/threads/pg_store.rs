@@ -57,6 +57,8 @@ impl fmt::Debug for PgThreadStore {
 /// Resolves the sender's canonical display name (agent name / user
 /// display name / email local-part) so the feed can attribute speakers in
 /// a multi-party thread; the platform-label override is applied in Rust.
+/// Keep the COALESCE in sync with `colleagues::pg_store::display_name_expr!`
+/// (same rule, different table aliases).
 const CONTEXT_SQL: &str = "SELECT m.kind, m.sender_colleague_id, \
             COALESCE(sa.name, su.display_name, split_part(su.email, '@', 1)) AS sender_name, \
             m.body \
