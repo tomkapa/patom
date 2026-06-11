@@ -5,18 +5,21 @@
 //! appends a `kind='posted'` row to the thread feed (the egress the worker's
 //! ping-pong guard watches for).
 //!
-//! Three receiver shapes, all posting to the *current* thread (`ctx.thread_id`):
+//! `receiver` is a single optional colleague id, all posting to the *current*
+//! thread (`ctx.thread_id`). The recipient's kind (human vs agent) is derived
+//! from the resolved `colleagues` row, not declared by the caller:
 //!
 //! - **none** (`receiver` omitted) — an untagged post (announcement / thinking
 //!   aloud to the channel). Posts and returns.
-//! - **human** — agents reach a human only inside a thread the human can see:
-//!   a channel thread requires channel membership (`ThreadStore::is_channel_member`),
-//!   rejected with no auto-add; a DM thread is always reachable. Posts a
-//!   `receiver`-addressed row.
-//! - **agent** — agents are org-global (reachable in any thread, no membership).
-//!   Posts the row, resolves the receiver's `(thread, agent)` participation,
-//!   bumps the DAG turn budget, and enqueues a `prompt_requests` *trigger* whose
-//!   `trigger_message_id` is the posted row; the worker picks it up.
+//! - **human colleague** — agents reach a human only inside a thread the human
+//!   can see: a channel thread requires channel membership
+//!   (`ThreadStore::is_channel_member`), rejected with no auto-add; a DM thread
+//!   is always reachable. Posts a `receiver`-addressed row.
+//! - **agent colleague** — agents are org-global (reachable in any thread, no
+//!   membership). Posts the row, resolves the receiver's `(thread, agent)`
+//!   participation, bumps the DAG turn budget, and enqueues a `prompt_requests`
+//!   *trigger* whose `trigger_message_id` is the posted row; the worker picks
+//!   it up.
 //!
 //! Returns the thread id and (for agent receivers) the trigger request id.
 
@@ -27,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-use crate::agents::{AgentId, AgentName, AgentStoreError, SharedAgentStore};
+use crate::agents::AgentId;
 use crate::auth::Caller;
 use crate::colleagues::{ColleagueError, ColleagueId, SharedColleagueStore};
 use crate::observability::log::preview;
@@ -42,27 +45,12 @@ use crate::types::{PROMPT_MAX_BYTES, Participant, Prompt, ToolName};
 
 use super::super::traits::{Tool, ToolCallContext, ToolError};
 
-/// Wire-side receiver shape. Three forms, in preference order:
-///
-/// - `{"kind":"colleague","id":"<uuid>"}` — **canonical**. Any colleague (human
-///   or agent) by the id surfaced in the `<colleagues>` roster.
-/// - `{"kind":"agent","name":"<role>"}` — sugar. An agent by role name
-///   (case-insensitive, scoped to the caller's org).
-/// - `{"kind":"human"}` — sugar for the DAG-root human (the user under whose
-///   authority the agent runs).
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum SendMessageReceiver {
-    Colleague { id: ColleagueId },
-    Agent { name: AgentName },
-    Human,
-}
-
 #[derive(Debug, Deserialize)]
 struct SendMessageInput {
-    /// Who to address. Omit entirely to post an untagged message to the thread.
+    /// Who to address — a colleague id (human or agent) from the `<colleagues>`
+    /// roster. Omit entirely to post an untagged message to the thread.
     #[serde(default)]
-    receiver: Option<SendMessageReceiver>,
+    receiver: Option<ColleagueId>,
     /// The message body. Same `PROMPT_MAX_BYTES` cap as the HTTP boundary.
     content: String,
 }
@@ -78,8 +66,8 @@ struct SendMessageOutput {
 ///
 /// Holds shared handles to the collaborators it needs: threads (post + resolve
 /// participation + membership gate), queue (enqueue agent trigger), dag (budget
-/// bump), agent store (resolve receiver agent), colleagues (resolve receiver
-/// colleague), sink (terminal failure publish on budget exhaustion).
+/// bump), colleagues (resolve receiver colleague by id), sink (terminal failure
+/// publish on budget exhaustion).
 pub struct SendMessageTool {
     name: ToolName,
     description: &'static str,
@@ -87,7 +75,6 @@ pub struct SendMessageTool {
     threads: SharedThreadStore,
     queue: SharedPromptQueue,
     dag: SharedDagBudget,
-    agents: SharedAgentStore,
     colleagues: SharedColleagueStore,
     sink: SharedResponseSink,
 }
@@ -100,12 +87,11 @@ const ERR_SYSTEM_RECEIVER: &str = "send_message: cannot deliver to System";
 
 const TOOL_DESCRIPTION: &str = "Send a message in the current thread. \
     Use this for ALL communication — plain assistant text is not delivered. \
-    Arguments: `receiver` (optional) is `{\"kind\":\"colleague\",\"id\":\"<uuid>\"}` to \
-    address any colleague (human or agent) by the id shown in your `<colleagues>` \
-    block, `{\"kind\":\"agent\",\"name\":\"<role>\"}` to reach an agent by role \
-    name, or `{\"kind\":\"human\"}` to reply to the person who prompted you; omit \
-    `receiver` to post an untagged message to the thread. `content` is the message \
-    body. You cannot message a human who is not a member of this channel.";
+    Arguments: `receiver` (optional) is the colleague id (a uuid) shown in your \
+    `<colleagues>` block — any colleague, human or agent; to reply to the person \
+    who prompted you, use their id from `<speaking-with>`. Omit `receiver` to \
+    post an untagged message to the thread. `content` is the message body. You \
+    cannot message a human who is not a member of this channel.";
 
 impl std::fmt::Debug for SendMessageTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -114,13 +100,12 @@ impl std::fmt::Debug for SendMessageTool {
 }
 
 impl SendMessageTool {
-    /// Construct the tool from its six shared collaborators.
+    /// Construct the tool from its five shared collaborators.
     #[must_use]
     pub fn new(
         threads: SharedThreadStore,
         queue: SharedPromptQueue,
         dag: SharedDagBudget,
-        agents: SharedAgentStore,
         colleagues: SharedColleagueStore,
         sink: SharedResponseSink,
     ) -> Self {
@@ -130,30 +115,9 @@ impl SendMessageTool {
             "required": ["content"],
             "properties": {
                 "receiver": {
-                    "type": "object",
-                    "oneOf": [
-                        {
-                            "required": ["kind", "id"],
-                            "properties": {
-                                "kind": { "const": "colleague" },
-                                "id": { "type": "string", "format": "uuid" }
-                            },
-                            "additionalProperties": false
-                        },
-                        {
-                            "required": ["kind", "name"],
-                            "properties": {
-                                "kind": { "const": "agent" },
-                                "name": { "type": "string", "minLength": 1 }
-                            },
-                            "additionalProperties": false
-                        },
-                        {
-                            "required": ["kind"],
-                            "properties": { "kind": { "const": "human" } },
-                            "additionalProperties": false
-                        }
-                    ]
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Colleague id (human or agent) from your <colleagues> block. Omit to post untagged to the thread."
                 },
                 "content": { "type": "string", "maxLength": PROMPT_MAX_BYTES }
             },
@@ -166,7 +130,6 @@ impl SendMessageTool {
             threads,
             queue,
             dag,
-            agents,
             colleagues,
             sink,
         }
@@ -193,10 +156,10 @@ impl SendMessageTool {
             ToolError::InvalidInput("send_message: caller must be an agent".into())
         })?;
 
-        let Some(raw) = input.receiver else {
+        let Some(id) = input.receiver else {
             return Ok((content, None, viewer_agent_id));
         };
-        let receiver = self.resolve_receiver(viewer_agent_id, raw, ctx).await?;
+        let receiver = self.resolve_colleague(id, ctx).await?;
 
         if receiver == ctx.viewer {
             set_outcome("invalid_input");
@@ -211,60 +174,10 @@ impl SendMessageTool {
         Ok((content, Some(receiver), viewer_agent_id))
     }
 
-    /// Resolve the wire-side receiver into a [`Participant`].
-    async fn resolve_receiver(
-        &self,
-        viewer: AgentId,
-        raw: SendMessageReceiver,
-        ctx: &ToolCallContext,
-    ) -> Result<Participant, ToolError> {
-        let name = match raw {
-            SendMessageReceiver::Colleague { id } => {
-                return self.resolve_colleague(id, ctx).await;
-            }
-            SendMessageReceiver::Human => {
-                let cid = self
-                    .colleagues
-                    .resolve_user(ctx.org_id, ctx.acting_user_id)
-                    .await
-                    .map_err(|e| {
-                        set_outcome("backend_error");
-                        ToolError::Backend(format!("send_message: resolve human colleague: {e}"))
-                    })?;
-                return Ok(Participant::human(cid, ctx.acting_user_id));
-            }
-            SendMessageReceiver::Agent { name } => name,
-        };
-        let record = self
-            .agents
-            .read_by_name_for_viewer(viewer, &name)
-            .await
-            .map_err(|e| match e {
-                AgentStoreError::NameNotFound(_) => {
-                    set_outcome("unknown_agent");
-                    warn!(patom.agent.name = %name, "send_message.unknown_agent");
-                    ToolError::InvalidInput(format!("send_message: unknown agent name {name}"))
-                }
-                err => {
-                    set_outcome("backend_error");
-                    warn!(error = %err, patom.agent.name = %name, "send_message.agent_lookup_failed");
-                    ToolError::Backend(format!("send_message: agent lookup: {err}"))
-                }
-            })?;
-        let cid = self
-            .colleagues
-            .resolve_agent(record.org_id, record.id)
-            .await
-            .map_err(|e| {
-                set_outcome("backend_error");
-                ToolError::Backend(format!("send_message: resolve agent colleague: {e}"))
-            })?;
-        Ok(Participant::agent(cid, record.id))
-    }
-
-    /// Resolve a canonical `{"kind":"colleague","id":…}` receiver. Privileged
-    /// directory read; a colleague outside the caller's org is reported as
-    /// unknown (no existence leak).
+    /// Resolve a `receiver` colleague id into a [`Participant`] (its kind —
+    /// human or agent — comes from the row). Privileged directory read; a
+    /// colleague outside the caller's org is reported as unknown (no existence
+    /// leak).
     async fn resolve_colleague(
         &self,
         id: ColleagueId,

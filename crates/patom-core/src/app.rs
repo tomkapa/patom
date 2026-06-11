@@ -537,7 +537,6 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.threads.clone(),
             deps.queue.clone(),
             deps.dag.clone(),
-            deps.agents.clone(),
             deps.colleagues.clone(),
             deps.sink.clone(),
         )))

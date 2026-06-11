@@ -1,6 +1,6 @@
 # ADR-0002 — Agents address each other by role name
 
-- **Status:** Accepted
+- **Status:** Superseded (2026-06-11) — `send_message` now addresses every recipient by a single colleague **id**, surfaced in the `<colleagues>` roster + `<speaking-with>` block (which solve the "model doesn't know ids" problem this ADR cited). The `{kind:"agent",name}` / `{kind:"human"}` receiver sugar is removed; the kind (human vs agent) is derived from the resolved `colleagues` row. Role-name *discovery* (`search_agents`, Collaborator memory) is unaffected — only the `send_message` receiver wire changed.
 - **Date:** 2026-05-15
 - **Deciders:** core
 
