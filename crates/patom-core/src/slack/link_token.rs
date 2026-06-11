@@ -41,10 +41,18 @@ pub const LINK_TOKEN_TTL_SECS: i64 = 600;
 /// Minted by the `/patom` slash handler; consumed by
 /// `GET /slack/identity/start` and re-verified by
 /// `GET /slack/identity/complete` after login.
+///
+/// `response_url` is the slash command's `response_url` so the completion
+/// route can swap the original "Set up Patom" ephemeral for a success
+/// message (`replace_original`). It is base64url-encoded on the wire (it
+/// contains `:` and `/`, which would break the `:`-split payload) and is
+/// signed, so the completion route never POSTs to an attacker-supplied
+/// URL. Empty when no usable response_url was available.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlackLinkClaims {
     pub team_id: SlackTeamId,
     pub slack_user_id: SlackUserId,
+    pub response_url: String,
 }
 
 /// Mint a signed token. `exp_secs` is an absolute Unix-epoch second value;
@@ -80,6 +88,7 @@ pub fn verify_link(key: &[u8], token: &str, now_secs: i64) -> Option<SlackLinkCl
     let mut parts = payload.split(':');
     let team_raw = parts.next()?;
     let user_raw = parts.next()?;
+    let rurl_b64 = parts.next()?;
     let exp_raw = parts.next()?;
     if parts.next().is_some() {
         return None;
@@ -87,6 +96,7 @@ pub fn verify_link(key: &[u8], token: &str, now_secs: i64) -> Option<SlackLinkCl
 
     let team_id = SlackTeamId::try_from(team_raw).ok()?;
     let slack_user_id = SlackUserId::try_from(user_raw).ok()?;
+    let response_url = decode_response_url(rurl_b64)?;
     let exp_secs: i64 = exp_raw.parse().ok()?;
     if exp_secs < now_secs {
         return None;
@@ -95,16 +105,32 @@ pub fn verify_link(key: &[u8], token: &str, now_secs: i64) -> Option<SlackLinkCl
     Some(SlackLinkClaims {
         team_id,
         slack_user_id,
+        response_url,
     })
 }
 
 fn render_payload(claims: &SlackLinkClaims, exp_secs: i64) -> String {
+    use base64::Engine as _;
+    let rurl_b64 =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.response_url.as_bytes());
     format!(
-        "{team}:{user}:{exp}",
+        "{team}:{user}:{rurl}:{exp}",
         team = claims.team_id.as_str(),
         user = claims.slack_user_id.as_str(),
+        rurl = rurl_b64,
         exp = exp_secs,
     )
+}
+
+/// Decode the base64url response_url field. An empty field (the "no
+/// response_url" case) decodes to an empty string; a malformed or
+/// non-UTF-8 field fails the whole token.
+fn decode_response_url(rurl_b64: &str) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(rurl_b64)
+        .ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]
@@ -115,6 +141,9 @@ mod tests {
         SlackLinkClaims {
             team_id: SlackTeamId::try_from("T0ABCDE").expect("valid team"),
             slack_user_id: SlackUserId::try_from("U0USER1").expect("valid user"),
+            // A realistic response_url — contains `:` and `/`, which the
+            // base64url field must survive without breaking the split.
+            response_url: "https://hooks.slack.com/commands/T0ABCDE/123/abcDEF".to_owned(),
         }
     }
 
@@ -127,6 +156,17 @@ mod tests {
         let token = sign_link(TEST_KEY, &claims, exp);
         let parsed = verify_link(TEST_KEY, &token, 1_700_000_000).expect("valid");
         assert_eq!(parsed, claims);
+    }
+
+    #[test]
+    fn roundtrip_with_empty_response_url() {
+        let claims = SlackLinkClaims {
+            response_url: String::new(),
+            ..sample_claims()
+        };
+        let token = sign_link(TEST_KEY, &claims, 4_102_444_800);
+        let parsed = verify_link(TEST_KEY, &token, 1_700_000_000).expect("valid");
+        assert_eq!(parsed.response_url, "");
     }
 
     #[test]

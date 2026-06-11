@@ -830,6 +830,10 @@ pub async fn build_server(
                 pieces.pool.clone(),
                 pieces.clock.clone(),
             ));
+            let slack_channels = Arc::new(crate::slack::channel_map::PgSlackChannelStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+            ));
             let threads_store = Arc::new(PgSlackThreadStore::new(
                 pieces.pool.clone(),
                 pieces.clock.clone(),
@@ -858,6 +862,7 @@ pub async fn build_server(
                     colleagues: pieces.colleagues.clone(),
                     workspaces: workspaces.clone(),
                     identities: identities.clone(),
+                    channels_map: slack_channels.clone(),
                     threads: threads_store.clone(),
                     poster: poster.clone(),
                     stream_pump: pump_handle.clone(),

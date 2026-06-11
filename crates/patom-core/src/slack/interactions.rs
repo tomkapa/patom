@@ -121,7 +121,7 @@ async fn handle_slash(state: State<AppState>, headers: HeaderMap, body: Bytes) -
         Ok(Some(_)) => {}
         Ok(None) => {
             info!(event = "slack.commands.unlinked_prompted");
-            return link_prompt(slack, &team_id, &user_id);
+            return link_prompt(slack, &team_id, &user_id, &parsed.response_url);
         }
         Err(e) => {
             warn!(error = ?e, event = "slack.commands.identity_lookup_failed");
@@ -300,6 +300,11 @@ async fn handle_view_submission(state: State<AppState>, view: ViewSubmission) ->
         colleagues: state.colleagues.clone(),
         workspaces: slack.workspaces.clone(),
         identities: slack.identities.clone(),
+        // Built inline from the pool/clock seam, like `thread_store` above.
+        channels_map: std::sync::Arc::new(crate::slack::channel_map::PgSlackChannelStore::new(
+            state.pool.clone(),
+            state.clock.clone(),
+        )),
         threads: slack.threads.clone(),
         poster: slack.poster.clone(),
         stream_pump: slack.stream_pump.clone(),
@@ -455,6 +460,7 @@ fn link_prompt(
     slack: &super::SlackAppState,
     team_id: &SlackTeamId,
     user_id: &SlackUserId,
+    response_url: &str,
 ) -> Response {
     let exp = slack.clock.now_unix_secs() + super::link_token::LINK_TOKEN_TTL_SECS;
     let token = super::link_token::sign_link(
@@ -462,6 +468,7 @@ fn link_prompt(
         &super::link_token::SlackLinkClaims {
             team_id: team_id.clone(),
             slack_user_id: user_id.clone(),
+            response_url: response_url.to_owned(),
         },
         exp,
     );
@@ -532,6 +539,11 @@ struct SlashPayload {
     /// it survives to the `view_submission` handler.
     user_name: String,
     trigger_id: String,
+    /// Slack's per-invocation callback URL. Used to `replace_original` the
+    /// "Set up Patom" ephemeral with a success message after the user
+    /// links (issue #41). Empty if Slack omitted it — the link flow still
+    /// works, it just can't update the prompt in place.
+    response_url: String,
 }
 
 impl SlashPayload {
@@ -545,6 +557,7 @@ impl SlashPayload {
         let mut user_id = None;
         let mut user_name = None;
         let mut trigger_id = None;
+        let mut response_url = String::new();
         for (k, v) in url::form_urlencoded::parse(body.as_ref()) {
             match k.as_ref() {
                 "command" => command = Some(v.into_owned()),
@@ -553,6 +566,7 @@ impl SlashPayload {
                 "user_id" => user_id = Some(v.into_owned()),
                 "user_name" => user_name = Some(v.into_owned()),
                 "trigger_id" => trigger_id = Some(v.into_owned()),
+                "response_url" => response_url = v.into_owned(),
                 _ => {}
             }
         }
@@ -575,6 +589,7 @@ impl SlashPayload {
             user_id,
             user_name,
             trigger_id,
+            response_url,
         })
     }
 }

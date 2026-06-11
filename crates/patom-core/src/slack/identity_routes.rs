@@ -157,7 +157,30 @@ async fn complete_inner(
         patom.user.id = %session.user_id.as_uuid(),
         event = "slack.identity.linked",
     );
+    // Best-effort: swap the original "Set up Patom" ephemeral for a
+    // success note so Slack reflects the link. Never fails the completion.
+    if !claims.response_url.is_empty() {
+        replace_slack_prompt(&slack.http, &claims.response_url).await;
+    }
     Ok(())
+}
+
+/// `POST` the slash `response_url` with `replace_original: true` to turn
+/// the "Set up Patom" button into a success message. Best-effort and
+/// bounded; a failure (expired 30-min response_url, transport error) is
+/// logged and swallowed — the browser already shows the success page.
+async fn replace_slack_prompt(http: &reqwest::Client, response_url: &str) {
+    let body = serde_json::json!({
+        "response_type": "ephemeral",
+        "replace_original": true,
+        "text": "✅ Connected — run `/patom` in any channel to pick an agent.",
+    });
+    let send = http.post(response_url).json(&body).send();
+    match tokio::time::timeout(std::time::Duration::from_secs(5), send).await {
+        Ok(Ok(_)) => info!(event = "slack.identity.prompt_replaced"),
+        Ok(Err(e)) => warn!(error = ?e, event = "slack.identity.prompt_replace_failed"),
+        Err(_) => warn!(event = "slack.identity.prompt_replace_timeout"),
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────

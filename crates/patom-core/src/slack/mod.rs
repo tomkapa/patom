@@ -24,6 +24,7 @@
 //! full design and `CLAUDE.md` for the binding engineering rules.
 
 pub mod bridge;
+pub mod channel_map;
 pub mod connect_link;
 pub mod connection_card;
 pub mod error;

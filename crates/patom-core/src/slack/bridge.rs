@@ -47,6 +47,7 @@ use crate::runtime::{IdempotencyKey, NewTrigger, RequestKindPayload, SharedPromp
 use crate::threads::{MessageKind, NewMessage, SharedThreadStore, ThreadId};
 use crate::types::Prompt;
 
+use super::channel_map::SharedSlackChannelStore;
 use super::error::SlackError;
 use super::identity::SharedSlackIdentityStore;
 use super::limits::SLACK_USERS_INFO_TIMEOUT;
@@ -106,6 +107,10 @@ pub struct BridgeDeps {
     pub colleagues: crate::colleagues::SharedColleagueStore,
     pub workspaces: SharedSlackWorkspaceStore,
     pub identities: SharedSlackIdentityStore,
+    /// Slack-channel ↔ Patom-channel mapping (`slack_channels`). Lets a
+    /// Slack-rooted conversation be a multi-participant channel thread
+    /// (issue #41) and ensures the acting human is a channel member.
+    pub channels_map: SharedSlackChannelStore,
     /// Slack-thread ↔ Patom-thread binding (`slack_threads`).
     pub threads: SharedSlackThreadStore,
     pub poster: SharedSlackPoster,
@@ -216,6 +221,14 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
     };
     let org_id = workspace.org_id;
     let caller = Caller::new(user_id, org_id);
+    // Mirror the Slack channel to a Patom channel and make the acting human
+    // a member — on every event, so a second human joining an existing
+    // Slack thread can read + post (issue #41). Channel threads replace the
+    // old two-party DM threads.
+    let channel_id = deps
+        .channels_map
+        .ensure_channel(org_id, &event.team_id, &event.channel_id, user_id)
+        .await?;
     let anchor = match event.thread_ts.clone() {
         Some(t) => t,
         None => SlackThreadTs::try_from(event.event_ts.as_str())?,
@@ -256,23 +269,12 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
         (None, InboundSource::AppMention) => {
             let agent =
                 resolve_mention_or_recruiter(deps, &event, &workspace.bot_user_id, org_id).await?;
-            // New Slack-originated conversation → a fresh Patom DM thread
-            // between the linked human and the mentioned agent (the DM
-            // counterpart), bound to this Slack thread.
-            let agent_counterpart = deps
-                .colleagues
-                .resolve_agent(org_id, agent)
-                .await
-                .map_err(|e| SlackError::Internal(format!("resolve agent colleague: {e}")))?;
+            // New Slack-originated conversation → a fresh Patom *channel*
+            // thread (multi-human, multi-agent), bound to this Slack thread.
+            // The mentioned agent joins via `resolve_participation` below.
             let thread = deps
                 .thread_store
-                .create_thread(
-                    &caller,
-                    None,
-                    None,
-                    human_colleague,
-                    Some(agent_counterpart),
-                )
+                .create_thread(&caller, Some(channel_id), None, human_colleague, None)
                 .await
                 .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
             deps.threads
@@ -585,7 +587,10 @@ pub async fn enqueue_from_slash(
             assert_eq!(linked.org_id, workspace.org_id);
             linked.user_id
         }
-        None => workspace.installed_by_user_id,
+        // The slash gate only opens the modal for a linked user, so this
+        // is an unlink-during-modal race. Reject rather than mis-attribute
+        // as the installer (no Phase-2 fallback).
+        None => return Err(SlackError::IdentityNotLinked(submit.slack_user_id.clone())),
     };
     // Defence-in-depth: re-validate that the chosen agent belongs to
     // the workspace's org. The modal options carry agent ids the
@@ -626,23 +631,16 @@ pub async fn enqueue_from_slash(
     .await?;
     let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
 
-    // A slash command starts a fresh conversation → new Patom DM thread
-    // between the linked human and the chosen agent, bound to the mirror's
-    // Slack thread.
-    let agent_counterpart = deps
-        .colleagues
-        .resolve_agent(org_id, agent.id)
-        .await
-        .map_err(|e| SlackError::Internal(format!("resolve agent colleague: {e}")))?;
+    // A slash command starts a fresh conversation → new Patom *channel*
+    // thread (multi-human, multi-agent), bound to the mirror's Slack
+    // thread. The chosen agent joins via `resolve_participation`.
+    let channel_id = deps
+        .channels_map
+        .ensure_channel(org_id, &submit.team_id, &submit.channel_id, user_id)
+        .await?;
     let thread_id = deps
         .thread_store
-        .create_thread(
-            &caller,
-            None,
-            None,
-            human_colleague,
-            Some(agent_counterpart),
-        )
+        .create_thread(&caller, Some(channel_id), None, human_colleague, None)
         .await
         .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
     deps.threads

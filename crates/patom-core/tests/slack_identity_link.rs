@@ -8,9 +8,11 @@
 //! member, gets a Human colleague, and resolves to their own identity.
 
 use patom::auth::{OrgId, Principal, Role, UserId};
+use patom::channels::ChannelId;
 use patom::clock::{SharedClock, SystemClock};
+use patom::slack::channel_map::{PgSlackChannelStore, SlackChannelStore};
 use patom::slack::identity::{LinkedVia, PgSlackIdentityStore, SharedSlackIdentityStore};
-use patom::slack::types::{SlackTeamId, SlackUserId};
+use patom::slack::types::{SlackChannelId, SlackTeamId, SlackUserId};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -228,4 +230,118 @@ async fn unlink_removes_link_for_org_member(pool: PgPool) {
             .is_none(),
         "row gone after unlink"
     );
+}
+
+// ── Channel-thread mapping (issue #41, point 3) ─────────────────────────
+
+fn channel_store(pool: PgPool) -> PgSlackChannelStore {
+    PgSlackChannelStore::new(pool, SystemClock::shared())
+}
+
+/// Count `channel_members` rows for a channel — proves multi-human membership.
+async fn member_count(pool: &PgPool, channel: ChannelId) -> i64 {
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM channel_members WHERE channel_id = $1")
+        .bind(channel)
+        .fetch_one(pool)
+        .await
+        .expect("count members");
+    n
+}
+
+#[sqlx::test]
+async fn ensure_channel_maps_creates_and_adds_member(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    seed_workspace(&pool, seed.org_id, seed.user_id).await;
+    let slack_chan = SlackChannelId::try_from("C0CHAN01").expect("valid");
+    let store = channel_store(pool.clone());
+
+    let cid = store
+        .ensure_channel(seed.org_id, &team(), &slack_chan, seed.user_id)
+        .await
+        .expect("ensure");
+
+    // A Patom channel was created with the derived slug, and the mapping
+    // points at it.
+    let (name,): (String,) = sqlx::query_as("SELECT name FROM channels WHERE id = $1")
+        .bind(cid)
+        .fetch_one(&pool)
+        .await
+        .expect("channel row");
+    assert_eq!(name, "slack-c0chan01");
+    let (mapped,): (ChannelId,) =
+        sqlx::query_as("SELECT channel_id FROM slack_channels WHERE slack_channel_id = $1")
+            .bind("C0CHAN01")
+            .fetch_one(&pool)
+            .await
+            .expect("mapping row");
+    assert_eq!(mapped, cid);
+    assert_eq!(member_count(&pool, cid).await, 1, "creator is a member");
+}
+
+#[sqlx::test]
+async fn ensure_channel_is_idempotent_and_admits_a_second_human(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    seed_workspace(&pool, seed.org_id, seed.user_id).await;
+    let second = seed_user(&pool).await;
+    // The second human must be an org member for the FK + colleague model;
+    // link them so they're enrolled (link_with_org adds org_members).
+    store(pool.clone())
+        .link_with_org(
+            second,
+            seed.org_id,
+            &team(),
+            &SlackUserId::try_from("U0SECOND").expect("valid"),
+            LinkedVia::SlackOauth,
+        )
+        .await
+        .expect("link second human");
+
+    let slack_chan = SlackChannelId::try_from("C0SHARED").expect("valid");
+    let cm = channel_store(pool.clone());
+
+    let first_call = cm
+        .ensure_channel(seed.org_id, &team(), &slack_chan, seed.user_id)
+        .await
+        .expect("first");
+    let second_call = cm
+        .ensure_channel(seed.org_id, &team(), &slack_chan, second)
+        .await
+        .expect("second");
+
+    assert_eq!(
+        first_call, second_call,
+        "same Slack channel → one Patom channel"
+    );
+    assert_eq!(
+        member_count(&pool, first_call).await,
+        2,
+        "both humans are members of the one channel (multi-human collaboration)"
+    );
+}
+
+#[sqlx::test]
+async fn distinct_slack_channels_map_to_distinct_patom_channels(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    seed_workspace(&pool, seed.org_id, seed.user_id).await;
+    let cm = channel_store(pool.clone());
+
+    let a = cm
+        .ensure_channel(
+            seed.org_id,
+            &team(),
+            &SlackChannelId::try_from("C0AAA").expect("valid"),
+            seed.user_id,
+        )
+        .await
+        .expect("a");
+    let b = cm
+        .ensure_channel(
+            seed.org_id,
+            &team(),
+            &SlackChannelId::try_from("C0BBB").expect("valid"),
+            seed.user_id,
+        )
+        .await
+        .expect("b");
+    assert_ne!(a, b, "different Slack channels are isolated Patom channels");
 }

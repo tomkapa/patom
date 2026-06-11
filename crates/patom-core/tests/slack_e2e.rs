@@ -179,6 +179,9 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         Arc::new(PgSlackWorkspaceStore::new(pool.clone(), clock.clone(), enc));
     let identities: SharedSlackIdentityStore =
         Arc::new(PgSlackIdentityStore::new(pool.clone(), clock.clone()));
+    let slack_channels_map: patom::slack::channel_map::SharedSlackChannelStore = Arc::new(
+        patom::slack::channel_map::PgSlackChannelStore::new(pool.clone(), clock.clone()),
+    );
     let slack_threads: SharedSlackThreadStore =
         Arc::new(PgSlackThreadStore::new(pool.clone(), clock.clone()));
     let thread_store: patom::threads::SharedThreadStore = Arc::new(
@@ -271,6 +274,7 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
             colleagues: std::sync::Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
             workspaces: workspaces.clone(),
             identities: identities.clone(),
+            channels_map: slack_channels_map.clone(),
             threads: slack_threads.clone(),
             poster: poster.clone(),
             stream_pump: pump.clone(),
