@@ -64,7 +64,11 @@ impl ThreadDisplayNames for PgSlackThreadDisplayNames {
                 })
                 .collect(),
             Err(e) => {
-                tracing::warn!(error = ?e, event = "slack.display_overrides.query_failed");
+                tracing::error!(
+                    error = ?e,
+                    patom.thread.id = %thread.as_uuid(),
+                    event = "slack.display_overrides.query_failed",
+                );
                 HashMap::new()
             }
         }

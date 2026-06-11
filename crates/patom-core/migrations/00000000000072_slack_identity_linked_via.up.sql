@@ -8,9 +8,11 @@
 --   - 'slack_oauth' — written by the post-login completion route after an
 --                     unlinked user authenticates to Patom via `/patom`.
 --
--- Nullable with no backfill: Phase 1 never populated `slack_identities`,
--- so the table is empty in every environment and the paired `.down.sql`
--- is a clean `DROP COLUMN`.
+-- NOT NULL, no default: Phase 1 never populated `slack_identities`, so the
+-- table is empty in every environment (an `ADD COLUMN NOT NULL` with no
+-- default is safe) and every write path supplies `linked_via` — so the
+-- audit invariant "every link has a known source" holds by construction.
+-- The paired `.down.sql` is a clean `DROP COLUMN`.
 ALTER TABLE slack_identities
-    ADD COLUMN linked_via TEXT
-        CHECK (linked_via IS NULL OR linked_via IN ('installer', 'slack_oauth'));
+    ADD COLUMN linked_via TEXT NOT NULL
+        CHECK (linked_via IN ('installer', 'slack_oauth'));

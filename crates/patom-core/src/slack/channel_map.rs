@@ -66,7 +66,9 @@ impl fmt::Debug for PgSlackChannelStore {
 /// since a Slack id is ≤ 32 chars). A future enhancement could fetch the
 /// human channel name via `conversations.info` (needs `channels:read`).
 fn channel_name_for(slack_channel_id: &SlackChannelId) -> Result<ChannelName, SlackError> {
-    let raw = format!("slack-{}", slack_channel_id.as_str());
+    // Lowercase explicitly so the slug matches the documented form and the
+    // `ChannelName` rule regardless of `ChannelName`'s own normalisation.
+    let raw = format!("slack-{}", slack_channel_id.as_str().to_lowercase());
     Ok(ChannelName::try_from(raw.as_str())?)
 }
 

@@ -157,13 +157,24 @@ async fn complete_inner(
         patom.user.id = %session.user_id.as_uuid(),
         event = "slack.identity.linked",
     );
-    // Capture the Slack display name (per-platform label) so the agent
-    // refers to this person by their Slack handle in Slack threads — it is
-    // stored on `slack_identities`, never on the canonical Patom user.
-    // Best-effort; a `users.info` miss leaves it NULL (renderer falls back).
+    complete_followups(slack, &claims, &workspace.bot_token).await;
+    Ok(())
+}
+
+/// Best-effort post-link side effects: capture the Slack display name (the
+/// per-platform label, stored on `slack_identities` — never on the Patom
+/// user) and swap the "Set up Patom" ephemeral for a success message.
+/// Never fails the completion — the account is already linked.
+async fn complete_followups(
+    slack: &crate::slack::SlackAppState,
+    claims: &super::link_token::SlackLinkClaims,
+    bot_token: &super::types::SlackBotToken,
+) {
+    // A `users.info` miss leaves the label NULL (renderer falls back to the
+    // canonical colleague name).
     if let Some(name) = crate::slack::bridge::fetch_slack_display_name(
         &slack.http,
-        &workspace.bot_token,
+        bot_token,
         claims.slack_user_id.as_str(),
     )
     .await
@@ -174,12 +185,9 @@ async fn complete_inner(
     {
         warn!(error = ?e, event = "slack.identity.display_name_store_failed");
     }
-    // Best-effort: swap the original "Set up Patom" ephemeral for a
-    // success note so Slack reflects the link. Never fails the completion.
     if !claims.response_url.is_empty() {
         replace_slack_prompt(&slack.http, &claims.response_url).await;
     }
-    Ok(())
 }
 
 /// `POST` the slash `response_url` with `replace_original: true` to turn
@@ -204,6 +212,7 @@ async fn replace_slack_prompt(http: &reqwest::Client, response_url: &str) {
 // DELETE /api/slack/identity/{team_id}/{slack_user_id}
 // ────────────────────────────────────────────────────────────────────
 
+#[tracing::instrument(name = "slack.identity.unlink", skip_all)]
 async fn unlink(
     State(state): State<AppState>,
     principal: Principal,
