@@ -118,7 +118,9 @@ export function ChatView() {
     channels.find((c) => c.id === selectedChannelId) ?? null;
 
   // Roster of the open context: the channel's members (or, in DM mode, the
-  // whole workspace via #general) plus every agent (org-global).
+  // whole workspace via #general) plus every agent (org-global). This scopes
+  // the composer, mentions, header counts, and name resolution — NOT the DM
+  // sidebar, which is workspace-wide (see `dmSource` below).
   const rosterChannelId = isDemo
     ? null
     : selectedDm
@@ -126,16 +128,28 @@ export function ChatView() {
       : (selectedChannelId ?? general?.id ?? null);
   const liveRoster = useRoster(rosterChannelId);
   const me = useAuthStore((s) => s.me);
-  const roster = isDemo ? DEMO_ROSTER : liveRoster.roster;
-  const agents = useMemo(() => roster.filter((m) => m.kind === "agent"), [roster]);
-  const humans = useMemo(() => roster.filter((m) => m.kind === "human"), [roster]);
+  const contextRoster = isDemo ? DEMO_ROSTER : liveRoster.roster;
+  const agents = useMemo(
+    () => contextRoster.filter((m) => m.kind === "agent"),
+    [contextRoster],
+  );
+  const humans = useMemo(
+    () => contextRoster.filter((m) => m.kind === "human"),
+    [contextRoster],
+  );
+
+  // The DM sidebar is workspace-wide and must NOT narrow to the open channel,
+  // so it sources its roster from #general directly — selecting a channel
+  // leaves the people you can DM unchanged.
+  const dmLiveRoster = useRoster(isDemo ? null : (general?.id ?? null));
+  const dmSource = isDemo ? DEMO_ROSTER : dmLiveRoster.roster;
   // DM sidebar: everyone except the viewer (you don't DM yourself).
   const dmRoster = useMemo(
     () => [
-      ...humans.filter((h) => h.id !== me?.user.id),
-      ...agents,
+      ...dmSource.filter((m) => m.kind === "human" && m.id !== me?.user.id),
+      ...dmSource.filter((m) => m.kind === "agent"),
     ],
-    [humans, agents, me?.user.id],
+    [dmSource, me?.user.id],
   );
 
   // DM mode reads the pair's conversation; channel mode reads the channel.
@@ -169,7 +183,7 @@ export function ChatView() {
   // SSE stream + view selector are skipped in demo mode by passing null.
   const liveRootId = isDemo ? null : selectedRoot;
   useThreadStream(liveRootId);
-  const view = useThreadView(liveRootId, roster, poster);
+  const view = useThreadView(liveRootId, contextRoster, poster);
   const demoView = useMemo(
     () => (isDemo ? buildDemoView(poster) : null),
     [isDemo, poster],
@@ -268,7 +282,7 @@ export function ChatView() {
     try {
       const res = await submit.mutateAsync({
         content: input.content,
-        tags: matchMentions(input.content, roster).map(tagRef),
+        tags: matchMentions(input.content, contextRoster).map(tagRef),
         thread_id: threadId,
         idempotency_key,
       });
@@ -329,7 +343,7 @@ export function ChatView() {
           />
           <MessageList
             threads={threads}
-            roster={roster}
+            roster={contextRoster}
             channel={channelLabel}
             welcome={welcome}
             onOpenThread={(rootId) => {
@@ -354,7 +368,7 @@ export function ChatView() {
             </div>
           ) : null}
           <Composer
-            roster={roster}
+            roster={contextRoster}
             mode={selectedDm ? "dm" : "channel"}
             dmCounterpart={selectedDm ?? undefined}
             channel={channelName}
@@ -372,7 +386,7 @@ export function ChatView() {
           channel={channelName}
           resizable={isWide}
           thread={selectedThread}
-          roster={roster}
+          roster={contextRoster}
           bubbles={bubbles}
           rootMessage={rootMessage}
           showThinking={showThinking}
