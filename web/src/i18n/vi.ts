@@ -684,7 +684,7 @@ const vi: TranslationTable = {
     "Đội ngũ của bạn đã được tuyển và đang chờ. Bạn muốn họ tự giới thiệu và cho biết cần kết nối những gì không? Chúng tôi sẽ soạn sẵn một tin nhắn gửi Recruiter vào ô bên dưới — bạn xem lại rồi bấm gửi.",
   "chat.welcome.cta": "Giới thiệu tôi với đội ngũ",
   "chat.welcome.prefill":
-    "@recruiter Chào bạn! Bạn giới thiệu giúp tôi về đội ngũ — ai làm gì và họ phối hợp ra sao — và cho tôi biết tôi nên thiết lập những kết nối nào nhé?",
+    "@recruiter Chào bạn! Bạn giới thiệu giúp tôi về đội ngũ nhé — xem qua từng agent, cho biết họ làm gì và phối hợp ra sao, và kiểm tra phần mô tả của mỗi người để biết họ dùng kết nối nào. Rồi cho tôi biết chính xác cần thiết lập những kết nối nào. Nếu một mô tả không nêu kết nối nào thì agent đó không cần — đừng gợi ý thêm.",
 
   // General tab
   "settings.general.title": "Chung",

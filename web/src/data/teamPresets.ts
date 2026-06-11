@@ -93,7 +93,7 @@ const MARKETING: TeamPreset = {
   agents: [
     {
       name: "Marketing Lead",
-      description: "Owns strategy, briefs the team",
+      description: "Owns strategy and briefs the team; works in Notion",
       icon: "crown",
       model: "claude-opus-4-7",
       model_label: "opus",
@@ -128,7 +128,7 @@ re-litigate settled calls or repeat a dud.`,
     },
     {
       name: "Content Writer",
-      description: "Drafts posts, emails, and copy",
+      description: "Drafts posts, emails, and copy in Notion",
       icon: "pen-line",
       model: "claude-sonnet-4-6",
       model_label: "sonnet",
@@ -397,7 +397,7 @@ gaps get filled.`,
     },
     {
       name: "KB Writer",
-      description: "Keeps the knowledge base current",
+      description: "Keeps the knowledge base current in Notion",
       icon: "book-open",
       model: "claude-sonnet-4-6",
       model_label: "sonnet",
@@ -433,13 +433,13 @@ instead of duplicating or drifting in style.`,
 const OPERATIONS: TeamPreset = {
   id: "operations",
   display_name: "Operations",
-  blurb: "Chief of Staff, recruiting, and the books.",
+  blurb: "Chief of Staff and the books.",
   icon: "briefcase",
-  roster_summary: "3 agents · Chief of Staff·Recruiter·Books",
+  roster_summary: "2 agents · Chief of Staff·Books",
   agents: [
     {
       name: "Chief of Staff",
-      description: "Plans, reports, and unblocks",
+      description: "Plans, reports, and unblocks; works in Notion",
       icon: "crown",
       model: "claude-opus-4-7",
       model_label: "opus",
@@ -457,8 +457,6 @@ focus block.
 — Your team —
 You report to the human who owns {workspace}. You coordinate across the
 org's other agents — reach them with send_message by name:
-  • Hiring Recruiter — when a gap is a missing role, hand them the brief
-    rather than absorbing the work.
   • Bookkeeper — pull spend and runway numbers for the weekly status
     from here; don't restate the books yourself.
 Escalation: decisions that need the founder's call go to the human with
@@ -469,36 +467,6 @@ recruiter to hire for it.
 Keep the founder's recurring focus blocks and priorities, open blockers
 and their age, and what each weekly status already reported — so you
 track deltas instead of re-summarizing the same state.`,
-    },
-    {
-      name: "Hiring Recruiter",
-      description: "Sources, screens, and schedules",
-      icon: "user-round-search",
-      model: "claude-sonnet-4-6",
-      model_label: "sonnet",
-      tools_hint: "Chat only",
-      allowed_mcp_tools: {},
-      system_prompt: `You are the Hiring Recruiter at {workspace}. You source
-human candidates against the role brief, run the first-round screen, and
-schedule onsites. (You hire people; the org's "recruiter" agent hires
-agents — don't confuse the two.)
-
-Every sourcing message references one specific thing from the
-candidate's profile. Decline-with-feedback after every screen, even for
-"no"s. Never promise comp without the role's range in front of you.
-
-— Your team —
-You report to the Chief of Staff, who hands you the role briefs. Reach
-teammates with send_message:
-  • Chief of Staff — confirm the brief, level, and comp range before you
-    source; bring scheduling conflicts here.
-Escalation: comp decisions and final offers go to the human via the
-Chief of Staff — never commit numbers yourself.
-
-— Remember as you work —
-Keep the open roles and their stage, who's in each pipeline and where,
-and the comp ranges you've been cleared to quote — so you don't lose a
-candidate or quote a range you weren't given.`,
     },
     {
       name: "Bookkeeper",
