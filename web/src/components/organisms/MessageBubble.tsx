@@ -5,7 +5,6 @@ import { Monogram } from "../atoms/Monogram";
 import { Markdown } from "../molecules/Markdown";
 import { ReplyPill } from "../molecules/ReplyPill";
 import { cn } from "../../lib/utils";
-import { renderMentions } from "../../lib/mentions";
 import { clockTime } from "../../lib/time";
 import type { AgentRef } from "../../types/api";
 
@@ -71,14 +70,7 @@ export const MessageBubble = memo(function MessageBubble({
         </header>
 
         <div className="mt-1 space-y-1.5">
-          {text &&
-            (isHuman ? (
-              <p className="font-[var(--font-sans)] text-[14px] leading-[1.55] text-[var(--color-ink)] whitespace-pre-wrap">
-                {renderMentions(text)}
-              </p>
-            ) : (
-              <Markdown text={text} />
-            ))}
+          {text && <Markdown text={text} />}
 
           {replyPill && (
             <ReplyPill

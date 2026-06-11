@@ -31,7 +31,6 @@ import { useResizableWidth } from "../../hooks/useResizableWidth";
 import type { Mentionable, ThreadSummary, ToolCallEntry } from "../../types/api";
 import type { Bubble, RootMessage } from "../../lib/foldHistory";
 import { DEMO_REPLY_META, type DemoReplyMeta } from "../../lib/demo";
-import { renderMentions } from "../../lib/mentions";
 
 const THREAD_PANEL_WIDTH_KEY = "patom.threadPanel.width";
 const THREAD_PANEL_DEFAULT_WIDTH = 360;
@@ -276,9 +275,11 @@ export function ThreadPanel({
                     {clockTime(rootMessage.ts)}
                   </span>
                 </div>
-                <p className="mt-0.5 text-[13.5px] leading-[1.5] text-[var(--color-ink)]">
-                  {renderMentions(rootMessage.text, roster.map((m) => m.name))}
-                </p>
+                <Markdown
+                  text={rootMessage.text}
+                  className="mt-0.5 text-[13.5px]"
+                  mentionNames={roster.map((m) => m.name)}
+                />
               </div>
             </article>
           )}
@@ -394,6 +395,54 @@ export function ThreadPanel({
   );
 }
 
+/** Shared layout for every thread reply: an avatar gutter plus a `flex-1`
+ *  content column holding the header (name · badge · time) and whatever the
+ *  caller renders as children. Both the human and agent cards compose this, so
+ *  their bodies always align under the name — the single source of truth for
+ *  reply indentation. The `if` for which card to render stays at the call site;
+ *  this shell carries no human/agent flag. */
+function ReplyShell({
+  requestId,
+  focused,
+  avatar,
+  name,
+  badge,
+  ts,
+  children,
+}: {
+  requestId?: string | null;
+  focused?: boolean;
+  avatar: ReactNode;
+  name: string;
+  badge?: ReactNode;
+  ts: string;
+  children: ReactNode;
+}) {
+  return (
+    <article
+      data-request-id={requestId}
+      className={cn(
+        "flex gap-3 border-b border-[var(--color-line)] px-5 py-4 transition-colors",
+        focused && "bg-[var(--color-moss-tint)]",
+      )}
+    >
+      {avatar}
+      <div className="min-w-0 flex-1">
+        <header className="flex items-baseline gap-2">
+          <span className="font-[var(--font-display)] text-[13px] font-bold text-[var(--color-ink)]">
+            {name}
+          </span>
+          {badge}
+          <span className="ml-auto font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
+            {clockTime(ts)}
+          </span>
+        </header>
+        {children}
+      </div>
+    </article>
+  );
+}
+
 function HumanReplyCard({
   bubble,
   roster,
@@ -406,34 +455,27 @@ function HumanReplyCard({
   const name = bubble.human_name ?? "you";
   const rosterNames = roster.map((m) => m.name);
   return (
-    <article
-      data-request-id={bubble.request_id}
-      className={cn(
-        "flex gap-3 border-b border-[var(--color-line)] px-5 py-4 transition-colors",
-        focused && "bg-[var(--color-moss-tint)]",
-      )}
+    <ReplyShell
+      requestId={bubble.request_id}
+      focused={focused}
+      name={name}
+      ts={bubble.ts}
+      avatar={
+        <Monogram
+          name={name}
+          id={bubble.human_id ?? name}
+          size={22}
+          tone="user"
+          avatarUrl={bubble.human_avatar_url}
+        />
+      }
     >
-      <Monogram
-        name={name}
-        id={bubble.human_id ?? name}
-        size={22}
-        tone="user"
-        avatarUrl={bubble.human_avatar_url}
+      <Markdown
+        text={bubble.text}
+        className="mt-0.5 text-[13.5px]"
+        mentionNames={rosterNames}
       />
-      <div className="min-w-0 flex-1">
-        <header className="flex items-baseline gap-2">
-          <span className="font-[var(--font-display)] text-[13px] font-bold text-[var(--color-ink)]">
-            {name}
-          </span>
-          <span className="ml-auto font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
-            {clockTime(bubble.ts)}
-          </span>
-        </header>
-        <p className="mt-0.5 text-[13.5px] leading-[1.5] text-[var(--color-ink)]">
-          {renderMentions(bubble.text, rosterNames)}
-        </p>
-      </div>
-    </article>
+    </ReplyShell>
   );
 }
 
@@ -519,14 +561,12 @@ function AgentReplyCard({
   const agentMonogramId = agent?.id ?? bubble.agent_id ?? "agent";
 
   return (
-    <article
-      data-request-id={bubble.request_id}
-      className={cn(
-        "border-b border-[var(--color-line)] px-5 py-4 transition-colors",
-        focused && "bg-[var(--color-moss-tint)]",
-      )}
-    >
-      <header className="flex items-center gap-2">
+    <ReplyShell
+      requestId={bubble.request_id}
+      focused={focused}
+      name={agentName}
+      ts={bubble.ts}
+      avatar={
         <Monogram
           name={agentName}
           id={agentMonogramId}
@@ -534,20 +574,20 @@ function AgentReplyCard({
           tone="moss"
           avatarUrl={agent?.avatar_url ?? null}
         />
-        <span className="font-[var(--font-display)] text-[13px] font-bold text-[var(--color-ink)]">
-          {agentName}
-        </span>
+      }
+      badge={
         <span className="border border-[var(--color-moss)] px-1 font-[var(--font-mono)] text-[9.5px] font-bold uppercase tracking-[0.14em] text-[var(--color-moss)]">
           AGENT
         </span>
-        <span className="ml-auto font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
-          {clockTime(bubble.ts)}
-        </span>
-      </header>
-
+      }
+    >
       <div className="mt-1.5 text-[13px] leading-[1.5] text-[var(--color-ink)]">
         {bubble.text ? (
-          <Markdown text={bubble.text} className="text-[13px]" />
+          <Markdown
+            text={bubble.text}
+            className="text-[13px]"
+            mentionNames={roster.map((m) => m.name)}
+          />
         ) : isLive && !bubble.error ? (
           <ThinkingIndicator />
         ) : null}
@@ -631,7 +671,7 @@ function AgentReplyCard({
           )}
         </div>
       )}
-    </article>
+    </ReplyShell>
   );
 }
 
