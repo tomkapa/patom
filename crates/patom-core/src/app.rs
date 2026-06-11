@@ -19,8 +19,8 @@ use tracing::{info, warn};
 use crate::agent_core::{Agent, AgentBuilder};
 use crate::agents::{
     AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL, AgentDescription, AgentFactory, AgentName,
-    AgentPromptCache, AgentSeed, AgentStoreError, AgentSystemPrompt, CachedAgents, PgAgentStore,
-    SharedAgentStore, SharedAgents,
+    AgentPromptCache, AgentSeed, AgentStoreError, AgentSystemPrompt, AvatarIndex, CachedAgents,
+    PgAgentStore, SharedAgentStore, SharedAgents, preset_agent_avatar_url,
 };
 use crate::assets::{S3AssetStore, SharedAssetStore};
 use crate::auth::{
@@ -85,7 +85,7 @@ const PG_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 /// working regardless of the org's chosen language. Public because the
 /// Slack bridge routes an un-@-tagged `@Patom` mention to this preset
 /// (there is no "default agent" at runtime any more).
-pub const RECRUITER_AGENT_NAME: &str = "recruiter";
+pub const RECRUITER_AGENT_NAME: &str = "Recruiter";
 
 // Note: every prompt body — the `<core>` family, the recruiter's role +
 // description in each supported language — lives in
@@ -553,7 +553,13 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.agents.clone(),
             deps.embedding_provider,
         )))
-        .with(Arc::new(CreateAgentTool::new(deps.agents.clone())))
+        .with(Arc::new(CreateAgentTool::new(
+            deps.agents.clone(),
+            deps.settings
+                .object_storage
+                .as_ref()
+                .map(|s| Arc::from(s.public_host.as_str())),
+        )))
         .with(Arc::new(SearchToolsTool::new(
             deps.mcp_catalog.clone(),
             deps.mcp_store.clone(),
@@ -589,12 +595,19 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
 /// the Vietnamese-translated seed. Fails only if the registry bodies
 /// suddenly violate a newtype invariant (a startup-time guarantee in
 /// practice since `Prompts::load` panics on malformed input).
-pub fn recruiter_seed(prompts: &Prompts, language: Language) -> Result<AgentSeed, AppError> {
+pub fn recruiter_seed(
+    prompts: &Prompts,
+    language: Language,
+    asset_host: Option<&str>,
+) -> Result<AgentSeed, AppError> {
     let set = prompts.set(language);
     Ok(AgentSeed {
         name: AgentName::try_from(RECRUITER_AGENT_NAME)?,
         system_prompt: AgentSystemPrompt::try_from(set.default_agent_role.as_ref())?,
         description: AgentDescription::try_from(set.default_agent_description.as_ref())?,
+        // The recruiter always takes `agent-1.png`. `None` when the asset
+        // CDN origin isn't configured (FE falls back to the monogram).
+        avatar_url: asset_host.map(|host| preset_agent_avatar_url(host, AvatarIndex::RECRUITER)),
     })
 }
 

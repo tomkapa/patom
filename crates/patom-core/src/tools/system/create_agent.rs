@@ -26,9 +26,9 @@ use tracing::{error, info};
 
 use crate::agents::{
     AGENT_DESCRIPTION_MAX_LEN, AGENT_NAME_MAX_LEN, AGENT_SYSTEM_PROMPT_MAX_LEN, AgentDescription,
-    AgentId, AgentName, AgentStoreError, AgentSystemPrompt, AllowedMcpTools,
+    AgentId, AgentName, AgentStoreError, AgentSystemPrompt, AllowedMcpTools, AvatarIndex,
     MAX_ALLOWED_MCP_CATALOGS_PER_AGENT, MAX_ALLOWED_MCP_TOOLS_PER_CATALOG_PER_AGENT, NewAgent,
-    SharedAgentStore,
+    SharedAgentStore, preset_agent_avatar_url,
 };
 use crate::mcp::{MCP_CATALOG_ID_MAX_LEN, MCP_TOOL_REMOTE_NAME_MAX_LEN};
 use crate::tools::{RequestKindModes, Tool, ToolCallContext, ToolError};
@@ -84,6 +84,11 @@ pub struct CreateAgentTool {
     description: &'static str,
     input_schema: Arc<Value>,
     agents: SharedAgentStore,
+    /// Public asset CDN origin (`PATOM_S3_PUBLIC_HOST`, no trailing slash),
+    /// or `None` when object storage isn't configured. A freshly-minted hire
+    /// gets a random bundled avatar built off this origin; `None` leaves the
+    /// hire avatar-less (FE renders the monogram).
+    asset_host: Option<Arc<str>>,
 }
 
 impl std::fmt::Debug for CreateAgentTool {
@@ -94,7 +99,7 @@ impl std::fmt::Debug for CreateAgentTool {
 
 impl CreateAgentTool {
     #[must_use]
-    pub fn new(agents: SharedAgentStore) -> Self {
+    pub fn new(agents: SharedAgentStore, asset_host: Option<Arc<str>>) -> Self {
         let name = ToolName::try_from(TOOL_NAME).expect("invariant: create_agent valid name");
         let input_schema = Arc::new(json!({
             "type": "object",
@@ -148,6 +153,7 @@ impl CreateAgentTool {
             description: TOOL_DESCRIPTION,
             input_schema,
             agents,
+            asset_host,
         }
     }
 
@@ -202,9 +208,14 @@ impl CreateAgentTool {
             description,
             allowed_mcp_tools,
             model: None,
-            // Recruiter-minted hires start with no avatar; the operator
-            // sets one later via `PUT /agents/{id}` (issue #43).
-            avatar_url: None,
+            // A recruiter-minted hire gets a random bundled avatar so the
+            // roster looks complete out of the box; the operator can still
+            // override it via `PUT /agents/{id}`. `None` when object storage
+            // isn't configured (FE renders the name monogram).
+            avatar_url: self
+                .asset_host
+                .as_ref()
+                .map(|host| preset_agent_avatar_url(host, AvatarIndex::random())),
             edited_by: Some(ctx.acting_user_id),
         };
 

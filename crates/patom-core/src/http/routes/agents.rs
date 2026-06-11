@@ -32,7 +32,7 @@ use crate::agents::prompt_versions::{
 };
 use crate::agents::{
     AgentDescription, AgentId, AgentName, AgentRecord, AgentSystemPrompt, AgentUpdate,
-    AllowedMcpTools, NewAgent,
+    AllowedMcpTools, AvatarIndex, NewAgent, preset_agent_avatar_url,
 };
 use crate::auth::{
     AuthError, OrgId, Principal, UserId, VisibilityTable, run_privileged, visible_to,
@@ -145,9 +145,10 @@ struct CreateAgentRequest {
     /// callers do not send it separately.
     #[serde(default)]
     model: Option<Model>,
-    /// Optional avatar URL for the new agent. Omit (or `null`) for no
-    /// avatar. Parsed through the shared [`AvatarUrl`] newtype at the
-    /// handler, so a malformed/oversize URL rejects with 400.
+    /// Optional avatar URL for the new agent. Parsed through the shared
+    /// [`AvatarUrl`] newtype at the handler, so a malformed/oversize URL
+    /// rejects with 400. When omitted (or `null`) the handler assigns a
+    /// random bundled default avatar instead (see the handler).
     #[serde(default)]
     avatar_url: Option<String>,
 }
@@ -208,11 +209,18 @@ async fn create_agent(
     let system_prompt =
         AgentSystemPrompt::try_from(payload.system_prompt).map_err(HttpError::Parse)?;
     let description = AgentDescription::try_from(payload.description).map_err(HttpError::Parse)?;
-    let avatar_url = payload
-        .avatar_url
-        .map(AvatarUrl::try_from)
-        .transpose()
-        .map_err(HttpError::Parse)?;
+    // Default avatar: an explicit URL is kept as-is; otherwise the agent
+    // gets a random bundled default (`{asset_origin}/agents/agent-{n}.png`,
+    // `n` in `1..=PRESET_AVATAR_COUNT`). The asset origin is `None` when
+    // object storage isn't configured, so the default degrades to `None` and
+    // the FE renders the name monogram.
+    let avatar_url = match payload.avatar_url {
+        Some(raw) => Some(AvatarUrl::try_from(raw).map_err(HttpError::Parse)?),
+        None => state
+            .assets
+            .as_ref()
+            .map(|s| preset_agent_avatar_url(s.public_host(), AvatarIndex::random())),
+    };
     // Entitlement gate (#134): refuse creation past the org's agent cap.
     // Count tenant-scoped (RLS limits it to the caller's org, mirroring
     // `list_agents`) then ask the policy. Inert under the OSS default
