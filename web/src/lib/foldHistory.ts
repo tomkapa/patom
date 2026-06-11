@@ -15,13 +15,20 @@ import type {
 const SEND_MESSAGE = "send_message";
 const WIRE_MCP_TOOL_NAME = "request_user_wire_mcp";
 
-type ReceiverInput =
-  | { kind: "human"; user_id: string }
-  | { kind: "agent"; agent_id: string };
+// The `send_message` receiver exactly as the model emits it on the tool call
+// — mirrors the backend `SendMessageReceiver` enum (send_message.rs). The
+// canonical form is a colleague id; `agent`-by-name and `human` are sugar.
+// (This is NOT the resolved wire `Participant` that posted rows carry — the
+// agent's bubble is built from its tool_use row, which only has this raw
+// input, so the recipient name is resolved here in the fold.)
+type ToolReceiver =
+  | { kind: "colleague"; id: string }
+  | { kind: "agent"; name: string }
+  | { kind: "human" };
 
 type SendMessageInput = {
   content: string;
-  receiver?: ReceiverInput;
+  receiver?: ToolReceiver;
   context_summary?: string;
 };
 
@@ -128,7 +135,31 @@ export function foldHistory(
   // reply bubble. The result lands in a later (system) row than the call,
   // so collect the failed call ids in a pre-pass before the fold.
   const failedCallIds = new Set<string>();
+  // colleague_id -> display name, used to resolve an agent's canonical
+  // `{kind:"colleague", id}` send_message receiver to a name. Primary source is
+  // the roster, which carries every *currently addressable* colleague — so the
+  // tag resolves even on the first message, before that colleague has posted in
+  // this thread.
+  const colleagueNames = new Map<string, string>();
+  for (const m of roster) {
+    if (m.colleague_id) colleagueNames.set(m.colleague_id, m.name);
+  }
+  // Fallback for a colleague that appears in this thread's history but is no
+  // longer in the roster (e.g. a removed channel member or a deleted agent):
+  // harvest the name from the `Participant` each row carries, so an old message
+  // addressed to them still resolves. A colleague in neither source stays
+  // absent — its tag is omitted rather than guessed wrong.
+  const noteColleague = (p: Participant | null, humanName: string | null) => {
+    if (!p || p.kind === "system") return;
+    const name =
+      p.kind === "agent"
+        ? (agentsById.get(p.agent_id)?.name ?? null)
+        : (humanName ?? humansById.get(p.user_id)?.name ?? null);
+    if (name) colleagueNames.set(p.colleague_id, name);
+  };
   for (const m of history) {
+    noteColleague(m.sender, m.sender_display_name);
+    noteColleague(m.receiver, null);
     for (const tr of decodeBody(m.body).toolResults) {
       if (tr.is_error) failedCallIds.add(tr.call_id);
     }
@@ -204,7 +235,12 @@ export function foldHistory(
           const tools = p.tool_calls;
           for (const tc of deliveredCalls) {
             const input = (tc.input ?? {}) as SendMessageInput;
-            const recv = input.receiver ?? null;
+            // The thread root prompter resolves the `{kind:"human"}` sugar.
+            const recvName = toolReceiverName(
+              input.receiver,
+              rootMessage?.name ?? null,
+              colleagueNames,
+            );
             const a = aid ? (agentsById.get(aid) ?? null) : null;
             const bubble: Bubble = {
               kind: "agent",
@@ -217,7 +253,7 @@ export function foldHistory(
               human_id: null,
               human_avatar_url: null,
               ts: m.created_at,
-              text: prefixWithReceiver(input.content ?? "", recv, agentsById, humansById),
+              text: prefixName(input.content ?? "", recvName),
               reasoning,
               tool_calls: tools,
               wire_requests: [],
@@ -270,15 +306,12 @@ export function foldHistory(
           id: authorId,
           avatar_url: authorAvatar,
           ts: m.created_at,
-          text: prefixWithReceiver(
+          text: prefixName(
             decoded.text,
-            receiverFrom(m.receiver),
-            agentsById,
-            humansById,
+            participantName(m.receiver, agentsById, humansById),
           ),
         };
       } else if (decoded.text) {
-        const recv = receiverFrom(m.receiver);
         bubbles.push({
           kind: "human",
           key: `h:${m.seq}:user`,
@@ -290,7 +323,10 @@ export function foldHistory(
           human_id: authorId,
           human_avatar_url: authorAvatar,
           ts: m.created_at,
-          text: prefixWithReceiver(decoded.text, recv, agentsById, humansById),
+          text: prefixName(
+            decoded.text,
+            participantName(m.receiver, agentsById, humansById),
+          ),
           reasoning: "",
           tool_calls: [],
           wire_requests: [],
@@ -345,11 +381,31 @@ function parseWireMcpOutput(output: string): McpWireRequest | null {
   };
 }
 
-function receiverFrom(p: Participant | null): ReceiverInput | null {
-  if (!p) return null;
-  if (p.kind === "agent") return { kind: "agent", agent_id: p.agent_id };
-  if (p.kind === "human") return { kind: "human", user_id: p.user_id };
-  return null;
+/** Display name of a resolved wire `Participant` — the receiver a *human*
+ *  row carries. `null` for `system` or an unknown satellite. */
+function participantName(
+  p: Participant | null,
+  agentsById: ReadonlyMap<string, Mentionable>,
+  humansById: ReadonlyMap<string, Mentionable>,
+): string | null {
+  if (!p || p.kind === "system") return null;
+  return p.kind === "agent"
+    ? (agentsById.get(p.agent_id)?.name ?? null)
+    : (humansById.get(p.user_id)?.name ?? null);
+}
+
+/** Display name of a raw `send_message` receiver — what an *agent* row carries
+ *  on its tool call. `agent` gives the name outright, `human` is the thread's
+ *  root prompter, `colleague` resolves through the harvested name index. */
+function toolReceiverName(
+  r: ToolReceiver | null | undefined,
+  rootHumanName: string | null,
+  colleagueNames: ReadonlyMap<string, string>,
+): string | null {
+  if (!r) return null;
+  if (r.kind === "agent") return r.name;
+  if (r.kind === "human") return rootHumanName;
+  return colleagueNames.get(r.id) ?? null;
 }
 
 function attachResults(
@@ -367,17 +423,10 @@ function attachResults(
   }
 }
 
-function prefixWithReceiver(
-  content: string,
-  receiver: ReceiverInput | null,
-  agentsById: ReadonlyMap<string, Mentionable>,
-  humansById: ReadonlyMap<string, Mentionable>,
-): string {
-  if (!receiver) return content;
-  const name =
-    receiver.kind === "agent"
-      ? agentsById.get(receiver.agent_id)?.name
-      : humansById.get(receiver.user_id)?.name;
+/** Prepend an `@Name` mention so the reader sees who a message addresses —
+ *  mirrors how a human @-mentions to invoke an agent. No-op when the name is
+ *  unknown or the content already opens with it. */
+function prefixName(content: string, name: string | null): string {
   if (!name || content.startsWith(`@${name}`)) return content;
   return `@${name} ${content}`;
 }

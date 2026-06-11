@@ -582,6 +582,17 @@ async fn membership_flips_visibility(pool: PgPool) {
             "member row carries a display name: {row:?}"
         );
         assert!(row.get("avatar_url").is_some(), "avatar key present");
+        // The colleague id lets the FE resolve an agent's `{kind:"colleague",
+        // id}` send_message receiver to this human's name on the very first
+        // message, before they have replied in the thread.
+        let cid = row["colleague_id"]
+            .as_str()
+            .expect("member row carries colleague_id");
+        assert_ne!(
+            cid,
+            row["user_id"].as_str().expect("user_id"),
+            "colleague_id is the colleagues PK, not the user id",
+        );
     }
 
     // Creator removes `other` → visibility revoked.

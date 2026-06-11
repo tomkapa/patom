@@ -5,17 +5,17 @@
 import type { Mentionable, ThreadMessage, ThreadSummary } from "../types/api";
 
 export const DEMO_AGENTS: Mentionable[] = [
-  { kind: "agent", id: "a-orion", name: "orion-research-v3", avatar_url: null },
-  { kind: "agent", id: "a-helios", name: "helios-deploy", avatar_url: null },
-  { kind: "agent", id: "a-atlas", name: "atlas-weather", avatar_url: null },
-  { kind: "agent", id: "a-vega", name: "vega-incident-bot", avatar_url: null },
+  { kind: "agent", id: "a-orion", name: "orion-research-v3", avatar_url: null, colleague_id: "col-a-orion" },
+  { kind: "agent", id: "a-helios", name: "helios-deploy", avatar_url: null, colleague_id: "col-a-helios" },
+  { kind: "agent", id: "a-atlas", name: "atlas-weather", avatar_url: null, colleague_id: "col-a-atlas" },
+  { kind: "agent", id: "a-vega", name: "vega-incident-bot", avatar_url: null, colleague_id: "col-a-vega" },
 ];
 
 /** Composer/mention roster in demo mode: the demo humans + the agents —
  *  one flat list, exactly like the live wire. */
 export const DEMO_ROSTER: Mentionable[] = [
-  { kind: "human", id: "user", name: "Tom Tran", avatar_url: null },
-  { kind: "human", id: "maya", name: "Maya Chen", avatar_url: null },
+  { kind: "human", id: "user", name: "Tom Tran", avatar_url: null, colleague_id: "col-user" },
+  { kind: "human", id: "maya", name: "Maya Chen", avatar_url: null, colleague_id: "col-maya" },
   ...DEMO_AGENTS,
 ];
 
