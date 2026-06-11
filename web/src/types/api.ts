@@ -235,6 +235,12 @@ export type Agent = {
    *  {@link Api.uploadAgentAvatar} then persisted on the next PUT. Mirrors
    *  `src/http/routes/agents.rs::AgentResponse.avatar_url`. */
   avatar_url?: string | null;
+  /** The agent's `colleagues` row id (addressing satellite), distinct from
+   *  `id`. Present on the list endpoint (the roster source); `null` on
+   *  create/update echoes. Lets the chat resolve a `{kind:"colleague", id}`
+   *  send_message receiver to this agent's name. Mirrors
+   *  `src/http/routes/agents.rs::AgentResponse.colleague_id`. */
+  colleague_id?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -312,6 +318,11 @@ export type ChannelMember = {
    *  render humans without a second endpoint. */
   display_name: string | null;
   avatar_url: string | null;
+  /** The member's `colleagues` row id (addressing satellite), distinct from
+   *  `user_id`. Lets the chat resolve a `{kind:"colleague", id}` send_message
+   *  receiver to this human's name. Mirrors
+   *  `src/http/routes/channels.rs::MemberResponse.colleague_id`. */
+  colleague_id: string | null;
 };
 
 /** One @-taggable participant — human or agent, treated identically by the
@@ -322,6 +333,11 @@ export type Mentionable = {
   id: string;
   name: string;
   avatar_url: string | null;
+  /** The participant's `colleagues` row id (addressing satellite), distinct
+   *  from `id`. Lets the chat resolve an agent's `{kind:"colleague", id}`
+   *  send_message receiver to a name even before that colleague has posted in
+   *  the thread. `null` when the source row didn't carry it. */
+  colleague_id: string | null;
 };
 
 /** One wire-side tag for `POST /prompts` — `{kind, id}` with the satellite

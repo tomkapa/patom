@@ -5,7 +5,13 @@ import type { Agent, ChannelMember, Mentionable, TagRef } from "../types/api";
 
 /** Project an agent onto the shared mentionable shape. */
 function agentMentionable(a: Agent): Mentionable {
-  return { kind: "agent", id: a.id, name: a.name, avatar_url: a.avatar_url ?? null };
+  return {
+    kind: "agent",
+    id: a.id,
+    name: a.name,
+    avatar_url: a.avatar_url ?? null,
+    colleague_id: a.colleague_id ?? null,
+  };
 }
 
 /** Project a channel member (profile-enriched human) onto the shared shape. */
@@ -15,6 +21,7 @@ function humanMentionable(m: ChannelMember): Mentionable {
     id: m.user_id,
     name: m.display_name ?? "member",
     avatar_url: m.avatar_url,
+    colleague_id: m.colleague_id,
   };
 }
 

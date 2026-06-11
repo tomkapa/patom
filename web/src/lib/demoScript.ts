@@ -9,17 +9,17 @@ import type { Channel, Mentionable, ThreadSummary } from "../types/api";
 import type { Beat, DemoLocation, DemoSeed } from "./demoReducer";
 
 // ── Cast ────────────────────────────────────────────────────────────────────
-const TOM: Mentionable = { kind: "human", id: "tom", name: "Tom", avatar_url: null };
-const MAYA: Mentionable = { kind: "human", id: "maya", name: "Maya", avatar_url: null };
-const DANI: Mentionable = { kind: "human", id: "dani", name: "Dani", avatar_url: null };
+const TOM: Mentionable = { kind: "human", id: "tom", name: "Tom", avatar_url: null, colleague_id: "col-tom" };
+const MAYA: Mentionable = { kind: "human", id: "maya", name: "Maya", avatar_url: null, colleague_id: "col-maya" };
+const DANI: Mentionable = { kind: "human", id: "dani", name: "Dani", avatar_url: null, colleague_id: "col-dani" };
 
-const RECRUITER: Mentionable = { kind: "agent", id: "recruiter", name: "recruiter", avatar_url: null };
-const MLEAD: Mentionable = { kind: "agent", id: "marketing-lead", name: "marketing-lead", avatar_url: null };
-const CONTENT: Mentionable = { kind: "agent", id: "content-writer", name: "content-writer", avatar_url: null };
-const SEO: Mentionable = { kind: "agent", id: "seo-analyst", name: "seo-analyst", avatar_url: null };
-const SOCIAL: Mentionable = { kind: "agent", id: "social-manager", name: "social-manager", avatar_url: null };
+const RECRUITER: Mentionable = { kind: "agent", id: "recruiter", name: "recruiter", avatar_url: null, colleague_id: "col-recruiter" };
+const MLEAD: Mentionable = { kind: "agent", id: "marketing-lead", name: "marketing-lead", avatar_url: null, colleague_id: "col-marketing-lead" };
+const CONTENT: Mentionable = { kind: "agent", id: "content-writer", name: "content-writer", avatar_url: null, colleague_id: "col-content-writer" };
+const SEO: Mentionable = { kind: "agent", id: "seo-analyst", name: "seo-analyst", avatar_url: null, colleague_id: "col-seo-analyst" };
+const SOCIAL: Mentionable = { kind: "agent", id: "social-manager", name: "social-manager", avatar_url: null, colleague_id: "col-social-manager" };
 /** The Act-1 hire — joins the roster mid-playback via a `hire` beat. */
-const LIFECYCLE: Mentionable = { kind: "agent", id: "lifecycle-marketer", name: "lifecycle-marketer", avatar_url: null };
+const LIFECYCLE: Mentionable = { kind: "agent", id: "lifecycle-marketer", name: "lifecycle-marketer", avatar_url: null, colleague_id: "col-lifecycle-marketer" };
 
 // ── Locations ───────────────────────────────────────────────────────────────
 const CH_LAUNCH = "c-launch";

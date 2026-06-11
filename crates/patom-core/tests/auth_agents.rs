@@ -272,6 +272,49 @@ async fn cross_org_isolation_filters_to_caller_org(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn list_includes_colleague_id(pool: PgPool) {
+    // The roster row carries the agent's colleague id (the `colleagues` PK,
+    // distinct from the agent id) so the FE can resolve an agent's
+    // `{kind:"colleague", id}` send_message receiver to a name — see
+    // web/src/lib/foldHistory.ts. Without it the recipient tag is missing on
+    // the first message to an agent that has not yet posted in the thread.
+    let h = AuthAgentsHarness::new(&pool).await;
+    h.seed_agent(h.primary.org_id, "alpha").await;
+
+    let app = router(h.state.clone());
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/agents")
+                .header("cookie", h.primary.cookie_header())
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let row = &json.as_array().expect("array")[0];
+
+    let agent_id = row["id"].as_str().expect("agent id");
+    let colleague_id = row["colleague_id"]
+        .as_str()
+        .expect("roster row carries colleague_id");
+    assert_ne!(
+        colleague_id, agent_id,
+        "colleague_id is the colleagues PK, not the agent id",
+    );
+    assert!(
+        uuid::Uuid::parse_str(colleague_id).is_ok(),
+        "colleague_id is a uuid: {colleague_id}",
+    );
+}
+
+#[sqlx::test]
 async fn list_scoped_to_active_org_not_all_memberships(pool: PgPool) {
     // A single user who belongs to *two* orgs must see only the agents
     // of the org their session is active in — RLS alone (membership in

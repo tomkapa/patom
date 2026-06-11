@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::{AuthError, OrgId, Principal, UserId, begin_as, run_privileged};
 use crate::channels::{CHANNEL_LIST_FETCH_MAX, ChannelId, ChannelName, MAX_CHANNELS_PER_ORG};
+use crate::colleagues::ColleagueId;
 
 use super::super::error::HttpError;
 use super::super::state::AppState;
@@ -244,6 +245,7 @@ async fn update_channel(
 struct MemberRow {
     user_id: UserId,
     added_at: DateTime<Utc>,
+    colleague_id: Option<ColleagueId>,
 }
 
 /// One channel-roster row, enriched with the member's profile so the FE can
@@ -256,6 +258,11 @@ struct MemberResponse {
     added_at: DateTime<Utc>,
     display_name: Option<String>,
     avatar_url: Option<String>,
+    /// The member's `colleagues` row (the addressing satellite), distinct from
+    /// `user_id`. Lets the FE map an agent's `{kind:"colleague", id}`
+    /// send_message receiver to this human's name when rendering who a message
+    /// addresses (web/src/lib/foldHistory.ts).
+    colleague_id: Option<ColleagueId>,
 }
 
 async fn list_members(
@@ -271,9 +278,14 @@ async fn list_members(
     if !caller_is_member(&mut tx, id, principal.user_id, org).await? {
         return Err(HttpError::NotFound);
     }
+    // LEFT JOIN colleagues so each member carries its addressing satellite id.
+    // LEFT (not INNER) keeps a member listed even if its colleague row is
+    // somehow absent — `colleague_id` just comes back null.
     let members = sqlx::query_as::<_, MemberRow>(
-        "SELECT user_id, added_at FROM channel_members \
-         WHERE channel_id = $1 AND org_id = $2 ORDER BY added_at ASC LIMIT $3",
+        "SELECT cm.user_id, cm.added_at, c.id AS colleague_id \
+         FROM channel_members cm \
+         LEFT JOIN colleagues c ON c.user_id = cm.user_id AND c.org_id = cm.org_id \
+         WHERE cm.channel_id = $1 AND cm.org_id = $2 ORDER BY cm.added_at ASC LIMIT $3",
     )
     .bind(id)
     .bind(org)
@@ -295,6 +307,7 @@ async fn list_members(
                 added_at: m.added_at,
                 display_name: profile.map(|p| p.name.clone()),
                 avatar_url: profile.and_then(|p| p.avatar_url.clone()),
+                colleague_id: m.colleague_id,
             }
         })
         .collect();

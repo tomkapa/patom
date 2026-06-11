@@ -37,6 +37,7 @@ use crate::agents::{
 use crate::auth::{
     AuthError, OrgId, Principal, UserId, VisibilityTable, run_privileged, visible_to,
 };
+use crate::colleagues::ColleagueId;
 use crate::mcp::McpServerId;
 use crate::provider::{Model, ProviderId};
 use crate::runtime::RequestKind;
@@ -95,6 +96,13 @@ struct AgentResponse {
     /// monogram; Slack uses the default bot avatar). Set via
     /// `POST /uploads/agent-avatar/{id}` then persisted on the next PUT.
     avatar_url: Option<String>,
+    /// The agent's row in `colleagues` (the addressing satellite), distinct
+    /// from `id` (the agent's own key). Lets the FE map a `{kind:"colleague",
+    /// id}` send_message receiver to this agent's name when rendering who a
+    /// message addresses (web/src/lib/foldHistory.ts). Populated on the list /
+    /// single-read paths (the roster source); `null` on create/update echoes,
+    /// where the FE refetches the roster anyway.
+    colleague_id: Option<ColleagueId>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -109,6 +117,9 @@ impl From<AgentRecord> for AgentResponse {
             allowed_mcp_tools: r.allowed_mcp_tools,
             model: r.model.map(Model::as_str),
             avatar_url: r.avatar_url.map(|a| a.as_str().to_owned()),
+            // The record carries no colleague id; create/update echoes leave it
+            // null and the FE rehydrates from the list endpoint.
+            colleague_id: None,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -389,14 +400,19 @@ async fn delete_agent(
 // `agent_prompt_versions` (migration 45). Lives here so the route can
 // run raw SQL inside the principal-scoped tx without going through the
 // store's privileged transaction.
+// LEFT JOIN to `colleagues` so the roster carries each agent's addressing
+// satellite id. LEFT (not INNER) keeps an agent visible even if its colleague
+// row is somehow absent — `colleague_id` just comes back null rather than the
+// agent vanishing from the list.
 const AGENT_LIST_SELECT: &str = "a.id, a.org_id, a.name, apv.system_prompt, a.description, \
-    a.allowed_mcp_tools, a.model, a.avatar_url, a.created_at, a.updated_at \
+    a.allowed_mcp_tools, a.model, a.avatar_url, a.created_at, a.updated_at, c.id AS colleague_id \
     FROM agents a \
     JOIN LATERAL ( \
         SELECT system_prompt FROM agent_prompt_versions \
          WHERE agent_id = a.id \
          ORDER BY version DESC LIMIT 1 \
-    ) apv ON TRUE";
+    ) apv ON TRUE \
+    LEFT JOIN colleagues c ON c.agent_id = a.id AND c.org_id = a.org_id";
 
 #[derive(sqlx::FromRow)]
 struct AgentRowForList {
@@ -408,6 +424,7 @@ struct AgentRowForList {
     allowed_mcp_tools: SqlxJson<AllowedMcpTools>,
     model: Option<Model>,
     avatar_url: Option<String>,
+    colleague_id: Option<ColleagueId>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -429,6 +446,7 @@ impl AgentRowForList {
             avatar_url: self
                 .avatar_url
                 .filter(|s| AvatarUrl::try_from(s.as_str()).is_ok()),
+            colleague_id: self.colleague_id,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
