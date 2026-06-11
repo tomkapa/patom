@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import { useActiveOrg } from "../../hooks/useMe";
-import { useAuthStore } from "../../stores/authStore";
+import { useMe } from "../../hooks/useMe";
 
 const ONBOARDING_PATH = "/onboarding";
 
@@ -21,10 +20,14 @@ const ONBOARDING_PATH = "/onboarding";
  *    keep the user in the wizard until they finish.
  *
  *  When the active org id is set but can't be resolved in `me.orgs`
- *  (rare), do nothing and let children render — mirrors prior behavior. */
+ *  (rare), do nothing and let children render — mirrors prior behavior.
+ *
+ *  Reads `me` from the React Query cache (same data `Protected` already
+ *  confirmed is loaded) rather than the authStore, so the redirect fires
+ *  in the same render cycle — preventing children from mounting briefly
+ *  and making org-scoped API calls that would 401 an org-less session. */
 export function OnboardingGate({ children }: { children: ReactNode }) {
-  const me = useAuthStore((s) => s.me);
-  const activeOrg = useActiveOrg();
+  const { data: me } = useMe();
   const { pathname, search } = useLocation();
   const onWizard = pathname === ONBOARDING_PATH;
   const wantsNew = new URLSearchParams(search).get("new") === "1";
@@ -38,6 +41,8 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
     if (!onWizard) return <Navigate to={ONBOARDING_PATH} replace />;
     return <>{children}</>;
   }
+
+  const activeOrg = me.orgs.find((o) => o.id === me.active_org_id) ?? null;
 
   if (activeOrg) {
     if (!activeOrg.onboarded && !onWizard) {
