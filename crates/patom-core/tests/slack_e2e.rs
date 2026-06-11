@@ -60,7 +60,7 @@ fn send_message_call(content: &str) -> ChatResponse {
         content: vec![AssistantContent::ToolCall(ToolCall {
             id: ToolCallId::try_from("call-1").expect("tool call id"),
             name: ToolName::try_from("send_message").expect("tool name"),
-            input: json!({ "receiver": { "kind": "human" }, "content": content }),
+            input: json!({ "content": content }),
         })],
         stop_reason: StopReason::ToolUse,
         ..Default::default()

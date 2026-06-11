@@ -145,7 +145,6 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
             threads.clone(),
             queue.clone(),
             dag.clone(),
-            agent_store.clone(),
             colleagues.clone(),
             sink.clone(),
         )))

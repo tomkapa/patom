@@ -15,20 +15,8 @@ import type {
 const SEND_MESSAGE = "send_message";
 const WIRE_MCP_TOOL_NAME = "request_user_wire_mcp";
 
-// The `send_message` receiver exactly as the model emits it on the tool call
-// — mirrors the backend `SendMessageReceiver` enum (send_message.rs). The
-// canonical form is a colleague id; `agent`-by-name and `human` are sugar.
-// (This is NOT the resolved wire `Participant` that posted rows carry — the
-// agent's bubble is built from its tool_use row, which only has this raw
-// input, so the recipient name is resolved here in the fold.)
-type ToolReceiver =
-  | { kind: "colleague"; id: string }
-  | { kind: "agent"; name: string }
-  | { kind: "human" };
-
 type SendMessageInput = {
   content: string;
-  receiver?: ToolReceiver;
   context_summary?: string;
 };
 
@@ -135,11 +123,10 @@ export function foldHistory(
   // reply bubble. The result lands in a later (system) row than the call,
   // so collect the failed call ids in a pre-pass before the fold.
   const failedCallIds = new Set<string>();
-  // colleague_id -> display name, used to resolve an agent's canonical
-  // `{kind:"colleague", id}` send_message receiver to a name. Primary source is
-  // the roster, which carries every *currently addressable* colleague — so the
-  // tag resolves even on the first message, before that colleague has posted in
-  // this thread.
+  // colleague_id -> display name, used to resolve a posted row's `receiver`
+  // colleague id to a name for the reply tag. Primary source is the roster,
+  // which carries every *currently addressable* colleague — so the tag resolves
+  // even on the first message, before that colleague has posted in this thread.
   const colleagueNames = new Map<string, string>();
   for (const m of roster) {
     if (m.colleague_id) colleagueNames.set(m.colleague_id, m.name);
@@ -157,11 +144,32 @@ export function foldHistory(
         : (humanName ?? humansById.get(p.user_id)?.name ?? null);
     if (name) colleagueNames.set(p.colleague_id, name);
   };
+  // An agent's reply bubble is built from its `tool_use` row, but the
+  // recipient is only authoritative on the materialized `posted` row the
+  // backend wrote (its resolved `receiver`). Index that receiver's colleague
+  // id by (request_id, text) — the two share a request_id, and the body text
+  // equals the send call's `content` — so the bubble tags from ground truth
+  // rather than guessing from the raw tool input. Absent ⇒ untagged.
+  const recvKey = (reqId: string | null, content: string) =>
+    `${reqId ?? ""} ${content}`;
+  const deliveredReceiver = new Map<string, string>();
   for (const m of history) {
     noteColleague(m.sender, m.sender_display_name);
     noteColleague(m.receiver, null);
-    for (const tr of decodeBody(m.body).toolResults) {
+    const decoded = decodeBody(m.body);
+    for (const tr of decoded.toolResults) {
       if (tr.is_error) failedCallIds.add(tr.call_id);
+    }
+    if (
+      m.kind === "posted" &&
+      m.sender.kind === "agent" &&
+      m.receiver &&
+      m.receiver.kind !== "system"
+    ) {
+      deliveredReceiver.set(
+        recvKey(m.request_id, decoded.text),
+        m.receiver.colleague_id,
+      );
     }
   }
 
@@ -235,12 +243,14 @@ export function foldHistory(
           const tools = p.tool_calls;
           for (const tc of deliveredCalls) {
             const input = (tc.input ?? {}) as SendMessageInput;
-            // The thread root prompter resolves the `{kind:"human"}` sugar.
-            const recvName = toolReceiverName(
-              input.receiver,
-              rootMessage?.name ?? null,
-              colleagueNames,
+            // Tag from the materialized delivery's receiver — the backend's
+            // resolved recipient — never the raw tool input or the thread root.
+            const recvColleague = deliveredReceiver.get(
+              recvKey(m.request_id, input.content ?? ""),
             );
+            const recvName = recvColleague
+              ? (colleagueNames.get(recvColleague) ?? null)
+              : null;
             const a = aid ? (agentsById.get(aid) ?? null) : null;
             const bubble: Bubble = {
               kind: "agent",
@@ -392,20 +402,6 @@ function participantName(
   return p.kind === "agent"
     ? (agentsById.get(p.agent_id)?.name ?? null)
     : (humansById.get(p.user_id)?.name ?? null);
-}
-
-/** Display name of a raw `send_message` receiver — what an *agent* row carries
- *  on its tool call. `agent` gives the name outright, `human` is the thread's
- *  root prompter, `colleague` resolves through the harvested name index. */
-function toolReceiverName(
-  r: ToolReceiver | null | undefined,
-  rootHumanName: string | null,
-  colleagueNames: ReadonlyMap<string, string>,
-): string | null {
-  if (!r) return null;
-  if (r.kind === "agent") return r.name;
-  if (r.kind === "human") return rootHumanName;
-  return colleagueNames.get(r.id) ?? null;
 }
 
 function attachResults(

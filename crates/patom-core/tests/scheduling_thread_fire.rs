@@ -45,12 +45,24 @@ use sqlx::PgPool;
 mod common;
 use common::pg::seed_tenant;
 
-/// Provider that posts a summary via `send_message(human, …)` on its first
-/// call, then ends the turn. Stands in for "the agent" — the scheduled fire's
-/// plumbing is what the test exercises, not the model's reasoning.
-#[derive(Debug, Default)]
+/// Provider that posts a summary via `send_message`, addressing the task owner
+/// by their colleague id, on its first call, then ends the turn. Stands in for
+/// "the agent" — the scheduled fire's plumbing is what the test exercises, not
+/// the model's reasoning. (A real model reads the id from its `<colleagues>`
+/// block; the test injects it directly.)
+#[derive(Debug)]
 struct PostsSummary {
     cursor: AtomicUsize,
+    owner: uuid::Uuid,
+}
+
+impl PostsSummary {
+    fn new(owner: uuid::Uuid) -> Self {
+        Self {
+            cursor: AtomicUsize::new(0),
+            owner,
+        }
+    }
 }
 
 const SUMMARY: &str = "Your morning summary: all clear.";
@@ -69,7 +81,7 @@ impl LlmProvider for PostsSummary {
                     id: ToolCallId::try_from("call-1").expect("id"),
                     name: ToolName::try_from("send_message").expect("name"),
                     input: serde_json::json!({
-                        "receiver": { "kind": "human" },
+                        "receiver": self.owner,
                         "content": SUMMARY,
                     }),
                 })],
@@ -115,7 +127,7 @@ async fn fire_creates_thread_and_agent_posts_summary_tagging_owner(pool: PgPool)
 
     // Agent factory: PostsSummary provider + a real send_message tool wired so
     // the agent's reply lands a posted feed row (the egress).
-    let provider: SharedProvider = Arc::new(PostsSummary::default());
+    let provider: SharedProvider = Arc::new(PostsSummary::new(owner_colleague.as_uuid()));
     let providers: SharedProviderRegistry = Arc::new(
         ProviderRegistry::builder()
             .insert(ProviderId::Anthropic, provider)
@@ -128,7 +140,6 @@ async fn fire_creates_thread_and_agent_posts_summary_tagging_owner(pool: PgPool)
             threads.clone(),
             queue.clone(),
             dag.clone(),
-            agent_store.clone(),
             colleagues.clone(),
             sink.clone(),
         )))

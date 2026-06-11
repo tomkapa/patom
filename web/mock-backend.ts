@@ -2574,22 +2574,30 @@ const server = Bun.serve({
           // Persist the agent's posted row for the G2 reconcile.
           const replyNow = new Date().toISOString();
           thread!.last_activity_at = replyNow;
-          thread!.messages.push({
-            seq: thread!.nextSeq++,
-            kind: "posted",
+          // Fields identical across the agent's two rows; only kind, receiver,
+          // and body differ.
+          const agentRowCommon = {
             sender: {
-              kind: "agent",
+              kind: "agent" as const,
               colleague_id: agentColleagueId(agent.id),
               agent_id: agent.id,
             },
             owner_agent_id: agent.id,
-            receiver: {
-              kind: "human",
-              colleague_id: humanColleagueId,
-              user_id: USER_ID,
-            },
-            // Agent posts persist as a `send_message` tool call (matching the
-            // real worker), so `foldHistory` renders them as reply bubbles.
+            created_at: replyNow,
+            request_id: replyRequestId,
+            client_key: null,
+            sender_display_name: null,
+            sender_avatar_url: null,
+          };
+          // The real worker writes two rows per send: a `tool_use` row carrying
+          // the `send_message` call (the bubble is built from this) and a
+          // `posted` row carrying the resolved `receiver` (the tag's ground
+          // truth, which `foldHistory` pairs back by request_id + content).
+          thread!.messages.push({
+            seq: thread!.nextSeq++,
+            kind: "tool_use",
+            ...agentRowCommon,
+            receiver: null,
             body: {
               role: "assistant",
               contents: [
@@ -2598,16 +2606,25 @@ const server = Bun.serve({
                   value: {
                     id: crypto.randomUUID(),
                     name: "send_message",
-                    input: { content: replyText, receiver: { kind: "human" } },
+                    input: { content: replyText },
                   },
                 },
               ],
             },
-            created_at: replyNow,
-            request_id: replyRequestId,
-            client_key: null,
-            sender_display_name: null,
-            sender_avatar_url: null,
+          });
+          thread!.messages.push({
+            seq: thread!.nextSeq++,
+            kind: "posted",
+            ...agentRowCommon,
+            receiver: {
+              kind: "human",
+              colleague_id: humanColleagueId,
+              user_id: USER_ID,
+            },
+            body: {
+              role: "assistant",
+              contents: [{ kind: "text", value: replyText }],
+            },
           });
         }, 400);
       }

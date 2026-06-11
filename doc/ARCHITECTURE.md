@@ -294,11 +294,13 @@ Plain assistant text is never delivered. Every agent-produced reply is an explic
 
 ```text
 send_message {
-  to:   { kind: "agent", name: "designer" } | { kind: "human" },
-  body: "...",
-  context_summary?: "..."   // optional, written into the session opener
+  receiver?: "<colleague-uuid>",   // a colleague id (human or agent) from the
+                                   // <colleagues> roster; omit to post untagged
+  content:  "..."
 }
 ```
+
+Addressing is by **colleague id** — one form for every recipient. The receiver's kind (human or agent) is derived from the resolved `colleagues` row, not declared by the caller; an agent recipient is woken, a human recipient is gated on channel membership, and an omitted `receiver` is an untagged post to the thread. (Supersedes the earlier `{kind:"agent",name}` / `{kind:"human"}` sugar — see [ADR-0002](./adr/0002-agents-address-by-role-name.md).)
 
 This is enforced at the tool boundary: a turn that produces plain text instead of a `send_message` returns nothing to anyone. The reason is [ADR-0001](./adr/0001-send-message-as-only-channel.md) — one observable seam for every interaction, an auditable handoff graph, no ambiguity about who saw what.
 
