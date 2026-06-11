@@ -83,6 +83,20 @@ pub trait SlackIdentityStore: fmt::Debug + Send + Sync {
         linked_via: LinkedVia,
     ) -> Result<(), SlackError>;
 
+    /// Record the Slack workspace display name for a linked user. This is
+    /// a per-platform display *label* — the agent renders it when talking
+    /// in a Slack thread so it uses the name the user's teammates know in
+    /// Slack — and is keyed/joined by `colleague_id` elsewhere; it never
+    /// touches `users.display_name` (Patom identity is not derived from
+    /// Slack). Privileged; a no-op when `display_name` is empty or no
+    /// `slack_identities` row exists yet for `(team, slack_user)`.
+    async fn set_display_name(
+        &self,
+        team_id: &SlackTeamId,
+        slack_user_id: &SlackUserId,
+        display_name: &str,
+    ) -> Result<(), SlackError>;
+
     /// Tear down the link. RLS-scoped by org membership: the caller may
     /// unlink any identity in a workspace whose org they belong to. The
     /// row is matched globally by `(team_id, slack_user_id)` (a UNIQUE
@@ -186,6 +200,35 @@ impl SlackIdentityStore for PgSlackIdentityStore {
             .bind(user_id)
             .bind(now)
             .bind(via)
+            .execute(&mut **tx)
+            .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn set_display_name(
+        &self,
+        team_id: &SlackTeamId,
+        slack_user_id: &SlackUserId,
+        display_name: &str,
+    ) -> Result<(), SlackError> {
+        if display_name.is_empty() {
+            return Ok(());
+        }
+        let team = team_id.as_str().to_owned();
+        let slack_user = slack_user_id.as_str().to_owned();
+        let name = display_name.to_owned();
+        // Privileged: keyed by (team, slack_user) from a verified Slack
+        // context, no Principal. Only updates the Slack-side label column.
+        run_privileged::<(), SlackError>(&self.pool, async move |tx| {
+            sqlx::query(
+                "UPDATE slack_identities SET display_name = $3 \
+                 WHERE team_id = $1 AND slack_user_id = $2",
+            )
+            .bind(&team)
+            .bind(&slack_user)
+            .bind(&name)
             .execute(&mut **tx)
             .await?;
             Ok(())

@@ -288,7 +288,8 @@ impl Agent {
         let (messages, memory_system) = tokio::join!(
             self.threads()
                 .context_for_agent(thread, agent_id, viewer_colleague),
-            self.memory().system_prompt_for_thread(viewer, kind_payload),
+            self.memory()
+                .system_prompt_for_thread(viewer, Some(thread), kind_payload),
         );
         let messages = messages?;
         let memory_system = memory_system?;
@@ -503,7 +504,7 @@ impl Agent {
         tracing::Span::current().record("patom.history.count", messages.len());
         let system = self
             .memory()
-            .system_prompt_for_thread(viewer, kind_payload)
+            .system_prompt_for_thread(viewer, None, kind_payload)
             .await?;
         let tools = self.tools().specs_for(kind_payload.kind());
         Ok(ChatRequest {

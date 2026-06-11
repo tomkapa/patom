@@ -29,10 +29,12 @@ use crate::agents::{AgentId, AgentPromptCache, SharedAgentStore};
 use crate::auth::{OrganizationRule, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use crate::clock::SharedClock;
 use crate::colleagues::{
-    ColleagueError, ColleagueId, ColleagueRosterCache, SharedColleagueStore, render_roster_block,
+    ColleagueError, ColleagueId, ColleagueRosterCache, SharedColleagueStore,
+    SharedThreadDisplayNames, render_roster_block,
 };
 use crate::prompts::Prompts;
 use crate::runtime::{RequestKind, RequestKindPayload};
+use crate::threads::ThreadId;
 use crate::types::Participant;
 
 use super::loader::MemorySectionLoader;
@@ -94,6 +96,9 @@ pub struct AgentMemory {
     prompt_cache: AgentPromptCache,
     colleagues: SharedColleagueStore,
     roster_cache: ColleagueRosterCache,
+    /// Per-thread display-name overrides (e.g. Slack handles in a
+    /// Slack-rooted thread). Keyed by colleague id; identity is unchanged.
+    display_names: SharedThreadDisplayNames,
     loader: MemorySectionLoader,
     prompts: Arc<Prompts>,
     language_resolver: SharedOrgLanguageResolver,
@@ -113,6 +118,7 @@ impl AgentMemory {
         prompt_cache: AgentPromptCache,
         colleagues: SharedColleagueStore,
         roster_cache: ColleagueRosterCache,
+        display_names: SharedThreadDisplayNames,
         loader: MemorySectionLoader,
         prompts: Arc<Prompts>,
         language_resolver: SharedOrgLanguageResolver,
@@ -124,6 +130,7 @@ impl AgentMemory {
             prompt_cache,
             colleagues,
             roster_cache,
+            display_names,
             loader,
             prompts,
             language_resolver,
@@ -158,7 +165,11 @@ impl AgentMemory {
     /// the viewer itself. Returns a fallible result so the caller can degrade
     /// to an empty block on a directory outage — the roster is an enrichment,
     /// not load-bearing for the turn.
-    async fn roster_block(&self, viewer: ColleagueId) -> Result<String, ColleagueError> {
+    async fn roster_block(
+        &self,
+        viewer: ColleagueId,
+        thread: Option<ThreadId>,
+    ) -> Result<String, ColleagueError> {
         let org = self.colleagues.read(viewer).await?.org_id();
         let roster = self.roster_cache.get_or_load(org, &self.colleagues).await?;
         // §5 saturation signal — no OTel Meter infra yet, so the bound is
@@ -168,7 +179,14 @@ impl AgentMemory {
             patom.org.id = %org,
             "colleagues.roster.size"
         );
-        Ok(render_roster_block(&roster, viewer))
+        // Per-platform name labels for this thread (e.g. Slack handles).
+        // Empty for web / background turns → canonical colleague names. The
+        // roster cache stays canonical and shared; overrides apply per render.
+        let overrides = match thread {
+            Some(t) => self.display_names.overrides_for_thread(t).await,
+            None => std::collections::HashMap::new(),
+        };
+        Ok(render_roster_block(&roster, viewer, &overrides))
     }
 }
 
@@ -183,6 +201,7 @@ impl Memory for AgentMemory {
     async fn system_prompt_for_thread(
         &self,
         viewer: Participant,
+        thread: Option<ThreadId>,
         kind_payload: &RequestKindPayload,
     ) -> Result<Arc<str>, MemoryError> {
         let agent_id = viewer.agent_id().ok_or_else(|| {
@@ -204,7 +223,7 @@ impl Memory for AgentMemory {
         // rehomed onto the thread feed (degrades empty; enrichment, not
         // load-bearing). The `<colleagues>` roster still renders.
         let memory_section = self.loader.load_stable(agent_id, kind_payload).await?;
-        let roster = match self.roster_block(viewer_colleague).await {
+        let roster = match self.roster_block(viewer_colleague, thread).await {
             Ok(block) => block,
             Err(e) => {
                 tracing::warn!(error = %e, "colleagues.roster.error");

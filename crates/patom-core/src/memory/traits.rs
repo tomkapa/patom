@@ -8,6 +8,7 @@ use crate::agents::AgentStoreError;
 use crate::auth::{LanguageResolverError, RuleResolverError};
 use crate::colleagues::ColleagueError;
 use crate::runtime::RequestKindPayload;
+use crate::threads::ThreadId;
 use crate::types::Participant;
 
 #[derive(Debug, Error)]
@@ -46,9 +47,14 @@ pub trait Memory: Send + Sync + fmt::Debug {
     /// session-scoped contextual-memory layer (top-K retrieval keyed on the
     /// opening message) degrades to empty here until it is rehomed onto the
     /// thread feed — it is enrichment, never load-bearing (doc/memory.md §1.3).
+    /// `thread` is the turn's thread (`None` for the background-cognition
+    /// path, which has no feed), used to resolve per-platform display
+    /// labels for the roster (e.g. Slack handles in a Slack-rooted thread)
+    /// without changing canonical colleague identity.
     async fn system_prompt_for_thread(
         &self,
         viewer: Participant,
+        thread: Option<ThreadId>,
         kind_payload: &RequestKindPayload,
     ) -> Result<Arc<str>, MemoryError>;
 }

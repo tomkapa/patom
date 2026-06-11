@@ -157,6 +157,23 @@ async fn complete_inner(
         patom.user.id = %session.user_id.as_uuid(),
         event = "slack.identity.linked",
     );
+    // Capture the Slack display name (per-platform label) so the agent
+    // refers to this person by their Slack handle in Slack threads — it is
+    // stored on `slack_identities`, never on the canonical Patom user.
+    // Best-effort; a `users.info` miss leaves it NULL (renderer falls back).
+    if let Some(name) = crate::slack::bridge::fetch_slack_display_name(
+        &slack.http,
+        &workspace.bot_token,
+        claims.slack_user_id.as_str(),
+    )
+    .await
+        && let Err(e) = slack
+            .identities
+            .set_display_name(&claims.team_id, &claims.slack_user_id, &name)
+            .await
+    {
+        warn!(error = ?e, event = "slack.identity.display_name_store_failed");
+    }
     // Best-effort: swap the original "Set up Patom" ephemeral for a
     // success note so Slack reflects the link. Never fails the completion.
     if !claims.response_url.is_empty() {

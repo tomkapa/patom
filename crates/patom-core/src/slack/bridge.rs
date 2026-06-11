@@ -777,11 +777,22 @@ async fn post_prompt_mirror(
 ) -> Result<SlackTs, SlackError> {
     let profile =
         fetch_user_profile(&deps.http, &workspace.bot_token, slack_user_id.as_str()).await;
-    let display_name = profile
+    let real_slack_name = profile
         .as_ref()
         .and_then(|p| p.display_name.clone())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| slack_user_name.to_owned());
+        .filter(|s| !s.is_empty());
+    // Opportunistically refresh the stored per-platform name — free, since
+    // we already fetched the profile for the mirror username. Best-effort
+    // and keyed by (team, slack_user); never touches the Patom user.
+    if let Some(name) = real_slack_name.as_deref()
+        && let Err(e) = deps
+            .identities
+            .set_display_name(&workspace.team_id, slack_user_id, name)
+            .await
+    {
+        warn!(error = ?e, event = "slack.bridge.display_name_refresh_failed");
+    }
+    let display_name = real_slack_name.unwrap_or_else(|| slack_user_name.to_owned());
     let icon_url = profile.as_ref().and_then(|p| p.image_url.clone());
     let blocks = build_prompt_mirror_blocks(prompt_text, agent_name);
     deps.poster
@@ -913,6 +924,21 @@ async fn fetch_user_profile(
         display_name,
         image_url: profile.image_192,
     })
+}
+
+/// Fetch just a Slack user's workspace display name via `users.info`.
+/// Used by the identity-link paths to store the per-platform name on
+/// `slack_identities` (issue #41). Best-effort: `None` on any failure or
+/// an empty handle.
+pub(crate) async fn fetch_slack_display_name(
+    http: &Client,
+    token: &SlackBotToken,
+    slack_user_id: &str,
+) -> Option<String> {
+    fetch_user_profile(http, token, slack_user_id)
+        .await
+        .and_then(|p| p.display_name)
+        .filter(|s| !s.is_empty())
 }
 
 /// Build the Block Kit body for the slash-command prompt mirror.

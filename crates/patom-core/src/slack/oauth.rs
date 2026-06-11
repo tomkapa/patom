@@ -270,6 +270,10 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
         // is the gate); use the existing default.
         role: crate::auth::Role::Member,
     };
+    // Clone the bot token before it moves into the workspace row — the
+    // installer auto-link uses it to fetch the installer's Slack display
+    // name via `users.info`.
+    let bot_token_for_sync = bot_token.clone();
     let new = NewWorkspace {
         org_id: parsed.org_id,
         team_id: team_id.clone(),
@@ -295,6 +299,7 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
     // `slack_identities(org_id, team_id) → slack_workspaces` is satisfied.
     link_installer_identity(
         slack,
+        &bot_token_for_sync,
         &team_id,
         parsed.org_id,
         parsed.user_id,
@@ -310,6 +315,7 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
 /// requirement.
 async fn link_installer_identity(
     slack: &SlackAppState,
+    bot_token: &SlackBotToken,
     team_id: &SlackTeamId,
     org_id: OrgId,
     user_id: UserId,
@@ -338,7 +344,21 @@ async fn link_installer_identity(
         .await
     {
         Ok(()) => info!(event = "slack.oauth.installer_linked"),
-        Err(e) => warn!(error = ?e, event = "slack.oauth.installer_link_failed"),
+        Err(e) => {
+            warn!(error = ?e, event = "slack.oauth.installer_link_failed");
+            return;
+        }
+    }
+    // Capture the installer's Slack handle as their per-platform label.
+    if let Some(name) =
+        crate::slack::bridge::fetch_slack_display_name(&slack.http, bot_token, authed.id.as_str())
+            .await
+        && let Err(e) = slack
+            .identities
+            .set_display_name(team_id, &installer_slack_user, &name)
+            .await
+    {
+        warn!(error = ?e, event = "slack.oauth.installer_display_name_store_failed");
     }
 }
 

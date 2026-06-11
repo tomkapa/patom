@@ -345,3 +345,73 @@ async fn distinct_slack_channels_map_to_distinct_patom_channels(pool: PgPool) {
         .expect("b");
     assert_ne!(a, b, "different Slack channels are isolated Patom channels");
 }
+
+// ── Per-platform name override resolution (issue #41) ───────────────────
+
+#[sqlx::test]
+async fn slack_backed_thread_overrides_human_name_with_slack_handle(pool: PgPool) {
+    use patom::auth::Caller;
+    use patom::colleagues::{ColleagueName, ThreadDisplayNames};
+    use patom::slack::display_overrides::PgSlackThreadDisplayNames;
+    use patom::threads::{PgThreadStore, ThreadId, ThreadStore};
+
+    let seed = seed_tenant(&pool).await;
+    seed_workspace(&pool, seed.org_id, seed.user_id).await;
+    let id = store(pool.clone());
+    let cm = channel_store(pool.clone());
+    let slack_user = SlackUserId::try_from("U0OWNER").expect("valid");
+    let slack_chan = SlackChannelId::try_from("C0OVR01").expect("valid");
+
+    // Link the human + record their Slack handle (the per-platform label).
+    id.link_with_org(
+        seed.user_id,
+        seed.org_id,
+        &team(),
+        &slack_user,
+        LinkedVia::Installer,
+    )
+    .await
+    .expect("link");
+    id.set_display_name(&team(), &slack_user, "tomkapa")
+        .await
+        .expect("set slack name");
+
+    // Mirror the Slack channel and open a channel thread in it.
+    let channel_id = cm
+        .ensure_channel(seed.org_id, &team(), &slack_chan, seed.user_id)
+        .await
+        .expect("channel");
+    let owner_colleague =
+        patom::colleagues::resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+            .await
+            .expect("colleague");
+    let threads = PgThreadStore::new(pool.clone(), SystemClock::shared());
+    let thread = threads
+        .create_thread(
+            &Caller::new(seed.user_id, seed.org_id),
+            Some(channel_id),
+            None,
+            owner_colleague,
+            None,
+        )
+        .await
+        .expect("thread");
+
+    let provider = PgSlackThreadDisplayNames::new(pool.clone());
+    let overrides = provider.overrides_for_thread(thread).await;
+    assert_eq!(
+        overrides.get(&owner_colleague).map(ColleagueName::as_str),
+        Some("tomkapa"),
+        "the agent sees the Slack handle for a Slack-backed thread, keyed by canonical colleague_id"
+    );
+
+    // A thread with no Slack-channel mapping resolves no overrides
+    // (canonical names everywhere else).
+    assert!(
+        provider
+            .overrides_for_thread(ThreadId::new())
+            .await
+            .is_empty(),
+        "non-Slack threads get canonical names"
+    );
+}

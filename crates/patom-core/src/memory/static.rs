@@ -27,6 +27,7 @@ impl Memory for StaticMemory {
     async fn system_prompt_for_thread(
         &self,
         _viewer: Participant,
+        _thread: Option<crate::threads::ThreadId>,
         _kind_payload: &RequestKindPayload,
     ) -> Result<Arc<str>, MemoryError> {
         Ok(self.prompt.clone())

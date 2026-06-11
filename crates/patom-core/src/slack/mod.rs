@@ -27,6 +27,7 @@ pub mod bridge;
 pub mod channel_map;
 pub mod connect_link;
 pub mod connection_card;
+pub mod display_overrides;
 pub mod error;
 pub mod events;
 mod hex;
