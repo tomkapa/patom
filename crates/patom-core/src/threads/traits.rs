@@ -10,6 +10,7 @@
 //! from per-agent **private artifacts** (reasoning / tool_use / tool_result /
 //! system_note) that are displayed to all but ingested only by their owner.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -19,7 +20,7 @@ use chrono::{DateTime, Utc};
 use crate::agents::AgentId;
 use crate::auth::{Caller, UserId};
 use crate::channels::ChannelId;
-use crate::colleagues::ColleagueId;
+use crate::colleagues::{ColleagueId, ColleagueName};
 use crate::provider::ChatMessage;
 use crate::runtime::PromptRequestId;
 use crate::types::{MessageSender, Participant};
@@ -278,11 +279,17 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
     /// `viewer`'s perspective (own utterances → Assistant, others → User).
     /// Peers' private rows are excluded. Privileged read — an agent is
     /// org-global within its org.
+    ///
+    /// Each non-viewer `posted` message is prefixed with its sender's name so
+    /// the agent can tell speakers apart in a multi-party thread. `overrides`
+    /// supplies per-platform labels (e.g. Slack handles) keyed by colleague
+    /// id; senders absent from it fall back to their canonical name.
     async fn context_for_agent(
         &self,
         thread: ThreadId,
         agent: AgentId,
         viewer: ColleagueId,
+        overrides: &HashMap<ColleagueId, ColleagueName>,
     ) -> Result<Vec<ChatMessage>, ThreadError>;
 }
 

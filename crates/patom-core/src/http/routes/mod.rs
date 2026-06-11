@@ -134,7 +134,10 @@ pub fn router(state: AppState) -> Router {
         // callback validates an HMAC-signed state token.
         .merge(crate::slack::events::router())
         .merge(crate::slack::interactions::router())
-        .merge(crate::slack::oauth::public_router());
+        .merge(crate::slack::oauth::public_router())
+        // "Set up Patom" button target — auth is the signed link token in
+        // the query string, no cookie session yet.
+        .merge(crate::slack::identity_routes::start_router());
 
     let private = Router::new()
         .merge(prompts::router())
@@ -152,6 +155,8 @@ pub fn router(state: AppState) -> Router {
         .merge(uploads::router())
         // Slack install endpoint — signed-in user only.
         .merge(crate::slack::oauth::private_router())
+        // Slack identity unlink — signed-in member only.
+        .merge(crate::slack::identity_routes::unlink_router())
         // Origin/Referer check — the second CSRF layer (alongside the
         // double-submit token below). Rejects state-changing requests
         // naming an untrusted origin. Needs `AppState` for the trusted
@@ -180,6 +185,10 @@ pub fn router(state: AppState) -> Router {
     // route_layers wrap only its own routes.
     let onboarding = Router::new()
         .merge(me::onboarding_router())
+        // Slack identity-link completion runs right after login, when a
+        // brand-new user is still org-less — so it needs `require_user`,
+        // not `require_principal` (which would 401 an org-less session).
+        .merge(crate::slack::identity_routes::complete_router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_trusted_origin,

@@ -250,11 +250,21 @@ impl Collaborators {
             clock.clone(),
         ));
 
+        // Per-platform roster name labels. Only the Slack-enabled build pays
+        // the per-turn `slack_channels` lookup; everything else gets the
+        // no-op so the agent-core path stays free of the Slack adapter.
+        let display_names: crate::colleagues::SharedThreadDisplayNames = if settings.slack.is_some()
+        {
+            Arc::new(crate::slack::display_overrides::PgSlackThreadDisplayNames::new(pool.clone()))
+        } else {
+            Arc::new(crate::colleagues::NoThreadDisplayNames)
+        };
         let memory: SharedMemory = Arc::new(AgentMemory::new(
             agents.clone(),
             cache,
             colleagues.clone(),
             roster_cache,
+            display_names,
             memory_loader.clone(),
             prompts.clone(),
             language_resolver.clone(),
@@ -830,6 +840,10 @@ pub async fn build_server(
                 pieces.pool.clone(),
                 pieces.clock.clone(),
             ));
+            let slack_channels = Arc::new(crate::slack::channel_map::PgSlackChannelStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+            ));
             let threads_store = Arc::new(PgSlackThreadStore::new(
                 pieces.pool.clone(),
                 pieces.clock.clone(),
@@ -858,6 +872,7 @@ pub async fn build_server(
                     colleagues: pieces.colleagues.clone(),
                     workspaces: workspaces.clone(),
                     identities: identities.clone(),
+                    channels_map: slack_channels.clone(),
                     threads: threads_store.clone(),
                     poster: poster.clone(),
                     stream_pump: pump_handle.clone(),
@@ -872,6 +887,7 @@ pub async fn build_server(
                 client_id: Arc::from(cfg.client_id.as_str()),
                 client_secret: cfg.client_secret.clone(),
                 redirect_url: Arc::from(cfg.redirect_url.as_str()),
+                public_base_url: Arc::from(settings.auth.oauth_redirect_base.as_str()),
                 workspaces,
                 identities,
                 threads: threads_store,

@@ -27,8 +27,20 @@ impl Memory for StaticMemory {
     async fn system_prompt_for_thread(
         &self,
         _viewer: Participant,
+        _overrides: &std::collections::HashMap<
+            crate::colleagues::ColleagueId,
+            crate::colleagues::ColleagueName,
+        >,
         _kind_payload: &RequestKindPayload,
     ) -> Result<Arc<str>, MemoryError> {
         Ok(self.prompt.clone())
+    }
+
+    async fn display_overrides(
+        &self,
+        _thread: Option<crate::threads::ThreadId>,
+    ) -> std::collections::HashMap<crate::colleagues::ColleagueId, crate::colleagues::ColleagueName>
+    {
+        std::collections::HashMap::new()
     }
 }

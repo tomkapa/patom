@@ -24,14 +24,18 @@
 //! full design and `CLAUDE.md` for the binding engineering rules.
 
 pub mod bridge;
+pub mod channel_map;
 pub mod connect_link;
 pub mod connection_card;
+pub mod display_overrides;
 pub mod error;
 pub mod events;
 mod hex;
 pub mod identity;
+pub mod identity_routes;
 pub mod interactions;
 pub mod limits;
+pub mod link_token;
 pub mod mention;
 pub mod modal;
 pub mod oauth;

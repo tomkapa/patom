@@ -26,6 +26,11 @@ pub struct SlackAppState {
     pub client_secret: SecretString,
     /// E.g. `https://patom.example.com/slack/oauth/callback`.
     pub redirect_url: Arc<str>,
+    /// Public origin the app is reachable at, e.g.
+    /// `https://patom.example.com` (the `oauth_redirect_base`). Used to
+    /// build the absolute "Set up Patom" Block Kit button URL — Slack
+    /// requires `url`-type buttons to be absolute https links.
+    pub public_base_url: Arc<str>,
     pub workspaces: SharedSlackWorkspaceStore,
     pub identities: SharedSlackIdentityStore,
     pub threads: SharedSlackThreadStore,

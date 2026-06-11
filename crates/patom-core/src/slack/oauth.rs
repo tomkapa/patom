@@ -11,9 +11,11 @@
 //!   `https://slack.com/api/oauth.v2.access`, seals the bot token, and
 //!   upserts `slack_workspaces`.
 //!
-//! Phase 1 scope: the workspace install is the only OAuth flow. Per-
-//! user identity linking (Slack user ↔ Patom user) lives behind a
-//! separate DM-confirmation flow tracked in GitHub issue #41.
+//! The install also auto-links the installer's identity from the
+//! `authed_user.id` Slack returns ([`LinkedVia::Installer`]), so the
+//! workspace owner is never prompted by `/patom`. Per-user identity
+//! linking for everyone else runs through the `/patom`-gated login flow
+//! in [`super::identity_routes`] (GitHub issue #41).
 
 use std::time::Duration;
 
@@ -36,6 +38,8 @@ use crate::http::AppState;
 use crate::http::HttpError;
 
 use super::error::SlackError;
+use super::identity::LinkedVia;
+use super::state::SlackAppState;
 use super::types::{SlackBotToken, SlackTeamId, SlackUserId};
 use super::workspace::{NewWorkspace, WorkspaceSummary};
 
@@ -266,9 +270,13 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
         // is the gate); use the existing default.
         role: crate::auth::Role::Member,
     };
+    // Clone the bot token before it moves into the workspace row — the
+    // installer auto-link uses it to fetch the installer's Slack display
+    // name via `users.info`.
+    let bot_token_for_sync = bot_token.clone();
     let new = NewWorkspace {
         org_id: parsed.org_id,
-        team_id,
+        team_id: team_id.clone(),
         team_name: exchange.team.name.unwrap_or_default(),
         bot_user_id,
         bot_token,
@@ -284,7 +292,74 @@ async fn callback(State(state): State<AppState>, Query(params): Query<CallbackQu
         patom.user.id = %parsed.user_id.as_uuid(),
         event = "slack.oauth.installed",
     );
+    // Auto-link the installer so the owner is never prompted by `/patom`.
+    // Best-effort + non-fatal: the install already succeeded, so a link
+    // failure must not fail the callback (the owner can still link via
+    // `/patom`). Runs after the workspace upsert so the composite FK
+    // `slack_identities(org_id, team_id) → slack_workspaces` is satisfied.
+    link_installer_identity(
+        slack,
+        &bot_token_for_sync,
+        &team_id,
+        parsed.org_id,
+        parsed.user_id,
+        exchange.authed_user.as_ref(),
+    )
+    .await;
     redirect_to_fe(state.web_base_url.as_deref(), None)
+}
+
+/// Write the installer's `slack_identities` row from the OAuth
+/// `authed_user.id`. No-op (with a log) when the field is absent or
+/// malformed — installer auto-link is a convenience, not a correctness
+/// requirement.
+async fn link_installer_identity(
+    slack: &SlackAppState,
+    bot_token: &SlackBotToken,
+    team_id: &SlackTeamId,
+    org_id: OrgId,
+    user_id: UserId,
+    authed_user: Option<&AuthedUser>,
+) {
+    let Some(authed) = authed_user.filter(|a| !a.id.is_empty()) else {
+        warn!(event = "slack.oauth.no_authed_user");
+        return;
+    };
+    let installer_slack_user = match SlackUserId::try_from(authed.id.as_str()) {
+        Ok(u) => u,
+        Err(e) => {
+            warn!(error = %e, event = "slack.oauth.bad_authed_user_id");
+            return;
+        }
+    };
+    match slack
+        .identities
+        .link_with_org(
+            user_id,
+            org_id,
+            team_id,
+            &installer_slack_user,
+            LinkedVia::Installer,
+        )
+        .await
+    {
+        Ok(()) => info!(event = "slack.oauth.installer_linked"),
+        Err(e) => {
+            warn!(error = ?e, event = "slack.oauth.installer_link_failed");
+            return;
+        }
+    }
+    // Capture the installer's Slack handle as their per-platform label.
+    if let Some(name) =
+        crate::slack::bridge::fetch_slack_display_name(&slack.http, bot_token, authed.id.as_str())
+            .await
+        && let Err(e) = slack
+            .identities
+            .set_display_name(team_id, &installer_slack_user, &name)
+            .await
+    {
+        warn!(error = ?e, event = "slack.oauth.installer_display_name_store_failed");
+    }
 }
 
 fn redirect_to_fe(web_base: Option<&str>, error: Option<&str>) -> Response {
@@ -381,6 +456,11 @@ struct ExchangeResponse {
     #[serde(default)]
     scope: Option<String>,
     team: ExchangeTeam,
+    /// The Slack user who performed the install. Carries their Slack user
+    /// id so we can auto-link the installer's identity (issue #41) — the
+    /// owner is then never prompted by `/patom`.
+    #[serde(default)]
+    authed_user: Option<AuthedUser>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -388,6 +468,12 @@ struct ExchangeTeam {
     id: String,
     #[serde(default)]
     name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthedUser {
+    #[serde(default)]
+    id: String,
 }
 
 async fn exchange_code(

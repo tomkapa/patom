@@ -358,6 +358,7 @@ async fn post_to_thread(
             // Per-agent avatar (issue #43): `Some` when the agent has
             // `avatar_url` set, else `None` → Slack's default bot avatar.
             icon_url,
+            ephemeral_to: None,
         })
         .await
     {

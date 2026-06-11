@@ -146,7 +146,7 @@ async fn context_repairs_tool_use_result_split_by_peer_post(pool: PgPool) {
     }
 
     let ctx = store
-        .context_for_agent(thread, agent_a, col_a)
+        .context_for_agent(thread, agent_a, col_a, &std::collections::HashMap::new())
         .await
         .expect("ctx");
     assert_eq!(ctx.len(), 3);
@@ -232,11 +232,11 @@ async fn context_filters_private_rows_by_owner(pool: PgPool) {
     }
 
     let ctx_a = store
-        .context_for_agent(thread, agent_a, col_a)
+        .context_for_agent(thread, agent_a, col_a, &std::collections::HashMap::new())
         .await
         .expect("ctx a");
     let ctx_b = store
-        .context_for_agent(thread, agent_b, col_b)
+        .context_for_agent(thread, agent_b, col_b, &std::collections::HashMap::new())
         .await
         .expect("ctx b");
 
@@ -257,6 +257,12 @@ async fn context_filters_private_rows_by_owner(pool: PgPool) {
     assert!(
         user_text_present(&ctx_a, "hello"),
         "human post maps to User"
+    );
+    // The peer's post is attributed by name so the agent can tell speakers
+    // apart in a multi-party thread (canonical name; no platform override here).
+    assert!(
+        user_text_present(&ctx_a, "Seeded Test User: "),
+        "human post is prefixed with the sender's name"
     );
 
     // B: human post + A's post (as User) + B's reasoning = 3; A's reasoning excluded.

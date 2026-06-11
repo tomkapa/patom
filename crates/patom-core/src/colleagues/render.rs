@@ -14,10 +14,11 @@
 //! the [`ColleagueRef`]s and the viewer is excluded before formatting. The
 //! caller hydrates and caches the roster; this function only formats.
 
+use std::collections::HashMap;
 use std::fmt::Write;
 
 use super::limits::MAX_ROSTER_INLINE;
-use super::types::{ColleagueId, ColleagueRef};
+use super::types::{ColleagueId, ColleagueName, ColleagueRef};
 
 /// XML-ish envelope tags. Public so tests can assert on wire shape.
 pub const ROSTER_TAG_OPEN: &str = "<colleagues>\n";
@@ -68,8 +69,16 @@ pub fn render_speaking_with(counterpart: &ColleagueRef) -> String {
 /// Returns `String::new()` when the org has no peers visible to the viewer (the
 /// empty envelope is omitted entirely). Above [`MAX_ROSTER_INLINE`] peers the
 /// block degrades to a one-line notice pointing the model at `search_agents`.
+/// `overrides` substitutes a platform-specific display *label* for a
+/// colleague (e.g. a Slack handle in a Slack-rooted thread), keyed by the
+/// canonical [`ColleagueId`]. Identity is unchanged — only the rendered
+/// name. Pass an empty map for canonical names everywhere.
 #[must_use]
-pub fn render_roster_block(roster: &[ColleagueRef], viewer: ColleagueId) -> String {
+pub fn render_roster_block<S: std::hash::BuildHasher>(
+    roster: &[ColleagueRef],
+    viewer: ColleagueId,
+    overrides: &HashMap<ColleagueId, ColleagueName, S>,
+) -> String {
     // Viewer-excluded set — the visible peer roster, not the global one.
     let peers: Vec<&ColleagueRef> = roster.iter().filter(|c| c.id != viewer).collect();
 
@@ -110,10 +119,13 @@ pub fn render_roster_block(roster: &[ColleagueRef], viewer: ColleagueId) -> Stri
         if i > 0 {
             out.push('\n');
         }
+        // Platform label wins over the canonical name; id is always the
+        // canonical colleague id the model addresses.
+        let name = overrides.get(&c.id).unwrap_or(&c.display_name);
         let _ = write!(
             &mut out,
             "- {name} — {kind}, id {id}",
-            name = c.display_name.as_str(),
+            name = name.as_str(),
             kind = c.kind.as_str(),
             id = c.id.as_uuid(),
         );
@@ -137,7 +149,7 @@ mod tests {
 
     #[test]
     fn empty_org_renders_empty() {
-        let block = render_roster_block(&[], ColleagueId::new());
+        let block = render_roster_block(&[], ColleagueId::new(), &HashMap::new());
         assert!(block.is_empty());
     }
 
@@ -145,7 +157,7 @@ mod tests {
     fn only_self_renders_empty() {
         let me = cref(ColleagueKind::Agent, "assistant");
         let viewer = me.id;
-        let block = render_roster_block(&[me], viewer);
+        let block = render_roster_block(&[me], viewer, &HashMap::new());
         assert!(block.is_empty(), "self-only excludes the viewer: {block}");
     }
 
@@ -155,7 +167,8 @@ mod tests {
         let viewer = me.id;
         let human = cref(ColleagueKind::Human, "Tom");
         let agent = cref(ColleagueKind::Agent, "designer");
-        let block = render_roster_block(&[me, human.clone(), agent.clone()], viewer);
+        let block =
+            render_roster_block(&[me, human.clone(), agent.clone()], viewer, &HashMap::new());
 
         assert!(block.contains("Tom"), "human listed: {block}");
         assert!(block.contains("designer"), "agent listed: {block}");
@@ -186,13 +199,33 @@ mod tests {
     }
 
     #[test]
+    fn override_substitutes_label_keeping_canonical_id() {
+        let me = cref(ColleagueKind::Agent, "assistant");
+        let viewer = me.id;
+        let human = cref(ColleagueKind::Human, "Thanh Hai");
+        let mut overrides = HashMap::new();
+        overrides.insert(human.id, ColleagueName::try_from("tomkapa").expect("valid"));
+        let block = render_roster_block(&[me, human.clone()], viewer, &overrides);
+
+        assert!(block.contains("tomkapa"), "platform label used: {block}");
+        assert!(
+            !block.contains("Thanh Hai"),
+            "canonical name suppressed in Slack render: {block}"
+        );
+        assert!(
+            block.contains(&human.id.as_uuid().to_string()),
+            "colleague id stays canonical: {block}"
+        );
+    }
+
+    #[test]
     fn degrades_above_cap() {
         let viewer = ColleagueId::new();
         let mut roster = Vec::with_capacity(MAX_ROSTER_INLINE + 1);
         for i in 0..=MAX_ROSTER_INLINE {
             roster.push(cref(ColleagueKind::Human, &format!("person_{i:03}")));
         }
-        let block = render_roster_block(&roster, viewer);
+        let block = render_roster_block(&roster, viewer, &HashMap::new());
         assert!(block.contains("search_agents"), "degrades: {block}");
         assert!(!block.contains("person_000"), "no inline names: {block}");
     }

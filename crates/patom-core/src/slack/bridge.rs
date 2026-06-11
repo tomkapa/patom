@@ -12,10 +12,9 @@
 //! 2. If the event's user is the bot itself, drop. The bot's own
 //!    `chat.postMessage` posts fire `message` events; we are not
 //!    subscribed to those, but defending here is cheap.
-//! 3. Resolve identity: `slack_identities` lookup → linked user. Miss
-//!    falls back to the workspace's `installed_by_user_id` (Phase 1
-//!    simplification; Phase 2 turns the miss into an ephemeral "link
-//!    your account" prompt — issue #41).
+//! 3. Resolve identity: `slack_identities` lookup → linked user. A miss
+//!    drops the event and posts an ephemeral nudge to run `/patom` to
+//!    connect the account — there is no installer fallback (issue #41).
 //! 4. Choose the anchor `thread_ts`. For replies Slack sets
 //!    `event.thread_ts`; for a mention on a top-level message we use
 //!    `event.ts` so the reply auto-creates a thread.
@@ -48,6 +47,7 @@ use crate::runtime::{IdempotencyKey, NewTrigger, RequestKindPayload, SharedPromp
 use crate::threads::{MessageKind, NewMessage, SharedThreadStore, ThreadId};
 use crate::types::Prompt;
 
+use super::channel_map::SharedSlackChannelStore;
 use super::error::SlackError;
 use super::identity::SharedSlackIdentityStore;
 use super::limits::SLACK_USERS_INFO_TIMEOUT;
@@ -107,6 +107,10 @@ pub struct BridgeDeps {
     pub colleagues: crate::colleagues::SharedColleagueStore,
     pub workspaces: SharedSlackWorkspaceStore,
     pub identities: SharedSlackIdentityStore,
+    /// Slack-channel ↔ Patom-channel mapping (`slack_channels`). Lets a
+    /// Slack-rooted conversation be a multi-participant channel thread
+    /// (issue #41) and ensures the acting human is a channel member.
+    pub channels_map: SharedSlackChannelStore,
     /// Slack-thread ↔ Patom-thread binding (`slack_threads`).
     pub threads: SharedSlackThreadStore,
     pub poster: SharedSlackPoster,
@@ -209,9 +213,22 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
     if workspace.bot_user_id.as_str() == event.user_id.as_str() {
         return Ok(());
     }
-    let user_id = resolve_user_id(deps, &event, &workspace).await?;
+    let Some(user_id) = resolve_user_id(deps, &event, &workspace).await? else {
+        // Unlinked Slack user — there is no installer fallback in Phase 2.
+        // Nudge them to the `/patom` onboarding entry and drop the event.
+        nudge_unlinked(deps, &workspace, &event).await;
+        return Ok(());
+    };
     let org_id = workspace.org_id;
     let caller = Caller::new(user_id, org_id);
+    // Mirror the Slack channel to a Patom channel and make the acting human
+    // a member — on every event, so a second human joining an existing
+    // Slack thread can read + post (issue #41). Channel threads replace the
+    // old two-party DM threads.
+    let channel_id = deps
+        .channels_map
+        .ensure_channel(org_id, &event.team_id, &event.channel_id, user_id)
+        .await?;
     let anchor = match event.thread_ts.clone() {
         Some(t) => t,
         None => SlackThreadTs::try_from(event.event_ts.as_str())?,
@@ -252,23 +269,12 @@ pub async fn process_event(deps: &BridgeDeps, event: InboundEvent) -> Result<(),
         (None, InboundSource::AppMention) => {
             let agent =
                 resolve_mention_or_recruiter(deps, &event, &workspace.bot_user_id, org_id).await?;
-            // New Slack-originated conversation → a fresh Patom DM thread
-            // between the linked human and the mentioned agent (the DM
-            // counterpart), bound to this Slack thread.
-            let agent_counterpart = deps
-                .colleagues
-                .resolve_agent(org_id, agent)
-                .await
-                .map_err(|e| SlackError::Internal(format!("resolve agent colleague: {e}")))?;
+            // New Slack-originated conversation → a fresh Patom *channel*
+            // thread (multi-human, multi-agent), bound to this Slack thread.
+            // The mentioned agent joins via `resolve_participation` below.
             let thread = deps
                 .thread_store
-                .create_thread(
-                    &caller,
-                    None,
-                    None,
-                    human_colleague,
-                    Some(agent_counterpart),
-                )
+                .create_thread(&caller, Some(channel_id), None, human_colleague, None)
                 .await
                 .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
             deps.threads
@@ -434,25 +440,54 @@ async fn resolve_human_colleague(
         .map_err(|e| SlackError::Internal(format!("resolve human colleague: {e}")))
 }
 
-/// Slack user → Patom user. Phase 1 falls back to the workspace
-/// installer when no explicit `slack_identities` row exists.
+/// Slack user → Patom user. `Ok(None)` for an unlinked Slack user: Phase
+/// 2 has no installer fallback, so the caller nudges them to `/patom`
+/// rather than silently bridging as the installer.
 async fn resolve_user_id(
     deps: &BridgeDeps,
     event: &InboundEvent,
     workspace: &crate::slack::workspace::WorkspaceWithToken,
-) -> Result<crate::auth::UserId, SlackError> {
+) -> Result<Option<crate::auth::UserId>, SlackError> {
     let linked = deps
         .identities
         .lookup(&event.team_id, &event.user_id)
         .await?;
     let Some(linked) = linked else {
-        return Ok(workspace.installed_by_user_id);
+        return Ok(None);
     };
     assert_eq!(
         linked.org_id, workspace.org_id,
         "invariant: slack_identities + slack_workspaces FK keeps these aligned"
     );
-    Ok(linked.user_id)
+    Ok(Some(linked.user_id))
+}
+
+/// Post an ephemeral "connect your account" nudge to an unlinked Slack
+/// user, routing them to the `/patom` onboarding entry. Best-effort: a
+/// failed post is logged, not propagated — the event is dropped either
+/// way. Ephemeral, so it never clutters the channel for anyone else.
+async fn nudge_unlinked(
+    deps: &BridgeDeps,
+    workspace: &crate::slack::workspace::WorkspaceWithToken,
+    event: &InboundEvent,
+) {
+    let req = super::poster::PostRequest {
+        token: workspace.bot_token.clone(),
+        channel: event.channel_id.clone(),
+        thread_ts: event.thread_ts.clone(),
+        body: super::poster::PostBody::Text(
+            "👋 To chat with Patom agents here, connect your account first — \
+             run `/patom` in this channel."
+                .to_owned(),
+        ),
+        username: "Patom".to_owned(),
+        icon_url: None,
+        ephemeral_to: Some(event.user_id.clone()),
+    };
+    match deps.poster.post(req).await {
+        Ok(_) => info!(event = "slack.bridge.unlinked_nudged"),
+        Err(e) => warn!(error = ?e, event = "slack.bridge.nudge_post_failed"),
+    }
 }
 
 /// Resolve `@AgentName` (if any) against the org. Falls back to the org's
@@ -520,6 +555,12 @@ pub struct SlashCommandSubmit {
     /// idempotency key so a re-submission of the same modal collapses
     /// into a single prompt at the queue.
     pub view_id: String,
+    /// `Some` when the compose modal was opened from a **message
+    /// shortcut** inside an existing Slack thread — the message's
+    /// `thread_ts`. The prompt mirror then posts into that thread and
+    /// continues (or creates) its binding instead of starting a new
+    /// top-level thread. `None` for the `/patom` slash entry.
+    pub thread_ts: Option<SlackThreadTs>,
 }
 
 /// Drive the slash command path.
@@ -552,7 +593,10 @@ pub async fn enqueue_from_slash(
             assert_eq!(linked.org_id, workspace.org_id);
             linked.user_id
         }
-        None => workspace.installed_by_user_id,
+        // The slash gate only opens the modal for a linked user, so this
+        // is an unlink-during-modal race. Reject rather than mis-attribute
+        // as the installer (no Phase-2 fallback).
+        None => return Err(SlackError::IdentityNotLinked(submit.slack_user_id.clone())),
     };
     // Defence-in-depth: re-validate that the chosen agent belongs to
     // the workspace's org. The modal options carry agent ids the
@@ -581,46 +625,25 @@ pub async fn enqueue_from_slash(
     let caller = Caller::new(user_id, org_id);
     let human_colleague = resolve_human_colleague(deps, org_id, user_id).await?;
 
-    let prompt_post = post_prompt_mirror(
+    // Mirror the Slack channel + add the human, then resolve the target
+    // thread (a fresh top-level one for `/patom`, or the existing thread
+    // for a message shortcut). Extracted to keep this fn within the
+    // length ceiling (§4).
+    let channel_id = deps
+        .channels_map
+        .ensure_channel(org_id, &submit.team_id, &submit.channel_id, user_id)
+        .await?;
+    let (thread_id, anchor) = resolve_slash_thread(
         deps,
         &workspace,
-        &submit.channel_id,
-        &submit.slack_user_id,
-        &submit.slack_user_name,
+        &submit,
+        channel_id,
+        &caller,
+        human_colleague,
         &prompt_text,
         &agent.name,
     )
     .await?;
-    let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
-
-    // A slash command starts a fresh conversation → new Patom DM thread
-    // between the linked human and the chosen agent, bound to the mirror's
-    // Slack thread.
-    let agent_counterpart = deps
-        .colleagues
-        .resolve_agent(org_id, agent.id)
-        .await
-        .map_err(|e| SlackError::Internal(format!("resolve agent colleague: {e}")))?;
-    let thread_id = deps
-        .thread_store
-        .create_thread(
-            &caller,
-            None,
-            None,
-            human_colleague,
-            Some(agent_counterpart),
-        )
-        .await
-        .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
-    deps.threads
-        .bind(
-            org_id,
-            &submit.team_id,
-            &submit.channel_id,
-            &anchor,
-            thread_id,
-        )
-        .await?;
 
     submit_to_thread(
         deps,
@@ -646,8 +669,101 @@ pub async fn enqueue_from_slash(
     .await
 }
 
-/// Post the synthetic prompt-mirror message as a channel-top-level
-/// post and return the Slack `ts` it lands under.
+/// Resolve the Patom thread + Slack anchor for a slash / shortcut submit,
+/// posting the prompt mirror in the right place.
+///
+/// - **`/patom` (no `thread_ts`):** post the mirror top-level; its `ts`
+///   anchors a fresh channel thread.
+/// - **message shortcut (`thread_ts` set):** post the mirror *into* that
+///   thread and continue its existing binding, or create + bind a channel
+///   thread anchored there if this is the first Patom touch on it.
+#[allow(clippy::too_many_arguments)]
+async fn resolve_slash_thread(
+    deps: &BridgeDeps,
+    workspace: &crate::slack::workspace::WorkspaceWithToken,
+    submit: &SlashCommandSubmit,
+    channel_id: crate::channels::ChannelId,
+    caller: &Caller,
+    human_colleague: ColleagueId,
+    prompt_text: &str,
+    agent_name: &AgentName,
+) -> Result<(ThreadId, SlackThreadTs), SlackError> {
+    if let Some(existing) = submit.thread_ts.clone() {
+        // Message-shortcut path: continue the message's thread (or create +
+        // bind it), then post the mirror into that thread.
+        let thread_id = match deps
+            .threads
+            .lookup_by_thread(&submit.team_id, &submit.channel_id, &existing)
+            .await?
+        {
+            Some(mapping) => mapping.thread_id,
+            None => {
+                create_and_bind(deps, caller, channel_id, human_colleague, submit, &existing)
+                    .await?
+            }
+        };
+        post_prompt_mirror(
+            deps,
+            workspace,
+            &submit.channel_id,
+            &submit.slack_user_id,
+            &submit.slack_user_name,
+            prompt_text,
+            agent_name,
+            Some(&existing),
+        )
+        .await?;
+        return Ok((thread_id, existing));
+    }
+    // Slash path: post the mirror top-level; its `ts` anchors a fresh thread.
+    let prompt_post = post_prompt_mirror(
+        deps,
+        workspace,
+        &submit.channel_id,
+        &submit.slack_user_id,
+        &submit.slack_user_name,
+        prompt_text,
+        agent_name,
+        None,
+    )
+    .await?;
+    let anchor = SlackThreadTs::try_from(prompt_post.as_str())?;
+    let thread_id =
+        create_and_bind(deps, caller, channel_id, human_colleague, submit, &anchor).await?;
+    Ok((thread_id, anchor))
+}
+
+/// Create a channel thread and bind it to the Slack `(team, channel,
+/// anchor)` — the shared tail of both the slash and shortcut paths.
+async fn create_and_bind(
+    deps: &BridgeDeps,
+    caller: &Caller,
+    channel_id: crate::channels::ChannelId,
+    human_colleague: ColleagueId,
+    submit: &SlashCommandSubmit,
+    anchor: &SlackThreadTs,
+) -> Result<ThreadId, SlackError> {
+    let thread_id = deps
+        .thread_store
+        .create_thread(caller, Some(channel_id), None, human_colleague, None)
+        .await
+        .map_err(|e| SlackError::Internal(format!("create thread: {e}")))?;
+    deps.threads
+        .bind(
+            caller.org_id,
+            &submit.team_id,
+            &submit.channel_id,
+            anchor,
+            thread_id,
+        )
+        .await?;
+    Ok(thread_id)
+}
+
+/// Post the synthetic prompt-mirror message and return the Slack `ts` it
+/// lands under. `reply_in_thread` is `Some(anchor)` to post the mirror as
+/// a reply inside an existing Slack thread (message-shortcut path), or
+/// `None` to post it as a channel-top-level message (slash path).
 ///
 /// Body is a Block Kit envelope so the parent message renders the
 /// prompt *and* a small "→ @agent" attribution line — without it the
@@ -659,6 +775,7 @@ pub async fn enqueue_from_slash(
 /// failing the prompt over a profile lookup hiccup.
 const SLACK_USERS_INFO_URL: &str = "https://slack.com/api/users.info";
 
+#[allow(clippy::too_many_arguments)]
 async fn post_prompt_mirror(
     deps: &BridgeDeps,
     workspace: &crate::slack::workspace::WorkspaceWithToken,
@@ -667,21 +784,33 @@ async fn post_prompt_mirror(
     slack_user_name: &str,
     prompt_text: &str,
     agent_name: &AgentName,
+    reply_in_thread: Option<&SlackThreadTs>,
 ) -> Result<SlackTs, SlackError> {
     let profile =
         fetch_user_profile(&deps.http, &workspace.bot_token, slack_user_id.as_str()).await;
-    let display_name = profile
+    let real_slack_name = profile
         .as_ref()
         .and_then(|p| p.display_name.clone())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| slack_user_name.to_owned());
+        .filter(|s| !s.is_empty());
+    // Opportunistically refresh the stored per-platform name — free, since
+    // we already fetched the profile for the mirror username. Best-effort
+    // and keyed by (team, slack_user); never touches the Patom user.
+    if let Some(name) = real_slack_name.as_deref()
+        && let Err(e) = deps
+            .identities
+            .set_display_name(&workspace.team_id, slack_user_id, name)
+            .await
+    {
+        warn!(error = ?e, event = "slack.bridge.display_name_refresh_failed");
+    }
+    let display_name = real_slack_name.unwrap_or_else(|| slack_user_name.to_owned());
     let icon_url = profile.as_ref().and_then(|p| p.image_url.clone());
     let blocks = build_prompt_mirror_blocks(prompt_text, agent_name);
     deps.poster
         .post(super::poster::PostRequest {
             token: workspace.bot_token.clone(),
             channel: channel_id.clone(),
-            thread_ts: None,
+            thread_ts: reply_in_thread.cloned(),
             body: super::poster::PostBody::Blocks {
                 fallback_text: prompt_text.to_owned(),
                 blocks,
@@ -691,6 +820,7 @@ async fn post_prompt_mirror(
             // name + avatar makes the mirror read as them at a glance.
             username: display_name,
             icon_url,
+            ephemeral_to: None,
         })
         .await
 }
@@ -805,6 +935,21 @@ async fn fetch_user_profile(
         display_name,
         image_url: profile.image_192,
     })
+}
+
+/// Fetch just a Slack user's workspace display name via `users.info`.
+/// Used by the identity-link paths to store the per-platform name on
+/// `slack_identities` (issue #41). Best-effort: `None` on any failure or
+/// an empty handle.
+pub(crate) async fn fetch_slack_display_name(
+    http: &Client,
+    token: &SlackBotToken,
+    slack_user_id: &str,
+) -> Option<String> {
+    fetch_user_profile(http, token, slack_user_id)
+        .await
+        .and_then(|p| p.display_name)
+        .filter(|s| !s.is_empty())
 }
 
 /// Build the Block Kit body for the slash-command prompt mirror.
