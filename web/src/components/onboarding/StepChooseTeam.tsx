@@ -31,6 +31,12 @@ import { LucideByName } from "./LucideByName";
  *  `agent-2.png` in roster order. */
 const AGENT_AVATAR_BASE = "https://asset.patom.app/agents";
 
+/** Number of bundled avatars on the CDN. Mirrors the backend's
+ *  `PRESET_AVATAR_COUNT`. Today's presets top out at 4 agents (→ agent-5),
+ *  but clamp the roster index so a future larger preset can never request
+ *  an asset outside the bundled `agent-1..agent-12` set. */
+const PRESET_AVATAR_COUNT = 12;
+
 /** Step 2 — pick a preset team and hire its agents. The Recruiter (the
  *  org's default-seeded agent) is NOT in any preset; it's always already
  *  hired by the time the wizard runs. Hiring loops `POST /agents`
@@ -73,9 +79,11 @@ export function StepChooseTeam({
             allowed_mcp_tools: a.allowed_mcp_tools,
             // Default avatar: the Recruiter takes agent-1.png, so preset
             // teammates take the next bundled CDN avatars in roster order
-            // (agent-2.png, agent-3.png, …). Sent as an explicit avatar_url
-            // so the BE keeps it instead of assigning a random default.
-            avatar_url: `${AGENT_AVATAR_BASE}/agent-${idx + 2}.png`,
+            // (agent-2.png, agent-3.png, …), clamped to the bundled set so
+            // a larger future preset never points outside agent-12.png.
+            // Sent as an explicit avatar_url so the BE keeps it instead of
+            // assigning a random default.
+            avatar_url: `${AGENT_AVATAR_BASE}/agent-${Math.min(idx + 2, PRESET_AVATAR_COUNT)}.png`,
           });
           // One event per genuinely-created agent. The 409 path below is a
           // resume over an already-hired agent, so it must not re-count.
