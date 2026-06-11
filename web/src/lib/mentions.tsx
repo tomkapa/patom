@@ -1,4 +1,5 @@
 import { Fragment, type ReactNode } from "react";
+import type { Element, Root, RootContent, Text } from "hast";
 
 // Match `@name`, `@name-with-dash`, `@name_with_underscore`. The leading
 // boundary is start-of-string or whitespace so an email like `a@b.com` is
@@ -103,4 +104,87 @@ export function renderMentions(
   });
   if (last < text.length) out.push(text.slice(last));
   return <Fragment>{out}</Fragment>;
+}
+
+/** Span boundaries for every mention in `value`, regardless of match mode. */
+function mentionSpans(
+  value: string,
+  agentNames?: string[],
+): Array<{ start: number; end: number }> {
+  if (agentNames && agentNames.length > 0) {
+    return findNamedMentions(value, agentNames).map(({ start, end }) => ({
+      start,
+      end,
+    }));
+  }
+  const spans: Array<{ start: number; end: number }> = [];
+  forEachMention(value, (tag, tagStart) => {
+    spans.push({ start: tagStart, end: tagStart + tag.length });
+  });
+  return spans;
+}
+
+function mentionElement(label: string): Element {
+  return {
+    type: "element",
+    tagName: "span",
+    properties: { className: ["mention"] },
+    children: [{ type: "text", value: label } satisfies Text],
+  };
+}
+
+/** Split one text run into interleaved text/`<span class="mention">` hast nodes.
+ *  The same matching rules as {@link renderMentions} — named-list when
+ *  `agentNames` is given, legacy `@word` otherwise — so the markdown read path
+ *  highlights mentions identically to the plain-text path. */
+export function splitMentionNodes(
+  value: string,
+  agentNames?: string[],
+): RootContent[] {
+  const spans = mentionSpans(value, agentNames);
+  if (spans.length === 0) return [{ type: "text", value }];
+  const out: RootContent[] = [];
+  let last = 0;
+  for (const { start, end } of spans) {
+    if (start > last) out.push({ type: "text", value: value.slice(last, start) });
+    out.push(mentionElement(value.slice(start, end)));
+    last = end;
+  }
+  if (last < value.length) out.push({ type: "text", value: value.slice(last) });
+  return out;
+}
+
+// A node carrying children is the only kind we descend into; bounded below.
+const REHYPE_NODE_CAP = 100_000;
+const NO_HIGHLIGHT_TAGS = new Set(["code", "pre"]);
+
+/** rehype attacher that highlights `@mentions` in every text node, skipping
+ *  `code`/`pre` so literal `@foo` in code stays literal. Walks an explicit
+ *  bounded stack — no recursion, no unbounded loop. */
+export function rehypeMentions(agentNames?: string[]) {
+  return () => (tree: Root) => {
+    const stack: Array<Root | Element> = [tree];
+    let visited = 0;
+    while (stack.length > 0) {
+      visited += 1;
+      if (visited > REHYPE_NODE_CAP) break;
+      const node = stack.pop();
+      if (node === undefined) break;
+      const next: RootContent[] = [];
+      let changed = false;
+      for (const child of node.children) {
+        if (child.type === "text") {
+          const parts = splitMentionNodes(child.value, agentNames);
+          if (parts.length > 1) changed = true;
+          next.push(...parts);
+          continue;
+        }
+        next.push(child);
+        if (child.type === "element" && !NO_HIGHLIGHT_TAGS.has(child.tagName)) {
+          stack.push(child);
+        }
+      }
+      if (changed) node.children = next as Element["children"];
+    }
+  };
 }

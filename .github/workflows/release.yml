@@ -20,9 +20,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # Build the two image variants concurrently. They share source and differ only
+  # by `--features cloud`; running them serially in one job doubled wall-clock
+  # for no reason. fail-fast: false so a flake in one variant doesn't cancel the
+  # other mid-push. Each variant keeps its own GHA cache scope (oss/cloud) so
+  # they don't evict each other's cargo-chef cook layer.
+  build:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Public OSS / self-host image: no cloud feature, no billing code.
+          # This is the image self-hosters pull, so it must NOT carry
+          # `--features cloud`.
+          - variant: oss
+            features: ""
+            tag_prefix: ""
+            float_tag: latest
+          # SaaS image: same source, built with `--features cloud` so
+          # `AppState.cloud` is true and self-service workspace creation
+          # (`POST /me/orgs`, the onboarding wizard) works. Kept on a distinct
+          # `cloud-*` tag so the public image stays feature-less. The patom-infra
+          # ArgoCD app floats to this tag (pinned in the `pin` job below).
+          - variant: cloud
+            features: cloud
+            tag_prefix: cloud-
+            float_tag: cloud-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,43 +71,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Public OSS / self-host image: no cloud feature, no billing code. This is
-      # the image self-hosters pull, so it must NOT carry `--features cloud`.
-      - name: Build & push OSS app image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            ghcr.io/tomkapa/patom:${{ steps.vars.outputs.sha }}
-            ghcr.io/tomkapa/patom:latest
-          cache-from: type=gha,scope=oss
-          cache-to: type=gha,mode=max,scope=oss
-
-      # SaaS image: same source, built with `--features cloud` so
-      # `AppState.cloud` is true and self-service workspace creation
-      # (`POST /me/orgs`, the onboarding wizard) works. Kept on a distinct
-      # `cloud-*` tag so the public image above stays feature-less. The
-      # patom-infra ArgoCD app floats to this tag (see below).
-      - name: Build & push cloud app image
+      - name: Build & push ${{ matrix.variant }} app image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
           build-args: |
-            FEATURES=cloud
+            FEATURES=${{ matrix.features }}
           tags: |
-            ghcr.io/tomkapa/patom:cloud-${{ steps.vars.outputs.sha }}
-            ghcr.io/tomkapa/patom:cloud-latest
-          cache-from: type=gha,scope=cloud
-          cache-to: type=gha,mode=max,scope=cloud
+            ghcr.io/tomkapa/patom:${{ matrix.tag_prefix }}${{ steps.vars.outputs.sha }}
+            ghcr.io/tomkapa/patom:${{ matrix.float_tag }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
 
-      # The Postgres backup image (patom-backup) is no longer built here: backups
-      # are a SaaS-operational concern owned by patom-infra, which builds and
-      # pushes that image itself (issue #90). patom ships only the app image and a
-      # minimal no-backup `postgresql` subchart for standalone self-hosting.
+  # The Postgres backup image (patom-backup) is no longer built here: backups
+  # are a SaaS-operational concern owned by patom-infra, which builds and
+  # pushes that image itself (issue #90). patom ships only the app image and a
+  # minimal no-backup `postgresql` subchart for standalone self-hosting.
+
+  # Float the SaaS deploy to the freshly-built cloud image. Runs once, after
+  # BOTH image variants are pushed — kept out of the build matrix so the
+  # cross-repo push happens exactly once and can't race with itself.
+  pin:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - id: vars
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: echo "sha=${HEAD_SHA::12}" >> "$GITHUB_OUTPUT"
 
       - name: Pin app image tag in patom-infra ArgoCD app
         # The chart's own values.yaml carries a STABLE, customer-facing pinned tag
