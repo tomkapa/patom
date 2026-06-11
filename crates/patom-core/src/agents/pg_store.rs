@@ -149,14 +149,15 @@ impl PgAgentStore {
             sqlx::query(
                 "INSERT INTO agents \
                      (id, org_id, name, description, description_embedding, \
-                      created_at, updated_at) \
-                 VALUES ($1, $2, $3, $4, $5::vector, $6, $6)",
+                      avatar_url, created_at, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $7)",
             )
             .bind(id)
             .bind(org_id)
             .bind(seed.name.as_str())
             .bind(seed.description.as_str())
             .bind(embedding_literal)
+            .bind(seed.avatar_url.as_ref().map(AvatarUrl::as_str))
             .bind(now)
             .execute(&mut **tx)
             .await?;

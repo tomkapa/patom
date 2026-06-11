@@ -163,6 +163,10 @@ impl AssetStore for S3AssetStore {
             .map_err(SdkOutcome::into_delete_error)?;
         Ok(())
     }
+
+    fn public_host(&self) -> &str {
+        &self.public_host
+    }
 }
 
 /// Per-op-neutral outcome from [`run_with_timeout`]. The caller maps
@@ -284,6 +288,10 @@ impl AssetStore for InMemoryAssetStore {
     async fn delete(&self, key: ObjectKey) -> Result<(), AssetError> {
         self.objects.lock().await.remove(key.as_str());
         Ok(())
+    }
+
+    fn public_host(&self) -> &str {
+        &self.public_host
     }
 }
 

@@ -447,6 +447,11 @@ pub struct AgentSeed {
     pub name: AgentName,
     pub system_prompt: AgentSystemPrompt,
     pub description: AgentDescription,
+    /// Optional default avatar for the seeded agent. `Some` when the asset
+    /// CDN origin is configured (the recruiter takes `agent-1.png`); `None`
+    /// in deployments without object storage, where the FE renders the name
+    /// monogram. Built via [`crate::agents::preset_agent_avatar_url`].
+    pub avatar_url: Option<AvatarUrl>,
 }
 
 #[cfg(test)]

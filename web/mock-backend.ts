@@ -478,6 +478,11 @@ const MODEL_CATALOG: { id: string; provider: string }[] = [
  *  this single row so the wizard's hire-team step starts from a clean
  *  canvas. The normal `AGENTS` seed below intentionally simulates an
  *  already-onboarded workspace (Atlas + Beacon). */
+/** Public CDN base for the bundled default agent avatars
+ *  (`agent-1.png` … `agent-12.png`), matching production and the onboarding
+ *  wizard. The real PNGs live here, so the preview loads them directly. */
+const ASSET_AVATAR_BASE = "https://asset.patom.app/agents";
+
 const RECRUITER_SEED: AgentRow = {
   id: "aaaaaaaa-0000-0000-0000-00000000000a",
   name: "Recruiter",
@@ -487,7 +492,8 @@ const RECRUITER_SEED: AgentRow = {
     "other agents for the workspace.",
   allowed_mcp_tools: {},
   model: null,
-  avatar_url: null,
+  // The Recruiter always takes the first bundled avatar (agent-1.png).
+  avatar_url: `${ASSET_AVATAR_BASE}/agent-1.png`,
   created_at: NOW,
   updated_at: NOW,
 };
@@ -1499,6 +1505,11 @@ const server = Bun.serve({
       }
       const id = `mock-agent-${crypto.randomUUID().slice(0, 8)}`;
       const now = new Date().toISOString();
+      // Mirrors the BE: an explicit avatar_url is kept; otherwise a fresh
+      // hire gets a random bundled default (agent-1..agent-12).
+      const avatar_url =
+        body.avatar_url ??
+        `${ASSET_AVATAR_BASE}/agent-${1 + Math.floor(Math.random() * 12)}.png`;
       const row: AgentRow = {
         id,
         name: body.name,
@@ -1507,7 +1518,7 @@ const server = Bun.serve({
 
         allowed_mcp_tools: body.allowed_mcp_tools ?? {},
         model: body.model ?? null,
-        avatar_url: body.avatar_url ?? null,
+        avatar_url,
         created_at: now,
         updated_at: now,
       };

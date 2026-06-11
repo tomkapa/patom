@@ -98,6 +98,7 @@ pub async fn seed_tenant(pool: &PgPool) -> Seed {
                     .expect("valid prompt"),
                 description: AgentDescription::try_from("Default test agent.")
                     .expect("valid description"),
+                avatar_url: None,
             },
         )
         .await

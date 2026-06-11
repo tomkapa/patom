@@ -13,8 +13,10 @@
 use std::sync::Arc;
 
 use patom::agents::{
-    AgentDescription, AgentName, AgentSystemPrompt, AllowedMcpTools, NewAgent, SharedAgentStore,
+    AgentDescription, AgentName, AgentSystemPrompt, AllowedMcpTools, NewAgent, PRESET_AVATAR_COUNT,
+    SharedAgentStore,
 };
+use patom::assets::InMemoryAssetStore;
 use patom::auth::OrgId;
 use patom::clock::SystemClock;
 use patom::http::{AppState, router};
@@ -514,5 +516,102 @@ async fn read_drops_avatar_url_that_violates_the_url_invariant(pool: PgPool) {
     assert!(
         read["avatar_url"].is_null(),
         "a row violating the URL invariant is dropped, not leaked",
+    );
+}
+
+/// POST `/api/agents` with the given JSON body, returning the response
+/// status and parsed JSON. Used by the default-avatar tests below.
+async fn post_agent(
+    app: &axum::Router,
+    h: &AuthAgentsHarness,
+    body: serde_json::Value,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("cookie", h.primary.cookie_header())
+                .header("x-csrf-token", h.primary.csrf_header())
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    };
+    (status, json)
+}
+
+/// Swap in an in-memory asset store so the default-avatar paths can build
+/// `{origin}/agents/agent-{n}.png` (the production origin comes from
+/// `PATOM_S3_PUBLIC_HOST`).
+fn with_assets(h: &mut AuthAgentsHarness, origin: &str) {
+    h.state.assets = Some(Arc::new(InMemoryAssetStore::new(origin)));
+}
+
+#[sqlx::test]
+async fn missing_avatar_assigns_random_default(pool: PgPool) {
+    // A plain create with no avatar_url gets a random bundled avatar in
+    // `1..=PRESET_AVATAR_COUNT` when the asset CDN is configured.
+    let mut h = AuthAgentsHarness::new(&pool).await;
+    with_assets(&mut h, "https://cdn.test");
+    let app = router(h.state.clone());
+    let (status, created) = post_agent(
+        &app,
+        &h,
+        serde_json::json!({
+            "name": "fresh-hire",
+            "system_prompt": "be helpful",
+            "description": "a brand new agent",
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    let url = created["avatar_url"]
+        .as_str()
+        .expect("random default avatar");
+    let n: u8 = url
+        .strip_prefix("https://cdn.test/agents/agent-")
+        .and_then(|s| s.strip_suffix(".png"))
+        .expect("matches the bundled avatar pattern")
+        .parse()
+        .expect("numeric index");
+    assert!(n >= 1, "index below 1: {n}");
+    assert!(n <= PRESET_AVATAR_COUNT, "index above cap: {n}");
+}
+
+#[sqlx::test]
+async fn explicit_avatar_url_not_overridden_by_default(pool: PgPool) {
+    // An explicit `avatar_url` (e.g. an onboarding preset's hardcoded CDN
+    // URL, or a user-set avatar) is kept as-is — the random default only
+    // fills in when no avatar_url is sent.
+    let mut h = AuthAgentsHarness::new(&pool).await;
+    with_assets(&mut h, "https://cdn.test");
+    let app = router(h.state.clone());
+    let (status, created) = post_agent(
+        &app,
+        &h,
+        serde_json::json!({
+            "name": "explicit-face",
+            "system_prompt": "be helpful",
+            "description": "explicit url is preserved",
+            "avatar_url": "https://asset.patom.app/agents/agent-2.png",
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(
+        created["avatar_url"].as_str(),
+        Some("https://asset.patom.app/agents/agent-2.png"),
     );
 }

@@ -50,7 +50,9 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
             .await
             .expect("user colleague");
     Fixture {
-        tool: CreateAgentTool::new(agents.clone()),
+        // No asset CDN origin → minted hires are avatar-less; the
+        // random-default behaviour is covered by its own test below.
+        tool: CreateAgentTool::new(agents.clone(), None),
         agents,
         ctx,
         viewer_agent_id: seed.agent_id,
@@ -114,6 +116,45 @@ async fn happy_path_persists_record_with_empty_mcp(pool: PgPool) {
             .contains("escalate translation ambiguity")
     );
     assert_ne!(record.id, f.viewer_agent_id);
+}
+
+#[sqlx::test]
+async fn minted_hire_gets_random_bundled_avatar(pool: PgPool) {
+    // With the asset CDN configured, a recruiter-minted hire is decorated
+    // with a random bundled avatar in `1..=PRESET_AVATAR_COUNT`.
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    let tool = CreateAgentTool::new(
+        f.agents.clone(),
+        Some(std::sync::Arc::from("https://cdn.test")),
+    );
+
+    tool.execute(valid_input("scribe"), &f.ctx)
+        .await
+        .expect("create scribe");
+
+    let name = AgentName::try_from("scribe").expect("name");
+    let record = f
+        .agents
+        .read_by_name_for_viewer(f.viewer_agent_id, &name)
+        .await
+        .expect("read");
+    let url = record
+        .avatar_url
+        .as_ref()
+        .map(patom::types::AvatarUrl::as_str)
+        .expect("minted hire has a bundled avatar");
+    let n: u8 = url
+        .strip_prefix("https://cdn.test/agents/agent-")
+        .and_then(|s| s.strip_suffix(".png"))
+        .expect("matches the bundled avatar pattern")
+        .parse()
+        .expect("numeric index");
+    assert!(n >= 1, "index below 1: {n}");
+    assert!(
+        n <= patom::agents::PRESET_AVATAR_COUNT,
+        "index above cap: {n}"
+    );
 }
 
 #[sqlx::test]

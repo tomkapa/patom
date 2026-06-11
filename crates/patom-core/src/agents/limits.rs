@@ -16,6 +16,15 @@ pub const AGENT_NAME_MAX_LEN: usize = 64;
 /// table.
 pub const AGENT_DESCRIPTION_MAX_LEN: usize = 512;
 
+/// Number of app-bundled default avatar images (`agent-1.png` ..
+/// `agent-{N}.png`) hosted on the asset CDN under `/agents/`.
+///
+/// The recruiter takes index 1, preset team members take the next indices
+/// in order, and a freshly-minted agent takes a random index in
+/// `1..=PRESET_AVATAR_COUNT`. Raising this requires uploading the matching
+/// `agent-{n}.png` assets to the CDN first. See [`crate::agents::avatar`].
+pub const PRESET_AVATAR_COUNT: u8 = 12;
+
 /// Top-K cap on a single `search_agents` result page.
 ///
 /// (doc/agent_discovery_plan.md §7) Same order of magnitude as

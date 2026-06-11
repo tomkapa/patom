@@ -285,7 +285,11 @@ pub(super) async fn seed_recruiter(
     org_id: crate::auth::OrgId,
     language: Language,
 ) -> Result<(), HttpError> {
-    let seed = crate::app::recruiter_seed(&state.prompts, language).map_err(|e| {
+    // The asset CDN origin (when object storage is configured) is where the
+    // bundled `agent-1.png` recruiter avatar lives. `None` in deployments
+    // without object storage → the recruiter seeds with no avatar.
+    let asset_host = state.assets.as_ref().map(|s| s.public_host());
+    let seed = crate::app::recruiter_seed(&state.prompts, language, asset_host).map_err(|e| {
         tracing::error!(
             event = "auth.callback.recruiter_seed_build_failed",
             error = ?e,

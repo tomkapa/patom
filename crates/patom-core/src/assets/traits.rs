@@ -319,6 +319,17 @@ pub trait AssetStore: fmt::Debug + Send + Sync + 'static {
 
     /// Delete an object. Idempotent — deleting a missing key is `Ok(())`.
     async fn delete(&self, key: ObjectKey) -> Result<(), AssetError>;
+
+    /// The public-facing base origin the FE prepends to object keys, with no
+    /// trailing slash (e.g. `https://asset.example` or
+    /// `http://minio:9000/<bucket>`). Validated at the config boundary
+    /// ([`crate::config::ObjectStorageSettings`]).
+    ///
+    /// Exposed so callers that assemble a *static* asset path — e.g. the
+    /// bundled default agent avatars at `/agents/agent-{n}.png` — can build
+    /// the absolute URL without uploading bytes. Single source of the origin:
+    /// the store already holds it for [`Self::put`].
+    fn public_host(&self) -> &str;
 }
 
 pub type SharedAssetStore = Arc<dyn AssetStore>;

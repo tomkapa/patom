@@ -12,6 +12,7 @@
 //! Distinct from [`crate::agent_core`]: that module owns the runtime orchestrator
 //! (`Agent`, the chat loop). This one owns the *registry* of agent definitions.
 
+mod avatar;
 mod cache;
 mod error;
 mod limits;
@@ -22,12 +23,13 @@ mod registry;
 mod store;
 mod types;
 
+pub use avatar::{AvatarIndex, preset_agent_avatar_url};
 pub use cache::AgentPromptCache;
 pub use error::AgentStoreError;
 pub use limits::{
     AGENT_DESCRIPTION_MAX_LEN, AGENT_NAME_MAX_LEN, AGENT_PROMPT_CACHE_CAP, AGENT_PROMPT_CACHE_TTL,
     AGENT_SYSTEM_PROMPT_MAX_LEN, DEFAULT_SEARCH_AGENT_RESULTS, MAX_ALLOWED_MCP_CATALOGS_PER_AGENT,
-    MAX_ALLOWED_MCP_TOOLS_PER_CATALOG_PER_AGENT, MAX_SEARCH_AGENT_RESULTS,
+    MAX_ALLOWED_MCP_TOOLS_PER_CATALOG_PER_AGENT, MAX_SEARCH_AGENT_RESULTS, PRESET_AVATAR_COUNT,
 };
 pub use model_resolver::{ModelResolver, SharedModelResolver, StaticAgentModelResolver};
 pub use pg_store::PgAgentStore;

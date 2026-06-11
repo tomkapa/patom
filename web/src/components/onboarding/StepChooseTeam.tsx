@@ -25,6 +25,12 @@ import { track } from "../../lib/analytics";
 import { ApiError } from "../../lib/errors";
 import { LucideByName } from "./LucideByName";
 
+/** Public CDN base for the bundled default agent avatars
+ *  (`agent-1.png` … `agent-12.png`). The Recruiter takes `agent-1.png`
+ *  (assigned by the backend seed), so preset teammates start at
+ *  `agent-2.png` in roster order. */
+const AGENT_AVATAR_BASE = "https://asset.patom.app/agents";
+
 /** Step 2 — pick a preset team and hire its agents. The Recruiter (the
  *  org's default-seeded agent) is NOT in any preset; it's always already
  *  hired by the time the wizard runs. Hiring loops `POST /agents`
@@ -54,7 +60,7 @@ export function StepChooseTeam({
       // agent surfaces as a 409 Conflict; we treat that as "already
       // done" and march on, which is what makes the loop honestly
       // resumable from the failing slot.
-      for (const a of preset.agents) {
+      for (const [idx, a] of preset.agents.entries()) {
         try {
           await api.createAgent({
             name: a.name,
@@ -65,6 +71,11 @@ export function StepChooseTeam({
             // wired are inert until the owner connects them; the
             // Recruiter's first-contact orientation surfaces the prompts.
             allowed_mcp_tools: a.allowed_mcp_tools,
+            // Default avatar: the Recruiter takes agent-1.png, so preset
+            // teammates take the next bundled CDN avatars in roster order
+            // (agent-2.png, agent-3.png, …). Sent as an explicit avatar_url
+            // so the BE keeps it instead of assigning a random default.
+            avatar_url: `${AGENT_AVATAR_BASE}/agent-${idx + 2}.png`,
           });
           // One event per genuinely-created agent. The 409 path below is a
           // resume over an already-hired agent, so it must not re-count.

@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 
 use patom::agents::{
     AgentDescription, AgentId, AgentName, AgentSeed, AgentStore, AgentStoreError,
-    AgentSystemPrompt, AgentUpdate, AllowedMcpTools, NewAgent, PgAgentStore,
+    AgentSystemPrompt, AgentUpdate, AllowedMcpTools, AvatarIndex, NewAgent, PgAgentStore,
+    preset_agent_avatar_url,
 };
 use patom::auth::OrgId;
 use patom::clock::SystemClock;
@@ -29,6 +30,7 @@ fn default_seed(name: &str, prompt: &str) -> AgentSeed {
         name: AgentName::try_from(name).expect("valid name"),
         system_prompt: AgentSystemPrompt::try_from(prompt).expect("valid prompt"),
         description: AgentDescription::try_from("Default seed.").expect("valid desc"),
+        avatar_url: None,
     }
 }
 
@@ -112,6 +114,29 @@ async fn seed_default_agent_has_no_avatar(pool: PgPool) {
     let store = store(&pool);
     let record = store.read(seed.agent_id).await.expect("read");
     assert!(record.avatar_url.is_none(), "seed agent has no avatar");
+}
+
+#[sqlx::test]
+async fn seed_preset_persists_default_avatar(pool: PgPool) {
+    // When the asset CDN is configured the recruiter seed carries
+    // `agent-1.png`; the URL must round-trip through the seed INSERT and the
+    // SELECT/hydrate path unchanged.
+    let seed = seed_tenant(&pool).await;
+    let store = store(&pool);
+
+    let avatar = preset_agent_avatar_url("https://cdn.test", AvatarIndex::RECRUITER);
+    let mut s = default_seed("avatared", "role prompt");
+    s.avatar_url = Some(avatar.clone());
+    let id = store
+        .seed_preset(seed.org_id, s)
+        .await
+        .expect("seed avatared");
+
+    let record = store.read(id).await.expect("read");
+    assert_eq!(
+        record.avatar_url.as_ref().map(AvatarUrl::as_str),
+        Some("https://cdn.test/agents/agent-1.png"),
+    );
 }
 
 #[sqlx::test]
