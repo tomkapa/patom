@@ -21,12 +21,12 @@ use crate::provider::ToolSpec;
 use crate::tools::{DynamicToolSource, SharedTool};
 use crate::types::{ParseError, ToolName};
 
-use super::catalog::SharedMcpCatalogStore;
+use super::catalog::{ClientSource, SharedMcpCatalogStore};
 use super::client::McpClient;
 use super::credentials::{CredentialPayload, SharedMcpCredentialStore};
 use super::error::McpError;
 use super::limits::{MAX_MCP_SERVERS, MAX_TOOLS_PER_SERVER};
-use super::oauth::build_manager_for_request;
+use super::oauth::{ConnectCtx, build_manager_for_request};
 use super::store::{McpHealthUpdate, SharedMcpServerStore};
 use super::tool::McpTool;
 use super::types::{
@@ -574,7 +574,7 @@ impl McpRegistryInner {
             return Some(prev.client);
         }
         let connect_result = if matches!(credentials, Some(CredentialPayload::Oauth2(_))) {
-            self.connect_oauth(id, org_id, config).await
+            self.connect_oauth(id, org_id, catalog_id, config).await
         } else {
             McpClient::connect(config, credentials).await
         };
@@ -617,6 +617,7 @@ impl McpRegistryInner {
         &self,
         server_id: McpServerId,
         org_id: crate::auth::OrgId,
+        catalog_id: &McpCatalogId,
         transport: &McpTransport,
     ) -> Result<McpClient, McpError> {
         let deps = self.oauth_deps.as_ref().ok_or_else(|| {
@@ -626,6 +627,27 @@ impl McpRegistryInner {
             )
         })?;
         let McpTransport::Http { url } = transport;
+        // The catalog row drives which OAuth client gets re-applied on
+        // reconnect (`client_source` + the platform/user secret). A
+        // credentialed server with no catalog row is a misconfiguration —
+        // surface it rather than connecting unauthenticated.
+        let catalog = deps
+            .catalog
+            .get_for_org(org_id, catalog_id)
+            .await?
+            .ok_or_else(|| {
+                McpError::InvalidConfig(format!(
+                    "oauth server {server_id} has no catalog row for `{catalog_id}`"
+                ))
+            })?;
+        // Only `UserSupplied` connectors carry a per-org client in the
+        // catalog row; every other source reads its client from env or the
+        // persisted DCR registration, so skip the decrypt otherwise.
+        let user_oauth_client = if matches!(catalog.client_source, ClientSource::UserSupplied) {
+            deps.catalog.oauth_client(org_id, catalog_id).await?
+        } else {
+            None
+        };
         // Bound the OAuth manager build: it performs PRM + AS metadata
         // discovery over HTTP plus a credential-store read, so a slow
         // vendor must not stall the connect path (CLAUDE.md §5).
@@ -634,13 +656,16 @@ impl McpRegistryInner {
         // the worst-case connect duration predictable.
         let manager = tokio::time::timeout(
             super::limits::MCP_CONNECT_TIMEOUT,
-            build_manager_for_request(
+            build_manager_for_request(ConnectCtx {
+                catalog: &catalog,
+                base_url: url.as_str(),
+                http: deps.inner_http.clone(),
+                platform_clients: deps.platform_clients.as_ref(),
+                user_oauth_client,
+                credentials: deps.credentials.clone(),
                 server_id,
                 org_id,
-                url.as_str(),
-                deps.inner_http.clone(),
-                deps.credentials.clone(),
-            ),
+            }),
         )
         .await
         .map_err(|_| McpError::Connect("oauth manager init timed out".into()))?
