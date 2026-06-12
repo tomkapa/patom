@@ -115,7 +115,7 @@ mod tests {
         let out = usable_models(&registry, &overlay, OrgId::new());
 
         assert!(!out.is_empty(), "deepseek models must surface");
-        assert_eq!(providers_of(&out), ["deepseek"].into_iter().collect());
+        assert_eq!(providers_of(&out), std::iter::once("deepseek").collect());
         assert!(out.iter().any(|e| e.id == "deepseek-v4-flash"));
     }
 
@@ -151,7 +151,7 @@ mod tests {
 
         assert_eq!(
             providers_of(&out),
-            ["deepseek"].into_iter().collect(),
+            std::iter::once("deepseek").collect(),
             "another org's BYO key must not leak into mine"
         );
     }
