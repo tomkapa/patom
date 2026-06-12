@@ -684,7 +684,7 @@ const en = {
     "Your team is hired and waiting. Want them to introduce themselves and tell you which connections to set up? We'll drop a message to your Recruiter into the box below — review it and hit send.",
   "chat.welcome.cta": "Introduce me to the team",
   "chat.welcome.prefill":
-    "@recruiter Hi! Could you introduce me to my team — go through each agent, say what they do and how they hand off, and check each one's description for the connection it uses. Then tell me exactly which connections to set up. If a description names no connection, that agent needs none — please don't suggest extras.",
+    "@Recruiter Hi! Could you introduce me to my team — go through each agent, say what they do and how they hand off, and check each one's description for the connection it uses. Then tell me exactly which connections to set up. If a description names no connection, that agent needs none — please don't suggest extras.",
 
   // General tab
   "settings.general.title": "General",

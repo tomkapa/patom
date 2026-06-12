@@ -14,8 +14,9 @@ pub const DEFAULT_WARN_BPS: u16 = 8000;
 /// (CLAUDE.md §5: *unknown bound → pick a pessimistic one and add a metric*).
 ///
 /// Every lane is `>=` the most expensive catalog model's corresponding lane
-/// (today the Anthropic Opus tier: input 15 / output 75 / cache-write 18.75 /
-/// cache-read 1.5 USD per Mtok). Over-billing an unpriced model is the safe
+/// (today the dearest lanes are OpenAI gpt-5.5 output at $30/Mtok and input at
+/// $5/Mtok; the fallback sits comfortably above all of them). Over-billing an
+/// unpriced model is the safe
 /// failure: it can only *tighten* the budget, never silently let spend run
 /// free. A `pricing.price_for` fallback also emits `patom.billing.price.fallback`
 /// so ops can add the missing entry. Units: micro-USD per million tokens.

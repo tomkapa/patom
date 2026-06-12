@@ -68,6 +68,14 @@ pub struct AppState {
     /// it after every key write so the new key routes within one tick. The
     /// owning coordinator task lives on [`Server`].
     pub provider_refresh: crate::provider::ProviderRefreshTrigger,
+    /// Immutable platform provider registry (the keys the operator configured
+    /// at startup — DeepSeek only in the default cloud build). `GET /models`
+    /// reads it to show an org only the models it can actually route.
+    pub providers: crate::provider::SharedProviderRegistry,
+    /// Per-org BYO provider overlay (#141). `GET /models` unions its keyed
+    /// providers with [`Self::providers`] so a BYO key surfaces that vendor's
+    /// models in the agent picker. Same predicate the model resolver routes on.
+    pub provider_overlay: crate::provider::OrgProviderOverlay,
     /// Per-user rate limiter for `POST /mcp-servers/test-connect`. Process-wide
     /// singleton shared across all handlers.
     pub mcp_test_rate: TestConnectRateLimiter,

@@ -357,7 +357,7 @@ export function ThreadPanel({
             value={reply}
             onChange={setReply}
             roster={roster}
-            placeholder="Reply… (@ to mention anyone)"
+            placeholder="Reply… (@mention an agent to get a reply)"
             onSubmit={sendReply}
             disabled={!thread || pending}
             textRef={replyRef}

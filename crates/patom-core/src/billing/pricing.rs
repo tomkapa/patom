@@ -29,25 +29,30 @@ pub fn price_for(model: Model) -> Price {
 /// with an arbitrary string (a real [`Model`] can only ever be a catalog name).
 fn price_for_name(name: &str) -> Price {
     // micro-USD per million tokens: input, output, cache_write, cache_read.
-    // Vendor list prices as of the catalog generation (May 2026); see
-    // src/provider/catalog.rs for the source links.
+    // Vendor list prices verified against official sources June 2026 (see
+    // src/provider/catalog.rs for the source links). When a vendor changes a
+    // list price, update the arm here — the change is the audit trail (§8).
     match name {
-        // Anthropic. Cache-write = 1.25× input, cache-read = 0.1× input.
-        "claude-opus-4-7" => Price::new(15_000_000, 75_000_000, 18_750_000, 1_500_000),
+        // Anthropic — platform.claude.com/docs/en/about-claude/models/overview.
+        // Cache-write = 1.25× input, cache-read = 0.1× input.
+        "claude-opus-4-7" => Price::new(5_000_000, 25_000_000, 6_250_000, 500_000),
         "claude-sonnet-4-6" | "claude-sonnet-4-5" => {
             Price::new(3_000_000, 15_000_000, 3_750_000, 300_000)
         }
-        "claude-haiku-4-5" => Price::new(800_000, 4_000_000, 1_000_000, 80_000),
-        // OpenAI. No cache-write surcharge (cache_write = input);
-        // cache-read ≈ 0.1× input.
-        "gpt-5.5" => Price::new(2_500_000, 20_000_000, 2_500_000, 250_000),
-        "gpt-5.4" => Price::new(1_250_000, 10_000_000, 1_250_000, 125_000),
+        "claude-haiku-4-5" => Price::new(1_000_000, 5_000_000, 1_250_000, 100_000),
+        // OpenAI — developers.openai.com/api/docs/pricing. No cache-write
+        // surcharge (cache_write = input); cache-read ≈ 0.1× input. The GPT-5
+        // line doubled with the 2026-04-23 GPT-5.5 release.
+        "gpt-5.5" => Price::new(5_000_000, 30_000_000, 5_000_000, 500_000),
+        "gpt-5.4" => Price::new(2_500_000, 15_000_000, 2_500_000, 250_000),
         "gpt-5.4-mini" => Price::new(250_000, 2_000_000, 250_000, 25_000),
         "gpt-5.4-nano" => Price::new(50_000, 400_000, 50_000, 5_000),
         "gpt-4o-mini" => Price::new(150_000, 600_000, 150_000, 15_000),
-        // DeepSeek.
-        "deepseek-v4-pro" => Price::new(270_000, 1_100_000, 270_000, 27_000),
-        "deepseek-v4-flash" => Price::new(70_000, 280_000, 70_000, 7_000),
+        // DeepSeek — api-docs.deepseek.com/quick_start/pricing. Standard list
+        // price (ignores the periodic 75% V4-Pro promo). cache_write = input,
+        // cache-read = 0.1× input.
+        "deepseek-v4-pro" => Price::new(1_740_000, 3_480_000, 1_740_000, 174_000),
+        "deepseek-v4-flash" => Price::new(140_000, 280_000, 140_000, 14_000),
         // Test-only sentinels, present only under the `test-catalog` feature
         // (see catalog::TEST_CATALOG_EXTENSION). Priced so the completeness
         // test holds without exposing them to release builds.
@@ -170,7 +175,7 @@ mod tests {
         // 1M tokens on each lane sums the four per-Mtok rates directly.
         let price = price_for_name("claude-opus-4-7");
         let cost = turn_cost(price, &usage(1_000_000, 1_000_000, 1_000_000, 1_000_000));
-        assert_eq!(cost.get(), 15_000_000 + 75_000_000 + 18_750_000 + 1_500_000);
+        assert_eq!(cost.get(), 5_000_000 + 25_000_000 + 6_250_000 + 500_000);
     }
 
     #[test]

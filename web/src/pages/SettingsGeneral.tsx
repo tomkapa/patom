@@ -15,7 +15,7 @@ import { GutteredEditor } from "../components/organisms/GutteredEditor";
 import { PromptStatsFooter } from "../components/agentDetail/PromptStatsFooter";
 import { Modal, ModalFooter, ModalHeader } from "../components/molecules/Modal";
 import { Select } from "../components/molecules/Select";
-import { PrefixInput } from "../components/core/PrefixInput";
+// import { PrefixInput } from "../components/core/PrefixInput"; // slug field hidden (unsupported)
 import { ImageUploader } from "../components/molecules/ImageUploader";
 import { Monogram } from "../components/atoms/Monogram";
 import {
@@ -34,7 +34,8 @@ import type { Language } from "../types/api";
 // Default tile for workspaces without a custom avatar; matches OrgSwitcher.
 import appLogoUrl from "../../assets/favicon-192.png";
 
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+// Slug editing is hidden until the backend supports it; kept for re-enable.
+// const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export function SettingsGeneral() {
   const { t } = useT();
@@ -271,7 +272,10 @@ export function SettingsGeneral() {
               data-testid="settings-general-name"
             />
           </SettingsField>
-          <SettingsField
+          {/* Slug editing isn't supported yet — hidden until the backend
+           *  honours a slug change. State/save plumbing stays put so this is
+           *  a one-block re-enable. */}
+          {/* <SettingsField
             label={t("settings.general.identity.slug")}
             helper={t("settings.general.identity.slug.helper")}
           >
@@ -296,7 +300,7 @@ export function SettingsGeneral() {
                 {slugError}
               </div>
             ) : null}
-          </SettingsField>
+          </SettingsField> */}
         </SectionCard>
 
         {/* DEFAULTS */}

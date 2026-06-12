@@ -10,14 +10,14 @@ use patom::auth::OrgId;
 use patom::billing::GrantAmount;
 use patom::entitlements::{AgentLimit, Entitlements, Feature};
 
-/// The launch-period signup credit grant: $2 = 2,000,000 micro-USD (#154).
+/// The launch-period signup credit grant: $1 = 1,000,000 micro-USD (#154).
 ///
 /// A new workspace is seeded with this much free platform credit so it can
 /// start using AI without paying. It is a **launch promo** — when it ends this
 /// drops to a path that returns `None` from [`Entitlements::signup_grant`],
 /// while [`Entitlements::credit_gate_active`] stays `true` (new orgs then start
 /// blocked at zero and must bring their own key or pay).
-pub const SIGNUP_GRANT_MICROS: i64 = 2_000_000;
+pub const SIGNUP_GRANT_MICROS: i64 = 1_000_000;
 
 /// The cloud-tier entitlement policy.
 ///

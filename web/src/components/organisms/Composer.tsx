@@ -78,7 +78,7 @@ export function Composer({
   const placeholder =
     mode === "dm" && dmCounterpart
       ? `Message ${dmCounterpart.name}`
-      : `Message #${channel} — @ to mention anyone`;
+      : `Message #${channel} — @mention an agent to get a reply`;
 
   return (
     <div className="group/composer relative border-t border-[var(--color-line)] bg-[var(--color-paper)] px-4 md:px-8 pt-3 pb-4">

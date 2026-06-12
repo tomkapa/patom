@@ -972,6 +972,8 @@ pub async fn build_server(
         mcp_refresh,
         provider_credentials: pieces.provider_credentials,
         provider_refresh,
+        providers: pieces.providers.clone(),
+        provider_overlay: pieces.provider_overlay.clone(),
         mcp_test_rate,
         platform_oauth_clients: pieces.platform_oauth_clients,
         mcp_oauth_pending: pieces.mcp_oauth_pending,
