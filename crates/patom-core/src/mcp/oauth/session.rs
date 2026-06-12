@@ -69,26 +69,79 @@ where
         .map_err(OAuthError::from)
 }
 
+/// Inputs to [`build_manager_for_request`]. Bundled into a struct so the
+/// connect path reads top-down at the seam and stays under clippy's
+/// argument-count cap (the same shape as [`StartCtx`]).
+#[allow(missing_debug_implementations)] // holds reqwest::Client + trait-object stores (no Debug)
+pub struct ConnectCtx<'a> {
+    pub catalog: &'a McpCatalogEntry,
+    pub base_url: &'a str,
+    pub http: reqwest::Client,
+    pub platform_clients: &'a HashMap<String, PlatformOAuthClient>,
+    /// The operator's own OAuth client, decrypted from the catalog row.
+    /// Required when `catalog.client_source == UserSupplied`, ignored
+    /// otherwise; the registry fetches it via
+    /// [`crate::mcp::McpCatalogStore::oauth_client`].
+    pub user_oauth_client: Option<UserOAuthClient>,
+    pub credentials: SharedMcpCredentialStore,
+    pub server_id: McpServerId,
+    pub org_id: crate::auth::OrgId,
+}
+
 /// Build an `AuthorizationManager` for `(server_id, org_id)` bound to
 /// `base_url`. Used by the registry's connect path; rmcp's `AuthClient`
 /// wraps the returned manager and handles bearer injection + refresh.
 ///
-/// The manager loads stored credentials from `credentials` on the first
-/// `get_access_token` call — no eager fetch here.
+/// When a persisted token exists we discover AS metadata and re-apply the
+/// OAuth client config (branching on `client_source`, secret included for
+/// confidential Platform/`UserSupplied` clients). rmcp's `refresh_token`
+/// dereferences `manager.oauth_client`, so without this an expired access
+/// token fails the reconnect with `Internal error: OAuth client not
+/// configured` — the connect path is the one hand-off that never called
+/// `configure_client`. This generalises rmcp's own `initialize_from_store`
+/// (which only knows the public-client `configure_client_id` shape) to
+/// carry the client secret.
+///
+/// A not-yet-authorized server (bootstrap row, `token_response = None`) has
+/// nothing to refresh, so we leave the client unconfigured and let the
+/// un-authed connect surface `AuthorizationRequired` unchanged — same gate
+/// rmcp uses in `initialize_from_store`.
 pub async fn build_manager_for_request(
-    server_id: McpServerId,
-    org_id: crate::auth::OrgId,
-    base_url: &str,
-    http: reqwest::Client,
-    credentials: SharedMcpCredentialStore,
+    ctx: ConnectCtx<'_>,
 ) -> Result<AuthorizationManager, OAuthError> {
     let mut manager = bounded(
         "AuthorizationManager::new[connect]",
-        AuthorizationManager::new(base_url),
+        AuthorizationManager::new(ctx.base_url),
     )
     .await?;
-    manager.with_client(http).map_err(OAuthError::from)?;
-    manager.set_credential_store(PatomCredentialStore::new(server_id, org_id, credentials));
+    manager
+        .with_client(ctx.http.clone())
+        .map_err(OAuthError::from)?;
+    let cred_store = PatomCredentialStore::new(ctx.server_id, ctx.org_id, ctx.credentials.clone());
+    let has_token = matches!(
+        cred_store.load().await.map_err(OAuthError::from)?,
+        Some(stored) if stored.token_response.is_some(),
+    );
+    manager.set_credential_store(cred_store);
+    if has_token {
+        let metadata = bounded("discover_metadata[connect]", manager.discover_metadata()).await?;
+        manager.set_metadata(metadata);
+        // The refresh_token grant (RFC 6749 §6) never sends `redirect_uri`,
+        // so the value is irrelevant here — `base_url` is a valid absolute
+        // URL that satisfies rmcp's `RedirectUrl` parse without affecting
+        // the refresh request.
+        configure_oauth_client(
+            &mut manager,
+            ctx.catalog,
+            ctx.base_url,
+            ctx.platform_clients,
+            ctx.user_oauth_client.as_ref(),
+            ctx.server_id,
+            ctx.org_id,
+            ctx.credentials,
+        )
+        .await?;
+    }
     Ok(manager)
 }
 
@@ -438,7 +491,7 @@ pub async fn handle_callback(
 
     // Re-configure the client identically to the start path so rmcp's
     // internal state matches the AS's record of this flow.
-    configure_client_for_callback(
+    configure_oauth_client(
         &mut manager,
         catalog,
         redirect_uri,
@@ -460,10 +513,13 @@ pub async fn handle_callback(
 }
 
 /// Branch on `client_source` and call `configure_client` on the manager with
-/// the right config. Extracted from [`handle_callback`] to keep that function
-/// under the §4 length ceiling.
+/// the right config. Shared by [`handle_callback`] (code exchange) and
+/// [`build_manager_for_request`] (reconnect/refresh) so both hand-offs apply
+/// an identical client — id plus secret for confidential clients. The caller
+/// must have set the manager's metadata first (`configure_client` requires
+/// it).
 #[allow(clippy::too_many_arguments)]
-async fn configure_client_for_callback(
+async fn configure_oauth_client(
     manager: &mut AuthorizationManager,
     catalog: &McpCatalogEntry,
     redirect_uri: &str,

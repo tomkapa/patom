@@ -32,7 +32,9 @@ mod state_adapter;
 
 pub use credential_adapter::PatomCredentialStore;
 pub use errors::OAuthError;
-pub use session::{StartCtx, build_manager_for_request, handle_callback, start_authorization};
+pub use session::{
+    ConnectCtx, StartCtx, build_manager_for_request, handle_callback, start_authorization,
+};
 pub use state_adapter::{
     PatomPendingCtx, PatomStateStore, PgMcpOAuthPendingStore, ResumeCtx,
     SharedMcpOAuthPendingStore, SlackPingCtx,
