@@ -418,6 +418,7 @@ impl SendMessageTool {
                     from,
                     to_thread: thread,
                     content: content.as_str().to_owned(),
+                    to: receiver,
                 },
             )
             .await;

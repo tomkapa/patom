@@ -29,6 +29,7 @@ path = "src/main.rs"
 patom-core = { workspace = true }
 anyhow.workspace = true
 dotenvy.workspace = true
+rustls.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

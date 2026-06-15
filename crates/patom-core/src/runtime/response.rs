@@ -55,6 +55,12 @@ pub enum ResponseChunk {
         from: AgentId,
         to_thread: ThreadId,
         content: String,
+        /// The colleague this message is addressed to (the `send_message`
+        /// receiver), or `None` for an untagged post. Lets a chat adapter
+        /// render a platform `@`-mention of the recipient (e.g. Lark `<at>`).
+        /// Optional + skipped-when-`None` so the wire stays backward-compatible.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<crate::colleagues::ColleagueId>,
     },
     /// Interactive prompt: the agent is asking the user to wire an MCP
     /// integration from inside the chat thread.

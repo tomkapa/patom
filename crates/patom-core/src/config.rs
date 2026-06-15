@@ -81,6 +81,9 @@ pub enum SettingsError {
     #[error("slack: PATOM_SLACK_CLIENT_ID must be non-empty after trim")]
     InvalidSlackClientId,
 
+    #[error("lark: PATOM_LARK_API_BASE {raw:?} is not a valid http(s) origin ({reason})")]
+    InvalidLarkApiBase { raw: String, reason: &'static str },
+
     #[error(
         "s3: partial configuration; set all of PATOM_S3_ENDPOINT, \
          PATOM_S3_BUCKET, PATOM_S3_ACCESS_KEY_ID, PATOM_S3_SECRET_ACCESS_KEY, \
@@ -157,6 +160,12 @@ pub struct Settings {
     /// set. `None` is a first-class deployment (the Slack routes and
     /// background workers stay un-spawned).
     pub slack: Option<SlackSettings>,
+    /// Lark (Feishu) adapter — present iff `PATOM_LARK_ENABLED` is truthy.
+    /// `None` is a first-class deployment (the Lark admin route 404s and the
+    /// WS manager stays un-spawned). Per-bot app secrets are registered in the
+    /// `lark_apps` table (DB-encrypted), never via env — so the only env knob
+    /// is the feature flag + an optional API-host override.
+    pub lark: Option<LarkSettings>,
     /// Generic S3-compatible object storage (MinIO / AWS / self-hosted /
     /// Cloudflare R2). Present iff all required `PATOM_S3_*` env vars are
     /// set. When `None`, the upload endpoints 503 with "asset storage not
@@ -242,6 +251,23 @@ pub struct SlackSettings {
     /// Derived: `<auth.oauth_redirect_base>/slack/oauth/callback`. Slack
     /// must whitelist this URL on the app's "OAuth & Permissions" page.
     pub redirect_url: String,
+}
+
+/// Default Lark open-platform API host (international). CN deployments set
+/// `PATOM_LARK_API_BASE=https://open.feishu.cn`.
+pub const DEFAULT_LARK_API_BASE: &str = "https://open.larksuite.com";
+
+/// Lark-side configuration. Gated by `PATOM_LARK_ENABLED`; per-bot credentials
+/// live in the `lark_apps` table (DB-encrypted), not here.
+#[derive(Debug, Clone)]
+pub struct LarkSettings {
+    /// Lark open-platform API base (`https://open.larksuite.com` intl /
+    /// `https://open.feishu.cn` CN). Selects the handshake + REST host. Stored
+    /// trimmed with no trailing slash.
+    pub api_base: String,
+    /// Public origin used to build the future consent link; reuses
+    /// `auth.oauth_redirect_base` (trailing slash trimmed).
+    pub public_base_url: String,
 }
 
 /// Patom-supported MCP OAuth client credentials, keyed by the env-var
@@ -565,6 +591,13 @@ struct RawSettings {
     patom_slack_client_id: Option<String>,
     #[serde(default)]
     patom_slack_client_secret: Option<SecretString>,
+
+    // Lark adapter — a single feature flag (per-bot secrets are DB-registered,
+    // not env) plus an optional API-host override.
+    #[serde(default)]
+    patom_lark_enabled: Option<bool>,
+    #[serde(default)]
+    patom_lark_api_base: Option<String>,
 
     // S3-compatible object storage — same all-or-nothing rule as Slack
     // for the five required fields. `region` is optional (defaulted).
@@ -897,6 +930,27 @@ impl TryFrom<RawSettings> for Settings {
             }
             _ => return Err(SettingsError::PartialSlackConfig),
         };
+        let lark = if raw.patom_lark_enabled.unwrap_or(false) {
+            let raw_base = raw
+                .patom_lark_api_base
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(DEFAULT_LARK_API_BASE);
+            let api_base = parse_origin(raw_base, &["http", "https"]).map_err(|reason| {
+                SettingsError::InvalidLarkApiBase {
+                    raw: raw_base.to_owned(),
+                    reason,
+                }
+            })?;
+            let public_base_url = auth.oauth_redirect_base.trim_end_matches('/').to_owned();
+            Some(LarkSettings {
+                api_base,
+                public_base_url,
+            })
+        } else {
+            None
+        };
         let object_storage = resolve_object_storage(
             raw.patom_s3_endpoint,
             raw.patom_s3_region,
@@ -935,6 +989,7 @@ impl TryFrom<RawSettings> for Settings {
             posthog_key: raw.patom_posthog_key,
             posthog_host,
             slack,
+            lark,
             object_storage,
             smtp,
         })
@@ -1169,6 +1224,8 @@ mod tests {
             patom_slack_signing_secret: None,
             patom_slack_client_id: None,
             patom_slack_client_secret: None,
+            patom_lark_enabled: None,
+            patom_lark_api_base: None,
             patom_s3_endpoint: None,
             patom_s3_region: None,
             patom_s3_bucket: None,

@@ -109,6 +109,9 @@ pub struct Server {
     /// Optional Slack bridge worker — `Some` iff `settings.slack` is
     /// `Some`. `run_server` joins on `shutdown()` after HTTP exits.
     pub slack_bridge: Option<crate::slack::bridge::BridgeHandle>,
+    /// Optional Lark bridge worker — `Some` iff `settings.lark` is `Some`.
+    /// `run_server` joins on `shutdown()` after HTTP exits.
+    pub lark_bridge: Option<crate::lark::bridge::BridgeHandle>,
 }
 
 /// Pre-built collaborators shared by the agent and the runtime.
@@ -913,6 +916,101 @@ pub async fn build_server(
         }
     };
 
+    // Lark adapter — built only when `PATOM_LARK_ENABLED` is set. Per-bot
+    // credentials are DB-registered (encrypted) via `/api/lark/apps`, so the
+    // only env config is the feature flag + the API host. We build the stores,
+    // mint the token provider over the app-secret source, spawn the stream-pump
+    // supervisor, the inbound bridge worker, and the WS manager (one
+    // long-connection per registered bot), then expose it via `AppState::lark`.
+    let (lark_app_state, lark_bridge_handle) = match settings.lark.as_ref() {
+        None => (None, None),
+        Some(cfg) => {
+            use crate::lark::app_store::{PgLarkAppStore, SharedLarkAppStore};
+            use crate::lark::channel_map::PgLarkChannelStore;
+            use crate::lark::directory::PgLarkDirectory;
+            use crate::lark::poster::{HttpLarkPoster, SharedLarkPoster};
+            use crate::lark::state::LarkAppState;
+            use crate::lark::thread_map::PgLarkThreadStore;
+            use crate::lark::token::{AppSecretSource, CachingTokenProvider, SharedTokenProvider};
+            use crate::lark::{bridge, stream_pump, ws_manager};
+
+            let lark_http = build_http_client()?;
+            let app_store = Arc::new(PgLarkAppStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+                pieces.mcp_encryptor.clone(),
+            ));
+            let apps: SharedLarkAppStore = app_store.clone();
+            let secret_source: Arc<dyn AppSecretSource> = app_store;
+            let token_provider: SharedTokenProvider = Arc::new(CachingTokenProvider::new(
+                lark_http.clone(),
+                cfg.api_base.clone(),
+                secret_source.clone(),
+                pieces.clock.clone(),
+            ));
+            let directory: crate::lark::directory::SharedLarkDirectory = Arc::new(
+                PgLarkDirectory::new(pieces.pool.clone(), pieces.clock.clone()),
+            );
+            let channels = Arc::new(PgLarkChannelStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+            ));
+            let lark_threads = Arc::new(PgLarkThreadStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+            ));
+            let poster: SharedLarkPoster =
+                Arc::new(HttpLarkPoster::new(lark_http.clone(), cfg.api_base.clone()));
+
+            let pump_handle = stream_pump::spawn(
+                stream_pump::PumpDeps {
+                    thread_stream: thread_stream.clone(),
+                    poster,
+                    token_provider: token_provider.clone(),
+                    directory: directory.clone(),
+                    apps: apps.clone(),
+                },
+                cancel.clone(),
+            );
+
+            let (bridge_handle, bridge_tx) = bridge::spawn(
+                bridge::BridgeDeps {
+                    apps: apps.clone(),
+                    directory,
+                    channels,
+                    threads: lark_threads,
+                    thread_store: pieces.threads.clone(),
+                    colleagues: pieces.colleagues.clone(),
+                    queue: pieces.queue.clone(),
+                    stream_pump: pump_handle.clone(),
+                    token_provider: token_provider.clone(),
+                    http: lark_http.clone(),
+                    api_base: cfg.api_base.clone(),
+                },
+                cancel.clone(),
+            );
+
+            let ws_manager = ws_manager::spawn(
+                ws_manager::WsManagerDeps {
+                    apps: apps.clone(),
+                    secret_source,
+                    token_provider,
+                    http: lark_http,
+                    api_base: cfg.api_base.clone(),
+                    bridge_tx,
+                },
+                cancel.clone(),
+            );
+
+            let state = LarkAppState {
+                apps,
+                stream_pump: pump_handle,
+                ws_manager,
+            };
+            (Some(state), Some(bridge_handle))
+        }
+    };
+
     // Object-storage seam — built once at startup from S3 settings when
     // present. Holding `None` is a first-class deployment shape; the
     // upload routes 503 cleanly instead of every other handler refusing
@@ -1000,6 +1098,7 @@ pub async fn build_server(
         web_dist: settings.web_dist.clone(),
         index_html,
         slack: slack_app_state,
+        lark: lark_app_state,
         assets,
         orgs: orgs_store,
         mailer,
@@ -1020,6 +1119,7 @@ pub async fn build_server(
         scheduling_scheduler,
         http_addr: settings.http_addr,
         slack_bridge: slack_bridge_handle,
+        lark_bridge: lark_bridge_handle,
     })
 }
 
@@ -1037,11 +1137,14 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
         scheduling_scheduler,
         http_addr,
         slack_bridge,
+        lark_bridge,
     } = server;
-    // The supervisor task that owns the stream-pump JoinSet is held
-    // behind `state.slack`. Clone the handle out before the state
-    // moves into the axum router so shutdown can still reach it.
+    // The supervisor tasks that own the stream-pump JoinSets are held behind
+    // `state.slack`/`state.lark`. Clone the handles out before the state moves
+    // into the axum router so shutdown can still reach them.
     let slack_pump_handle = state.slack.as_ref().map(|s| s.stream_pump.clone());
+    let lark_pump_handle = state.lark.as_ref().map(|s| s.stream_pump.clone());
+    let lark_ws_manager = state.lark.as_ref().map(|s| s.ws_manager.clone());
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(http_addr)
         .await
@@ -1075,6 +1178,20 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
     if let Some(pump) = slack_pump_handle {
         pump.shutdown().await;
         info!("slack.stream_pump.shutdown.complete");
+    }
+    // Lark: transport first (stop holding the long-connections), then bridge,
+    // then pump — same ordering as Slack.
+    if let Some(manager) = lark_ws_manager {
+        manager.shutdown().await;
+        info!("lark.ws_manager.shutdown.complete");
+    }
+    if let Some(bridge) = lark_bridge {
+        bridge.shutdown().await;
+        info!("lark.bridge.shutdown.complete");
+    }
+    if let Some(pump) = lark_pump_handle {
+        pump.shutdown().await;
+        info!("lark.stream_pump.shutdown.complete");
     }
     workers.shutdown().await;
     info!("workers.shutdown.complete");

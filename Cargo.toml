@@ -222,6 +222,37 @@ hmac = { version = "0.12", default-features = false }
 # the verifier. Owner: slack/.
 subtle = { version = "2", default-features = false }
 
+# §8 (zero-dep bias): protobuf runtime for Lark's long-connection. Lark's WS
+# transport delivers events as `pbbp2`-framed protobuf — there is no JSON
+# webhook, so the existing serde inbound path cannot be reused. The pbbp2
+# Frame/Header is two small messages; we hand-write them with `prost`'s
+# `#[derive(Message)]` (the `derive` feature) rather than running `prost-build`,
+# so there is NO build-time `protoc` dependency (the upstream SDK ships only
+# generated Go, no `.proto`) — the wire format is vendored as documentation in
+# `crates/patom-core/proto/pbbp2.proto`. Hand-rolling a varint/wire decoder for
+# untrusted socket bytes is ~300 LOC and a known footgun, firmly over the
+# 200-LOC bar. Owner: lark/.
+prost = { version = "0.13", default-features = false, features = ["std", "derive"] }
+
+# §8 (zero-dep bias): the WS client for Lark's long-connection. A client-side
+# RFC-6455 implementation (control-frame ping/pong, fragmentation, masking) is
+# well over 200 LOC and a known footgun; `tokio-tungstenite` is the de-facto
+# async choice. Pinned to `rustls-tls-native-roots` so it shares the single
+# rustls 0.23 TLS stack already pulled by `reqwest`/`sqlx`/`oauth2` (no openssl,
+# no second stack). The codec is behind the injectable `LarkTransport` seam so
+# tests never open a socket. Owner: lark/.
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+
+# §8 (zero-dep bias): NOT a new crate — `rustls` is already in the tree
+# (reqwest/sqlx/oauth2/tokio-tungstenite all pull it). We declare it directly
+# only to call `CryptoProvider::install_default()` once at startup: rustls 0.23
+# refuses to auto-select a crypto provider when BOTH `aws-lc-rs` and `ring` are
+# compiled in (they are, via different deps), and tokio-tungstenite's default
+# TLS config relies on that auto-selection — so the Lark WS dial panics without
+# an explicit process default. `aws_lc_rs` is rustls's own default backend.
+# Owner: patom-server (composition root).
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
+
 # §8 (zero-dep bias): the AWS-maintained S3 client, pointed at Cloudflare R2
 # (S3-compatible API). We need PutObject + DeleteObject + Sigv4 signing for
 # user-avatar and MCP-catalog-logo uploads. The signing protocol alone
