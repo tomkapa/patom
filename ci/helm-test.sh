@@ -49,7 +49,11 @@ pkgdir="$(mktemp -d)"
 helm package "$CHART" --destination "$pkgdir" >/dev/null || fail "helm package failed"
 ver="$(helm show chart "$CHART" | awk '/^version:/ {print $2}')"
 test -f "$pkgdir/patom-${ver}.tgz" || fail "expected packaged chart patom-${ver}.tgz"
-tar tzf "$pkgdir/patom-${ver}.tgz" | grep -q 'patom/charts/postgresql/Chart.yaml' \
+# Capture the listing first, then grep it: piping `tar … | grep -q` makes grep
+# close the pipe on its first match, so tar dies with SIGPIPE and `pipefail`
+# turns the whole pipeline non-zero even though the subchart was found.
+listing="$(tar tzf "$pkgdir/patom-${ver}.tgz")"
+grep -q 'patom/charts/postgresql/Chart.yaml' <<<"$listing" \
   || fail "packaged chart is missing the vendored postgresql subchart"
 rm -rf "$pkgdir"
 pass "packages to patom-${ver}.tgz with the postgresql subchart"
