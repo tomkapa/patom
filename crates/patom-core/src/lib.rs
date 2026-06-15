@@ -21,6 +21,7 @@ pub mod entitlements;
 pub mod error;
 pub mod hook;
 pub mod http;
+pub mod lark;
 pub mod mcp;
 pub mod memory;
 pub mod observability;
@@ -38,8 +39,8 @@ pub mod types;
 pub use agent_core::{Agent, AgentBuilder, AgentError};
 pub use agents::{AgentId, AgentRecord, AgentStore, SharedAgentStore};
 pub use config::{
-    ObjectStorageSettings, ProviderCredentials, ProviderSettings, Settings, SettingsError,
-    SlackSettings,
+    LarkSettings, ObjectStorageSettings, ProviderCredentials, ProviderSettings, Settings,
+    SettingsError, SlackSettings,
 };
 pub use entitlements::{
     AgentLimit, Entitlements, Feature, LicenseError, SharedEntitlements, UnlimitedEntitlements,

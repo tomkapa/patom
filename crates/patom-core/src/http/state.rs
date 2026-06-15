@@ -179,6 +179,10 @@ pub struct AppState {
     /// 404 cleanly when this is `None`, so deployments without Slack
     /// stay first-class.
     pub slack: Option<SlackAppState>,
+    /// Lark adapter wiring — `Some` when `PATOM_LARK_ENABLED` is set,
+    /// `None` otherwise. The admin route 404s and the WS manager stays
+    /// un-spawned when `None`, so deployments without Lark stay first-class.
+    pub lark: Option<crate::lark::LarkAppState>,
     /// Object-storage seam for user avatars and MCP catalog icons.
     /// `Some` when `PATOM_S3_*` env vars are configured; `None` makes
     /// the upload routes 503 with "asset storage not configured".

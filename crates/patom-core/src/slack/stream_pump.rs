@@ -573,6 +573,7 @@ mod tests {
             from: crate::agents::AgentId::new(),
             to_thread: ThreadId::new(),
             content: "hello".to_owned(),
+            to: None,
         };
         match payload_for_post(&c, None) {
             Some(PostBody::Text(s)) => assert_eq!(s, "hello"),
@@ -611,6 +612,7 @@ mod tests {
             from: crate::agents::AgentId::new(),
             to_thread: ThreadId::new(),
             content: String::new(),
+            to: None,
         };
         assert!(payload_for_post(&c, None).is_none());
     }

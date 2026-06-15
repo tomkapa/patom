@@ -6,6 +6,15 @@ use patom::{Settings, app, observability};
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
+
+    // rustls 0.23 refuses to auto-select a crypto provider when both `aws-lc-rs`
+    // and `ring` are compiled in (they are — via reqwest/sqlx vs the Lark WS
+    // client's tokio-tungstenite). The Lark long-connection builds a *default*
+    // rustls config, which panics without an explicit process default. Install
+    // one before any TLS subsystem starts; `install_default` errors only if a
+    // provider is already set, which we ignore.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // Bind the OTel guard to the function scope: `Drop` shuts down the tracer
     // provider after `run_server` returns, flushing buffered spans before the
     // process exits.
