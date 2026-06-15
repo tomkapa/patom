@@ -13,7 +13,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::agents::AgentId;
-use crate::auth::{Caller, Principal};
+use crate::auth::{AuthError, Caller, Principal, Role};
 use crate::http::{AppState, HttpError};
 
 use super::app_store::{LarkApp, LarkConnectTarget, NewLarkApp};
@@ -56,12 +56,29 @@ impl From<LarkApp> for AppView {
     }
 }
 
+/// Re-read the caller's live role on the active org (a stale JWT can't outlive a
+/// demotion) and require owner/admin: registering/removing bot credentials is a
+/// privileged operation, not something any member may do. Mirrors
+/// `routes/provider_credentials::require_admin`.
+async fn require_admin(state: &AppState, principal: &Principal) -> Result<(), HttpError> {
+    let role = state
+        .users
+        .membership(principal.user_id, principal.active_org_id)
+        .await?
+        .ok_or(AuthError::NotMember(principal.active_org_id))?;
+    match role {
+        Role::Owner | Role::Admin => Ok(()),
+        Role::Member => Err(HttpError::Forbidden("owner or admin role required")),
+    }
+}
+
 async fn register_app(
     State(state): State<AppState>,
     principal: Principal,
     Json(body): Json<RegisterRequest>,
 ) -> Result<StatusCode, HttpError> {
     let lark = state.lark.as_ref().ok_or(HttpError::NotFound)?;
+    require_admin(&state, &principal).await?;
     let app_id = LarkAppId::try_from(body.app_id).map_err(HttpError::Parse)?;
     let app_secret = LarkAppSecret::try_from(body.app_secret).map_err(HttpError::Parse)?;
     let caller = Caller::new(principal.user_id, principal.active_org_id);
@@ -91,6 +108,7 @@ async fn list_apps(
     principal: Principal,
 ) -> Result<Json<Vec<AppView>>, HttpError> {
     let lark = state.lark.as_ref().ok_or(HttpError::NotFound)?;
+    require_admin(&state, &principal).await?;
     let caller = Caller::new(principal.user_id, principal.active_org_id);
     let apps = lark.apps.list(&caller).await.map_err(map_err)?;
     Ok(Json(apps.into_iter().map(AppView::from).collect()))
@@ -102,9 +120,13 @@ async fn delete_app(
     Path(app_id): Path<String>,
 ) -> Result<StatusCode, HttpError> {
     let lark = state.lark.as_ref().ok_or(HttpError::NotFound)?;
+    require_admin(&state, &principal).await?;
     let app_id = LarkAppId::try_from(app_id).map_err(HttpError::Parse)?;
     let caller = Caller::new(principal.user_id, principal.active_org_id);
     lark.apps.delete(&caller, &app_id).await.map_err(map_err)?;
+    // Tear down the bot's live long-connection so its reconnect task doesn't
+    // linger until LARK_RECONNECT_MAX after the credentials are gone.
+    lark.ws_manager.disconnect(&app_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -114,6 +136,9 @@ fn map_err(e: LarkError) -> HttpError {
     match e {
         LarkError::UnknownApp(_) => HttpError::NotFound,
         LarkError::Parse(pe) => HttpError::Parse(pe),
-        _ => HttpError::Internal,
+        other => {
+            tracing::error!(error = ?other, event = "lark.apps.store_error");
+            HttpError::Internal
+        }
     }
 }

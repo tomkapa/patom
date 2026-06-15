@@ -55,6 +55,13 @@ pub const LARK_DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 /// Per-attempt timeout for the endpoint handshake POST.
 pub const LARK_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Timeout for dialing the negotiated `wss://…` endpoint.
+///
+/// Covers TCP + TLS + WS upgrade. Without it a slow/unresponsive Lark gateway
+/// would hang the connection task indefinitely instead of failing into the
+/// reconnect loop.
+pub const LARK_WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Per-attempt timeout for the `tenant_access_token/internal` mint.
 pub const LARK_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
 

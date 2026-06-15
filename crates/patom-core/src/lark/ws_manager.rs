@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
-use tokio::task::JoinSet;
+use tokio::task::{AbortHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -61,6 +61,7 @@ pub struct WsManagerHandle {
     cancel: CancellationToken,
     join: AsyncMutex<Option<tokio::task::JoinHandle<()>>>,
     connect_tx: mpsc::Sender<LarkConnectTarget>,
+    disconnect_tx: mpsc::Sender<LarkAppId>,
 }
 
 impl WsManagerHandle {
@@ -79,6 +80,15 @@ impl WsManagerHandle {
             warn!(event = "lark.ws.connect_after_shutdown");
         }
     }
+
+    /// Tear down a deleted bot's long-connection so its task stops at once
+    /// rather than after the reconnect budget. Idempotent: a no-op for a bot
+    /// the supervisor isn't running.
+    pub async fn disconnect(&self, app_id: &LarkAppId) {
+        if self.disconnect_tx.send(app_id.clone()).await.is_err() {
+            warn!(event = "lark.ws.disconnect_after_shutdown");
+        }
+    }
 }
 
 /// Shared handle to the WS manager.
@@ -88,12 +98,19 @@ pub type SharedWsManagerHandle = Arc<WsManagerHandle>;
 #[must_use]
 pub fn spawn(deps: WsManagerDeps, cancel: CancellationToken) -> SharedWsManagerHandle {
     let (connect_tx, connect_rx) = mpsc::channel::<LarkConnectTarget>(LARK_CONNECT_QUEUE);
+    let (disconnect_tx, disconnect_rx) = mpsc::channel::<LarkAppId>(LARK_CONNECT_QUEUE);
     let supervisor_cancel = cancel.clone();
-    let join = tokio::spawn(supervisor(deps, supervisor_cancel, connect_rx));
+    let join = tokio::spawn(supervisor(
+        deps,
+        supervisor_cancel,
+        connect_rx,
+        disconnect_rx,
+    ));
     Arc::new(WsManagerHandle {
         cancel,
         join: AsyncMutex::new(Some(join)),
         connect_tx,
+        disconnect_tx,
     })
 }
 
@@ -101,16 +118,20 @@ async fn supervisor(
     deps: WsManagerDeps,
     cancel: CancellationToken,
     mut connect_rx: mpsc::Receiver<LarkConnectTarget>,
+    mut disconnect_rx: mpsc::Receiver<LarkAppId>,
 ) {
     let mut set: JoinSet<()> = JoinSet::new();
     // App ids we've already spawned a connection task for — dedup hot-add and
-    // the startup sweep so a re-register never opens a second socket.
+    // the startup sweep so a re-register never opens a second socket. Paired
+    // with `handles` so a deleted bot's task can be aborted by app id.
     let mut spawned: std::collections::HashSet<LarkAppId> = std::collections::HashSet::new();
+    let mut handles: std::collections::HashMap<LarkAppId, AbortHandle> =
+        std::collections::HashMap::new();
     match deps.apps.list_connect_targets().await {
         Ok(targets) => {
             info!(count = targets.len(), event = "lark.ws.manager_start");
             for target in targets {
-                spawn_connection(&mut set, &mut spawned, &deps, &cancel, target);
+                spawn_connection(&mut set, &mut spawned, &mut handles, &deps, &cancel, target);
             }
         }
         Err(e) => warn!(error = ?e, event = "lark.ws.list_targets_failed"),
@@ -121,7 +142,12 @@ async fn supervisor(
             // A newly-registered bot to connect (hot-add). On a closed channel
             // recv() yields None → the `Some` pattern disables this branch.
             Some(target) = connect_rx.recv() => {
-                spawn_connection(&mut set, &mut spawned, &deps, &cancel, target);
+                spawn_connection(&mut set, &mut spawned, &mut handles, &deps, &cancel, target);
+            }
+            // A deleted bot to tear down: abort its task and forget it so a
+            // later re-register can reconnect.
+            Some(app_id) = disconnect_rx.recv() => {
+                disconnect(&mut spawned, &mut handles, &app_id);
             }
             // Reap a finished connection task (reconnect exhausted); disabled
             // when the set is empty so the supervisor still parks on `cancel`.
@@ -136,6 +162,7 @@ async fn supervisor(
 fn spawn_connection(
     set: &mut JoinSet<()>,
     spawned: &mut std::collections::HashSet<LarkAppId>,
+    handles: &mut std::collections::HashMap<LarkAppId, AbortHandle>,
     deps: &WsManagerDeps,
     cancel: &CancellationToken,
     target: LarkConnectTarget,
@@ -143,9 +170,25 @@ fn spawn_connection(
     if !spawned.insert(target.app_id.clone()) {
         return;
     }
+    let app_id = target.app_id.clone();
     let d = deps.clone();
     let c = cancel.clone();
-    set.spawn(async move { run_connection(d, target, c).await });
+    let handle = set.spawn(async move { run_connection(d, target, c).await });
+    handles.insert(app_id, handle);
+}
+
+/// Abort a bot's connection task and forget it (so a later re-register can
+/// reconnect). A no-op for an app the supervisor isn't running.
+fn disconnect(
+    spawned: &mut std::collections::HashSet<LarkAppId>,
+    handles: &mut std::collections::HashMap<LarkAppId, AbortHandle>,
+    app_id: &LarkAppId,
+) {
+    spawned.remove(app_id);
+    if let Some(handle) = handles.remove(app_id) {
+        handle.abort();
+        info!(app = %app_id, event = "lark.ws.disconnected");
+    }
 }
 
 /// Bounded reconnect loop for one bot.

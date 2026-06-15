@@ -17,6 +17,12 @@ CREATE TABLE lark_channels (
     PRIMARY KEY (org_id, tenant_key, chat_id)
 );
 
+-- One Patom channel mirrors exactly one Lark chat (the bridge derives a slug
+-- per chat_id and never reuses a channel). Enforce that 1:1 mapping, mirroring
+-- slack_channels' UNIQUE(channel_id) — channels.id is a global UUID, so a bare
+-- channel_id index is org-safe.
+CREATE UNIQUE INDEX lark_channels_channel_idx ON lark_channels (channel_id);
+
 ALTER TABLE lark_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE lark_channels FORCE ROW LEVEL SECURITY;
 CREATE POLICY lark_channels_org_isolation ON lark_channels

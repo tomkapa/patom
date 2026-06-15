@@ -37,16 +37,23 @@ pub async fn sync_on_join(deps: &BridgeDeps, ev: &ChatMemberEvent) -> Result<(),
     );
     let by_user = by_user?;
     let by_open = by_open?;
+    // The two id-type pages are paired positionally (same chat, same sort order
+    // across calls). If their lengths differ, membership changed between the two
+    // reads, so the positional alignment is no longer trustworthy — pairing the
+    // common prefix could persist the wrong open_id for a user_id (poisoning
+    // mention routing). Skip this sync rather than write misaligned rows; a later
+    // member event re-triggers it, and unsynced members are still shadow-minted
+    // lazily on their first post.
     if by_user.len() != by_open.len() {
         warn!(
             event = "lark.roster.id_count_mismatch",
             user_id_count = by_user.len(),
             open_id_count = by_open.len(),
-            "roster user_id/open_id pages differ in length; pairing the common prefix",
+            "roster user_id/open_id pages differ in length; skipping sync to avoid misaligned pairs",
         );
+        return Ok(());
     }
-    // Pair positionally (same chat, same sort order across the two calls). `zip`
-    // stops at the shorter list, so an unexpected mismatch can't index OOB.
+    // Lengths match → positional pairing is sound.
     for ((user_raw, name), (open_raw, _)) in by_user.iter().zip(by_open.iter()) {
         let (Ok(user_id), Ok(open_id)) = (
             LarkUserId::try_from(user_raw.as_str()),

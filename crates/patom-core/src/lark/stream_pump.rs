@@ -237,10 +237,11 @@ async fn handle_stream_event(
     }
 }
 
-/// Render a reply for Lark: rewrite inline `@Name` to `<at>`, and prepend an
-/// `<at>` for the addressed recipient (the `send_message` receiver) when the
-/// agent addressed a Lark human without naming them in the text — so the human
-/// is pinged. Best-effort: a directory failure logs and posts what it has.
+/// Render a reply for Lark: rewrite inline `@Name` to `<at>`, then prepend an
+/// addressed-to cue for the `send_message` receiver when they were not named in
+/// the text. A Lark *human* gets a real `<at>` ping; an *agent* (which cannot be
+/// `<at>`-pinged across BYO apps) gets a plain `@Name` text marker instead.
+/// Best-effort: a directory failure logs and posts what it has.
 async fn render_outbound(
     deps: &PumpDeps,
     req: &AttachRequest,
@@ -252,17 +253,78 @@ async fn render_outbound(
         return inline;
     };
     match deps.directory.tag_for(req.org_id, receiver).await {
-        // Prepend the recipient ping, unless the inline render already tagged
-        // them (the agent wrote `@Name` in the text → avoid a double `<at>`).
+        // Human shadow: a real `<at>` ping, unless the inline render already
+        // tagged them (the agent wrote `@Name` → avoid a double `<at>`).
         Ok(Some((name, open_id))) if !inline.contains(open_id.as_str()) => {
             format!("{} {inline}", mention::render_at(&open_id, &name))
         }
-        Ok(_) => inline,
+        // Human, but inline already tagged them → nothing more to prepend.
+        Ok(Some(_)) => inline,
+        // Not a Lark human shadow: an agent recipient cannot be `<at>`-pinged
+        // across BYO apps, so fall back to a plain `@Name` addressed-to marker.
+        Ok(None) => prepend_agent_marker(deps, req, receiver, inline).await,
         Err(e) => {
             warn!(error = ?e, event = "lark.stream_pump.receiver_tag_failed");
             inline
         }
     }
+}
+
+/// Prepend a plain `@Name` addressed-to marker when the `send_message` receiver
+/// is an *agent* colleague — a visible "to whom" cue, since a peer bot cannot be
+/// `<at>`-pinged in the BYO multi-app model (its `open_id` is app-scoped and
+/// undiscoverable across apps). Deduped: skipped when the reply already names
+/// the agent inline. Best-effort — a directory failure logs and posts as-is.
+async fn prepend_agent_marker(
+    deps: &PumpDeps,
+    req: &AttachRequest,
+    receiver: ColleagueId,
+    inline: String,
+) -> String {
+    match deps.directory.agent_name_for(req.org_id, receiver).await {
+        Ok(Some(name)) => apply_agent_marker(inline, &name),
+        Ok(None) => inline,
+        Err(e) => {
+            warn!(error = ?e, event = "lark.stream_pump.receiver_agent_name_failed");
+            inline
+        }
+    }
+}
+
+/// Prepend `@name ` to `inline` unless `inline` already names the agent inline
+/// (so an agent that typed `@Name` itself isn't double-marked).
+fn apply_agent_marker(inline: String, name: &str) -> String {
+    if already_names(&inline, name) {
+        inline
+    } else {
+        format!("@{name} {inline}")
+    }
+}
+
+/// Whether `text` already contains an inline `@name` mention at a word boundary
+/// — start-of-text or after whitespace, with a non-name char (or end) right
+/// after the name. Mirrors `mention::render_ats`'s boundary rule so the dedup
+/// agrees with the inline rewrite (e.g. `a@Name` is *not* a match).
+fn already_names(text: &str, name: &str) -> bool {
+    let needle = format!("@{name}");
+    for (pos, _) in text.match_indices(&needle) {
+        let prev_is_boundary = text[..pos]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace);
+        let after = &text[pos + needle.len()..];
+        let next_is_boundary = after.chars().next().is_none_or(|c| !is_name_char(c));
+        if prev_is_boundary && next_is_boundary {
+            return true;
+        }
+    }
+    false
+}
+
+/// A char that can appear inside a mentionable name run (`[A-Za-z0-9_-]`);
+/// matches `mention::is_name_char`.
+fn is_name_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '-' || c == '_'
 }
 
 /// Rewrite inline `@Name` mentions in the reply into Lark `<at>` markup.
@@ -391,5 +453,38 @@ mod tests {
         let out = clip("a".repeat(100), 10);
         assert_eq!(out.chars().count(), 10);
         assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn agent_marker_prepended_when_absent() {
+        let out = apply_agent_marker("Hey, can you take this one?".to_owned(), "Recruiter");
+        assert_eq!(out, "@Recruiter Hey, can you take this one?");
+    }
+
+    #[test]
+    fn agent_marker_deduped_when_named_inline() {
+        // The agent already addressed @Recruiter in the body → no second marker.
+        let out = apply_agent_marker("@Recruiter please review this".to_owned(), "Recruiter");
+        assert_eq!(out, "@Recruiter please review this");
+    }
+
+    #[test]
+    fn agent_marker_dedup_requires_word_boundary() {
+        // `email@Recruiter` is not an inline mention → still prepend the marker.
+        let out = apply_agent_marker("ping email@Recruiter now".to_owned(), "Recruiter");
+        assert_eq!(out, "@Recruiter ping email@Recruiter now");
+    }
+
+    #[test]
+    fn already_names_respects_boundaries() {
+        assert!(already_names("@Recruiter hi", "Recruiter"));
+        assert!(already_names("hi @Recruiter", "Recruiter"));
+        assert!(already_names("ok @Recruiter, thanks", "Recruiter"));
+        // Prefix of a longer name must not count as a match.
+        assert!(!already_names("@Recruiters meeting", "Recruiter"));
+        // Not at a word boundary.
+        assert!(!already_names("a@Recruiter", "Recruiter"));
+        // Absent entirely.
+        assert!(!already_names("hello there", "Recruiter"));
     }
 }

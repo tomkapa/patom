@@ -20,14 +20,18 @@ use tracing::warn;
 
 use super::{LarkSink, LarkSource, SharedLarkSink};
 use crate::lark::error::LarkError;
+use crate::lark::limits::LARK_WS_CONNECT_TIMEOUT;
 use crate::lark::pbbp2::Frame;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Dial `url`, returning the write half (shared) and the read half.
 pub async fn connect(url: &str) -> Result<(SharedLarkSink, WsReceiver), LarkError> {
-    let (stream, _resp) = connect_async(url)
+    // Bound the dial (TCP + TLS + WS upgrade) so an unresponsive gateway fails
+    // into the reconnect loop instead of hanging the connection task (§5).
+    let (stream, _resp) = tokio::time::timeout(LARK_WS_CONNECT_TIMEOUT, connect_async(url))
         .await
+        .map_err(|_| LarkError::Handshake("ws connect timed out".to_owned()))?
         .map_err(|e| LarkError::Handshake(format!("ws connect failed: {e}")))?;
     let (write, read) = stream.split();
     let sink: SharedLarkSink = Arc::new(WsSink {

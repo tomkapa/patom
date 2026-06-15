@@ -181,6 +181,13 @@ fn parse_token_response(body: &[u8]) -> Result<(String, i64), LarkError> {
         .tenant_access_token
         .filter(|t| !t.is_empty())
         .ok_or_else(|| LarkError::TokenMint("token mint ok but token empty".to_owned()))?;
+    // A non-positive `expire` would make the token instantly stale (re-mint on
+    // every call). Treat it as a malformed upstream response and fail fast.
+    if resp.expire <= 0 {
+        return Err(LarkError::TokenMint(
+            "token mint ok but expire <= 0".to_owned(),
+        ));
+    }
     Ok((token, resp.expire))
 }
 
@@ -251,6 +258,22 @@ mod tests {
     fn ok_with_empty_token_is_error() {
         let body = br#"{"code":0,"tenant_access_token":"","expire":7200}"#;
         assert!(parse_token_response(body).is_err());
+    }
+
+    #[test]
+    fn ok_with_nonpositive_expire_is_error() {
+        // A success code with a missing / zero / negative expiry is malformed —
+        // accepting it would re-mint on every call. Reject it instead.
+        for body in [
+            &br#"{"code":0,"tenant_access_token":"t-abc","expire":0}"#[..],
+            &br#"{"code":0,"tenant_access_token":"t-abc","expire":-1}"#[..],
+            &br#"{"code":0,"tenant_access_token":"t-abc"}"#[..],
+        ] {
+            assert!(
+                matches!(parse_token_response(body), Err(LarkError::TokenMint(_))),
+                "non-positive expire must be a mint error"
+            );
+        }
     }
 
     #[test]

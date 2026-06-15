@@ -90,6 +90,20 @@ pub trait LarkDirectory: fmt::Debug + Send + Sync {
         org_id: OrgId,
         colleague: ColleagueId,
     ) -> Result<Option<(String, LarkOpenId)>, LarkError>;
+
+    /// The `agents.name` for an *agent* colleague in an org, or `None` for a
+    /// human / unknown colleague.
+    ///
+    /// A peer bot cannot be `<at>`-pinged in the BYO multi-app model — its
+    /// `open_id` is app-scoped and undiscoverable across apps (Feishu docs) — so
+    /// when a `send_message` addresses an agent, the outbound render falls back
+    /// to a plain `@Name` text marker (a visible "to whom" cue, not a real
+    /// ping). This resolves that name. Privileged + org-scoped.
+    async fn agent_name_for(
+        &self,
+        org_id: OrgId,
+        colleague: ColleagueId,
+    ) -> Result<Option<String>, LarkError>;
 }
 
 /// Shared handle to a [`LarkDirectory`].
@@ -329,5 +343,30 @@ impl LarkDirectory for PgLarkDirectory {
             Some((name, open_id)) => Ok(Some((name, LarkOpenId::try_from(open_id)?))),
             None => Ok(None),
         }
+    }
+
+    async fn agent_name_for(
+        &self,
+        org_id: OrgId,
+        colleague: ColleagueId,
+    ) -> Result<Option<String>, LarkError> {
+        // Privileged (no Principal on the outbound render path) + org-scoped by
+        // the bound `$1`. The `kind = 'agent'` filter (with the join on
+        // `agent_id`) returns `None` for a human / unknown colleague.
+        let row: Option<(String,)> =
+            run_privileged::<Option<(String,)>, LarkError>(&self.pool, async move |tx| {
+                Ok(sqlx::query_as(
+                    "SELECT ag.name \
+                       FROM colleagues c \
+                       JOIN agents ag ON ag.id = c.agent_id \
+                      WHERE c.id = $2 AND c.org_id = $1 AND c.kind = 'agent'",
+                )
+                .bind(org_id)
+                .bind(colleague)
+                .fetch_optional(&mut **tx)
+                .await?)
+            })
+            .await?;
+        Ok(row.map(|(name,)| name))
     }
 }
