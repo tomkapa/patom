@@ -159,6 +159,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::slack::identity_routes::unlink_router())
         // Lark bot registration — admin-only (signed-in member).
         .merge(crate::lark::admin_routes::private_router())
+        // Discord bot registration — admin-only (signed-in member).
+        .merge(crate::discord::admin_routes::private_router())
         // Origin/Referer check — the second CSRF layer (alongside the
         // double-submit token below). Rejects state-changing requests
         // naming an untrusted origin. Needs `AppState` for the trusted

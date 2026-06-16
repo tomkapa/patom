@@ -165,6 +165,7 @@ impl UploadsHarness {
             index_html: std::sync::Arc::from(""),
             slack: None,
             lark: None,
+            discord: None,
             assets,
             orgs: std::sync::Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
             mailer: std::sync::Arc::new(patom::orgs::LogMailer),

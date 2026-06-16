@@ -84,6 +84,9 @@ pub enum SettingsError {
     #[error("lark: PATOM_LARK_API_BASE {raw:?} is not a valid http(s) origin ({reason})")]
     InvalidLarkApiBase { raw: String, reason: &'static str },
 
+    #[error("discord: PATOM_DISCORD_API_BASE {raw:?} is not a valid http(s) base url ({reason})")]
+    InvalidDiscordApiBase { raw: String, reason: &'static str },
+
     #[error(
         "s3: partial configuration; set all of PATOM_S3_ENDPOINT, \
          PATOM_S3_BUCKET, PATOM_S3_ACCESS_KEY_ID, PATOM_S3_SECRET_ACCESS_KEY, \
@@ -166,6 +169,12 @@ pub struct Settings {
     /// `lark_apps` table (DB-encrypted), never via env — so the only env knob
     /// is the feature flag + an optional API-host override.
     pub lark: Option<LarkSettings>,
+    /// Discord adapter — present iff `PATOM_DISCORD_ENABLED` is truthy. `None`
+    /// is a first-class deployment (the Discord admin route 404s and the gateway
+    /// manager stays un-spawned). Per-bot tokens are registered in the
+    /// `discord_apps` table (DB-encrypted), never via env — so the only env knob
+    /// is the feature flag + an optional API-base override.
+    pub discord: Option<DiscordSettings>,
     /// Generic S3-compatible object storage (MinIO / AWS / self-hosted /
     /// Cloudflare R2). Present iff all required `PATOM_S3_*` env vars are
     /// set. When `None`, the upload endpoints 503 with "asset storage not
@@ -267,6 +276,27 @@ pub struct LarkSettings {
     pub api_base: String,
     /// Public origin used to build the future consent link; reuses
     /// `auth.oauth_redirect_base` (trailing slash trimmed).
+    pub public_base_url: String,
+}
+
+/// Default Discord REST API base (versioned).
+///
+/// The Gateway `GET /gateway/bot` connect-info call and every REST call
+/// (`/channels/{id}/messages`, roster, history, interaction callbacks) join onto
+/// this; the Gateway WSS URL itself is returned by `GET /gateway/bot`, not
+/// derived from this base.
+pub const DEFAULT_DISCORD_API_BASE: &str = "https://discord.com/api/v10";
+
+/// Discord-side configuration. Gated by `PATOM_DISCORD_ENABLED`; per-bot tokens
+/// live in the `discord_apps` table (DB-encrypted), not here.
+#[derive(Debug, Clone)]
+pub struct DiscordSettings {
+    /// Discord REST API base, e.g. `https://discord.com/api/v10`. Stored trimmed
+    /// with no trailing slash; a versioned path is allowed (unlike the
+    /// origin-only Lark base).
+    pub api_base: String,
+    /// Public origin used to build the consent link (the Slack #41 Link-style
+    /// button URL); reuses `auth.oauth_redirect_base` (trailing slash trimmed).
     pub public_base_url: String,
 }
 
@@ -598,6 +628,13 @@ struct RawSettings {
     patom_lark_enabled: Option<bool>,
     #[serde(default)]
     patom_lark_api_base: Option<String>,
+
+    // Discord adapter — a single feature flag (per-bot tokens are DB-registered,
+    // not env) plus an optional API-base override.
+    #[serde(default)]
+    patom_discord_enabled: Option<bool>,
+    #[serde(default)]
+    patom_discord_api_base: Option<String>,
 
     // S3-compatible object storage — same all-or-nothing rule as Slack
     // for the five required fields. `region` is optional (defaulted).
@@ -951,6 +988,27 @@ impl TryFrom<RawSettings> for Settings {
         } else {
             None
         };
+        let discord = if raw.patom_discord_enabled.unwrap_or(false) {
+            let raw_base = raw
+                .patom_discord_api_base
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(DEFAULT_DISCORD_API_BASE);
+            let api_base = parse_base_url(raw_base, &["http", "https"]).map_err(|reason| {
+                SettingsError::InvalidDiscordApiBase {
+                    raw: raw_base.to_owned(),
+                    reason,
+                }
+            })?;
+            let public_base_url = auth.oauth_redirect_base.trim_end_matches('/').to_owned();
+            Some(DiscordSettings {
+                api_base,
+                public_base_url,
+            })
+        } else {
+            None
+        };
         let object_storage = resolve_object_storage(
             raw.patom_s3_endpoint,
             raw.patom_s3_region,
@@ -990,6 +1048,7 @@ impl TryFrom<RawSettings> for Settings {
             posthog_host,
             slack,
             lark,
+            discord,
             object_storage,
             smtp,
         })
@@ -1226,6 +1285,8 @@ mod tests {
             patom_slack_client_secret: None,
             patom_lark_enabled: None,
             patom_lark_api_base: None,
+            patom_discord_enabled: None,
+            patom_discord_api_base: None,
             patom_s3_endpoint: None,
             patom_s3_region: None,
             patom_s3_bucket: None,

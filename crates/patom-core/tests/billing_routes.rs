@@ -130,6 +130,7 @@ impl BillingHarness {
             index_html: std::sync::Arc::from(""),
             slack: None,
             lark: None,
+            discord: None,
             assets: None,
             orgs: Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
             mailer: Arc::new(patom::orgs::LogMailer),
