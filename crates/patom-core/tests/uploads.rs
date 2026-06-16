@@ -582,8 +582,12 @@ async fn attachment_upload_pdf_returns_reference(pool: PgPool) {
 async fn attachment_upload_rejects_disallowed_type(pool: PgPool) {
     let (h, store) = UploadsHarness::with_assets(pool).await;
     let app = router(h.state.clone());
-    // text/plain is not in the attachment allow-list.
-    let body = build_multipart("text/plain", b"just some text");
+    // application/octet-stream is not in the attachment allow-list (image / PDF
+    // / Office / text are; a generic binary blob is not). NOTE: this previously
+    // used `text/plain`, but `AssetContentType::from_attachment_mime` allows
+    // `text/*` by design (UTF-8 text-file attachments), so that input is
+    // accepted — the stale assertion was a pre-existing bug from #187.
+    let body = build_multipart("application/octet-stream", b"\x00\x01\x02 binary blob");
     let req = upload_request("/api/uploads/attachment", &h.primary, body);
     let res = app.oneshot(req).await.expect("response");
     assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
