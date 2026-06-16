@@ -1022,6 +1022,7 @@ pub async fn build_server(
             };
             use crate::discord::channel_map::PgDiscordChannelStore;
             use crate::discord::directory::PgDiscordDirectory;
+            use crate::discord::history::{HttpDiscordHistoryReader, SharedHistoryReader};
             use crate::discord::poster::{HttpDiscordPoster, SharedDiscordPoster};
             use crate::discord::ratelimit::RateLimiter;
             use crate::discord::state::DiscordAppState;
@@ -1048,8 +1049,16 @@ pub async fn build_server(
                 pieces.pool.clone(),
                 pieces.clock.clone(),
             ));
+            // One rate limiter shared by the poster and the history reader (same
+            // bot/egress budget).
             let limiter = Arc::new(RateLimiter::new());
             let poster: SharedDiscordPoster = Arc::new(HttpDiscordPoster::new(
+                discord_http.clone(),
+                cfg.api_base.clone(),
+                tokens.clone(),
+                limiter.clone(),
+            ));
+            let history: SharedHistoryReader = Arc::new(HttpDiscordHistoryReader::new(
                 discord_http.clone(),
                 cfg.api_base.clone(),
                 tokens.clone(),
@@ -1076,6 +1085,7 @@ pub async fn build_server(
                     colleagues: pieces.colleagues.clone(),
                     queue: pieces.queue.clone(),
                     outbound: pump_handle.clone(),
+                    history,
                 },
                 cancel.clone(),
             );

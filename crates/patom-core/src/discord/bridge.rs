@@ -39,9 +39,13 @@ use super::connection::InboundDispatch;
 use super::directory::SharedDiscordDirectory;
 use super::error::DiscordError;
 use super::event::{self, DiscordEvent, InboundMessage};
-use super::limits::{DISCORD_DISPLAY_NAME_MAX, DISCORD_INBOUND_CONTENT_MAX, DISCORD_INBOUND_QUEUE};
+use super::history::SharedHistoryReader;
+use super::limits::{
+    DISCORD_BACKFILL_MAX_MESSAGES, DISCORD_BACKFILL_MAX_PAGES, DISCORD_BACKFILL_PAGE_SIZE,
+    DISCORD_DISPLAY_NAME_MAX, DISCORD_INBOUND_CONTENT_MAX, DISCORD_INBOUND_QUEUE,
+};
 use super::roster;
-use super::types::{ContainerId, DiscordUserId, GuildId};
+use super::types::{ContainerId, DiscordMessageId, DiscordUserId, GuildId};
 
 /// Where a freshly-triggered Patom thread's outbound chunks should be routed back
 /// into Discord. The (D6) stream pump implements [`OutboundAttach`].
@@ -79,6 +83,8 @@ pub struct BridgeDeps {
     pub colleagues: SharedColleagueStore,
     pub queue: SharedPromptQueue,
     pub outbound: SharedOutboundAttach,
+    /// Reads pre-join channel history for the one-shot backfill on first access.
+    pub history: SharedHistoryReader,
 }
 
 impl fmt::Debug for BridgeDeps {
@@ -199,7 +205,7 @@ async fn handle_message(
         .await?;
 
     let is_trigger = m.guild_id.is_none() || m.mentions_bot(bot_user_id);
-    let thread_id = resolve_thread(
+    let (thread_id, needs_backfill) = resolve_thread(
         deps,
         &caller,
         app,
@@ -210,37 +216,28 @@ async fn handle_message(
     )
     .await?;
 
-    // Rewrite `<@id>` markers to readable `@Name` so the agent reads who is
-    // referenced (the mention objects carry the names — no DB lookup).
-    let rendered = super::mention::render_inbound(&m.content, &m.mention_names());
-    let body_text: String = rendered.chars().take(DISCORD_INBOUND_CONTENT_MAX).collect();
-    let idem = IdempotencyKey::try_from(format!(
-        "discord:{}:{}",
-        guild.as_str(),
-        m.message_id.as_str()
-    ))?;
+    // One-shot pre-join history backfill on first access: mirror the messages
+    // sent *before* this one so the agent reads the whole conversation, not just
+    // from the moment it joined. Best-effort and dedup-safe.
+    if needs_backfill {
+        maybe_backfill(deps, app, &guild, &m.channel_id, thread_id, &m.message_id).await;
+    }
+
     let receiver = if is_trigger {
         Some(resolve_agent_colleague(deps, app).await?)
     } else {
         None
     };
-    let appended = deps
-        .thread_store
-        .append(
-            &caller,
-            thread_id,
-            NewMessage {
-                kind: MessageKind::Posted,
-                sender: Some(shadow.colleague_id),
-                owner_agent_id: None,
-                receiver,
-                body: ChatMessage::User(vec![UserContent::Text(body_text)]),
-                request_id: None,
-                idempotency_key: Some(idem.clone()),
-            },
-        )
-        .await
-        .map_err(|e| DiscordError::Internal(format!("append: {e}")))?;
+    let appended = append_mirrored(
+        deps,
+        &caller,
+        thread_id,
+        shadow.colleague_id,
+        receiver,
+        &guild,
+        &m,
+    )
+    .await?;
 
     if is_trigger {
         enqueue_and_attach(
@@ -258,6 +255,152 @@ async fn handle_message(
     Ok(())
 }
 
+/// Append one mirrored message as a `posted` row (the shared live + backfill
+/// path). `<@id>` markers render to `@Name`; the idempotency key dedups
+/// redelivery / backfill overlap. `receiver` is the addressed agent for a
+/// trigger, else `None`.
+async fn append_mirrored(
+    deps: &BridgeDeps,
+    caller: &Caller,
+    thread_id: ThreadId,
+    sender_colleague: ColleagueId,
+    receiver: Option<ColleagueId>,
+    guild: &GuildId,
+    m: &InboundMessage,
+) -> Result<ThreadMessageId, DiscordError> {
+    let rendered = super::mention::render_inbound(&m.content, &m.mention_names());
+    let body_text: String = rendered.chars().take(DISCORD_INBOUND_CONTENT_MAX).collect();
+    let idem = IdempotencyKey::try_from(format!(
+        "discord:{}:{}",
+        guild.as_str(),
+        m.message_id.as_str()
+    ))?;
+    deps.thread_store
+        .append(
+            caller,
+            thread_id,
+            NewMessage {
+                kind: MessageKind::Posted,
+                sender: Some(sender_colleague),
+                owner_agent_id: None,
+                receiver,
+                body: ChatMessage::User(vec![UserContent::Text(body_text)]),
+                request_id: None,
+                idempotency_key: Some(idem),
+            },
+        )
+        .await
+        .map_err(|e| DiscordError::Internal(format!("append: {e}")))
+}
+
+/// Run the one-shot backfill and mark it complete on a definitive outcome (incl.
+/// an empty / unreadable channel). A transient error is logged and left unmarked
+/// so a later message retries.
+async fn maybe_backfill(
+    deps: &BridgeDeps,
+    app: &DiscordApp,
+    guild: &GuildId,
+    channel: &ContainerId,
+    thread_id: ThreadId,
+    before: &DiscordMessageId,
+) {
+    match backfill_channel(deps, app, guild, channel, thread_id, before).await {
+        Ok(()) => {
+            if let Err(e) = deps.threads.mark_backfilled(guild, channel).await {
+                warn!(error = ?e, event = "discord.backfill.mark_failed");
+            }
+        }
+        Err(e) => warn!(error = ?e, event = "discord.backfill.failed"),
+    }
+}
+
+/// Page channel history backward from `before`, then mirror it oldest-first so
+/// the backfilled rows precede the live message in thread order. Bounded by
+/// [`DISCORD_BACKFILL_MAX_PAGES`] and [`DISCORD_BACKFILL_MAX_MESSAGES`] (§5).
+async fn backfill_channel(
+    deps: &BridgeDeps,
+    app: &DiscordApp,
+    guild: &GuildId,
+    channel: &ContainerId,
+    thread_id: ThreadId,
+    before: &DiscordMessageId,
+) -> Result<(), DiscordError> {
+    let mut cursor = before.clone();
+    let mut collected: Vec<InboundMessage> = Vec::new();
+    for _ in 0..DISCORD_BACKFILL_MAX_PAGES {
+        if collected.len() >= DISCORD_BACKFILL_MAX_MESSAGES {
+            break;
+        }
+        let page = deps
+            .history
+            .fetch_before(
+                &app.application_id,
+                channel,
+                &cursor,
+                DISCORD_BACKFILL_PAGE_SIZE,
+            )
+            .await?;
+        let page_len = page.len();
+        // The page is newest-first; its last (oldest) message is the next cursor.
+        if let Some(oldest) = page.last() {
+            cursor = oldest.message_id.clone();
+        }
+        collected.extend(page);
+        if page_len < DISCORD_BACKFILL_PAGE_SIZE {
+            break; // last page
+        }
+    }
+    // Keep the most-recent window, then reverse to chronological (oldest-first).
+    collected.truncate(DISCORD_BACKFILL_MAX_MESSAGES);
+    collected.reverse();
+    let mut mirrored = 0usize;
+    for m in &collected {
+        if mirror_backfilled(deps, app, guild, thread_id, m).await? {
+            mirrored += 1;
+        }
+    }
+    info!(channel = %channel, mirrored, event = "discord.backfill.complete");
+    Ok(())
+}
+
+/// Mirror one backfilled message (shadow-mint its author + channel membership +
+/// append, no trigger). Skips bot/webhook authors. Returns whether a row was
+/// appended.
+async fn mirror_backfilled(
+    deps: &BridgeDeps,
+    app: &DiscordApp,
+    guild: &GuildId,
+    thread_id: ThreadId,
+    m: &InboundMessage,
+) -> Result<bool, DiscordError> {
+    if m.author.bot || m.webhook_id.is_some() {
+        return Ok(false);
+    }
+    let display = m
+        .author
+        .display_name(m.member_nick.as_deref())
+        .map(|d| d.chars().take(DISCORD_DISPLAY_NAME_MAX).collect::<String>());
+    let shadow = deps
+        .directory
+        .resolve_or_mint(app.org_id, &m.author.id, display.as_deref())
+        .await?;
+    let caller = Caller::new(shadow.user_id, app.org_id);
+    deps.channels
+        .ensure_channel(app.org_id, guild, &m.channel_id, shadow.user_id)
+        .await?;
+    append_mirrored(
+        deps,
+        &caller,
+        thread_id,
+        shadow.colleague_id,
+        None,
+        guild,
+        m,
+    )
+    .await?;
+    Ok(true)
+}
+
 /// Resolve the bound Patom thread, or create + bind one on first sight.
 async fn resolve_thread(
     deps: &BridgeDeps,
@@ -267,13 +410,15 @@ async fn resolve_thread(
     m: &InboundMessage,
     channel_id: ChannelId,
     creator: ColleagueId,
-) -> Result<ThreadId, DiscordError> {
+) -> Result<(ThreadId, bool), DiscordError> {
+    // Returns `(thread_id, needs_backfill)`: an existing binding reports its
+    // `backfill_complete` flag; a freshly-created one always needs backfill.
     if let Some(mapping) = deps
         .threads
         .lookup_by_container(guild, &m.channel_id)
         .await?
     {
-        return Ok(mapping.thread_id);
+        return Ok((mapping.thread_id, !mapping.backfill_complete));
     }
     let thread = deps
         .thread_store
@@ -291,7 +436,7 @@ async fn resolve_thread(
             thread,
         )
         .await?;
-    Ok(thread)
+    Ok((thread, true))
 }
 
 /// Resolve the app's agent to its colleague id (the message receiver).

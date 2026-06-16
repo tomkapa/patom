@@ -32,6 +32,7 @@ pub mod directory;
 pub mod error;
 pub mod event;
 pub mod handshake;
+pub mod history;
 pub mod limits;
 pub mod mention;
 pub mod poster;

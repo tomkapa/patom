@@ -120,6 +120,7 @@ async fn build_rig(
         colleagues: Arc::new(PgColleagueStore::new(pool.clone())),
         queue,
         outbound: pump,
+        history: Arc::new(patom::discord::history::FakeHistoryReader::empty()),
     };
     DiscordRig { deps, fake }
 }

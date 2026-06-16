@@ -26,6 +26,7 @@ use patom::discord::bridge::{
 use patom::discord::channel_map::PgDiscordChannelStore;
 use patom::discord::connection::InboundDispatch;
 use patom::discord::directory::PgDiscordDirectory;
+use patom::discord::history::FakeHistoryReader;
 use patom::discord::thread_map::PgDiscordThreadStore;
 use patom::discord::types::{ApplicationId, BotToken, DiscordUserId};
 use patom::runtime::PgPromptQueue;
@@ -85,6 +86,9 @@ async fn build_rig(pool: &PgPool, caller: &Caller, agent_id: patom::agents::Agen
         colleagues: Arc::new(PgColleagueStore::new(pool.clone())),
         queue: Arc::new(PgPromptQueue::new(pool.clone(), clock.clone())),
         outbound: outbound_seam,
+        // No backfill in these tests (empty reader) — the live ingest path is
+        // what's under test here.
+        history: Arc::new(FakeHistoryReader::empty()),
     };
     Rig { deps, outbound }
 }
