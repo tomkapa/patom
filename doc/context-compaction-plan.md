@@ -103,7 +103,7 @@ build path (agent_core, has the provider):
 - Add `context_window: u32` to `CatalogEntry` + a `ContextWindow(u32)` newtype (CLAUDE.md §1). `CONTEXT_TOKEN_BUDGET` is a fraction of it.
 - **Trigger signal uses real data, zero new deps:** read the previous turn's `input_tokens` from `turn_metrics` (already keyed by `state_id`) as the "are we near the window" signal. The `chars/4` estimator (`TokenEstimate(u32)` newtype) is used only to pick the **cut-point** within the tail. A `patom.context.tokens_estimated` vs actual-`input_tokens` comparison metric calibrates the heuristic. No tokenizer crate (CLAUDE.md §8).
 
-## Data model — migration `00000000000083_thread_compactions`
+## Data model — migration `00000000000084_thread_compactions`
 
 ```sql
 -- up
