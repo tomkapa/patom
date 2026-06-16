@@ -1028,6 +1028,7 @@ pub async fn build_server(
             use crate::discord::state::DiscordAppState;
             use crate::discord::stream_pump::SharedDiscordPumpHandle;
             use crate::discord::thread_map::PgDiscordThreadStore;
+            use crate::discord::thread_opener::{HttpDiscordThreadOpener, SharedThreadOpener};
             use crate::discord::{bridge, stream_pump, ws_manager};
 
             let discord_http = build_http_client()?;
@@ -1053,6 +1054,14 @@ pub async fn build_server(
             // bot/egress budget).
             let limiter = Arc::new(RateLimiter::new());
             let poster: SharedDiscordPoster = Arc::new(HttpDiscordPoster::new(
+                discord_http.clone(),
+                cfg.api_base.clone(),
+                tokens.clone(),
+                limiter.clone(),
+            ));
+            // Opens a thread on a top-level channel @mention; shares the same
+            // egress rate-limit budget as the poster + history reader.
+            let thread_opener: SharedThreadOpener = Arc::new(HttpDiscordThreadOpener::new(
                 discord_http.clone(),
                 cfg.api_base.clone(),
                 tokens.clone(),
@@ -1086,6 +1095,7 @@ pub async fn build_server(
                     queue: pieces.queue.clone(),
                     outbound: pump_handle.clone(),
                     history,
+                    thread_opener,
                 },
                 cancel.clone(),
             );

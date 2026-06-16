@@ -111,6 +111,21 @@ pub const DISCORD_INVALID_REQUEST_BUDGET: u32 = 10_000;
 pub const DISCORD_INVALID_REQUEST_WINDOW: Duration = Duration::from_mins(10);
 
 // ─────────────────────────────────────────────────────────────────────────
+// Thread opening (auto-thread on a channel @mention)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Cap on a thread name derived from the triggering message. Discord rejects a
+/// thread name longer than 100 characters; the opener truncates to this bound.
+pub const DISCORD_THREAD_NAME_MAX: usize = 100;
+
+/// Auto-archive window (minutes) requested when the bot opens a thread.
+///
+/// 1440 = 24h, a value every guild supports without a boost tier (the larger
+/// 4320 / 10080 options require server boosts), so a thread we open never trips
+/// a tier-gated rejection.
+pub const DISCORD_THREAD_AUTO_ARCHIVE_MINUTES: u32 = 1_440;
+
+// ─────────────────────────────────────────────────────────────────────────
 // Stream pump
 // ─────────────────────────────────────────────────────────────────────────
 

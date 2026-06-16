@@ -1,6 +1,10 @@
-# Discord — agent replies in a thread (design, for a future session)
+# Discord — agent replies in a thread (design + as-built)
 
-> Status: **planned, not implemented.** Follow-up to the Discord BYO-bot integration (PR #186, branch `feat/discord-byo-integration`). Authored after a live test showed the agent replying in the **channel** instead of a **thread**. The product decision (confirmed with the user) is **auto-open a thread**: when a member `@mentions` the agent at the channel top level, the bot opens a Discord thread on that message and the whole exchange lives there, keeping the channel clean.
+> Status: **IMPLEMENTED** (branch `feat/discord-byo-integration`). Follow-up to the Discord BYO-bot integration (PR #186). Authored after a live test showed the agent replying in the **channel** instead of a **thread**. The product decision (confirmed with the user) is **auto-open a thread**: when a member `@mentions` the agent at the channel top level, the bot opens a Discord thread on that message and the whole exchange lives there, keeping the channel clean.
+>
+> **As-built deviation from §2 (trigger semantics) — confirmed with the user 2026-06-16:** triggering stays **strictly `@mention`-or-DM** (matching the Lark adapter and the "tagging or DM only" product rule). The §2 `in_bot_owned_thread` auto-continue trigger was **NOT** adopted — a follow-up inside a bot-opened thread **re-`@mentions`** the bot to trigger another run (a plain message there is ingested for context but does not auto-run). This is *narrower* than Slack, which auto-continues in a bound thread without a re-mention; reconciling Slack was explicitly left out of scope ("Discord only for now"). Everything else below shipped as described: the `ThreadOpener` seam, `is_thread` derived from `parent_id`, the `handle_message` restructure, optional `reply_to`, the backfill skip on a freshly-opened thread, and the thread-name helper.
+>
+> **Landed in:** `discord/limits.rs` (`DISCORD_THREAD_NAME_MAX`, `DISCORD_THREAD_AUTO_ARCHIVE_MINUTES`), new `discord/thread_opener.rs` (`ThreadOpener` + `HttpDiscordThreadOpener` + `FakeThreadOpener`), `discord/thread_map.rs` (`is_thread`), `discord/bridge.rs` (`Conversation` + `resolve_conversation` + `thread_name`, `AttachRequest.reply_to: Option`), `discord/stream_pump.rs` (optional `reply_to`), `app.rs` (wiring). Tests: `tests/discord_threads.rs` (new) + updated `tests/discord_bridge.rs`. All gates green.
 
 ## Current behavior (what ships in PR #186)
 
@@ -139,11 +143,13 @@ New (`tests/discord_threads.rs`, `#[sqlx::test]`):
 
 ## Edge cases & notes
 
-- **User-made thread + `@mention`**: `m.channel_id` is the thread; `open_from_message` returns `Err` (Discord 400 "cannot start a thread from a message in a thread") → fallback replies **in that thread** (correct). Follow-ups need a re-mention (we don't own it). Fine.
+- **User-made thread + `@mention`** (and forums): `m.channel_id` is the thread; `open_from_message` returns `Err` (Discord `50024` "Cannot execute action on this channel type") → fallback replies **in that thread**. A **4xx** failure is treated as *permanent* and the container is recorded `is_thread = TRUE` (migration `83` made `is_thread` an explicit column, since the parent is unknown here), so a re-mention does **not** re-attempt (and re-fail) the open — it converses in the thread directly. A 5xx/transient open failure degrades just once and retries next time. (Earlier the fallback re-tried the open + logged a WARN on *every* mention; now it learns once and logs at `debug`.)
 - **Forum channels** (`GuildForum`/`GuildMedia`): a "message" is itself a thread; `open_from_message` will error → fallback. Acceptable for the experiment; revisit if forum support is wanted.
 - **Multiple separate channel mentions** → multiple threads (each mention = its own conversation). Matches the chosen UX.
 - **`message_reference` inside a fresh thread**: drop it (the trigger message lives in the parent channel, not the thread, so a cross-channel reference can error). The thread context is implicit.
 - **`ChannelType`** (`types.rs`) already has `is_thread()` / `is_dm()` helpers if richer detection is later wanted (e.g. consuming `THREAD_CREATE`, currently `DiscordEvent::Other`).
+- **Gateway redelivery of a top-level @mention** (RESUME replay window): the bridge is a single-consumer worker, so redeliveries are processed sequentially. A second `open_from_message` for the same source message is **safe either way Discord responds** — if Discord returns the already-created thread, `resolve_thread` reuses the existing binding (no residue); if Discord 400s ("thread already created"), the opener errors and the fallback path dedups the mirror (org-scoped `idempotency_key`) and the trigger (idempotency key), so there is **no duplicate thread, no duplicate reply, no duplicate run** — only a cosmetic spurious channel binding for the parent channel. Not worth a schema column / message→thread map for the experiment; revisit if it shows up in practice.
+- **Agent loses the parent channel's pre-thread history.** A freshly-opened thread skips backfill (the thread has no history; the parent channel's backlog is not pulled into it), so the agent's context starts at the triggering message. Acceptable for the experiment; if channel context matters, backfill the parent channel into the new thread on open.
 
 ## Out of scope (leave deferred)
 

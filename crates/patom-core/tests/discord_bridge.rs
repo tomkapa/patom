@@ -28,7 +28,8 @@ use patom::discord::connection::InboundDispatch;
 use patom::discord::directory::PgDiscordDirectory;
 use patom::discord::history::FakeHistoryReader;
 use patom::discord::thread_map::PgDiscordThreadStore;
-use patom::discord::types::{ApplicationId, BotToken, DiscordUserId};
+use patom::discord::thread_opener::{FakeThreadOpener, SharedThreadOpener};
+use patom::discord::types::{ApplicationId, BotToken, ContainerId, DiscordUserId};
 use patom::runtime::PgPromptQueue;
 use patom::threads::PgThreadStore;
 
@@ -40,6 +41,8 @@ const BOT_USER_ID: &str = "999999999999999999";
 const GUILD_ID: &str = "222222222222222222";
 const CHANNEL_ID: &str = "333333333333333333";
 const HUMAN_ID: &str = "444444444444444444";
+/// The thread id the rig's `FakeThreadOpener` returns when the bridge opens one.
+const THREAD_ID: &str = "555000000000000001";
 
 /// Records every outbound-pump attach the bridge requests.
 #[derive(Debug, Default)]
@@ -57,6 +60,7 @@ impl OutboundAttach for FakeOutboundAttach {
 struct Rig {
     deps: BridgeDeps,
     outbound: Arc<FakeOutboundAttach>,
+    opener: Arc<FakeThreadOpener>,
 }
 
 async fn build_rig(pool: &PgPool, caller: &Caller, agent_id: patom::agents::AgentId) -> Rig {
@@ -77,6 +81,10 @@ async fn build_rig(pool: &PgPool, caller: &Caller, agent_id: patom::agents::Agen
 
     let outbound = Arc::new(FakeOutboundAttach::default());
     let outbound_seam: SharedOutboundAttach = outbound.clone();
+    let opener = Arc::new(FakeThreadOpener::returning(
+        ContainerId::try_from(THREAD_ID).expect("thread id"),
+    ));
+    let thread_opener: SharedThreadOpener = opener.clone();
     let deps = BridgeDeps {
         apps: app_store,
         directory: Arc::new(PgDiscordDirectory::new(pool.clone(), clock.clone())),
@@ -89,8 +97,13 @@ async fn build_rig(pool: &PgPool, caller: &Caller, agent_id: patom::agents::Agen
         // No backfill in these tests (empty reader) — the live ingest path is
         // what's under test here.
         history: Arc::new(FakeHistoryReader::empty()),
+        thread_opener,
     };
-    Rig { deps, outbound }
+    Rig {
+        deps,
+        outbound,
+        opener,
+    }
 }
 
 /// Build a MESSAGE_CREATE dispatch. `mentions` are user snowflakes; `guild` is
@@ -172,12 +185,14 @@ async fn ambient_guild_message_ingests_without_trigger(pool: PgPool) {
         .await,
         1,
     );
-    // …but NO trigger was enqueued and the pump was not attached.
+    // …but NO trigger was enqueued, the pump was not attached, and an ambient
+    // message never opens a thread.
     assert_eq!(
         count(&pool, "SELECT COUNT(*) FROM prompt_requests").await,
         0
     );
     assert!(rig.outbound.attached.lock().expect("lock").is_empty());
+    assert_eq!(rig.opener.call_count(), 0, "ambient ingest opens no thread");
 }
 
 #[sqlx::test]
@@ -213,10 +228,28 @@ async fn mention_enqueues_a_trigger_and_attaches_pump(pool: PgPool) {
         1,
         "the mention enqueues a discord-namespaced trigger",
     );
+    // The top-level @mention OPENS a thread and converses there (not the channel).
+    assert_eq!(rig.opener.call_count(), 1, "a thread was opened once");
     assert_eq!(
-        rig.outbound.attached.lock().expect("lock").len(),
+        count(
+            &pool,
+            "SELECT COUNT(*) FROM discord_threads \
+             WHERE container_id = '555000000000000001' AND parent_id = '333333333333333333'"
+        )
+        .await,
         1,
-        "pump attached once"
+        "the bound thread records its parent channel (is_thread)",
+    );
+    let attached = rig.outbound.attached.lock().expect("lock");
+    assert_eq!(attached.len(), 1, "pump attached once");
+    assert_eq!(
+        attached[0].container_id.as_str(),
+        THREAD_ID,
+        "the reply routes to the opened thread, not the channel",
+    );
+    assert!(
+        attached[0].reply_to.is_none(),
+        "no inline message_reference inside a fresh thread",
     );
 }
 
@@ -235,7 +268,19 @@ async fn dm_message_always_triggers(pool: PgPool) {
         count(&pool, "SELECT COUNT(*) FROM prompt_requests").await,
         1
     );
-    assert_eq!(rig.outbound.attached.lock().expect("lock").len(), 1);
+    // A DM never opens a thread — it replies inline in the DM channel.
+    assert_eq!(rig.opener.call_count(), 0, "no thread opened for a DM");
+    let attached = rig.outbound.attached.lock().expect("lock");
+    assert_eq!(attached.len(), 1);
+    assert_eq!(
+        attached[0].container_id.as_str(),
+        CHANNEL_ID,
+        "the reply lands in the DM channel",
+    );
+    assert!(
+        attached[0].reply_to.is_some(),
+        "a DM reply threads under the triggering message",
+    );
 }
 
 #[sqlx::test]

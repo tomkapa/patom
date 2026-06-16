@@ -8,15 +8,24 @@
 //! Per-message flow ([`process_event`] → `handle_message`):
 //! 1. Drop the bot's own messages (`author.id == bot_user_id`).
 //! 2. Skip peer-bot / webhook authors (no human shadow — attribution deferred).
-//! 3. Shadow-mint the sender's colleague; mirror the channel and add the sender
-//!    as a member (so the append passes channel RLS).
+//! 3. Shadow-mint the sender's colleague.
 //! 4. Classify: a DM, or a guild message that `@`-mentions the bot, is a
-//!    **trigger**; any other guild message is **ambient** (ingest only).
-//! 5. Resolve (or create + bind) the Patom thread; append the `posted` row with
+//!    **trigger**; any other guild message is **ambient** (ingest only). The
+//!    trigger gate is `@`-mention-or-DM only — a message inside a thread does
+//!    *not* auto-continue; a follow-up re-`@`-mentions the bot.
+//! 5. Resolve the conversation container ([`resolve_conversation`]): a top-level
+//!    guild @mention **opens a thread** on the triggering message and converses
+//!    there (so the channel stays clean), degrading to an inline channel reply
+//!    if the open fails; a message already inside a bot-owned thread continues
+//!    there; a DM or ambient message stays in its own channel. Mirror that
+//!    container as a Patom channel + add the sender as a member (channel RLS).
+//! 6. Resolve (or create + bind) the Patom thread keyed on the conversation
+//!    container; append the `posted` row with
 //!    `idempotency_key = discord:{guild}:{message_id}` (dedupes redelivery /
 //!    backfill overlap).
-//! 6. Trigger only: resolve the agent's participation, enqueue a fresh-DAG
-//!    trigger, and attach the outbound pump.
+//! 7. Trigger only: resolve the agent's participation, enqueue a fresh-DAG
+//!    trigger, and attach the outbound pump (routed to the conversation
+//!    container, replying under the trigger only outside a thread).
 
 use std::fmt;
 use std::sync::Arc;
@@ -43,8 +52,10 @@ use super::history::SharedHistoryReader;
 use super::limits::{
     DISCORD_BACKFILL_MAX_MESSAGES, DISCORD_BACKFILL_MAX_PAGES, DISCORD_BACKFILL_PAGE_SIZE,
     DISCORD_DISPLAY_NAME_MAX, DISCORD_INBOUND_CONTENT_MAX, DISCORD_INBOUND_QUEUE,
+    DISCORD_THREAD_NAME_MAX,
 };
 use super::roster;
+use super::thread_opener::SharedThreadOpener;
 use super::types::{ContainerId, DiscordMessageId, DiscordUserId, GuildId};
 
 /// Where a freshly-triggered Patom thread's outbound chunks should be routed back
@@ -57,8 +68,10 @@ pub struct AttachRequest {
     /// replying agent has no Discord bot of its own.
     pub application_id: super::types::ApplicationId,
     pub container_id: ContainerId,
-    /// The triggering message, so the reply can be a Discord reply.
-    pub reply_to: super::types::DiscordMessageId,
+    /// The triggering message to reply under (a Discord inline reply), or `None`
+    /// to post plainly — inside a freshly-opened thread (whose root lives in the
+    /// parent channel, not the thread) or a continuation in an owned thread.
+    pub reply_to: Option<DiscordMessageId>,
 }
 
 /// The seam the bridge uses to attach the outbound pump for a thread. Kept a
@@ -85,6 +98,9 @@ pub struct BridgeDeps {
     pub outbound: SharedOutboundAttach,
     /// Reads pre-join channel history for the one-shot backfill on first access.
     pub history: SharedHistoryReader,
+    /// Opens a Discord thread on a top-level channel @mention, so the agent
+    /// converses in a thread instead of cluttering the channel.
+    pub thread_opener: SharedThreadOpener,
 }
 
 impl fmt::Debug for BridgeDeps {
@@ -199,43 +215,34 @@ async fn handle_message(
         .resolve_or_mint(app.org_id, &m.author.id, display.as_deref())
         .await?;
     let caller = Caller::new(shadow.user_id, app.org_id);
-    let channel_id = deps
-        .channels
-        .ensure_channel(app.org_id, &guild, &m.channel_id, shadow.user_id)
-        .await?;
 
+    // 4. Trigger gate: @mention-or-DM only (a thread does not auto-continue).
     let is_trigger = m.guild_id.is_none() || m.mentions_bot(bot_user_id);
-    let (thread_id, needs_backfill) = resolve_thread(
-        deps,
-        &caller,
-        app,
-        &guild,
-        &m,
-        channel_id,
-        shadow.colleague_id,
-    )
-    .await?;
-
-    // One-shot pre-join history backfill on first access: mirror the messages
-    // sent *before* this one so the agent reads the whole conversation, not just
-    // from the moment it joined. Best-effort and dedup-safe.
-    if needs_backfill {
-        maybe_backfill(deps, app, &guild, &m.channel_id, thread_id, &m.message_id).await;
-    }
+    info!(
+        patom.discord.channel = %m.channel_id,
+        has_guild = m.guild_id.is_some(),
+        is_trigger,
+        mentions = m.mentions.len(),
+        content_len = m.content.len(),
+        event = "discord.bridge.classified",
+    );
+    // 5. Where the conversation lives (may open a fresh thread).
+    let conv = resolve_conversation(deps, app, &guild, &m, is_trigger).await?;
 
     let receiver = if is_trigger {
         Some(resolve_agent_colleague(deps, app).await?)
     } else {
         None
     };
-    let appended = append_mirrored(
+    let (thread_id, appended) = mirror_into_thread(
         deps,
+        app,
         &caller,
-        thread_id,
-        shadow.colleague_id,
-        receiver,
         &guild,
         &m,
+        &conv,
+        shadow.colleague_id,
+        receiver,
     )
     .await?;
 
@@ -247,12 +254,169 @@ async fn handle_message(
             &guild,
             &m,
             thread_id,
+            &conv,
             shadow.colleague_id,
             appended,
         )
         .await?;
     }
     Ok(())
+}
+
+/// Mirror the message into its Patom thread: ensure the channel membership,
+/// resolve (or create + bind) the thread, run the one-shot backfill on first
+/// sight (skipped for a thread we just opened — its container differs from the
+/// message's channel), and append the `posted` row. Returns the thread + the
+/// appended row id for the trigger step.
+#[allow(clippy::too_many_arguments)]
+async fn mirror_into_thread(
+    deps: &BridgeDeps,
+    app: &DiscordApp,
+    caller: &Caller,
+    guild: &GuildId,
+    m: &InboundMessage,
+    conv: &Conversation,
+    sender_colleague: ColleagueId,
+    receiver: Option<ColleagueId>,
+) -> Result<(ThreadId, ThreadMessageId), DiscordError> {
+    let channel_id = deps
+        .channels
+        .ensure_channel(app.org_id, guild, &conv.container, caller.user_id)
+        .await?;
+    let (thread_id, needs_backfill) =
+        resolve_thread(deps, caller, app, guild, conv, channel_id, sender_colleague).await?;
+    if needs_backfill && conv.container == m.channel_id {
+        maybe_backfill(deps, app, guild, &conv.container, thread_id, &m.message_id).await;
+    }
+    let appended = append_mirrored(
+        deps,
+        caller,
+        thread_id,
+        sender_colleague,
+        receiver,
+        guild,
+        m,
+    )
+    .await?;
+    Ok((thread_id, appended))
+}
+
+/// The resolved conversation target for a message: which Discord container the
+/// agent converses in, the parent channel to bind (set only when we opened a
+/// thread), whether that container is a thread (so we never re-attempt an open),
+/// and the message to reply under (a Discord inline reply, or `None` to post
+/// plainly inside a thread).
+#[derive(Debug)]
+struct Conversation {
+    container: ContainerId,
+    parent: Option<ContainerId>,
+    is_thread: bool,
+    reply_to: Option<DiscordMessageId>,
+}
+
+/// Decide where the conversation lives. A top-level guild @mention **opens a
+/// fresh thread** on the triggering message (degrading to an inline channel
+/// reply if the open fails); a message already inside a bot-owned thread
+/// continues there (post plainly); a DM (or any non-trigger) stays in its own
+/// channel — a DM trigger replies under the message, ambient posts plainly.
+async fn resolve_conversation(
+    deps: &BridgeDeps,
+    app: &DiscordApp,
+    guild: &GuildId,
+    m: &InboundMessage,
+    is_trigger: bool,
+) -> Result<Conversation, DiscordError> {
+    let in_owned_thread = deps
+        .threads
+        .lookup_by_container(guild, &m.channel_id)
+        .await?
+        .is_some_and(|b| b.is_thread);
+    // `already_thread` ends true when the container is a thread (or otherwise
+    // non-threadable): a known thread, or one a thread-open *permanently*
+    // rejected. We persist it so a later mention never re-attempts the open.
+    let mut already_thread = in_owned_thread;
+    if m.guild_id.is_some() && is_trigger && !in_owned_thread {
+        let name = thread_name(m);
+        match deps
+            .thread_opener
+            .open_from_message(&app.application_id, &m.channel_id, &m.message_id, &name)
+            .await
+        {
+            Ok(thread) => {
+                info!(
+                    patom.discord.thread = %thread,
+                    patom.discord.channel = %m.channel_id,
+                    event = "discord.bridge.thread_opened",
+                );
+                return Ok(Conversation {
+                    container: thread,
+                    parent: Some(m.channel_id.clone()),
+                    is_thread: true,
+                    reply_to: None,
+                });
+            }
+            // Can't open a thread here. A 4xx is permanent (already a thread, a
+            // forum, missing perms) → remember the container is non-threadable so
+            // we never retry; a 5xx/transient failure degrades just this once.
+            // Either way we fall back to a plain reply in the channel. A 4xx is an
+            // expected degradation (info); a 5xx/unexpected one is worth a warn.
+            Err(e) => {
+                if is_permanent_open_failure(&e) {
+                    already_thread = true;
+                    info!(error = ?e, event = "discord.bridge.thread_open_fallback");
+                } else {
+                    warn!(error = ?e, event = "discord.bridge.thread_open_failed");
+                }
+            }
+        }
+    }
+    // Continuation in a thread / a DM / an ambient ingest stays put. A trigger
+    // outside a thread replies under the message; inside a thread (or ambient)
+    // posts plainly.
+    let reply_to = (is_trigger && !in_owned_thread).then(|| m.message_id.clone());
+    Ok(Conversation {
+        container: m.channel_id.clone(),
+        parent: None,
+        is_thread: already_thread,
+        reply_to,
+    })
+}
+
+/// Whether a failed thread-open will keep failing for this container — a 4xx
+/// (e.g. 50024 "can't thread here": already a thread, a forum, missing perms).
+/// A 5xx / rate-limit / transport error is transient and worth retrying later.
+fn is_permanent_open_failure(e: &DiscordError) -> bool {
+    matches!(e, DiscordError::PostFailed { status, .. } if (400..500).contains(status))
+}
+
+/// Derive a Discord thread name from the triggering message: rendered content,
+/// whitespace-collapsed and truncated to [`DISCORD_THREAD_NAME_MAX`], with a
+/// default when empty (Discord requires a 1–100 char thread name).
+fn thread_name(m: &InboundMessage) -> String {
+    let rendered = super::mention::render_inbound(&m.content, &m.mention_names());
+    let body = strip_leading_mentions(&rendered);
+    let truncated: String = body.chars().take(DISCORD_THREAD_NAME_MAX).collect();
+    let name = if truncated.is_empty() {
+        "conversation".to_owned()
+    } else {
+        truncated
+    };
+    assert!(!name.is_empty(), "invariant: thread name is non-empty");
+    assert!(
+        name.chars().count() <= DISCORD_THREAD_NAME_MAX,
+        "invariant: thread name within the Discord cap"
+    );
+    name
+}
+
+/// Drop leading `@Name` / `<@id>` address tokens and collapse whitespace, so a
+/// thread title reads as the request ("draft a JD") not the address
+/// ("@Recruiter draft a JD"). Bounded by the token count.
+fn strip_leading_mentions(s: &str) -> String {
+    s.split_whitespace()
+        .skip_while(|tok| tok.starts_with('@') || tok.starts_with("<@"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Append one mirrored message as a `posted` row (the shared live + backfill
@@ -401,13 +565,14 @@ async fn mirror_backfilled(
     Ok(true)
 }
 
-/// Resolve the bound Patom thread, or create + bind one on first sight.
+/// Resolve the bound Patom thread for the conversation container, or create +
+/// bind one on first sight.
 async fn resolve_thread(
     deps: &BridgeDeps,
     caller: &Caller,
     app: &DiscordApp,
     guild: &GuildId,
-    m: &InboundMessage,
+    conv: &Conversation,
     channel_id: ChannelId,
     creator: ColleagueId,
 ) -> Result<(ThreadId, bool), DiscordError> {
@@ -415,7 +580,7 @@ async fn resolve_thread(
     // `backfill_complete` flag; a freshly-created one always needs backfill.
     if let Some(mapping) = deps
         .threads
-        .lookup_by_container(guild, &m.channel_id)
+        .lookup_by_container(guild, &conv.container)
         .await?
     {
         return Ok((mapping.thread_id, !mapping.backfill_complete));
@@ -425,18 +590,31 @@ async fn resolve_thread(
         .create_thread(caller, Some(channel_id), None, creator, None)
         .await
         .map_err(|e| DiscordError::Internal(format!("create thread: {e}")))?;
-    // parent_id is unknown from a MESSAGE_CREATE; recorded later from THREAD_*.
+    // `parent` is set only when we opened a thread (its parent channel); other
+    // bindings record `parent = NULL`. `is_thread` is explicit (it can be true
+    // with an unknown parent — a user-made thread we fell back into).
     deps.threads
         .bind(
             app.org_id,
             &app.application_id,
             guild,
-            &m.channel_id,
-            None,
+            &conv.container,
+            conv.parent.as_ref(),
+            conv.is_thread,
             thread,
         )
         .await?;
-    Ok((thread, true))
+    // A thread *we* opened has no pre-thread history (its parent channel's
+    // backlog lives in the channel, not the thread), so mark its one-shot
+    // backfill done now — otherwise the first *later* message inside the thread
+    // would needlessly page the thread's own backlog. A user-made thread we fell
+    // back into DOES have pre-mention history, so it still backfills on first
+    // sight; channels / DMs likewise.
+    let opened = conv.parent.is_some();
+    if opened {
+        deps.threads.mark_backfilled(guild, &conv.container).await?;
+    }
+    Ok((thread, !opened))
 }
 
 /// Resolve the app's agent to its colleague id (the message receiver).
@@ -450,7 +628,9 @@ async fn resolve_agent_colleague(
         .map_err(|e| DiscordError::Internal(format!("resolve agent colleague: {e}")))
 }
 
-/// Resolve participation, enqueue a fresh-DAG trigger, and attach the pump.
+/// Resolve participation, enqueue a fresh-DAG trigger, and attach the pump
+/// (routed to the conversation container, replying under the trigger only when
+/// `conv.reply_to` is set — i.e. outside a thread).
 #[allow(clippy::too_many_arguments)]
 async fn enqueue_and_attach(
     deps: &BridgeDeps,
@@ -459,6 +639,7 @@ async fn enqueue_and_attach(
     guild: &GuildId,
     m: &InboundMessage,
     thread_id: ThreadId,
+    conv: &Conversation,
     sender_colleague: ColleagueId,
     trigger_msg: ThreadMessageId,
 ) -> Result<(), DiscordError> {
@@ -494,8 +675,8 @@ async fn enqueue_and_attach(
             thread_id,
             org_id: app.org_id,
             application_id: app.application_id.clone(),
-            container_id: m.channel_id.clone(),
-            reply_to: m.message_id.clone(),
+            container_id: conv.container.clone(),
+            reply_to: conv.reply_to.clone(),
         })
         .await;
     info!(

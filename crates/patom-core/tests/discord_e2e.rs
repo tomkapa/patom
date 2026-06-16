@@ -29,7 +29,8 @@ use patom::discord::directory::PgDiscordDirectory;
 use patom::discord::poster::{FakeDiscordPoster, SharedDiscordPoster};
 use patom::discord::stream_pump::{self, PumpDeps};
 use patom::discord::thread_map::PgDiscordThreadStore;
-use patom::discord::types::{ApplicationId, BotToken, DiscordUserId};
+use patom::discord::thread_opener::{FakeThreadOpener, SharedThreadOpener};
+use patom::discord::types::{ApplicationId, BotToken, ContainerId, DiscordUserId};
 use patom::provider::{AssistantContent, ChatResponse, StopReason, ToolCall, ToolCallId};
 use patom::runtime::{PgThreadStream, SharedThreadStream};
 use patom::threads::PgThreadStore;
@@ -111,6 +112,10 @@ async fn build_rig(
         CancellationToken::new(),
     );
 
+    // A DM never opens a thread, so the opener is unused here.
+    let thread_opener: SharedThreadOpener = Arc::new(FakeThreadOpener::returning(
+        ContainerId::try_from("555000000000000001").expect("thread id"),
+    ));
     let deps = BridgeDeps {
         apps,
         directory,
@@ -121,6 +126,7 @@ async fn build_rig(
         queue,
         outbound: pump,
         history: Arc::new(patom::discord::history::FakeHistoryReader::empty()),
+        thread_opener,
     };
     DiscordRig { deps, fake }
 }

@@ -32,6 +32,11 @@ pub struct DiscordThreadMapping {
     pub thread_id: ThreadId,
     /// Whether the one-shot pre-join history backfill has run for this container.
     pub backfill_complete: bool,
+    /// Whether this container is a thread the bot owns, derived from
+    /// `parent_id IS NOT NULL` (a bot-opened thread binds with its parent
+    /// channel; a top-level channel / DM binds with `parent_id = NULL`). The
+    /// bridge uses it to avoid opening a thread inside a thread.
+    pub is_thread: bool,
 }
 
 /// Reverse projection used by the stream pump: where a Patom thread's chunks
@@ -64,7 +69,14 @@ pub trait DiscordThreadStore: fmt::Debug + Send + Sync {
     /// Insert a `(guild_id, container_id) → patom_thread_id` row. Idempotent on
     /// the primary key; an existing row is left alone so a later message in the
     /// same container still resolves to the existing Patom thread. `parent_id`
-    /// is the thread's parent channel (NULL for a top-level channel).
+    /// is the thread's parent channel when known (NULL otherwise — a top-level
+    /// channel, a DM, or a user-made thread whose parent we never learned).
+    /// `is_thread` records whether the container is a thread (or otherwise
+    /// non-threadable) so the bridge converses in it instead of re-attempting a
+    /// thread-open — independent of whether `parent_id` is known.
+    // The columns of one binding row; positional is clearer than a one-call-site
+    // param struct here.
+    #[allow(clippy::too_many_arguments)]
     async fn bind(
         &self,
         org_id: OrgId,
@@ -72,6 +84,7 @@ pub trait DiscordThreadStore: fmt::Debug + Send + Sync {
         guild_id: &GuildId,
         container_id: &ContainerId,
         parent_id: Option<&ContainerId>,
+        is_thread: bool,
         patom_thread_id: ThreadId,
     ) -> Result<(), DiscordError>;
 
@@ -113,11 +126,11 @@ impl DiscordThreadStore for PgDiscordThreadStore {
         guild_id: &GuildId,
         container_id: &ContainerId,
     ) -> Result<Option<DiscordThreadMapping>, DiscordError> {
-        type Row = (ThreadId, bool);
+        type Row = (ThreadId, bool, bool);
         let row: Option<Row> =
             run_privileged::<Option<Row>, DiscordError>(&self.pool, async |tx| {
                 Ok(sqlx::query_as(
-                    "SELECT patom_thread_id, backfill_complete \
+                    "SELECT patom_thread_id, backfill_complete, is_thread \
                      FROM discord_threads \
                      WHERE guild_id = $1 AND container_id = $2",
                 )
@@ -127,12 +140,13 @@ impl DiscordThreadStore for PgDiscordThreadStore {
                 .await?)
             })
             .await?;
-        Ok(
-            row.map(|(thread_id, backfill_complete)| DiscordThreadMapping {
+        Ok(row.map(
+            |(thread_id, backfill_complete, is_thread)| DiscordThreadMapping {
                 thread_id,
                 backfill_complete,
-            }),
-        )
+                is_thread,
+            },
+        ))
     }
 
     async fn lookup_by_patom_thread(
@@ -161,6 +175,7 @@ impl DiscordThreadStore for PgDiscordThreadStore {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn bind(
         &self,
         org_id: OrgId,
@@ -168,14 +183,15 @@ impl DiscordThreadStore for PgDiscordThreadStore {
         guild_id: &GuildId,
         container_id: &ContainerId,
         parent_id: Option<&ContainerId>,
+        is_thread: bool,
         patom_thread_id: ThreadId,
     ) -> Result<(), DiscordError> {
         let now = self.clock.now_utc();
         run_privileged::<(), DiscordError>(&self.pool, async |tx| {
             sqlx::query(
                 "INSERT INTO discord_threads \
-                   (org_id, application_id, guild_id, container_id, parent_id, patom_thread_id, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                   (org_id, application_id, guild_id, container_id, parent_id, is_thread, patom_thread_id, created_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
                  ON CONFLICT (guild_id, container_id) DO NOTHING",
             )
             .bind(org_id)
@@ -183,6 +199,7 @@ impl DiscordThreadStore for PgDiscordThreadStore {
             .bind(guild_id.as_str())
             .bind(container_id.as_str())
             .bind(parent_id.map(ContainerId::as_str))
+            .bind(is_thread)
             .bind(patom_thread_id)
             .bind(now)
             .execute(&mut **tx)

@@ -301,7 +301,7 @@ async fn post_reply(
         .post(PostRequest {
             application_id,
             container_id: req.container_id.clone(),
-            reply_to: Some(req.reply_to.clone()),
+            reply_to: req.reply_to.clone(),
             content,
             allowed_mentions: AllowedMentions::users(&pinged),
         })

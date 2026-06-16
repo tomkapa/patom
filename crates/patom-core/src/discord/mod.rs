@@ -41,6 +41,7 @@ pub mod roster;
 pub mod state;
 pub mod stream_pump;
 pub mod thread_map;
+pub mod thread_opener;
 pub mod transport;
 pub mod types;
 pub mod ws_manager;

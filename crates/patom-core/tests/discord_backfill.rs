@@ -28,7 +28,8 @@ use patom::discord::directory::PgDiscordDirectory;
 use patom::discord::event::InboundMessage;
 use patom::discord::history::FakeHistoryReader;
 use patom::discord::thread_map::PgDiscordThreadStore;
-use patom::discord::types::{ApplicationId, BotToken, DiscordUserId};
+use patom::discord::thread_opener::{FakeThreadOpener, SharedThreadOpener};
+use patom::discord::types::{ApplicationId, BotToken, ContainerId, DiscordUserId};
 use patom::runtime::PgPromptQueue;
 use patom::threads::PgThreadStore;
 
@@ -101,6 +102,10 @@ async fn build_deps(
     .expect("register");
 
     let outbound: SharedOutboundAttach = Arc::new(NoopAttach::default());
+    // Ambient (no-mention) messages never open a thread, so the opener is unused.
+    let thread_opener: SharedThreadOpener = Arc::new(FakeThreadOpener::returning(
+        ContainerId::try_from("555000000000000001").expect("thread id"),
+    ));
     BridgeDeps {
         apps,
         directory: Arc::new(PgDiscordDirectory::new(pool.clone(), clock.clone())),
@@ -111,6 +116,7 @@ async fn build_deps(
         queue: Arc::new(PgPromptQueue::new(pool.clone(), clock.clone())),
         outbound,
         history,
+        thread_opener,
     }
 }
 
