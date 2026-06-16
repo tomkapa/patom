@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChatLayout } from "../components/templates/ChatLayout";
 import { ChannelHeader } from "../components/organisms/ChannelHeader";
-import { Composer } from "../components/organisms/Composer";
+import { Composer, type ComposerSubmit } from "../components/organisms/Composer";
 import { MessageList, type WelcomeContext } from "../components/organisms/MessageList";
 import { Sidebar, dmKey } from "../components/organisms/Sidebar";
 import { ThreadPanel } from "../components/organisms/ThreadPanel";
@@ -33,7 +33,7 @@ import type { Bubble, Poster, RootMessage } from "../lib/foldHistory";
 import { uuidv7 } from "../lib/utils";
 import { useIsWide } from "../hooks/useMediaQuery";
 import { useT } from "../i18n";
-import type { Channel, Mentionable } from "../types/api";
+import type { Attachment, Channel, Mentionable } from "../types/api";
 
 /** Demo mode has no backend; show a single read-only #general so the feed
  *  renders. Real channels come from `useChannels`. */
@@ -245,13 +245,14 @@ export function ChatView() {
 
   // Post to the channel timeline (or start a DM thread). Tags are whoever
   // was @-mentioned — agents among them get invoked; none is required.
-  const onSubmit = async (input: { content: string; tags: Mentionable[] }) => {
+  const onSubmit = async (input: ComposerSubmit) => {
     if (isDemo) return;
     setComposerError(null);
     try {
       const res = await submit.mutateAsync({
         content: input.content,
         tags: input.tags.map(tagRef),
+        attachments: input.attachments,
         // In channel mode the new thread is stamped with the channel; a DM
         // names its counterpart so the BE files it as the pair's thread.
         ...(selectedDm
@@ -269,7 +270,10 @@ export function ChatView() {
   // Reply inside the open thread. The text goes exactly as typed — no
   // implicit @-prefix; the backend routes DM replies to the counterpart and
   // leaves untagged channel replies as plain posts.
-  const onThreadReply = async (input: { content: string }) => {
+  const onThreadReply = async (input: {
+    content: string;
+    attachments?: Attachment[];
+  }) => {
     if (isDemo || !selectedThread) return;
     const threadId = selectedThread.thread_id;
     const idempotency_key = uuidv7();
@@ -284,6 +288,7 @@ export function ChatView() {
         content: input.content,
         tags: matchMentions(input.content, contextRoster).map(tagRef),
         thread_id: threadId,
+        attachments: input.attachments,
         idempotency_key,
       });
       // Stamp the outcome so the persisted echo can dedupe this entry and

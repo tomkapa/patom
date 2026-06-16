@@ -8,12 +8,15 @@ use super::convert::{
 use crate::observability::gen_ai;
 use crate::provider::chat::{ChatRequest, ChatResponse, Usage};
 use crate::provider::error::ProviderError;
+use crate::provider::materialize::{HttpAttachmentSource, SharedAttachmentSource};
 use crate::provider::traits::LlmProvider;
 use crate::types::{ModelId, SecretString};
 
 /// Anthropic-Messages-API implementation of [`LlmProvider`].
 pub struct AnthropicProvider {
     client: Anthropic,
+    /// Fetches attachment bytes for the Office → text path (issue #187).
+    source: SharedAttachmentSource,
 }
 
 impl std::fmt::Debug for AnthropicProvider {
@@ -35,7 +38,10 @@ impl AnthropicProvider {
         if let Some(url) = base_url {
             client = client.with_base_url(url);
         }
-        Ok(Self { client })
+        let source = std::sync::Arc::new(
+            HttpAttachmentSource::new().map_err(|e| ProviderError::Transport(e.to_string()))?,
+        );
+        Ok(Self { client, source })
     }
 }
 
@@ -75,17 +81,24 @@ impl LlmProvider for AnthropicProvider {
         gen_ai::record_chat_request("anthropic", &request);
 
         let model = parse_model(request.model.as_str());
+        let caps = request.model.capabilities();
+        let model_name = request.model.as_str();
 
         // `.then(|| …)` defers the `.collect()` to the non-empty case so we don't
         // allocate an empty `Vec` only to throw it away.
         let tools = (!request.tools.is_empty())
             .then(|| request.tools.iter().map(tool_spec_to_param).collect());
 
-        let messages = request
-            .messages
-            .into_iter()
-            .filter_map(message_to_param)
-            .collect();
+        // `for` (not `filter_map`) because each message may await attachment
+        // materialization and fail the whole request on unsupported content.
+        let mut messages = Vec::with_capacity(request.messages.len());
+        for msg in request.messages {
+            if let Some(param) =
+                message_to_param(msg, caps, model_name, self.source.as_ref()).await?
+            {
+                messages.push(param);
+            }
+        }
 
         let mut params = MessageCreateParams::new(request.max_output_tokens.get(), messages, model)
             .with_system_string(request.system.to_string());

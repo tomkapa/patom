@@ -363,6 +363,16 @@ export type MessageSender = Participant;
 // Mirrors src/provider/chat.rs `ChatMessage` + UserContent / AssistantContent.
 // Wire shape is `{role, contents: [{kind, value}]}`; the demo fixtures tolerate
 // the legacy `{role, content: string}` form too.
+/** An image/file attachment reference (issue #187). Mirrors the backend
+ *  `RawAttachment` shape returned by `POST /uploads/attachment` and accepted
+ *  by `POST /prompts`. */
+export type Attachment = {
+  url: string;
+  mime: string;
+  filename: string;
+  size: number;
+};
+
 export type ContentBlock =
   | { kind: "text"; value: string }
   | { kind: "reasoning"; value: string }
@@ -373,7 +383,9 @@ export type ContentBlock =
   | {
       kind: "tool_result";
       value: { call_id: string; output: string; is_error?: boolean };
-    };
+    }
+  | { kind: "image"; value: Attachment }
+  | { kind: "file"; value: Attachment };
 
 export type ChatMessageBody = {
   role?: "user" | "assistant" | "system" | "tool";

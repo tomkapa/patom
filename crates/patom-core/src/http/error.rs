@@ -226,6 +226,7 @@ impl IntoResponse for HttpError {
                 | AssetError::MagicByteMismatch { .. }
                 | AssetError::UnknownFileType
                 | AssetError::MissingField
+                | AssetError::MissingFilename
                 | AssetError::TooManyFields
                 | AssetError::Multipart(_)
                 | AssetError::Parse(_),

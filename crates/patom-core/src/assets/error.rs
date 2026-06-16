@@ -30,6 +30,11 @@ pub enum AssetError {
     #[error("missing multipart field 'file'")]
     MissingField,
 
+    /// The `file` part carried no `filename` in its Content-Disposition.
+    /// Required for message attachments so the model and UI can label it.
+    #[error("missing attachment filename")]
+    MissingFilename,
+
     /// The multipart envelope contained more than one part.
     #[error("multipart body must contain exactly one field")]
     TooManyFields,

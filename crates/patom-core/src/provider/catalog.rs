@@ -17,11 +17,60 @@ use thiserror::Error;
 
 use super::id::ProviderId;
 
-/// One catalog row: model name + the provider that serves it.
+/// What multimodal input a model accepts, after Patom's per-provider adaptation.
+///
+/// This is the capability gate that keeps a text-only backend on the shared
+/// OpenAI-compatible wire path (DeepSeek) from ever receiving image or file
+/// content parts (issue #187). A flag being `true` means "we can deliver this
+/// content to the model" — whether natively (OpenAI `file` part, Anthropic
+/// `document` block) or via server-side adaptation (Office → text for
+/// Anthropic). *How* is the converter's concern; *whether* is this flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelCapabilities {
+    /// PNG/JPEG/WebP/GIF image input.
+    pub images: bool,
+    /// PDF document input.
+    pub pdf: bool,
+    /// Office (xlsx/docx) input.
+    pub office: bool,
+}
+
+impl ModelCapabilities {
+    /// Text-only: no multimodal input of any kind.
+    pub const NONE: Self = Self {
+        images: false,
+        pdf: false,
+        office: false,
+    };
+
+    /// Images + PDF + Office. Both Anthropic and OpenAI reach this today
+    /// (Office on Anthropic is delivered by extracting to text server-side).
+    pub const ALL: Self = Self {
+        images: true,
+        pdf: true,
+        office: true,
+    };
+
+    /// Whether the given mime is accepted as input by this model.
+    #[must_use]
+    pub const fn accepts(self, mime: super::attachment::AttachmentMime) -> bool {
+        if mime.is_image() {
+            self.images
+        } else if mime.is_pdf() {
+            self.pdf
+        } else {
+            self.office
+        }
+    }
+}
+
+/// One catalog row: model name + the provider that serves it + the multimodal
+/// input it accepts.
 #[derive(Debug, Clone, Copy)]
 pub struct CatalogEntry {
     pub name: &'static str,
     pub provider: ProviderId,
+    pub capabilities: ModelCapabilities,
 }
 
 /// Every model Patom accepts on the chat path. Linear scan is fine — the slice
@@ -40,18 +89,22 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "claude-opus-4-7",
         provider: ProviderId::Anthropic,
+        capabilities: ModelCapabilities::ALL,
     },
     CatalogEntry {
         name: "claude-sonnet-4-6",
         provider: ProviderId::Anthropic,
+        capabilities: ModelCapabilities::ALL,
     },
     CatalogEntry {
         name: "claude-haiku-4-5",
         provider: ProviderId::Anthropic,
+        capabilities: ModelCapabilities::ALL,
     },
     CatalogEntry {
         name: "claude-sonnet-4-5",
         provider: ProviderId::Anthropic,
+        capabilities: ModelCapabilities::ALL,
     },
     // OpenAI — current generation per
     // https://developers.openai.com/api/docs/models/all (May 2026).
@@ -60,22 +113,27 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "gpt-5.5",
         provider: ProviderId::Openai,
+        capabilities: ModelCapabilities::ALL,
     },
     CatalogEntry {
         name: "gpt-5.4",
         provider: ProviderId::Openai,
+        capabilities: ModelCapabilities::ALL,
     },
     CatalogEntry {
         name: "gpt-5.4-mini",
         provider: ProviderId::Openai,
+        capabilities: ModelCapabilities::ALL,
     },
     CatalogEntry {
         name: "gpt-5.4-nano",
         provider: ProviderId::Openai,
+        capabilities: ModelCapabilities::ALL,
     },
     CatalogEntry {
         name: "gpt-4o-mini",
         provider: ProviderId::Openai,
+        capabilities: ModelCapabilities::ALL,
     },
     // DeepSeek — current generation per
     // https://api-docs.deepseek.com/quick_start/pricing (May 2026). The old
@@ -85,10 +143,12 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "deepseek-v4-pro",
         provider: ProviderId::Deepseek,
+        capabilities: ModelCapabilities::NONE,
     },
     CatalogEntry {
         name: "deepseek-v4-flash",
         provider: ProviderId::Deepseek,
+        capabilities: ModelCapabilities::NONE,
     },
 ];
 
@@ -100,10 +160,12 @@ const TEST_CATALOG_EXTENSION: &[CatalogEntry] = &[
     CatalogEntry {
         name: "test-model",
         provider: ProviderId::Anthropic,
+        capabilities: ModelCapabilities::ALL,
     },
     CatalogEntry {
         name: "test-model-openai",
         provider: ProviderId::Openai,
+        capabilities: ModelCapabilities::ALL,
     },
 ];
 
@@ -150,6 +212,13 @@ impl Model {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         self.entry.name
+    }
+
+    /// Multimodal input this model accepts. Consulted by each provider's
+    /// converter to gate (or down-convert) attachment content before dispatch.
+    #[must_use]
+    pub const fn capabilities(self) -> ModelCapabilities {
+        self.entry.capabilities
     }
 
     /// Every catalog entry, in declaration order. Bounded by the catalog.
@@ -289,6 +358,41 @@ mod tests {
                 entry.name
             );
         }
+    }
+
+    #[test]
+    fn deepseek_models_are_text_only() {
+        // The DeepSeek caveat (issue #187): official API is text-only, and it
+        // shares the OpenAI-compatible wire path. Capabilities must gate every
+        // multimodal kind off so no image/file part is ever emitted to it.
+        for name in ["deepseek-v4-pro", "deepseek-v4-flash"] {
+            let caps = Model::try_from(name).expect("known").capabilities();
+            assert_eq!(caps, ModelCapabilities::NONE);
+            assert!(!caps.images && !caps.pdf && !caps.office);
+        }
+    }
+
+    #[test]
+    fn anthropic_and_openai_models_accept_multimodal() {
+        for name in ["claude-opus-4-7", "gpt-5.5", "gpt-4o-mini"] {
+            let caps = Model::try_from(name).expect("known").capabilities();
+            assert!(caps.images, "{name} should accept images");
+            assert!(caps.pdf, "{name} should accept pdf");
+            assert!(caps.office, "{name} should accept office");
+        }
+    }
+
+    #[test]
+    fn capabilities_accepts_maps_mime_class() {
+        use crate::provider::attachment::AttachmentMime;
+        let none = ModelCapabilities::NONE;
+        assert!(!none.accepts(AttachmentMime::Png));
+        assert!(!none.accepts(AttachmentMime::Pdf));
+        assert!(!none.accepts(AttachmentMime::Xlsx));
+        let all = ModelCapabilities::ALL;
+        assert!(all.accepts(AttachmentMime::Png));
+        assert!(all.accepts(AttachmentMime::Pdf));
+        assert!(all.accepts(AttachmentMime::Docx));
     }
 
     #[test]

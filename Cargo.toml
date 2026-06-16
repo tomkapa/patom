@@ -282,6 +282,23 @@ infer = { version = "0.16", default-features = false }
 # Declaring it directly lets the assets-module API accept/return `Bytes`
 # without leaking transitive re-exports. Owner: assets/.
 bytes = { version = "1", default-features = false }
+# §8 (zero-dep bias): Office (xlsx) text extraction for the Anthropic path
+# (issue #187). Anthropic has no native xlsx input, so we extract cell text
+# server-side before sending. An .xlsx is a ZIP of OOXML parts (shared-strings
+# table + per-sheet cell XML with number-format/inline-string handling) —
+# correctly parsing that is well over the 200-LOC bar and a known footgun.
+# `calamine` is the de-facto Rust spreadsheet reader, pure-Rust, and reads
+# from an in-memory `Cursor` (no temp files). Default features kept: they pull
+# the bundled ZIP/OOXML backend the xlsx reader needs. Owner: provider/.
+calamine = { version = "0.34" }
+# §8 (zero-dep bias): ZIP reader for Office (docx) text extraction (issue
+# #187). A .docx is a ZIP whose `word/document.xml` holds the body; we unzip
+# that single part and scan its `<w:t>` runs in-tree (the XML scan is ~40 LOC,
+# under the §8 bar — the deflate/ZIP container is not). `zip` is the de-facto
+# Rust ZIP crate; defaults are disabled and only `deflate` is enabled to avoid
+# pulling extra compression backends. Pinned to the same major as `calamine`'s
+# transitive `zip` so the dependency tree carries a single copy. Owner: provider/.
+zip = { version = "7", default-features = false, features = ["deflate"] }
 
 # §8 (zero-dep bias): SMTP client for transactional mail — the member-invite
 # email (orgs/mailer.rs) and any future verification/notification mail. The SMTP

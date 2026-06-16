@@ -12,8 +12,9 @@ use crate::types::ParseError;
 
 use super::error::AssetError;
 use super::limits::{
-    ASSET_URL_MAX_LEN, MAX_AGENT_AVATAR_BYTES, MAX_AVATAR_BYTES, MAX_MCP_ICON_BYTES,
-    MAX_WORKSPACE_AVATAR_BYTES, OBJECT_KEY_MAX_LEN,
+    ASSET_URL_MAX_LEN, MAX_AGENT_AVATAR_BYTES, MAX_ATTACHMENT_FILE_BYTES,
+    MAX_ATTACHMENT_IMAGE_BYTES, MAX_AVATAR_BYTES, MAX_MCP_ICON_BYTES, MAX_WORKSPACE_AVATAR_BYTES,
+    OBJECT_KEY_MAX_LEN,
 };
 
 /// Image content-type allowed at the upload boundary.
@@ -70,6 +71,109 @@ impl ImageContentType {
             "image/webp" => Some(Self::Webp),
             "image/svg+xml" | "image/svg" => Some(Self::Svg),
             _ => None,
+        }
+    }
+}
+
+/// Content type stored in object storage. Superset of [`ImageContentType`]
+/// (avatars/icons) plus the message-attachment kinds (issue #187): GIF, PDF,
+/// and the two Office OOXML formats.
+///
+/// This is the *storage* content-type — the value written as the object's
+/// `Content-Type` header. Per-domain validation (which subset a given upload
+/// path accepts) lives at the boundary that produces it: [`ImageContentType`]
+/// for avatars, [`Self::from_attachment_mime`] for message attachments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetContentType {
+    Png,
+    Jpeg,
+    Webp,
+    Gif,
+    Svg,
+    Pdf,
+    Xlsx,
+    Docx,
+}
+
+impl AssetContentType {
+    /// Wire-form `Content-Type` header value.
+    #[must_use]
+    pub const fn as_mime(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
+            Self::Gif => "image/gif",
+            Self::Svg => "image/svg+xml",
+            Self::Pdf => "application/pdf",
+            Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+    }
+
+    /// Canonical file extension (no leading dot) for derived object keys.
+    #[must_use]
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Webp => "webp",
+            Self::Gif => "gif",
+            Self::Svg => "svg",
+            Self::Pdf => "pdf",
+            Self::Xlsx => "xlsx",
+            Self::Docx => "docx",
+        }
+    }
+
+    /// Parse a `Content-Type` the **message-attachment** boundary accepts:
+    /// images (no SVG — not valid model input) plus PDF/xlsx/docx. Returns
+    /// `None` for anything else, including `image/svg+xml`.
+    #[must_use]
+    pub fn from_attachment_mime(raw: &str) -> Option<Self> {
+        let canonical = raw
+            .split(';')
+            .next()
+            .unwrap_or(raw)
+            .trim()
+            .to_ascii_lowercase();
+        match canonical.as_str() {
+            "image/png" => Some(Self::Png),
+            "image/jpeg" | "image/jpg" => Some(Self::Jpeg),
+            "image/webp" => Some(Self::Webp),
+            "image/gif" => Some(Self::Gif),
+            "application/pdf" => Some(Self::Pdf),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some(Self::Xlsx),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
+                Some(Self::Docx)
+            }
+            _ => None,
+        }
+    }
+
+    /// Maximum body bytes for this type on the message-attachment path.
+    /// Images and files differ (files inline as base64 against provider
+    /// per-file limits). Mirrors the provider-side caps in
+    /// `crate::provider::limits` (the two layers cannot share a constant
+    /// without an `assets → provider` cycle; `/prompts` re-validates).
+    #[must_use]
+    pub const fn attachment_max_bytes(self) -> usize {
+        match self {
+            Self::Png | Self::Jpeg | Self::Webp | Self::Gif | Self::Svg => {
+                MAX_ATTACHMENT_IMAGE_BYTES
+            }
+            Self::Pdf | Self::Xlsx | Self::Docx => MAX_ATTACHMENT_FILE_BYTES,
+        }
+    }
+}
+
+impl From<ImageContentType> for AssetContentType {
+    fn from(t: ImageContentType) -> Self {
+        match t {
+            ImageContentType::Png => Self::Png,
+            ImageContentType::Jpeg => Self::Jpeg,
+            ImageContentType::Webp => Self::Webp,
+            ImageContentType::Svg => Self::Svg,
         }
     }
 }
@@ -314,7 +418,7 @@ pub trait AssetStore: fmt::Debug + Send + Sync + 'static {
         &self,
         key: ObjectKey,
         bytes: Bytes,
-        content_type: ImageContentType,
+        content_type: AssetContentType,
     ) -> Result<AssetUrl, AssetError>;
 
     /// Delete an object. Idempotent — deleting a missing key is `Ok(())`.

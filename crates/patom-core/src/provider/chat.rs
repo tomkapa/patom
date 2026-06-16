@@ -11,6 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::provider::Model;
+use crate::provider::attachment::Attachment;
 use crate::types::{MaxOutputTokens, ModelId, ParseError, ToolName};
 
 /// Maximum bytes accepted in a `ToolCallId`.
@@ -131,6 +132,13 @@ crate::str_enum! {
 pub enum UserContent {
     Text(String),
     ToolResult(ToolResult),
+    /// An image the user attached (PNG/JPEG/WebP/GIF). A reference, not bytes —
+    /// the provider materialises it at dispatch time (CLAUDE.md §1).
+    Image(Attachment),
+    /// A non-image file the user attached (PDF / xlsx / docx). Handled per
+    /// provider capability: native on OpenAI, document-block (PDF) or
+    /// extracted-to-text (Office) on Anthropic, rejected on text-only backends.
+    File(Attachment),
 }
 
 /// Content allowed in an assistant-role message.
@@ -277,5 +285,52 @@ mod tests {
     fn tool_call_id_round_trips_verbatim() {
         let id = ToolCallId::try_from("toolu_01abc").expect("valid");
         assert_eq!(id.as_str(), "toolu_01abc");
+    }
+
+    fn sample_attachment(mime: &str, name: &str) -> Attachment {
+        Attachment::try_from(crate::provider::attachment::RawAttachment {
+            url: "https://assets.example/attachments/abc.bin".to_owned(),
+            mime: mime.to_owned(),
+            filename: name.to_owned(),
+            size: 1234,
+        })
+        .expect("valid attachment")
+    }
+
+    #[test]
+    fn user_content_image_block_round_trips_through_jsonb_shape() {
+        let msg = ChatMessage::User(vec![
+            UserContent::Text("look at this".to_owned()),
+            UserContent::Image(sample_attachment("image/png", "shot.png")),
+        ]);
+        let json = serde_json::to_value(&msg).expect("ser");
+        // Adjacently-tagged: {"kind":"image","value":{url,mime,filename,size}}.
+        assert_eq!(json["role"], "user");
+        assert_eq!(json["contents"][1]["kind"], "image");
+        assert_eq!(json["contents"][1]["value"]["mime"], "image/png");
+
+        let back: ChatMessage = serde_json::from_value(json).expect("de");
+        let ChatMessage::User(contents) = back else {
+            panic!("expected user message");
+        };
+        assert!(matches!(contents[1], UserContent::Image(_)));
+    }
+
+    #[test]
+    fn user_content_file_block_round_trips() {
+        let msg = ChatMessage::User(vec![UserContent::File(sample_attachment(
+            "application/pdf",
+            "report.pdf",
+        ))]);
+        let json = serde_json::to_string(&msg).expect("ser");
+        let back: ChatMessage = serde_json::from_str(&json).expect("de");
+        let ChatMessage::User(contents) = back else {
+            panic!("expected user message");
+        };
+        let UserContent::File(att) = &contents[0] else {
+            panic!("expected file");
+        };
+        assert_eq!(att.mime().as_mime(), "application/pdf");
+        assert_eq!(att.filename().as_str(), "report.pdf");
     }
 }
