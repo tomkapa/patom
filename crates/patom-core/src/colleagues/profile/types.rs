@@ -8,7 +8,7 @@
 //!
 //! CLAUDE.md §1: each field carrying a length invariant is a newtype with a
 //! `TryFrom` smart constructor that mirrors the `colleague_profiles` column
-//! `CHECK`s (migration 84). [`ProfileText`] is *derived*, never user-set — it is
+//! `CHECK`s (migration 85). [`ProfileText`] is *derived*, never user-set — it is
 //! the flattened embedding source composed by [`compose_profile_text`].
 
 use std::fmt;

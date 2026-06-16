@@ -2,7 +2,7 @@
 //!
 //! Every cap lives here, named and doc-commented with *why this number*, so the
 //! typed `TryFrom` bounds cannot drift from the `colleague_profiles` column
-//! `CHECK`s they mirror (migration 84).
+//! `CHECK`s they mirror (migration 85).
 
 /// Max bytes of a `role` ("Product Manager"). Roles are short labels, not prose;
 /// mirrors the `role` column `CHECK (... BETWEEN 1 AND 200)`.
