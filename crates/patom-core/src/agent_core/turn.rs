@@ -287,13 +287,15 @@ impl Agent {
         // the feed (sender attribution) and the system prompt (roster) name
         // people identically. Empty for web/background threads.
         let overrides = self.memory().display_overrides(Some(thread)).await;
-        // The feed read and the system-prompt compose hit independent stores;
-        // run them concurrently so the turn pays one round-trip latency, not two.
-        let (messages, memory_system) = tokio::join!(
+        // The feed read, the system-prompt compose, and the thread's participant
+        // roll-up hit independent stores; run all three concurrently so the turn
+        // pays one round-trip latency, not three.
+        let (messages, memory_system, participants) = tokio::join!(
             self.threads()
                 .context_for_agent(thread, agent_id, viewer_colleague, &overrides),
             self.memory()
                 .system_prompt_for_thread(viewer, &overrides, kind_payload),
+            self.threads().thread_participants(thread),
         );
         let messages = messages?;
         let memory_system = memory_system?;
@@ -304,10 +306,11 @@ impl Agent {
         span.record("patom.history.count", messages.len());
 
         // L1 + L2: the `<participants>` block — who raised the thread and who
-        // has posted, enriched with their shared profiles. A thread-store outage
-        // degrades to empty (enrichment, not load-bearing); the block render
-        // degrades independently inside `participants_block`.
-        let participants_block = match self.threads().thread_participants(thread).await {
+        // has posted, enriched with their shared profiles. The participant read
+        // above overlapped the feed/prompt reads; only the (cache-warm) render
+        // happens here. A thread-store outage degrades to empty (enrichment, not
+        // load-bearing); the block render degrades independently.
+        let participants_block = match participants {
             Ok(participants) => {
                 self.memory()
                     .participants_block(&participants, viewer_colleague, &overrides)
@@ -336,11 +339,12 @@ impl Agent {
 
         // Both blocks sit in the per-turn tail (after `<memory>`), so they never
         // perturb the org-stable prefix that drives prompt-cache hits.
-        let tail: String = [participants_block, todos_block]
-            .into_iter()
-            .filter(|b| !b.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let tail = match (participants_block.is_empty(), todos_block.is_empty()) {
+            (false, false) => format!("{participants_block}\n{todos_block}"),
+            (false, true) => participants_block,
+            (true, false) => todos_block,
+            (true, true) => String::new(),
+        };
         let system: std::sync::Arc<str> = if tail.is_empty() {
             memory_system
         } else {
