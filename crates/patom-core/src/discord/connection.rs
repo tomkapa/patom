@@ -385,7 +385,7 @@ mod tests {
             run_connection(gw_task, &mut src, &cfg(), None, &tx, &cancel_task).await
         });
         // Advance well past the (jittered ≤ interval) first beat, then stop.
-        tokio::time::sleep(Duration::from_millis(60_000)).await;
+        tokio::time::sleep(Duration::from_mins(1)).await;
         cancel.cancel();
         let _result = handle.await.expect("join").expect("run");
         // IDENTIFY (op 2) then at least one HEARTBEAT (op 1).

@@ -22,6 +22,7 @@
 //! mandatory `allowed_mentions` safety object and the Cloudflare invalid-request
 //! ban that aggregates across a shared egress IP (both handled in `poster.rs`).
 
+pub mod app_store;
 pub mod codec;
 pub mod connection;
 pub mod error;
