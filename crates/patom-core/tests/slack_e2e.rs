@@ -351,6 +351,7 @@ async fn signed_app_mention_drives_agent_reply_back_to_slack(pool: PgPool) {
         index_html: std::sync::Arc::from(""),
         slack: Some(slack_state),
         lark: None,
+        discord: None,
         assets: None,
         orgs: Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
         mailer: Arc::new(patom::orgs::LogMailer),
