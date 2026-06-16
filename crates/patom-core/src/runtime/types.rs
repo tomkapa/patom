@@ -251,6 +251,33 @@ crate::str_enum! {
     }
 }
 
+crate::str_enum! {
+    /// Label on a `turn_metrics` row — what kind of LLM call it measured.
+    ///
+    /// A superset of [`RequestKind`]: every enqueued job records its own kind,
+    /// and context compaction (#182) records [`MetricKind::Compaction`] folds
+    /// that are *not* enqueued jobs (no `prompt_requests` row, no
+    /// [`RequestKindPayload`]). Kept separate from `RequestKind` so the
+    /// queue-dispatch enum stays exactly the set of dispatchable jobs — no
+    /// `unreachable!` arm for a label that can never be claimed.
+    pub enum MetricKind {
+        Normal     => "normal",
+        Reflection => "reflection",
+        Resolution => "resolution",
+        Compaction => "compaction",
+    }
+}
+
+impl From<RequestKind> for MetricKind {
+    fn from(kind: RequestKind) -> Self {
+        match kind {
+            RequestKind::Normal => Self::Normal,
+            RequestKind::Reflection => Self::Reflection,
+            RequestKind::Resolution => Self::Resolution,
+        }
+    }
+}
+
 /// Kind-specific metadata persisted in `prompt_requests.kind_payload` as JSONB.
 ///
 /// Every [`RequestKind`] has a corresponding variant — `Normal` is an

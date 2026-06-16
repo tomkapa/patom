@@ -6,7 +6,7 @@ use crate::agents::AgentId;
 use crate::agents::prompt_versions::PromptVersionId;
 use crate::auth::OrgId;
 use crate::provider::{Model, ProviderId};
-use crate::runtime::{PromptRequestId, RequestKind};
+use crate::runtime::{MetricKind, PromptRequestId};
 use crate::threads::AgentThreadId;
 use crate::types::ParseError;
 
@@ -151,7 +151,7 @@ pub struct TurnMetricsRow {
     pub state_id: AgentThreadId,
     pub agent_id: AgentId,
     pub prompt_version_id: PromptVersionId,
-    pub kind: RequestKind,
+    pub kind: MetricKind,
     /// Catalog model the worker resolved at turn-start. Recorded as the
     /// catalog handle (not the provider-echoed string) so every row is
     /// guaranteed-resolvable. `Model` already enforces `octet_length`-fit

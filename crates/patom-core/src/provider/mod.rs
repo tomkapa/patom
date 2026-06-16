@@ -22,7 +22,10 @@ mod registry;
 mod traits;
 
 pub use attachment::{Attachment, AttachmentMime, FileName, RawAttachment};
-pub use catalog::{CatalogEntry, MODEL_CATALOG, Model, ModelCapabilities, UnknownModel};
+pub use catalog::{
+    CatalogEntry, ContextWindow, InvalidContextWindow, MODEL_CATALOG, Model, ModelCapabilities,
+    UnknownModel,
+};
 pub use chat::{
     AssistantContent, ChatMessage, ChatRequest, ChatResponse, Role, StopReason,
     TOOL_CALL_ID_MAX_BYTES, ToolCall, ToolCallId, ToolResult, ToolSpec, Usage, UserContent,

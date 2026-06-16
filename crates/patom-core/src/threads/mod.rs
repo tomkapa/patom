@@ -11,11 +11,12 @@ mod traits;
 
 pub use error::ThreadError;
 pub use limits::{
-    DEFAULT_THREAD_FEED, MAX_TAGS_PER_MESSAGE, MAX_THREAD_FEED, MAX_THREAD_LIST,
-    ROOT_SNIPPET_MAX_CHARS,
+    DEFAULT_THREAD_FEED, MAX_CONTEXT_MESSAGES, MAX_TAGS_PER_MESSAGE, MAX_THREAD_FEED,
+    MAX_THREAD_LIST, MAX_TOOL_RESULT_CHARS, ROOT_SNIPPET_MAX_CHARS,
 };
 pub use pg_store::PgThreadStore;
 pub use traits::{
-    AgentThreadId, FeedMessage, MessageKind, NewMessage, RootSummary, SharedThreadStore, ThreadId,
-    ThreadListItem, ThreadMessageId, ThreadScope, ThreadStore,
+    AgentThreadId, ContextTail, FeedMessage, MessageKind, NewMessage, RootSummary, Seq,
+    SharedThreadStore, TailRow, ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId,
+    ThreadScope, ThreadStore,
 };

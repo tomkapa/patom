@@ -41,7 +41,7 @@ pub use response::{
     SharedResponseSource, StreamEvent,
 };
 pub use types::{
-    Attempts, ChunkSeq, ClaimKey, FailureReason, IdempotencyKey, PromptRequestId, RequestKind,
-    RequestKindPayload, RequestStatus, SeqOverflow, TurnSeq, WorkerId,
+    Attempts, ChunkSeq, ClaimKey, FailureReason, IdempotencyKey, MetricKind, PromptRequestId,
+    RequestKind, RequestKindPayload, RequestStatus, SeqOverflow, TurnSeq, WorkerId,
 };
 pub use worker::{WorkerConfig, WorkerPool, WorkerPoolHandle};
