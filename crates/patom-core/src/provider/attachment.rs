@@ -23,7 +23,8 @@ use super::limits::{MAX_ATTACHMENT_FILE_BYTES, MAX_ATTACHMENT_IMAGE_BYTES, MAX_F
 /// gate and every provider conversion covers each variant (CLAUDE.md §1). The
 /// allow-list is exactly what at least one supported provider accepts as input
 /// (see issue #187): images everywhere, PDF on Anthropic + OpenAI, Office on
-/// OpenAI natively and on Anthropic via server-side text extraction.
+/// both via server-side text extraction (OpenAI's inline `file_data` is
+/// PDF-only, so xlsx/docx are extracted rather than sent natively).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentMime {
     Png,
@@ -35,6 +36,10 @@ pub enum AttachmentMime {
     Xlsx,
     /// Word `.docx` (OOXML word-processing document).
     Docx,
+    /// Any UTF-8 text file (`.md`, `.json`, `.toml`, `.txt`, `.csv`, `.yaml`,
+    /// `.xml`, source code, …). Delivered to every provider — including
+    /// text-only DeepSeek — as the decoded text.
+    Text,
 }
 
 impl AttachmentMime {
@@ -49,10 +54,13 @@ impl AttachmentMime {
             Self::Pdf => "application/pdf",
             Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Self::Text => "text/plain",
         }
     }
 
-    /// Canonical file extension (no leading dot).
+    /// Canonical file extension (no leading dot). Text files normalise to
+    /// `txt` for the storage key; the original name (with its real extension)
+    /// is preserved separately in the [`FileName`].
     #[must_use]
     pub const fn extension(self) -> &'static str {
         match self {
@@ -63,6 +71,7 @@ impl AttachmentMime {
             Self::Pdf => "pdf",
             Self::Xlsx => "xlsx",
             Self::Docx => "docx",
+            Self::Text => "txt",
         }
     }
 
@@ -86,6 +95,16 @@ impl AttachmentMime {
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
                 Some(Self::Docx)
             }
+            // Any text/* type (markdown, csv, html, yaml, plain, …) plus the
+            // common `application/*` text formats are treated as plain text.
+            "application/json"
+            | "application/toml"
+            | "application/x-toml"
+            | "application/xml"
+            | "application/yaml"
+            | "application/x-yaml"
+            | "application/x-ndjson" => Some(Self::Text),
+            other if other.starts_with("text/") => Some(Self::Text),
             _ => None,
         }
     }
@@ -103,11 +122,19 @@ impl AttachmentMime {
         matches!(self, Self::Pdf)
     }
 
-    /// Whether this is an Office format (`file` part on OpenAI; extracted to
-    /// text server-side for Anthropic, which has no native support).
+    /// Whether this is an Office format (xlsx/docx). Both providers receive it
+    /// as server-side extracted text — OpenAI's inline `file_data` is PDF-only,
+    /// and Anthropic has no native Office input.
     #[must_use]
     pub const fn is_office(self) -> bool {
         matches!(self, Self::Xlsx | Self::Docx)
+    }
+
+    /// Whether this is a plain-text file. Delivered to every provider as the
+    /// decoded UTF-8 text (no parsing, no native part).
+    #[must_use]
+    pub const fn is_text(self) -> bool {
+        matches!(self, Self::Text)
     }
 
     /// Per-mime decoded-size ceiling. Images and files have different caps
@@ -301,7 +328,18 @@ mod tests {
             AttachmentMime::from_mime("application/pdf; charset=binary"),
             Some(AttachmentMime::Pdf)
         );
-        assert_eq!(AttachmentMime::from_mime("text/plain"), None);
+        // Text formats (incl. any text/* and common application/* text types)
+        // map to `Text`; truly-unsupported binary types do not.
+        assert_eq!(
+            AttachmentMime::from_mime("text/markdown; charset=utf-8"),
+            Some(AttachmentMime::Text)
+        );
+        assert_eq!(
+            AttachmentMime::from_mime("application/toml"),
+            Some(AttachmentMime::Text)
+        );
+        assert_eq!(AttachmentMime::from_mime("application/octet-stream"), None);
+        assert_eq!(AttachmentMime::from_mime("audio/mpeg"), None);
     }
 
     #[test]
@@ -320,7 +358,7 @@ mod tests {
 
     #[test]
     fn attachment_rejects_unsupported_mime() {
-        let err = Attachment::try_from(raw("text/plain", 100)).expect_err("rejected");
+        let err = Attachment::try_from(raw("application/octet-stream", 100)).expect_err("rejected");
         assert!(matches!(err, ParseError::Malformed { .. }));
     }
 

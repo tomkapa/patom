@@ -1,12 +1,13 @@
 //! Dispatch-time materialization of attachment references.
 //!
 //! A stored [`Attachment`](super::attachment::Attachment) carries only a URL.
-//! Some provider conversions need the raw bytes: OpenAI inlines PDF/Office as
-//! base64 `file` parts, and the Anthropic path extracts Office documents to
-//! text (Anthropic has no native Office input). This module provides the async
-//! fetch seam plus the Office text extractors, kept out of the per-provider
-//! converters so the conversion code stays a pure mapping over already-resolved
-//! data.
+//! Some provider conversions need the raw bytes: OpenAI inlines PDF as a
+//! base64 `file` part, and both providers extract Office documents to text
+//! (OpenAI's inline `file_data` is PDF-only; Anthropic has no native Office
+//! input). Plain-text files (md/json/toml/…) are UTF-8 decoded. This module
+//! provides the async fetch seam plus the document/text materializers, kept out
+//! of the per-provider converters so the conversion code stays a pure mapping
+//! over already-resolved data.
 //!
 //! Image and PDF content on the Anthropic path, and image content on OpenAI,
 //! ride as URLs and never touch this module — only the byte-requiring cases do.
@@ -24,9 +25,7 @@ use crate::assets::AssetUrl;
 use crate::tools::truncate_to_char_boundary;
 
 use super::attachment::AttachmentMime;
-use super::limits::{
-    ATTACHMENT_FETCH_TIMEOUT, MAX_ATTACHMENT_FILE_BYTES, MAX_OFFICE_EXTRACT_BYTES,
-};
+use super::limits::{ATTACHMENT_FETCH_TIMEOUT, MAX_ATTACHMENT_FILE_BYTES, MAX_DOC_EXTRACT_BYTES};
 
 /// Failure materializing an attachment before dispatch.
 #[derive(Debug, Error)]
@@ -124,21 +123,32 @@ pub fn to_data_uri(mime: AttachmentMime, bytes: &[u8]) -> String {
     format!("data:{};base64,{}", mime.as_mime(), BASE64.encode(bytes))
 }
 
-/// Extract plain text from an Office document for providers without native
-/// Office input (Anthropic). Output is capped at [`MAX_OFFICE_EXTRACT_CHARS`].
-pub fn extract_office_text(mime: AttachmentMime, bytes: &[u8]) -> Result<String, AttachmentError> {
+/// Render a document/text attachment as the text we inject into the prompt.
+///
+/// Office (xlsx/docx) is parsed, a plain-text file is UTF-8 decoded. Both are
+/// capped at [`MAX_DOC_EXTRACT_BYTES`]. Images/PDF are not text — they ride as
+/// their own provider parts and never reach here.
+pub fn attachment_to_text(mime: AttachmentMime, bytes: &[u8]) -> Result<String, AttachmentError> {
     let mut text = match mime {
         AttachmentMime::Xlsx => extract_xlsx(bytes)?,
         AttachmentMime::Docx => extract_docx(bytes)?,
+        AttachmentMime::Text => decode_text(bytes),
         other => {
             return Err(AttachmentError::Extract(format!(
-                "not an office type: {}",
+                "not a text-renderable type: {}",
                 other.as_mime()
             )));
         }
     };
-    truncate_to_char_boundary(&mut text, MAX_OFFICE_EXTRACT_BYTES);
+    truncate_to_char_boundary(&mut text, MAX_DOC_EXTRACT_BYTES);
     Ok(text)
+}
+
+/// Decode a plain-text file as UTF-8. Lossy so a stray invalid byte yields a
+/// replacement char rather than failing the turn — the upload boundary already
+/// rejected binary payloads (NUL check).
+fn decode_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// Flatten every sheet into tab-separated rows prefixed by the sheet name.
@@ -157,7 +167,7 @@ fn extract_xlsx(bytes: &[u8]) -> Result<String, AttachmentError> {
     let names = workbook.sheet_names();
     // Bounded by the number of sheets in the workbook (§5).
     for name in names {
-        if out.len() >= MAX_OFFICE_EXTRACT_BYTES {
+        if out.len() >= MAX_DOC_EXTRACT_BYTES {
             break;
         }
         let Ok(range) = workbook.worksheet_range(&name) else {
@@ -170,7 +180,7 @@ fn extract_xlsx(bytes: &[u8]) -> Result<String, AttachmentError> {
             let cells: Vec<String> = row.iter().map(ToString::to_string).collect();
             out.push_str(&cells.join("\t"));
             out.push('\n');
-            if out.len() >= MAX_OFFICE_EXTRACT_BYTES {
+            if out.len() >= MAX_DOC_EXTRACT_BYTES {
                 break;
             }
         }
@@ -325,6 +335,26 @@ pub(crate) mod test_support {
                 .ok_or_else(|| AttachmentError::Fetch(format!("no stub for {url}")))
         }
     }
+
+    /// Build a tiny valid `.docx` (a ZIP holding `word/document.xml` with one
+    /// run) for converter tests that exercise the Office → text path.
+    pub(crate) fn tiny_docx(body: &str) -> Vec<u8> {
+        use std::io::Write as _;
+        use zip::write::SimpleFileOptions;
+
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            zip.start_file("word/document.xml", SimpleFileOptions::default())
+                .expect("start");
+            let xml = format!(
+                "<w:document><w:body><w:p><w:r><w:t>{body}</w:t></w:r></w:p></w:body></w:document>"
+            );
+            zip.write_all(xml.as_bytes()).expect("write");
+            zip.finish().expect("finish");
+        }
+        buf
+    }
 }
 
 #[cfg(test)]
@@ -360,6 +390,6 @@ mod tests {
 
     #[test]
     fn extract_office_rejects_non_office() {
-        assert!(extract_office_text(AttachmentMime::Pdf, b"%PDF").is_err());
+        assert!(attachment_to_text(AttachmentMime::Pdf, b"%PDF").is_err());
     }
 }

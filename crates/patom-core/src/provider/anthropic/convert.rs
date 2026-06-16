@@ -15,7 +15,7 @@ use crate::provider::chat::{
     AssistantContent, ChatMessage, StopReason, ToolCall, ToolCallId, ToolSpec, UserContent,
 };
 use crate::provider::error::ProviderError;
-use crate::provider::materialize::{AttachmentSource, extract_office_text};
+use crate::provider::materialize::{AttachmentSource, attachment_to_text};
 use crate::types::ToolName;
 
 /// Map a provider-agnostic message into a claudius `MessageParam`. Returns `None` for a
@@ -90,8 +90,8 @@ async fn user_content_to_block(
 }
 
 /// Map a non-image file. PDF rides as a URL `document` block (native). Office
-/// formats have no native Anthropic support, so we fetch the bytes and extract
-/// plain text into a `TextBlock`.
+/// (no native support) and plain-text files are fetched and rendered to a
+/// `TextBlock` — Office is parsed, text is UTF-8 decoded.
 async fn file_to_block(
     att: Attachment,
     caps: ModelCapabilities,
@@ -104,12 +104,12 @@ async fn file_to_block(
             DocumentSource::UrlPdf(UrlPdfSource::new(att.url().as_str().to_owned())),
         )));
     }
-    // Office: fetch + extract to text.
+    // Office / text: fetch + render to text.
     let bytes = source
         .fetch(att.url())
         .await
         .map_err(|e| ProviderError::Attachment(e.to_string()))?;
-    let text = extract_office_text(att.mime(), &bytes)
+    let text = attachment_to_text(att.mime(), &bytes)
         .map_err(|e| ProviderError::Attachment(e.to_string()))?;
     let body = format!("[Attached file: {}]\n{text}", att.filename().as_str());
     Ok(ContentBlock::Text(TextBlock::new(body)))
@@ -273,7 +273,7 @@ mod tests {
     #[tokio::test]
     async fn office_is_fetched_and_extracted_to_text() {
         // Minimal valid .docx: a ZIP holding word/document.xml with one run.
-        let docx = tiny_docx("Hello sheet");
+        let docx = crate::provider::materialize::test_support::tiny_docx("Hello sheet");
         let msg = ChatMessage::User(vec![UserContent::File(attachment(
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "memo.docx",
@@ -288,24 +288,5 @@ mod tests {
         let text = json["content"][0]["text"].as_str().expect("text");
         assert!(text.contains("memo.docx"), "prefix: {text}");
         assert!(text.contains("Hello sheet"), "body: {text}");
-    }
-
-    /// Build a tiny valid `.docx` (a ZIP with `word/document.xml`) for tests.
-    fn tiny_docx(body: &str) -> Vec<u8> {
-        use std::io::Write as _;
-        use zip::write::SimpleFileOptions;
-
-        let mut buf = Vec::new();
-        {
-            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            zip.start_file("word/document.xml", SimpleFileOptions::default())
-                .expect("start");
-            let xml = format!(
-                "<w:document><w:body><w:p><w:r><w:t>{body}</w:t></w:r></w:p></w:body></w:document>"
-            );
-            zip.write_all(xml.as_bytes()).expect("write");
-            zip.finish().expect("finish");
-        }
-        buf
     }
 }

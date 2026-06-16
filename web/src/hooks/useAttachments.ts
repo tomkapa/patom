@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
-import { uuidv7 } from "../lib/utils";
+import { formatBytes, uuidv7 } from "../lib/utils";
 import type { Attachment } from "../types/api";
 
 const IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
@@ -20,8 +20,54 @@ const FILE_MIMES = [
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ];
 
+// `application/*` MIME types the server already treats as text. Anything with a
+// `text/` prefix is also text; everything else is detected by extension because
+// browsers report an empty/unhelpful type for .md/.toml/etc.
+const TEXT_APP_MIMES = [
+  "application/json",
+  "application/toml",
+  "application/x-toml",
+  "application/xml",
+  "application/yaml",
+  "application/x-yaml",
+  "application/x-ndjson",
+];
+const TEXT_EXTENSIONS = [
+  ".md", ".markdown", ".txt", ".text", ".log", ".json", ".toml", ".yaml",
+  ".yml", ".csv", ".tsv", ".xml", ".ini", ".cfg", ".conf", ".env", ".rs",
+  ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".java", ".rb", ".sh", ".sql",
+  ".html", ".css",
+];
+
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot).toLowerCase() : "";
+}
+
+function isTextFile(file: File): boolean {
+  if (file.type.startsWith("text/")) return true;
+  if (TEXT_APP_MIMES.includes(file.type)) return true;
+  return TEXT_EXTENSIONS.includes(extensionOf(file.name));
+}
+
+/** Whether the server's mime allow-list already accepts `file.type`. */
+function serverKnowsMime(file: File): boolean {
+  return (
+    isImageMime(file.type) ||
+    FILE_MIMES.includes(file.type) ||
+    file.type.startsWith("text/") ||
+    TEXT_APP_MIMES.includes(file.type)
+  );
+}
+
 /** `accept` attribute for the hidden file input. */
-export const ATTACHMENT_ACCEPT = [...IMAGE_MIMES, ...FILE_MIMES].join(",");
+export const ATTACHMENT_ACCEPT = [
+  ...IMAGE_MIMES,
+  ...FILE_MIMES,
+  "text/*",
+  ...TEXT_APP_MIMES,
+  ...TEXT_EXTENSIONS,
+].join(",");
 
 // Mirror the backend caps (crate `provider::limits`). The server re-validates,
 // so these only give the user fast local feedback.
@@ -47,13 +93,24 @@ export type PendingAttachment = {
 };
 
 function rejectReason(file: File): string | null {
-  const allowed = isImageMime(file.type) || FILE_MIMES.includes(file.type);
+  const allowed =
+    isImageMime(file.type) || FILE_MIMES.includes(file.type) || isTextFile(file);
   if (!allowed) return "unsupported file type";
   const cap = isImageMime(file.type) ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
   if (file.size > cap) {
-    return `too large (max ${Math.floor(cap / (1024 * 1024))} MB)`;
+    return `too large (max ${formatBytes(cap)})`;
   }
   return null;
+}
+
+/** Normalize a file for upload: text files whose browser-reported type the
+ *  server wouldn't recognize (empty / `application/octet-stream` for .md,
+ *  .toml, …) are re-stamped `text/plain` so the upload boundary accepts them. */
+function normalizeForUpload(file: File): File {
+  if (isTextFile(file) && !serverKnowsMime(file)) {
+    return new File([file], file.name, { type: "text/plain" });
+  }
+  return file;
 }
 
 export function useAttachments() {
@@ -75,7 +132,7 @@ export function useAttachments() {
 
   const upload = useCallback(async (id: string, file: File) => {
     try {
-      const attachment = await api.uploadAttachment(file);
+      const attachment = await api.uploadAttachment(normalizeForUpload(file));
       setItems((prev) =>
         prev.map((it) =>
           it.id === id ? { ...it, status: "done", attachment } : it,

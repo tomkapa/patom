@@ -93,6 +93,8 @@ pub enum AssetContentType {
     Pdf,
     Xlsx,
     Docx,
+    /// Any UTF-8 text file (md/json/toml/csv/…); stored as `text/plain`.
+    Text,
 }
 
 impl AssetContentType {
@@ -108,6 +110,7 @@ impl AssetContentType {
             Self::Pdf => "application/pdf",
             Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Self::Text => "text/plain",
         }
     }
 
@@ -123,12 +126,14 @@ impl AssetContentType {
             Self::Pdf => "pdf",
             Self::Xlsx => "xlsx",
             Self::Docx => "docx",
+            Self::Text => "txt",
         }
     }
 
     /// Parse a `Content-Type` the **message-attachment** boundary accepts:
-    /// images (no SVG — not valid model input) plus PDF/xlsx/docx. Returns
-    /// `None` for anything else, including `image/svg+xml`.
+    /// images (no SVG — not valid model input), PDF/xlsx/docx, and any text
+    /// file (`text/*` plus common `application/*` text formats). Returns `None`
+    /// for anything else, including `image/svg+xml`.
     #[must_use]
     pub fn from_attachment_mime(raw: &str) -> Option<Self> {
         let canonical = raw
@@ -147,6 +152,14 @@ impl AssetContentType {
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
                 Some(Self::Docx)
             }
+            "application/json"
+            | "application/toml"
+            | "application/x-toml"
+            | "application/xml"
+            | "application/yaml"
+            | "application/x-yaml"
+            | "application/x-ndjson" => Some(Self::Text),
+            other if other.starts_with("text/") => Some(Self::Text),
             _ => None,
         }
     }
@@ -162,7 +175,7 @@ impl AssetContentType {
             Self::Png | Self::Jpeg | Self::Webp | Self::Gif | Self::Svg => {
                 MAX_ATTACHMENT_IMAGE_BYTES
             }
-            Self::Pdf | Self::Xlsx | Self::Docx => MAX_ATTACHMENT_FILE_BYTES,
+            Self::Pdf | Self::Xlsx | Self::Docx | Self::Text => MAX_ATTACHMENT_FILE_BYTES,
         }
     }
 }

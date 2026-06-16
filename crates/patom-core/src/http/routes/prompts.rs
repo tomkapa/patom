@@ -154,6 +154,10 @@ pub(super) async fn submit_internal(
         params.tags.len() <= MAX_TAGS_PER_MESSAGE,
         "invariant: handler caps tags before submit_internal"
     );
+    assert!(
+        params.attachments.len() <= MAX_ATTACHMENTS_PER_MESSAGE,
+        "invariant: handler caps attachments before submit_internal"
+    );
     let caller = Caller::new(params.user_id, params.org_id);
     let store = PgThreadStore::new(state.pool.clone(), state.clock.clone());
 
@@ -604,6 +608,28 @@ async fn submit_prompt(
         .map(Attachment::try_from)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| HttpError::BadRequest(e.to_string()))?;
+
+    // SSRF guard (issue #187): the attachment URL is later fetched
+    // server-side (Office → text, OpenAI base64 inlining) or handed to the
+    // provider to fetch. The client supplies it as plain JSON, so constrain
+    // it to our own asset origin — only `POST /uploads/attachment` mints a
+    // legitimate reference (`{public_host}/attachments/…`). Without this a
+    // signed-in user could point it at `http://169.254.169.254/…` and
+    // exfiltrate internal/metadata responses through the model.
+    if !attachments.is_empty() {
+        let store = state
+            .assets
+            .as_ref()
+            .ok_or(HttpError::AssetStorageMissing)?;
+        let prefix = format!("{}/", store.public_host());
+        for att in &attachments {
+            if !att.url().as_str().starts_with(&prefix) {
+                return Err(HttpError::BadRequest(
+                    "attachment url is not from the asset store".to_owned(),
+                ));
+            }
+        }
+    }
 
     // Text is optional when at least one attachment is present (issue #187);
     // otherwise an empty body is rejected by the `Prompt` smart constructor.

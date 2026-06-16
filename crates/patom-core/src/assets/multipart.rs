@@ -186,6 +186,23 @@ fn attachment_magic_matches(prefix: &[u8], claimed: AssetContentType) -> bool {
         // (PK\x05\x06) or spanned (PK\x07\x08) archive is not a real
         // document, so we require the local-file-header signature.
         AssetContentType::Xlsx | AssetContentType::Docx => prefix.starts_with(b"PK\x03\x04"),
+        // Text has no magic bytes; require the prefix to be valid UTF-8 text so
+        // a binary payload can't masquerade as a text file.
+        AssetContentType::Text => looks_like_text(prefix),
+    }
+}
+
+/// Whether `prefix` is plausibly UTF-8 text: no NUL byte, and the bytes decode
+/// as UTF-8 except possibly for a codepoint truncated at the prefix boundary.
+fn looks_like_text(prefix: &[u8]) -> bool {
+    if prefix.contains(&0) {
+        return false;
+    }
+    match std::str::from_utf8(prefix) {
+        Ok(_) => true,
+        // `error_len() == None` means the only problem is an incomplete final
+        // codepoint (the prefix cut mid-character) — still valid text.
+        Err(e) => e.error_len().is_none(),
     }
 }
 
@@ -400,6 +417,23 @@ mod tests {
     }
 
     #[test]
+    fn attachment_accepts_utf8_text() {
+        validate_attachment_bytes(b"# Notes\nkey = 1\n", AssetContentType::Text, 1024)
+            .expect("text ok");
+        // A truncated final codepoint (prefix cut mid-char) is still text.
+        validate_attachment_bytes(&[b'h', b'i', 0xE2, 0x82], AssetContentType::Text, 1024)
+            .expect("truncated codepoint ok");
+    }
+
+    #[test]
+    fn attachment_rejects_binary_claimed_as_text() {
+        assert!(matches!(
+            validate_attachment_bytes(b"\x00\x01\x02binary", AssetContentType::Text, 1024),
+            Err(AssetError::MagicByteMismatch { .. })
+        ));
+    }
+
+    #[test]
     fn attachment_mime_strings_match_provider_strings() {
         // Cross-layer drift guard: the asset-storage mime strings must equal
         // the provider-side `AttachmentMime` strings, since the upload returns
@@ -413,9 +447,27 @@ mod tests {
             (AssetContentType::Pdf, AttachmentMime::Pdf),
             (AssetContentType::Xlsx, AttachmentMime::Xlsx),
             (AssetContentType::Docx, AttachmentMime::Docx),
+            (AssetContentType::Text, AttachmentMime::Text),
         ];
         for (asset, provider) in pairs {
             assert_eq!(asset.as_mime(), provider.as_mime());
         }
+    }
+
+    #[test]
+    fn attachment_byte_caps_match_provider_caps() {
+        // The asset-layer caps mirror the provider-layer caps (the two cannot
+        // share a constant without an `assets → provider` cycle). Guard the
+        // hand-sync so a bump on one side can't silently diverge.
+        use crate::assets::limits as a;
+        use crate::provider::limits as p;
+        assert_eq!(
+            p::MAX_ATTACHMENT_IMAGE_BYTES,
+            u64::try_from(a::MAX_ATTACHMENT_IMAGE_BYTES).expect("usize fits u64"),
+        );
+        assert_eq!(
+            p::MAX_ATTACHMENT_FILE_BYTES,
+            u64::try_from(a::MAX_ATTACHMENT_FILE_BYTES).expect("usize fits u64"),
+        );
     }
 }

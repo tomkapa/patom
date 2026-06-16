@@ -280,6 +280,7 @@ export function ChatView() {
     addPending(threadId, {
       idempotency_key,
       text: input.content,
+      attachments: input.attachments,
       ts: new Date().toISOString(),
     });
     setComposerError(null);

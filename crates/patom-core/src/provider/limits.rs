@@ -62,12 +62,12 @@ pub const MAX_ATTACHMENT_FILE_BYTES: u64 = 32 * 1024 * 1024;
 /// allowed file on a slow link before we fail the turn rather than hang it.
 pub const ATTACHMENT_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Maximum bytes of extracted text kept from a single Office (xlsx/docx)
-/// attachment on the Anthropic path.
+/// Maximum bytes of text injected into the prompt from a single document
+/// attachment — Office (xlsx/docx) extraction or a decoded plain-text file.
 ///
-/// Extraction can balloon (a large spreadsheet → megabytes of text); the cap
-/// bounds what we inject into the prompt — and therefore token spend — per
-/// attachment. Mirrors OpenAI's own server-side "first ~1000 rows" posture.
-/// Expressed in bytes to match the crate-wide truncation convention
+/// Extraction/decoding can balloon (a large spreadsheet or log → megabytes of
+/// text); the cap bounds what we inject into the prompt — and therefore token
+/// spend — per attachment. Mirrors OpenAI's own server-side "first ~1000 rows"
+/// posture. Expressed in bytes to match the crate-wide truncation convention
 /// ([`crate::tools::truncate_to_char_boundary`]).
-pub const MAX_OFFICE_EXTRACT_BYTES: usize = 200 * 1024;
+pub const MAX_DOC_EXTRACT_BYTES: usize = 200 * 1024;

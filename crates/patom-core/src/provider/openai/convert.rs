@@ -22,7 +22,7 @@ use crate::provider::chat::{
     UserContent,
 };
 use crate::provider::error::ProviderError;
-use crate::provider::materialize::{AttachmentSource, to_data_uri};
+use crate::provider::materialize::{AttachmentSource, attachment_to_text, to_data_uri};
 use crate::types::ToolName;
 
 /// Top-level chat-completion request body.
@@ -222,64 +222,117 @@ pub(super) async fn message_to_wire(
     }
 }
 
-/// A user turn may carry text, attachments, *and* tool results. Text-only and
-/// tool-result turns keep their original shape (a bare-string `User` message
-/// per text block, a `Tool` message per result) so existing payloads are
-/// unchanged. When the turn carries an image/file, text + attachments collapse
-/// into a single `User` message whose `content` is a parts array (OpenAI
-/// requires the array form for multimodal); tool results still split out.
+/// One resolved user-content item: either plain text (a text block, or an
+/// Office/text attachment rendered to text) or a media part (`image_url` /
+/// PDF `file`). Tool results are handled separately as `Tool` messages.
+enum Item {
+    Text(String),
+    Media(UserContentPart),
+}
+
+/// A user turn may carry text, attachments, *and* tool results. We resolve each
+/// block to an [`Item`], then choose the wire shape. With **no media** (text
+/// only, possibly with Office/text-file attachments) we emit bare-string `User`
+/// messages, one per text item — preserving the text-only payload shape that
+/// text-only backends (DeepSeek) require, since they do not accept the
+/// content-parts array. With **any media** (image / PDF) we emit a single
+/// `User` message whose `content` is a parts array (OpenAI requires the array
+/// form for media). Tool results always split out into their own `Tool`
+/// messages.
 async fn user_to_wire(
     blocks: Vec<UserContent>,
     caps: ModelCapabilities,
     model: &str,
     source: &dyn AttachmentSource,
 ) -> Result<Vec<WireMessage>, ProviderError> {
-    let has_attachment = blocks
-        .iter()
-        .any(|b| matches!(b, UserContent::Image(_) | UserContent::File(_)));
-
-    if !has_attachment {
-        let mut out: Vec<WireMessage> = Vec::with_capacity(blocks.len());
-        for block in blocks {
-            match block {
-                UserContent::Text(t) => out.push(WireMessage::User {
-                    content: UserMessageContent::Text(t),
-                }),
-                UserContent::ToolResult(r) => out.push(tool_message(r)),
-                // `has_attachment` is false, so these arms are unreachable; map
-                // them defensively rather than `unreachable!` (CLAUDE.md §12).
-                UserContent::Image(att) | UserContent::File(att) => {
-                    out.push(WireMessage::User {
-                        content: UserMessageContent::Parts(vec![
-                            attachment_part(att, caps, model, source).await?,
-                        ]),
-                    });
-                }
-            }
-        }
-        return Ok(out);
-    }
-
-    let mut parts: Vec<UserContentPart> = Vec::new();
+    let mut items: Vec<Item> = Vec::with_capacity(blocks.len());
     let mut tool_msgs: Vec<WireMessage> = Vec::new();
     for block in blocks {
         match block {
-            UserContent::Text(t) => parts.push(UserContentPart::Text { text: t }),
-            UserContent::Image(att) | UserContent::File(att) => {
-                parts.push(attachment_part(att, caps, model, source).await?);
-            }
+            UserContent::Text(t) => items.push(Item::Text(t)),
             UserContent::ToolResult(r) => tool_msgs.push(tool_message(r)),
+            UserContent::Image(att) => {
+                gate(caps, &att, model)?;
+                items.push(Item::Media(UserContentPart::ImageUrl {
+                    image_url: ImageUrlPart {
+                        url: att.url().as_str().to_owned(),
+                        detail: "auto",
+                    },
+                }));
+            }
+            UserContent::File(att) => items.push(file_to_item(att, caps, model, source).await?),
         }
     }
 
-    let mut out = Vec::with_capacity(1 + tool_msgs.len());
-    if !parts.is_empty() {
+    let has_media = items.iter().any(|i| matches!(i, Item::Media(_)));
+    let mut out: Vec<WireMessage> = Vec::with_capacity(items.len() + tool_msgs.len());
+    if has_media {
+        let parts = items
+            .into_iter()
+            .map(|i| match i {
+                Item::Text(text) => UserContentPart::Text { text },
+                Item::Media(p) => p,
+            })
+            .collect();
         out.push(WireMessage::User {
             content: UserMessageContent::Parts(parts),
         });
+    } else {
+        for i in items {
+            if let Item::Text(t) = i {
+                out.push(WireMessage::User {
+                    content: UserMessageContent::Text(t),
+                });
+            }
+        }
     }
     out.extend(tool_msgs);
     Ok(out)
+}
+
+/// Resolve a `File` attachment. PDF is fetched and inlined as a base64 `file`
+/// part (a media item). Office (xlsx/docx) and plain-text files are fetched and
+/// rendered to text: OpenAI's inline `file_data` data-URL only accepts
+/// `application/pdf` (non-PDF MIME types are rejected with
+/// `invalid_request_error`), so xlsx/docx are parsed and text files decoded —
+/// same as the Anthropic path.
+async fn file_to_item(
+    att: Attachment,
+    caps: ModelCapabilities,
+    model: &str,
+    source: &dyn AttachmentSource,
+) -> Result<Item, ProviderError> {
+    gate(caps, &att, model)?;
+    let bytes = source
+        .fetch(att.url())
+        .await
+        .map_err(|e| ProviderError::Attachment(e.to_string()))?;
+    if att.mime().is_pdf() {
+        return Ok(Item::Media(UserContentPart::File {
+            file: FilePart {
+                filename: Some(att.filename().as_str().to_owned()),
+                file_data: to_data_uri(att.mime(), &bytes),
+            },
+        }));
+    }
+    let text = attachment_to_text(att.mime(), &bytes)
+        .map_err(|e| ProviderError::Attachment(e.to_string()))?;
+    Ok(Item::Text(format!(
+        "[Attached file: {}]\n{text}",
+        att.filename().as_str()
+    )))
+}
+
+/// Capability gate: reject content the target model can't accept before any
+/// part is emitted (the DeepSeek guard).
+fn gate(caps: ModelCapabilities, att: &Attachment, model: &str) -> Result<(), ProviderError> {
+    if caps.accepts(att.mime()) {
+        return Ok(());
+    }
+    Err(ProviderError::UnsupportedContent {
+        mime: att.mime().as_mime(),
+        model: model.to_owned(),
+    })
 }
 
 /// One `role=tool` message for a tool result. OpenAI has no `is_error` flag;
@@ -290,41 +343,6 @@ fn tool_message(r: ToolResult) -> WireMessage {
         content: r.output,
         tool_call_id: r.call_id.as_str().to_string(),
     }
-}
-
-/// Build the content part for an image or file attachment, gating on model
-/// capability first. Images ride as a URL (`image_url`); PDF/Office are fetched
-/// and inlined as base64 `file` parts (OpenAI `file` does not accept a URL).
-async fn attachment_part(
-    att: Attachment,
-    caps: ModelCapabilities,
-    model: &str,
-    source: &dyn AttachmentSource,
-) -> Result<UserContentPart, ProviderError> {
-    if !caps.accepts(att.mime()) {
-        return Err(ProviderError::UnsupportedContent {
-            mime: att.mime().as_mime(),
-            model: model.to_owned(),
-        });
-    }
-    if att.mime().is_image() {
-        return Ok(UserContentPart::ImageUrl {
-            image_url: ImageUrlPart {
-                url: att.url().as_str().to_owned(),
-                detail: "auto",
-            },
-        });
-    }
-    let bytes = source
-        .fetch(att.url())
-        .await
-        .map_err(|e| ProviderError::Attachment(e.to_string()))?;
-    Ok(UserContentPart::File {
-        file: FilePart {
-            filename: Some(att.filename().as_str().to_owned()),
-            file_data: to_data_uri(att.mime(), &bytes),
-        },
-    })
 }
 
 /// An assistant turn collapses into a single wire message that carries any combination of
@@ -621,13 +639,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn office_becomes_base64_file_part_natively() {
-        // OpenAI takes Office files natively (server-side augmentation); we do
-        // NOT extract text — just inline the bytes as a `file` part.
-        let src = StubAttachmentSource::new().with(ASSET, b"PK\x03\x04 xlsx".to_vec());
-        let mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    async fn office_is_extracted_to_string_content() {
+        // OpenAI inline `file_data` is PDF-only (it rejects Office MIME types),
+        // so Office attachments are extracted to text. With no image/PDF in the
+        // turn the message stays bare-string content (no parts array).
+        let docx = crate::provider::materialize::test_support::tiny_docx("quarterly numbers");
+        let mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let src = StubAttachmentSource::new().with(ASSET, docx);
         let wire = message_to_wire(
-            ChatMessage::User(vec![UserContent::File(attachment(mime, "data.xlsx"))]),
+            ChatMessage::User(vec![UserContent::File(attachment(mime, "data.docx"))]),
             caps_for("gpt-5.5"),
             "gpt-5.5",
             &src,
@@ -635,13 +655,56 @@ mod tests {
         .await
         .expect("ok");
         let json = serde_json::to_value(&wire[0]).expect("ser");
-        assert_eq!(json["content"][0]["type"], "file");
+        let content = json["content"].as_str().expect("string content");
+        assert!(content.contains("data.docx"), "prefix: {content}");
+        assert!(content.contains("quarterly numbers"), "body: {content}");
     }
 
     #[tokio::test]
-    async fn deepseek_rejects_any_attachment() {
+    async fn text_file_becomes_string_content() {
+        let src = StubAttachmentSource::new().with(ASSET, b"# Notes\nhello".to_vec());
+        let wire = message_to_wire(
+            ChatMessage::User(vec![UserContent::File(attachment(
+                "text/markdown",
+                "notes.md",
+            ))]),
+            caps_for("gpt-5.5"),
+            "gpt-5.5",
+            &src,
+        )
+        .await
+        .expect("ok");
+        let json = serde_json::to_value(&wire[0]).expect("ser");
+        let content = json["content"].as_str().expect("string content");
+        assert!(content.contains("notes.md") && content.contains("# Notes\nhello"));
+    }
+
+    #[tokio::test]
+    async fn image_plus_text_keeps_parts_array() {
+        // When media is present, text-file content rides as a `text` part
+        // alongside the `image_url` part.
+        let src = StubAttachmentSource::new().with(ASSET, b"plain".to_vec());
+        let wire = message_to_wire(
+            ChatMessage::User(vec![
+                UserContent::Image(attachment("image/png", "a.png")),
+                UserContent::File(attachment("text/plain", "n.txt")),
+            ]),
+            caps_for("gpt-5.5"),
+            "gpt-5.5",
+            &src,
+        )
+        .await
+        .expect("ok");
+        let json = serde_json::to_value(&wire[0]).expect("ser");
+        let parts = json["content"].as_array().expect("parts array");
+        assert_eq!(parts[0]["type"], "image_url");
+        assert_eq!(parts[1]["type"], "text");
+    }
+
+    #[tokio::test]
+    async fn deepseek_rejects_binary_attachment() {
         // The core DeepSeek guard (issue #187): text-only model on the shared
-        // OpenAI wire path must never receive an image/file part.
+        // OpenAI wire path must never receive an image/PDF part.
         let src = StubAttachmentSource::new();
         let err = message_to_wire(
             ChatMessage::User(vec![UserContent::Image(attachment("image/png", "a.png"))]),
@@ -652,6 +715,27 @@ mod tests {
         .await
         .expect_err("must reject");
         assert!(matches!(err, ProviderError::UnsupportedContent { .. }));
+    }
+
+    #[tokio::test]
+    async fn deepseek_accepts_text_file_as_string() {
+        // A text file is just text, so even a text-only model takes it — as
+        // bare-string content, never a parts array.
+        let src = StubAttachmentSource::new().with(ASSET, b"key = 1".to_vec());
+        let wire = message_to_wire(
+            ChatMessage::User(vec![UserContent::File(attachment(
+                "application/toml",
+                "c.toml",
+            ))]),
+            caps_for("deepseek-v4-pro"),
+            "deepseek-v4-pro",
+            &src,
+        )
+        .await
+        .expect("text file ok");
+        let json = serde_json::to_value(&wire[0]).expect("ser");
+        let content = json["content"].as_str().expect("string content");
+        assert!(content.contains("c.toml") && content.contains("key = 1"));
     }
 
     #[tokio::test]

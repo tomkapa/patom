@@ -22,9 +22,14 @@ use super::id::ProviderId;
 /// This is the capability gate that keeps a text-only backend on the shared
 /// OpenAI-compatible wire path (DeepSeek) from ever receiving image or file
 /// content parts (issue #187). A flag being `true` means "we can deliver this
-/// content to the model" — whether natively (OpenAI `file` part, Anthropic
-/// `document` block) or via server-side adaptation (Office → text for
-/// Anthropic). *How* is the converter's concern; *whether* is this flag.
+/// content to the model" — whether natively (image URL, PDF as an OpenAI
+/// `file` part / Anthropic `document` block) or via server-side adaptation
+/// (Office → text on both providers). *How* is the converter's concern;
+/// *whether* is this flag.
+// One independent yes/no per content class is the natural shape for a
+// capability set; a bitflag/enum would be less readable for four orthogonal
+// flags consulted individually by `accepts`.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelCapabilities {
     /// PNG/JPEG/WebP/GIF image input.
@@ -33,22 +38,30 @@ pub struct ModelCapabilities {
     pub pdf: bool,
     /// Office (xlsx/docx) input.
     pub office: bool,
+    /// Plain-text file input (md/json/toml/…), delivered as decoded text.
+    /// True even for text-only models — a text file is just text.
+    pub text: bool,
 }
 
 impl ModelCapabilities {
-    /// Text-only: no multimodal input of any kind.
-    pub const NONE: Self = Self {
+    /// Text-only model: rejects image/PDF/Office parts but still accepts
+    /// plain-text file attachments (they ride as ordinary text). This is the
+    /// DeepSeek posture — its official API is text-only, so no `image_url` /
+    /// `file` part may reach it, but a `.md`/`.json` file is fine.
+    pub const TEXT_ONLY: Self = Self {
         images: false,
         pdf: false,
         office: false,
+        text: true,
     };
 
-    /// Images + PDF + Office. Both Anthropic and OpenAI reach this today
-    /// (Office on Anthropic is delivered by extracting to text server-side).
+    /// Images + PDF + Office + text. Both Anthropic and OpenAI reach this
+    /// today (Office/text are delivered as extracted/decoded text).
     pub const ALL: Self = Self {
         images: true,
         pdf: true,
         office: true,
+        text: true,
     };
 
     /// Whether the given mime is accepted as input by this model.
@@ -58,6 +71,8 @@ impl ModelCapabilities {
             self.images
         } else if mime.is_pdf() {
             self.pdf
+        } else if mime.is_text() {
+            self.text
         } else {
             self.office
         }
@@ -143,12 +158,12 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "deepseek-v4-pro",
         provider: ProviderId::Deepseek,
-        capabilities: ModelCapabilities::NONE,
+        capabilities: ModelCapabilities::TEXT_ONLY,
     },
     CatalogEntry {
         name: "deepseek-v4-flash",
         provider: ProviderId::Deepseek,
-        capabilities: ModelCapabilities::NONE,
+        capabilities: ModelCapabilities::TEXT_ONLY,
     },
 ];
 
@@ -361,14 +376,15 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_models_are_text_only() {
+    fn deepseek_models_reject_binary_but_accept_text() {
         // The DeepSeek caveat (issue #187): official API is text-only, and it
-        // shares the OpenAI-compatible wire path. Capabilities must gate every
-        // multimodal kind off so no image/file part is ever emitted to it.
+        // shares the OpenAI-compatible wire path. No image/PDF/Office part may
+        // be emitted to it — but a plain-text file is just text, so it passes.
         for name in ["deepseek-v4-pro", "deepseek-v4-flash"] {
             let caps = Model::try_from(name).expect("known").capabilities();
-            assert_eq!(caps, ModelCapabilities::NONE);
+            assert_eq!(caps, ModelCapabilities::TEXT_ONLY);
             assert!(!caps.images && !caps.pdf && !caps.office);
+            assert!(caps.text, "{name} should accept text files");
         }
     }
 
@@ -379,20 +395,23 @@ mod tests {
             assert!(caps.images, "{name} should accept images");
             assert!(caps.pdf, "{name} should accept pdf");
             assert!(caps.office, "{name} should accept office");
+            assert!(caps.text, "{name} should accept text");
         }
     }
 
     #[test]
     fn capabilities_accepts_maps_mime_class() {
         use crate::provider::attachment::AttachmentMime;
-        let none = ModelCapabilities::NONE;
-        assert!(!none.accepts(AttachmentMime::Png));
-        assert!(!none.accepts(AttachmentMime::Pdf));
-        assert!(!none.accepts(AttachmentMime::Xlsx));
+        let text_only = ModelCapabilities::TEXT_ONLY;
+        assert!(!text_only.accepts(AttachmentMime::Png));
+        assert!(!text_only.accepts(AttachmentMime::Pdf));
+        assert!(!text_only.accepts(AttachmentMime::Xlsx));
+        assert!(text_only.accepts(AttachmentMime::Text));
         let all = ModelCapabilities::ALL;
         assert!(all.accepts(AttachmentMime::Png));
         assert!(all.accepts(AttachmentMime::Pdf));
         assert!(all.accepts(AttachmentMime::Docx));
+        assert!(all.accepts(AttachmentMime::Text));
     }
 
     #[test]
