@@ -248,14 +248,33 @@ crate::str_enum! {
         /// Single-contradiction resolution. Payload is
         /// [`RequestKindPayload::Resolution`].
         Resolution => "resolution",
-        /// **Metering-only label** for a context-compaction summarizer call
-        /// (#182). NOT an enqueued job: it never appears on a `prompt_requests`
-        /// row (the `prompt_requests.kind` CHECK still excludes it) and has no
-        /// [`RequestKindPayload`] variant. It exists solely so a summarizer
-        /// fold can record a `turn_metrics` row (billed to the org) distinct
-        /// from the turn that triggered it. Job-dispatch sites treat it as
-        /// unreachable.
+    }
+}
+
+crate::str_enum! {
+    /// Label on a `turn_metrics` row — what kind of LLM call it measured.
+    ///
+    /// A superset of [`RequestKind`]: every enqueued job records its own kind,
+    /// and context compaction (#182) records [`MetricKind::Compaction`] folds
+    /// that are *not* enqueued jobs (no `prompt_requests` row, no
+    /// [`RequestKindPayload`]). Kept separate from `RequestKind` so the
+    /// queue-dispatch enum stays exactly the set of dispatchable jobs — no
+    /// `unreachable!` arm for a label that can never be claimed.
+    pub enum MetricKind {
+        Normal     => "normal",
+        Reflection => "reflection",
+        Resolution => "resolution",
         Compaction => "compaction",
+    }
+}
+
+impl From<RequestKind> for MetricKind {
+    fn from(kind: RequestKind) -> Self {
+        match kind {
+            RequestKind::Normal => Self::Normal,
+            RequestKind::Reflection => Self::Reflection,
+            RequestKind::Resolution => Self::Resolution,
+        }
     }
 }
 

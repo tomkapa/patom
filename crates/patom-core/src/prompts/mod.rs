@@ -47,12 +47,6 @@ impl CorePrompts {
             RequestKind::Normal => self.normal.clone(),
             RequestKind::Reflection => self.reflection.clone(),
             RequestKind::Resolution => self.resolution.clone(),
-            // Invariant: compaction never resolves a prompt core — the Compactor
-            // builds its own summarizer request. Reaching here is a programmer
-            // error (CLAUDE.md §6: assertion, not an operating failure).
-            RequestKind::Compaction => {
-                unreachable!("compaction is a metering label, not a prompt-bearing job kind")
-            }
         }
     }
 }

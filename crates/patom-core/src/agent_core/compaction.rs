@@ -25,7 +25,7 @@ use crate::provider::{
     AssistantContent, ChatMessage, ChatRequest, ChatResponse, Model, ProviderError, SharedProvider,
     ToolCallId, UserContent,
 };
-use crate::runtime::{PromptRequestId, RequestKind};
+use crate::runtime::{MetricKind, PromptRequestId};
 use crate::threads::{AgentThreadId, ContextTail, MAX_CONTEXT_MESSAGES, Seq, TailRow, ThreadId};
 use crate::types::MaxOutputTokens;
 
@@ -595,7 +595,7 @@ impl Agent {
                 routing.request_id,
                 Some(state_id),
                 routing.org,
-                RequestKind::Compaction,
+                MetricKind::Compaction,
                 sample.started_at,
                 sample.duration,
                 &sample.response,

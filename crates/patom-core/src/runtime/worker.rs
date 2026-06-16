@@ -250,12 +250,6 @@ impl Worker {
                 self.run_background(&agent, &claim, &receipt, cancel.clone())
                     .await;
             }
-            // Invariant: compaction is a metering-only label; the
-            // `prompt_requests.kind` CHECK excludes it, so a claim can never
-            // carry it (CLAUDE.md §6 assertion).
-            RequestKind::Compaction => {
-                unreachable!("compaction is never enqueued as a job")
-            }
         }
 
         cancel_watcher.abort();

@@ -124,12 +124,24 @@ fn tool_result_with(owner: AgentId, call_id: &str, output: &str) -> NewMessage {
 }
 
 /// The per-thread feed seqs of `thread`, ascending.
-async fn thread_seqs(pool: &PgPool, thread: patom::threads::ThreadId) -> Vec<i64> {
-    sqlx::query_scalar("SELECT seq FROM thread_messages WHERE thread_id = $1 ORDER BY seq ASC")
-        .bind(thread)
-        .fetch_all(pool)
-        .await
-        .expect("seqs")
+async fn thread_seqs(pool: &PgPool, thread: patom::threads::ThreadId) -> Vec<Seq> {
+    let raw: Vec<i64> =
+        sqlx::query_scalar("SELECT seq FROM thread_messages WHERE thread_id = $1 ORDER BY seq ASC")
+            .bind(thread)
+            .fetch_all(pool)
+            .await
+            .expect("seqs");
+    raw.into_iter()
+        .map(|v| Seq::try_from(v).expect("valid seq"))
+        .collect()
+}
+
+/// Position of the first message whose text contains `needle`, or `None`.
+fn user_text_index(ctx: &[ChatMessage], needle: &str) -> Option<usize> {
+    ctx.iter().position(|m| {
+        matches!(m, ChatMessage::User(blocks)
+            if blocks.iter().any(|b| matches!(b, UserContent::Text(t) if t == needle)))
+    })
 }
 
 /// note 13: a peer's posted row can land between an agent's tool_use and its
@@ -347,7 +359,7 @@ async fn context_tail_returns_only_rows_after_since(pool: PgPool) {
     }
     let seqs = thread_seqs(&pool, thread).await;
     assert_eq!(seqs.len(), 4);
-    let since = Seq::try_from(seqs[1]).expect("since"); // after m2
+    let since = seqs[1]; // after m2
 
     let tail = store
         .context_tail(
@@ -361,10 +373,12 @@ async fn context_tail_returns_only_rows_after_since(pool: PgPool) {
         .expect("tail");
     assert_eq!(tail.len(), 2, "only m3 + m4 are past `since`");
     let messages = tail.into_messages();
-    assert!(user_text_present(&messages, "m3"));
-    assert!(user_text_present(&messages, "m4"));
     assert!(!user_text_present(&messages, "m1"));
     assert!(!user_text_present(&messages, "m2"));
+    // Returned in chronological order (m3 before m4), not just present.
+    let i3 = user_text_index(&messages, "m3").expect("m3 present");
+    let i4 = user_text_index(&messages, "m4").expect("m4 present");
+    assert!(i3 < i4, "rows must come back in chronological seq order");
 }
 
 /// Stage 4: the windowing floor. A thread longer than `MAX_CONTEXT_MESSAGES`,

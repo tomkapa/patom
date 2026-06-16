@@ -33,14 +33,32 @@ impl ContextWindow {
     }
 }
 
+/// A catalog window must be a positive token count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("context window must be > 0")]
+pub struct InvalidContextWindow;
+
+impl TryFrom<u32> for ContextWindow {
+    type Error = InvalidContextWindow;
+    fn try_from(raw: u32) -> Result<Self, Self::Error> {
+        if raw == 0 {
+            return Err(InvalidContextWindow);
+        }
+        Ok(Self(raw))
+    }
+}
+
 /// One catalog row: model name + the provider that serves it + its context window.
 #[derive(Debug, Clone, Copy)]
 pub struct CatalogEntry {
     pub name: &'static str,
     pub provider: ProviderId,
     /// Maximum prompt tokens the model accepts (the compaction budget is a
-    /// fraction of this — see `agent_core::compaction`).
-    pub context_window: u32,
+    /// fraction of this — see `agent_core::compaction`). The inner field is
+    /// private, so a [`ContextWindow`] outside this module can only be built via
+    /// the validating [`TryFrom`]; the trusted in-tree catalog below constructs
+    /// it directly.
+    pub context_window: ContextWindow,
 }
 
 /// Every model Patom accepts on the chat path. Linear scan is fine — the slice
@@ -61,22 +79,22 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "claude-opus-4-7",
         provider: ProviderId::Anthropic,
-        context_window: 200_000,
+        context_window: ContextWindow(200_000),
     },
     CatalogEntry {
         name: "claude-sonnet-4-6",
         provider: ProviderId::Anthropic,
-        context_window: 200_000,
+        context_window: ContextWindow(200_000),
     },
     CatalogEntry {
         name: "claude-haiku-4-5",
         provider: ProviderId::Anthropic,
-        context_window: 200_000,
+        context_window: ContextWindow(200_000),
     },
     CatalogEntry {
         name: "claude-sonnet-4-5",
         provider: ProviderId::Anthropic,
-        context_window: 200_000,
+        context_window: ContextWindow(200_000),
     },
     // OpenAI — current generation per
     // https://developers.openai.com/api/docs/models/all (May 2026).
@@ -87,27 +105,27 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "gpt-5.5",
         provider: ProviderId::Openai,
-        context_window: 400_000,
+        context_window: ContextWindow(400_000),
     },
     CatalogEntry {
         name: "gpt-5.4",
         provider: ProviderId::Openai,
-        context_window: 400_000,
+        context_window: ContextWindow(400_000),
     },
     CatalogEntry {
         name: "gpt-5.4-mini",
         provider: ProviderId::Openai,
-        context_window: 400_000,
+        context_window: ContextWindow(400_000),
     },
     CatalogEntry {
         name: "gpt-5.4-nano",
         provider: ProviderId::Openai,
-        context_window: 400_000,
+        context_window: ContextWindow(400_000),
     },
     CatalogEntry {
         name: "gpt-4o-mini",
         provider: ProviderId::Openai,
-        context_window: 128_000,
+        context_window: ContextWindow(128_000),
     },
     // DeepSeek — current generation per
     // https://api-docs.deepseek.com/quick_start/pricing (May 2026). The old
@@ -118,12 +136,12 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "deepseek-v4-pro",
         provider: ProviderId::Deepseek,
-        context_window: 128_000,
+        context_window: ContextWindow(128_000),
     },
     CatalogEntry {
         name: "deepseek-v4-flash",
         provider: ProviderId::Deepseek,
-        context_window: 128_000,
+        context_window: ContextWindow(128_000),
     },
 ];
 
@@ -137,12 +155,12 @@ const TEST_CATALOG_EXTENSION: &[CatalogEntry] = &[
     CatalogEntry {
         name: "test-model",
         provider: ProviderId::Anthropic,
-        context_window: 2_000,
+        context_window: ContextWindow(2_000),
     },
     CatalogEntry {
         name: "test-model-openai",
         provider: ProviderId::Openai,
-        context_window: 2_000,
+        context_window: ContextWindow(2_000),
     },
 ];
 
@@ -195,7 +213,7 @@ impl Model {
     /// lookup. The compaction token budget is a fraction of this.
     #[must_use]
     pub const fn context_window(self) -> ContextWindow {
-        ContextWindow(self.entry.context_window)
+        self.entry.context_window
     }
 
     /// Every catalog entry, in declaration order. Bounded by the catalog.
@@ -341,6 +359,12 @@ mod tests {
         assert_eq!(haiku.context_window().get(), 200_000);
         let mini = Model::try_from("gpt-4o-mini").expect("known");
         assert_eq!(mini.context_window().get(), 128_000);
+    }
+
+    #[test]
+    fn context_window_try_from_rejects_zero() {
+        assert!(ContextWindow::try_from(0).is_err());
+        assert_eq!(ContextWindow::try_from(1).expect("valid").get(), 1);
     }
 
     #[test]

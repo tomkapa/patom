@@ -17,7 +17,9 @@ use crate::provider::{
     ChatMessage, ChatRequest, ChatResponse, SharedProvider, StopReason, ToolCall, ToolCallId,
     ToolResult, UserContent,
 };
-use crate::runtime::{IdempotencyKey, PromptRequestId, RequestKind, RequestKindPayload};
+use crate::runtime::{
+    IdempotencyKey, MetricKind, PromptRequestId, RequestKind, RequestKindPayload,
+};
 use crate::threads::{AgentThreadId, MessageKind, NewMessage, ThreadId};
 use crate::tools::{
     SharedTool, TOOL_RESULT_MAX_BYTES, ToolBox, ToolCallContext, ToolCallRow, ToolCallRowId,
@@ -87,7 +89,7 @@ impl Agent {
             request_id,
             Some(claim_key),
             caller.org_id,
-            kind_payload.kind(),
+            kind_payload.kind().into(),
             started_at,
             duration,
             &response,
@@ -403,7 +405,7 @@ impl Agent {
             request_id,
             None,
             caller.org_id,
-            kind_payload.kind(),
+            kind_payload.kind().into(),
             started_at,
             duration,
             &response,
@@ -646,7 +648,7 @@ impl Agent {
         request_id: PromptRequestId,
         state_id: Option<AgentThreadId>,
         org_id: crate::auth::OrgId,
-        kind: RequestKind,
+        kind: MetricKind,
         started_at: chrono::DateTime<chrono::Utc>,
         duration: StdDuration,
         response: &ChatResponse,

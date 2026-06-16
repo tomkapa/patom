@@ -109,3 +109,10 @@ const _: () = assert!(DEFAULT_MAX_TURNS > 0);
 const _: () = assert!(DEFAULT_MAX_TURNS <= MAX_TURNS_CAP);
 const _: () = assert!(CONTEXT_TOKEN_BUDGET_DIVISOR > 0);
 const _: () = assert!(MAX_COMPACTION_CHUNKS > 0);
+const _: () = assert!(SUMMARIZER_INPUT_BUDGET > 0);
+const _: () = assert!(MAX_SUMMARY_TOKENS > 0);
+// The rolling summary must fit inside one summarizer fold's input budget.
+const _: () = assert!(MAX_SUMMARY_TOKENS <= SUMMARIZER_INPUT_BUDGET);
+// A single fold must be allowed to take at least as long as the whole pass is.
+const _: () = assert!(COMPACTION_LLM_TIMEOUT.as_secs() <= MAX_COMPACTION_WALL_CLOCK.as_secs());
+const _: () = assert!(COMPACTION_COOLDOWN.as_secs() > 0);

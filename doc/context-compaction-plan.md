@@ -1,8 +1,10 @@
 # Patom — Context compaction (bound unbounded thread context per turn)
 
-> Status: **planning** (no code yet). Authored 2026-06-16. Closes the deferral in [`lark-byo-integration-plan.md` §Deferred](lark-byo-integration-plan.md): *"the full mirror flows unbounded into context today; this is accepted and will be handled by the planned compaction feature."* Tracks [#182](https://github.com/tomkapa/patom/issues/182).
+> Status: **shipped** (#182). Authored 2026-06-16. Closes the deferral in [`lark-byo-integration-plan.md` §Deferred](lark-byo-integration-plan.md): *"the full mirror flows unbounded into context today; this is accepted and will be handled by the planned compaction feature."* Tracks [#182](https://github.com/tomkapa/patom/issues/182).
 >
-> **Principles:** (1) **correctness/safety first** — the prompt is bounded on *every* turn regardless of whether summarization succeeds; (2) **the shared feed is immutable** — `thread_messages` is the system of record; compaction is a *derived* artifact the read path consults, never a rewrite of history; (3) **single path** — no per-platform branching; this is a core feature, not Lark-specific (though Lark's ambient group-message ingest raises its priority); (4) **CLAUDE.md binding** — bounded loops, no recursion, newtyped invariants, tests own the clock, one error type per boundary, saturation metrics.
+> **As-built deltas from this plan** (the body below is the original design; these are the decisions that changed during implementation): the summarizer **reuses the turn's already-resolved `(provider, model)`** — there is no separate `SUMMARIZER_MODEL` registry lookup; the trigger/cut constants are `CONTEXT_TOKEN_BUDGET_DIVISOR` (budget = `window / 2`) and `MAX_TOOL_RESULT_CHARS` (the old `COMPACTION_THRESHOLD` / `MAX_TOOL_RESULT_TOKENS` names were dropped); and compaction folds are metered under a dedicated `MetricKind::Compaction` (a `turn_metrics`-only label, kept out of the queue-dispatch `RequestKind`).
+>
+> **Principles:** (1) **correctness/safety first** — the prompt is bounded on *every* turn regardless of whether summarization succeeds; (2) **the shared feed is immutable** — `thread_messages` is the system of record; compaction is a *derived* artifact the read path consults, never a rewrite of history; (3) **single path** — no per-platform branching; this is a core feature, not Lark-specific (though Lark's ambient group-message ingest raises its priority); (4) **CLAUDE.md binding** — bounded loops, no recursion, newtype invariants, tests own the clock, one error type per boundary, saturation metrics.
 
 ## Why / positioning
 
@@ -44,7 +46,7 @@ Those agents own a **linear, single-owner session** they can mutate (replace old
 
 Two layers. The **windowing floor** is the correctness guarantee (no LLM, always holds). The **rolling summary** is the fidelity layer (LLM, best-effort).
 
-```
+```text
 build path (agent_core, has the provider):
   comp   = threads.load_compaction(thread, agent)        # summary + covers_through_seq | none
   since  = comp.covers_through_seq | 0
@@ -69,7 +71,7 @@ build path (agent_core, has the provider):
 ### Read path — `threads/pg_store.rs`
 
 - Generalize `context_for_agent` into `context_tail(thread, agent, viewer, since_seq, overrides)` — same query + perspective-map + `repair_tool_pairs`, with an added `AND m.seq > $since` and an `ORDER BY seq ASC LIMIT MAX_CONTEXT_MESSAGES + tool-pair slack`. The hard `LIMIT` is the floor: even with **no** summary yet (first turn on a pre-existing 500-message thread) the prompt cannot be unbounded.
-- **Oversized `tool_result` bodies are capped for the *prompt only*, never destructively.** The full row always stays in the immutable `thread_messages` feed; at assembly time a body over `MAX_TOOL_RESULT_TOKENS` is rendered as `head + [… omitted N chars · row {id}] + tail` so it remains recoverable, not deleted. This is a thin safety net — semantic, produce-time reduction of heavy tool results lives in the **companion feature** ([§Tool-result reduction](#tool-result-reduction--companion-feature)).
+- **Oversized `tool_result` bodies are capped for the *prompt only*, never destructively.** The full row always stays in the immutable `thread_messages` feed; at assembly time a body over `MAX_TOOL_RESULT_CHARS` is rendered as `head + [… omitted N chars · thread seq {seq}] + tail` so it remains recoverable, not deleted. This is a thin safety net — semantic, produce-time reduction of heavy tool results lives in the **companion feature** ([§Tool-result reduction](#tool-result-reduction--companion-feature)).
 - `load_compaction` / `save_compaction` — bound-parameter SQL only (CLAUDE.md §10), `#[derive(FromRow)] + TryFrom<Row>` at the boundary.
 - Return type becomes a struct, not a bare `Vec`:
   ```rust
@@ -81,9 +83,9 @@ build path (agent_core, has the provider):
 
 ### Compaction step — `agent_core/compaction.rs` (new module)
 
-- A `Compactor` holding the summarizer `SharedProvider` (resolved via the existing provider registry for `SUMMARIZER_MODEL`, default a cheap model e.g. `claude-haiku-4-5`).
+- A `Compactor` that summarizes with the **turn's already-resolved `(provider, model)`** (as-built; the original plan resolved a separate `SUMMARIZER_MODEL`, but the locked decision is to reuse the agent's own model — no second registry lookup).
 - **Chunked, bounded, non-recursive** (CLAUDE.md §4/§5):
-  ```
+  ```text
   fn summarize(prev: Option<CompactionSummary>, overflow: Vec<ChatMessage>) -> Result<CompactionSummary, CompactionError>:
       chunks = split(overflow, SUMMARIZER_INPUT_BUDGET)          # Vec, oldest first
       assert!(chunks.len() <= MAX_COMPACTION_CHUNKS)             # if larger, drop oldest + log (no silent cap)
@@ -130,12 +132,13 @@ Each named, exported, doc-commented with *why this number* (CLAUDE.md §5). Star
 | Const | Start | Why |
 |---|---|---|
 | `MAX_CONTEXT_MESSAGES` | 200 | hard cap on verbatim tail rows — the floor that bounds turn 1 |
-| `CONTEXT_TOKEN_BUDGET` | 0.5 × window | leave room for system + tools + output |
-| `COMPACTION_THRESHOLD` | 0.6 × window | trigger summarize before the budget is hit |
-| `MAX_TOOL_RESULT_TOKENS` | ~8k | **prompt-render** cap for one tool_result (full row retained in feed); safety net only |
+| `CONTEXT_TOKEN_BUDGET_DIVISOR` | 2 (budget = window/2) | leave room for system + tools + output; the trigger fires at this budget (as-built: the separate `COMPACTION_THRESHOLD` was dropped) |
+| `MAX_TOOL_RESULT_CHARS` | ~32k chars (≈8k tokens) | **prompt-render** cap for one tool_result (full row retained in feed); safety net only |
 | `SUMMARIZER_INPUT_BUDGET` | ~24k | per-chunk input to the summarizer |
 | `MAX_COMPACTION_CHUNKS` | 8 | bounds the fold loop; over → drop oldest + log |
 | `COMPACTION_LLM_TIMEOUT` | 30s | every summarizer `await` is timeout-wrapped (CLAUDE.md §5) |
+| `MAX_COMPACTION_WALL_CLOCK` | 90s | total inline budget across folds (as-built addition) |
+| `COMPACTION_COOLDOWN` | 5 min | back off a failing summarizer (as-built addition) |
 | `MAX_SUMMARY_TOKENS` | ~4k | cap the rolling summary itself so it can't grow unbounded |
 
 ## Types & errors (CLAUDE.md §1, §12)
@@ -204,6 +207,6 @@ Until that lands, #182 keeps tool results lossless by **retaining the full row i
 
 ## Open questions to confirm during build
 
-1. **Summarizer provider resolution** — confirm the provider registry can hand `agent_core` a `SharedProvider` for `SUMMARIZER_MODEL` independent of the agent's own model (route by `Model::provider()`).
+1. **Summarizer provider resolution** — RESOLVED as-built: the summarizer reuses the turn's already-resolved `(provider, model)` (the same `route()` result), so no independent `SUMMARIZER_MODEL` lookup is needed.
 2. **Summary as system-prefix vs leading message** — default to system-prefix (protected head); reassess if it hurts prompt-cache hit-rate (watch `cache_read_input_tokens`).
 3. **RLS active-org pin** on `thread_compactions` reads — apply the same fix pattern as `agents.rs` (memory: [rls-gates-membership-not-active-org]).
