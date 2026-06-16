@@ -106,7 +106,9 @@ async fn supervisor(
     mut connect_rx: mpsc::Receiver<DiscordConnectTarget>,
     mut disconnect_rx: mpsc::Receiver<ApplicationId>,
 ) {
-    let mut set: JoinSet<()> = JoinSet::new();
+    // The task returns its app id on completion so the supervisor can `forget`
+    // it — otherwise a bot that stops can never reconnect without a restart.
+    let mut set: JoinSet<ApplicationId> = JoinSet::new();
     let mut spawned: HashSet<ApplicationId> = HashSet::new();
     let mut handles: HashMap<ApplicationId, AbortHandle> = HashMap::new();
     match deps.apps.list_connect_targets().await {
@@ -127,7 +129,16 @@ async fn supervisor(
             Some(app_id) = disconnect_rx.recv() => {
                 disconnect(&mut spawned, &mut handles, &app_id);
             }
-            Some(_) = set.join_next() => {}
+            Some(joined) = set.join_next() => {
+                // A connection task ended (clean stop / fatal / reconnect
+                // exhaustion). Forget it so a later hot-`connect` re-spawns it.
+                // An aborted task (from `disconnect`) yields `Err` and was
+                // already forgotten — skip it.
+                if let Ok(app_id) = joined {
+                    info!(app = %app_id, event = "discord.ws.connection_ended");
+                    forget(&mut spawned, &mut handles, &app_id);
+                }
+            }
         }
     }
     set.abort_all();
@@ -136,7 +147,7 @@ async fn supervisor(
 
 /// Spawn one bot's supervised connection, unless already running.
 fn spawn_connection(
-    set: &mut JoinSet<()>,
+    set: &mut JoinSet<ApplicationId>,
     spawned: &mut HashSet<ApplicationId>,
     handles: &mut HashMap<ApplicationId, AbortHandle>,
     deps: &WsManagerDeps,
@@ -147,10 +158,28 @@ fn spawn_connection(
         return;
     }
     let app_id = target.application_id.clone();
+    let ret_id = app_id.clone();
     let d = deps.clone();
     let c = cancel.clone();
-    let handle = set.spawn(async move { supervise_bot(d, target, c).await });
+    // The task yields its app id on completion so the supervisor forgets it.
+    let handle = set.spawn(async move {
+        supervise_bot(d, target, c).await;
+        ret_id
+    });
     handles.insert(app_id, handle);
+}
+
+/// Forget a finished bot so a later `connect` re-spawns it. Without this, a
+/// connection task that ends (clean stop, fatal close, or reconnect exhaustion)
+/// leaves its app id in `spawned`, and every later hot-`connect` is a silent
+/// no-op until a full process restart.
+fn forget(
+    spawned: &mut HashSet<ApplicationId>,
+    handles: &mut HashMap<ApplicationId, AbortHandle>,
+    app_id: &ApplicationId,
+) {
+    spawned.remove(app_id);
+    handles.remove(app_id);
 }
 
 /// Abort a bot's connection task and forget it (so a later re-register can
@@ -306,5 +335,26 @@ mod tests {
             "stable for the same app"
         );
         assert_ne!(advisory_key(&a), advisory_key(&b), "distinct per app");
+    }
+
+    #[test]
+    fn forget_allows_respawn_after_task_ends() {
+        let app = ApplicationId::try_from("111111111111111111").expect("app");
+        let mut spawned: HashSet<ApplicationId> = HashSet::new();
+        let mut handles: HashMap<ApplicationId, AbortHandle> = HashMap::new();
+        // A first connect records the app; a duplicate connect is a no-op while
+        // its task runs (single connection per bot).
+        assert!(spawned.insert(app.clone()), "first connect spawns");
+        assert!(
+            !spawned.insert(app.clone()),
+            "duplicate connect ignored while the task runs"
+        );
+        // When the task ends (clean stop / fatal / reconnect exhaustion) the
+        // supervisor forgets it...
+        forget(&mut spawned, &mut handles, &app);
+        assert!(!spawned.contains(&app));
+        // ...so a later hot-connect re-spawns it. Without `forget`, the bot could
+        // only come back via a full process restart (the hot-reload bug).
+        assert!(spawned.insert(app), "reconnect after the task ended");
     }
 }

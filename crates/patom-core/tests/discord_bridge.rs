@@ -222,9 +222,10 @@ async fn mention_enqueues_a_trigger_and_attaches_pump(pool: PgPool) {
         .await,
         1,
     );
-    // Exactly one trigger, keyed on the Discord idempotency namespace.
+    // Exactly one trigger, keyed on the Discord idempotency namespace
+    // (app-scoped: `discord:{app}:{guild}:{message}`).
     assert_eq!(
-        count(&pool, "SELECT COUNT(*) FROM prompt_requests WHERE idempotency_key = 'discord:222222222222222222:1002'").await,
+        count(&pool, "SELECT COUNT(*) FROM prompt_requests WHERE idempotency_key = 'discord:111111111111111111:222222222222222222:1002'").await,
         1,
         "the mention enqueues a discord-namespaced trigger",
     );
@@ -342,5 +343,82 @@ async fn redelivered_message_is_idempotent(pool: PgPool) {
     assert_eq!(
         count(&pool, "SELECT COUNT(*) FROM discord_user_handles").await,
         1
+    );
+}
+
+const APP_ID_B: &str = "111111111111111112";
+const BOT_USER_ID_B: &str = "999999999999999998";
+
+#[sqlx::test]
+async fn two_bots_in_one_guild_do_not_dedupe_each_others_mirror(pool: PgPool) {
+    // Regression: the mirror idempotency key must be app-scoped. Two bots share a
+    // guild, so the SAME Discord message reaches BOTH connections. With an
+    // app-blind `guild:message` key the ambient bot's row deduped the triggered
+    // bot's append (dedup is org-global on `(org_id, idempotency_key)`), leaving
+    // the triggered bot's freshly opened thread empty — which then tripped the
+    // non-empty-feed assertion in the agent turn (turn.rs).
+    let seed = seed_tenant(&pool).await;
+    let caller = Caller::new(seed.user_id, seed.org_id);
+    let rig = build_rig(&pool, &caller, seed.agent_id).await;
+    // A SECOND bot (app B) in the same org. (Same agent is fine — the bug is
+    // about the idempotency namespace, not agent identity.)
+    rig.deps
+        .apps
+        .register(
+            &caller,
+            NewDiscordApp {
+                application_id: ApplicationId::try_from(APP_ID_B).expect("app b"),
+                agent_id: seed.agent_id,
+                bot_token: BotToken::try_from("MTk4N.example.tokenb".to_owned()).expect("token b"),
+            },
+        )
+        .await
+        .expect("register app b");
+
+    // One human message @-mentioning bot B reaches both connections.
+    let content = "<@999999999999999998> draft a JD";
+    // Bot A sees it but isn't mentioned → ambient ingest (mirrors into A's thread).
+    bridge::process_event(
+        &rig.deps,
+        message_dispatch("2001", content, &[BOT_USER_ID_B], Some(GUILD_ID)),
+    )
+    .await
+    .expect("process via bot A");
+    // Bot B sees the SAME message and IS mentioned → trigger (opens a thread).
+    let mut dispatch_b = message_dispatch("2001", content, &[BOT_USER_ID_B], Some(GUILD_ID));
+    dispatch_b.application_id = ApplicationId::try_from(APP_ID_B).expect("app b id");
+    dispatch_b.bot_user_id = DiscordUserId::try_from(BOT_USER_ID_B).expect("bot b id");
+    bridge::process_event(&rig.deps, dispatch_b)
+        .await
+        .expect("process via bot B");
+
+    // Both bots mirror the message into their OWN thread — two posted rows, not
+    // one. Pre-fix this was 1 (B's append deduped against A's row).
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT COUNT(*) FROM thread_messages WHERE kind = 'posted'"
+        )
+        .await,
+        2,
+        "each bot's mirror survives — no cross-bot dedupe collision",
+    );
+    // The triggered bot's opened thread is non-empty — the exact condition the
+    // agent turn asserts before building its request.
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT COUNT(*) FROM thread_messages m \
+             JOIN discord_threads dt ON dt.patom_thread_id = m.thread_id \
+             WHERE dt.container_id = '555000000000000001' AND m.kind = 'posted'"
+        )
+        .await,
+        1,
+        "the triggered bot's freshly opened thread received the mirrored message",
+    );
+    // Bot B enqueued exactly one trigger.
+    assert_eq!(
+        count(&pool, "SELECT COUNT(*) FROM prompt_requests").await,
+        1,
     );
 }

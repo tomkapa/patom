@@ -290,6 +290,7 @@ async fn mirror_into_thread(
     }
     let appended = append_mirrored(
         deps,
+        app,
         caller,
         thread_id,
         sender_colleague,
@@ -419,12 +420,35 @@ fn strip_leading_mentions(s: &str) -> String {
         .join(" ")
 }
 
+/// Idempotency key for a mirrored Discord message (and its trigger). Scoped to
+/// the **app** — not just `guild:message` — because dedup is org-global on
+/// `(org_id, idempotency_key)`: two bots that share a guild each mirror the
+/// *same* Discord message into their own Patom thread, and a `guild:message`
+/// key would let the first bot's row dedupe the second's. That left the
+/// triggered bot's freshly-opened thread empty and tripped the non-empty-feed
+/// assertion in the agent turn. Redelivery / backfill overlap for one bot still
+/// dedups (same app + message).
+fn message_idempotency_key(
+    app: &DiscordApp,
+    guild: &GuildId,
+    message_id: &DiscordMessageId,
+) -> Result<IdempotencyKey, DiscordError> {
+    Ok(IdempotencyKey::try_from(format!(
+        "discord:{}:{}:{}",
+        app.application_id.as_str(),
+        guild.as_str(),
+        message_id.as_str()
+    ))?)
+}
+
 /// Append one mirrored message as a `posted` row (the shared live + backfill
 /// path). `<@id>` markers render to `@Name`; the idempotency key dedups
 /// redelivery / backfill overlap. `receiver` is the addressed agent for a
 /// trigger, else `None`.
+#[allow(clippy::too_many_arguments)]
 async fn append_mirrored(
     deps: &BridgeDeps,
+    app: &DiscordApp,
     caller: &Caller,
     thread_id: ThreadId,
     sender_colleague: ColleagueId,
@@ -434,11 +458,7 @@ async fn append_mirrored(
 ) -> Result<ThreadMessageId, DiscordError> {
     let rendered = super::mention::render_inbound(&m.content, &m.mention_names());
     let body_text: String = rendered.chars().take(DISCORD_INBOUND_CONTENT_MAX).collect();
-    let idem = IdempotencyKey::try_from(format!(
-        "discord:{}:{}",
-        guild.as_str(),
-        m.message_id.as_str()
-    ))?;
+    let idem = message_idempotency_key(app, guild, &m.message_id)?;
     deps.thread_store
         .append(
             caller,
@@ -554,6 +574,7 @@ async fn mirror_backfilled(
         .await?;
     append_mirrored(
         deps,
+        app,
         &caller,
         thread_id,
         shadow.colleague_id,
@@ -649,11 +670,7 @@ async fn enqueue_and_attach(
         .await
         .map_err(|e| DiscordError::Internal(format!("resolve participation: {e}")))?;
     let acting_user_id: UserId = caller.user_id;
-    let idem = IdempotencyKey::try_from(format!(
-        "discord:{}:{}",
-        guild.as_str(),
-        m.message_id.as_str()
-    ))?;
+    let idem = message_idempotency_key(app, guild, &m.message_id)?;
     let request_id = deps
         .queue
         .enqueue_trigger(NewTrigger {

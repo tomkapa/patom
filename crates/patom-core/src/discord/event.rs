@@ -106,9 +106,21 @@ impl From<RawMessage> for InboundMessage {
 
 impl InboundMessage {
     /// Whether the message `@`-mentions the given bot user.
+    ///
+    /// Primary signal is the `mentions` array. As a fallback we also scan the raw
+    /// `content` for the bot's mention marker (`<@id>` / `<@!id>`): a top-level
+    /// channel `@mention` is occasionally delivered with an empty `mentions`
+    /// array, and Discord grants `MESSAGE_CONTENT` for a message that mentions the
+    /// bot, so the marker is present whenever the bot is genuinely addressed.
     #[must_use]
     pub fn mentions_bot(&self, bot_user_id: &DiscordUserId) -> bool {
-        self.mentions.iter().any(|m| m.id == *bot_user_id)
+        if self.mentions.iter().any(|m| m.id == *bot_user_id) {
+            return true;
+        }
+        let id = bot_user_id.as_str();
+        let plain = format!("<@{id}>");
+        let nick = format!("<@!{id}>");
+        self.content.contains(&plain) || self.content.contains(&nick)
     }
 
     /// `(id, display_name)` pairs for the mentioned users, for rewriting `<@id>`
@@ -201,6 +213,38 @@ mod tests {
         let bot = DiscordUserId::try_from("555555555555555555").expect("bot");
         assert!(m.mentions_bot(&bot));
         assert!(m.webhook_id.is_none());
+    }
+
+    #[test]
+    fn mentions_bot_via_content_marker_when_array_empty() {
+        // A top-level channel @mention can arrive with an empty `mentions` array
+        // but the `<@id>` marker still in `content`. The trigger must still fire.
+        let bot = DiscordUserId::try_from("555555555555555555").expect("bot");
+        for marker in ["<@555555555555555555>", "<@!555555555555555555>"] {
+            let data = serde_json::json!({
+                "id": "1", "channel_id": "2", "guild_id": "3",
+                "author": {"id": "9", "username": "alice"},
+                "content": format!("hey {marker} draft a JD"),
+                "mentions": [],
+            });
+            let DiscordEvent::Message(m) = parse("MESSAGE_CREATE", &data).expect("parse") else {
+                panic!("message");
+            };
+            assert!(m.mentions.is_empty());
+            assert!(m.mentions_bot(&bot), "content marker {marker} triggers");
+        }
+        // A different id in the content does not falsely trigger.
+        let other = DiscordUserId::try_from("111111111111111111").expect("other");
+        let data = serde_json::json!({
+            "id": "1", "channel_id": "2", "guild_id": "3",
+            "author": {"id": "9", "username": "alice"},
+            "content": "hey <@555555555555555555> hi",
+            "mentions": [],
+        });
+        let DiscordEvent::Message(m) = parse("MESSAGE_CREATE", &data).expect("parse") else {
+            panic!("message");
+        };
+        assert!(!m.mentions_bot(&other));
     }
 
     #[test]
