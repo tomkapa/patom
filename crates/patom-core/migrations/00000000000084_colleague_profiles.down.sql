@@ -1,4 +1,4 @@
--- Reverse of 00000000000079_colleague_profiles.up.sql.
+-- Reverse of 00000000000084_colleague_profiles.up.sql.
 
 -- Undo the agents-side index + column resize. Returning the column to the
 -- original UNSIZED `vector` keeps the down a faithful inverse of the up.
