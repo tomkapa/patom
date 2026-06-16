@@ -30,7 +30,9 @@ use patom::discord::poster::{FakeDiscordPoster, SharedDiscordPoster};
 use patom::discord::stream_pump::{self, PumpDeps};
 use patom::discord::thread_map::PgDiscordThreadStore;
 use patom::discord::thread_opener::{FakeThreadOpener, SharedThreadOpener};
-use patom::discord::types::{ApplicationId, BotToken, ContainerId, DiscordUserId};
+use patom::discord::types::{
+    ApplicationId, BotToken, ContainerId, DiscordMessageId, DiscordUserId,
+};
 use patom::provider::{AssistantContent, ChatResponse, StopReason, ToolCall, ToolCallId};
 use patom::runtime::{PgThreadStream, SharedThreadStream};
 use patom::threads::PgThreadStore;
@@ -204,8 +206,9 @@ async fn dm_message_drives_agent_reply_back_to_discord(pool: PgPool) {
         CHANNEL_ID,
         "reply lands in the DM channel"
     );
-    assert!(
-        reply.reply_to.is_some(),
-        "the reply threads under the triggering message",
+    assert_eq!(
+        reply.reply_to.as_ref().map(DiscordMessageId::as_str),
+        Some("1001"),
+        "the reply threads under the triggering message (1001)",
     );
 }

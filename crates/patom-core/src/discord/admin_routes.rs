@@ -71,6 +71,11 @@ async fn require_admin(state: &AppState, principal: &Principal) -> Result<(), Ht
     }
 }
 
+#[tracing::instrument(
+    name = "discord.apps.register",
+    skip(state, principal, body),
+    fields(patom.org.id = %principal.active_org_id, patom.user.id = %principal.user_id),
+)]
 async fn register_app(
     State(state): State<AppState>,
     principal: Principal,
@@ -104,6 +109,11 @@ async fn register_app(
     Ok(StatusCode::CREATED)
 }
 
+#[tracing::instrument(
+    name = "discord.apps.list",
+    skip(state, principal),
+    fields(patom.org.id = %principal.active_org_id, patom.user.id = %principal.user_id),
+)]
 async fn list_apps(
     State(state): State<AppState>,
     principal: Principal,
@@ -115,6 +125,11 @@ async fn list_apps(
     Ok(Json(apps.into_iter().map(AppView::from).collect()))
 }
 
+#[tracing::instrument(
+    name = "discord.apps.delete",
+    skip(state, principal),
+    fields(patom.org.id = %principal.active_org_id, patom.user.id = %principal.user_id),
+)]
 async fn delete_app(
     State(state): State<AppState>,
     principal: Principal,

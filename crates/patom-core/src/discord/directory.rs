@@ -29,7 +29,7 @@ use crate::clock::SharedClock;
 use crate::colleagues::ColleagueId;
 
 use super::error::DiscordError;
-use super::limits::DISCORD_TAG_HANDLES_MAX;
+use super::limits::{DISCORD_DISPLAY_NAME_MAX, DISCORD_TAG_HANDLES_MAX};
 use super::types::DiscordUserId;
 
 /// A shadow colleague resolved (or just minted) for a Discord user.
@@ -124,7 +124,10 @@ impl DiscordDirectory for PgDiscordDirectory {
     ) -> Result<ShadowColleague, DiscordError> {
         let now = self.clock.now_utc();
         let discord_user = user_id.as_str().to_owned();
-        let display_name = name.map(str::to_owned);
+        // Cap at the trust boundary (§5): roster callers truncate, but a message
+        // caller could pass an over-long name straight through to the row.
+        let display_name =
+            name.map(|n| n.chars().take(DISCORD_DISPLAY_NAME_MAX).collect::<String>());
         // Synthetic, unroutable email: no `user_identities` row, so this account
         // can never authenticate. The global snowflake makes it deterministic.
         let synthetic_email = format!("discord-{discord_user}@shadow.invalid");

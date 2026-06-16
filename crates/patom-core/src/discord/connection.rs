@@ -17,7 +17,7 @@ use rand::Rng;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::codec::{self, Opcode};
 use super::error::DiscordError;
@@ -93,6 +93,19 @@ enum FrameAction {
     End(Directive),
 }
 
+/// Pick the reconnect directive for a dropped/zombied connection: `Resume` only
+/// when a session actually exists to replay, else `FreshReconnect`. Returning
+/// `Resume` with no session would make the manager treat it as a clean path and
+/// reset its backoff, risking a tight reconnect loop on repeated pre-`READY`
+/// drops.
+fn resume_or_fresh(state: &ConnState) -> Directive {
+    if state.session.is_some() {
+        Directive::Resume
+    } else {
+        Directive::FreshReconnect
+    }
+}
+
 /// Run one connection to completion over an already-open socket.
 pub async fn run_connection(
     sink: SharedGatewaySink,
@@ -131,8 +144,10 @@ pub async fn run_connection(
             }
             ev = source.next_event() => {
                 let Some(ev) = ev else {
-                    // Stream ended with no close frame (transport drop) → resume.
-                    return Ok(RunResult { directive: Directive::Resume, session: state.session });
+                    // Stream ended with no close frame (transport drop) → resume
+                    // if we have a session, else re-identify fresh.
+                    let directive = resume_or_fresh(&state);
+                    return Ok(RunResult { directive, session: state.session });
                 };
                 match handle_event(ev, &mut state, cfg, bridge_tx) {
                     FrameAction::Continue => {}
@@ -156,9 +171,11 @@ async fn beat(
         // No ACK since the last beat → the connection zombied. Close non-1000
         // (keeps the session resumable) and resume.
         warn!(event = "discord.gateway.zombie_detected");
-        let _ = sink.close().await;
+        if let Err(e) = sink.close().await {
+            error!(error = ?e, event = "discord.gateway.close_failed");
+        }
         return Ok(Some(RunResult {
-            directive: Directive::Resume,
+            directive: resume_or_fresh(state),
             session: state.session.clone(),
         }));
     }
@@ -237,7 +254,7 @@ fn handle_event(
             FrameAction::Continue
         }
         Opcode::Heartbeat => FrameAction::BeatNow,
-        Opcode::Reconnect => FrameAction::End(Directive::Resume),
+        Opcode::Reconnect => FrameAction::End(resume_or_fresh(state)),
         Opcode::InvalidSession => {
             let resumable =
                 codec::parse_invalid_session_resumable(&recv) && state.session.is_some();

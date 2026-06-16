@@ -28,8 +28,8 @@ use tokio::time::sleep;
 use super::app_store::SharedBotTokenSource;
 use super::error::DiscordError;
 use super::limits::{
-    DISCORD_MESSAGE_MAX, DISCORD_POST_MAX_RETRIES, DISCORD_POST_TIMEOUT,
-    DISCORD_RETRY_AFTER_CAP_SECS,
+    DISCORD_MESSAGE_MAX, DISCORD_POST_ERROR_BODY_MAX, DISCORD_POST_MAX_RETRIES,
+    DISCORD_POST_TIMEOUT, DISCORD_RETRY_AFTER_CAP_SECS,
 };
 use super::ratelimit::RateLimiter;
 use super::types::{ApplicationId, ContainerId, DiscordMessageId};
@@ -164,6 +164,11 @@ struct WireRateLimit {
 #[async_trait]
 impl DiscordPoster for HttpDiscordPoster {
     async fn post(&self, req: PostRequest) -> Result<Vec<DiscordMessageId>, DiscordError> {
+        // An empty body is a Discord 400 that would burn the shared
+        // invalid-request budget for nothing — there is no message to send.
+        if req.content.is_empty() {
+            return Ok(Vec::new());
+        }
         if self.limiter.invalid_budget_exhausted() {
             // A Cloudflare ban is imminent/active on the shared egress; do not
             // add to the invalid-request count.
@@ -322,7 +327,7 @@ async fn read_retry_after(resp: reqwest::Response) -> u32 {
 
 async fn read_text(resp: reqwest::Response) -> String {
     match tokio::time::timeout(DISCORD_POST_TIMEOUT, resp.text()).await {
-        Ok(Ok(body)) => body.chars().take(512).collect(),
+        Ok(Ok(body)) => body.chars().take(DISCORD_POST_ERROR_BODY_MAX).collect(),
         Ok(Err(_)) | Err(_) => String::new(),
     }
 }

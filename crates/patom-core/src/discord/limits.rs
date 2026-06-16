@@ -68,6 +68,14 @@ pub const DISCORD_GATEWAY_COMMANDS_PER_60S: u32 = 120;
 /// Control payloads (IDENTIFY/RESUME/HEARTBEAT) must be < 4096 bytes.
 pub const DISCORD_CONTROL_PAYLOAD_MAX_BYTES: usize = 4096;
 
+/// Maximum length of a Gateway `session_id` / `resume_gateway_url`. Opaque
+/// server-issued strings; cap them so a hostile frame cannot smuggle a blob.
+pub const DISCORD_SESSION_FIELD_MAX_LEN: usize = 512;
+
+/// How much of a non-2xx Discord REST body we keep for an error log. Bounded so
+/// a large error payload never bloats a log line / span attribute.
+pub const DISCORD_POST_ERROR_BODY_MAX: usize = 512;
+
 /// Bound on the hot-connect queue (admin registers a bot → the gateway manager
 /// opens its connection without a restart). Overflow drops the request and the
 /// bot connects on the next restart.

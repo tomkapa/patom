@@ -476,6 +476,15 @@ fn parse_snowflake<'a>(raw: &'a str, field: &'static str) -> Result<&'a str, Par
             detail: "snowflake must be ASCII digits",
         });
     }
+    // A Discord snowflake is a u64; a 20-digit all-ASCII string can still exceed
+    // u64::MAX (e.g. 99999999999999999999). Enforce the domain invariant here so
+    // an out-of-range id never crosses the boundary.
+    if raw.parse::<u64>().is_err() {
+        return Err(ParseError::Malformed {
+            field,
+            detail: "snowflake must fit in u64",
+        });
+    }
     Ok(raw)
 }
 
@@ -497,6 +506,8 @@ mod tests {
         assert!(ContainerId::try_from("oc_abc").is_err());
         assert!(GuildId::try_from("123;DROP").is_err());
         assert!(GuildId::try_from("12 34").is_err());
+        // All-digit and within the length cap, but above u64::MAX → rejected.
+        assert!(DiscordUserId::try_from("99999999999999999999").is_err());
     }
 
     #[test]

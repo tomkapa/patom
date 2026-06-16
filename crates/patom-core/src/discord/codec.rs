@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use crate::types::ParseError;
 
 use super::error::DiscordError;
-use super::limits::DISCORD_CONTROL_PAYLOAD_MAX_BYTES;
+use super::limits::{DISCORD_CONTROL_PAYLOAD_MAX_BYTES, DISCORD_SESSION_FIELD_MAX_LEN};
 use super::types::DiscordUserId;
 
 /// A Gateway opcode (the `op` field). Verified against
@@ -175,10 +175,6 @@ pub fn parse_hello(recv: &GatewayRecv) -> Result<Hello, DiscordError> {
         heartbeat_interval_ms: raw.heartbeat_interval,
     })
 }
-
-/// Maximum length of a Gateway `session_id` / `resume_gateway_url`. Opaque
-/// server-issued strings; cap them so a hostile frame cannot smuggle a blob.
-pub const DISCORD_SESSION_FIELD_MAX_LEN: usize = 512;
 
 /// `READY` (op 0, `t = READY`) — the session identity needed to RESUME, plus the
 /// bot's own user snowflake (so the bridge can drop the bot's own re-delivered

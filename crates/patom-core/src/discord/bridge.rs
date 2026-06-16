@@ -33,7 +33,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info, info_span, warn};
+use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::auth::{Caller, OrgId, UserId};
 use crate::channels::ChannelId;
@@ -160,7 +160,7 @@ async fn run_loop(
                 };
                 let span = info_span!("discord.bridge.process");
                 if let Err(e) = process_event(&deps, dispatch).instrument(span).await {
-                    warn!(error = ?e, event = "discord.bridge.process_failed");
+                    error!(error = ?e, event = "discord.bridge.process_failed");
                 }
             }
         }
