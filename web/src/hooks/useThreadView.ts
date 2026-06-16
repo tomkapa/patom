@@ -99,6 +99,11 @@ export function useThreadView(
       for (const p of state.pending.values()) {
         if (persistedClientKeys.has(p.idempotency_key)) continue;
         if (p.request_id && persistedRequestIds.has(p.request_id)) continue;
+        // Skip a bubble with neither text nor attachments (mirrors the
+        // persisted fold's guard) so an attachment-only send doesn't flash an
+        // empty bubble before its references resolve.
+        const attachments = p.attachments ?? [];
+        if (!p.text && attachments.length === 0) continue;
         optimisticBubbles.push({
           kind: "human",
           key: `opt:${p.idempotency_key}`,
@@ -111,6 +116,7 @@ export function useThreadView(
           human_avatar_url: poster.avatar_url,
           ts: p.ts,
           text: p.text,
+          attachments,
           reasoning: "",
           tool_calls: [],
           wire_requests: [],

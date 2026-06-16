@@ -20,7 +20,7 @@ use tokio::time::timeout;
 
 use super::error::AssetError;
 use super::limits::{MULTIPART_IO_TIMEOUT, SNIFF_PREFIX_BYTES};
-use super::traits::{AssetKind, ImageContentType};
+use super::traits::{AssetContentType, AssetKind, ImageContentType};
 
 /// Wrap a multipart I/O await in `MULTIPART_IO_TIMEOUT`. A slow client
 /// trickling bytes can't hold the request task indefinitely.
@@ -87,6 +87,128 @@ pub async fn extract_single_image_field(
         bytes,
         content_type: claimed,
     })
+}
+
+/// One message attachment extracted from a multipart body (issue #187).
+#[derive(Debug)]
+pub struct UploadedAttachment {
+    pub bytes: Bytes,
+    pub content_type: AssetContentType,
+    /// The original filename from the part's Content-Disposition.
+    pub filename: String,
+}
+
+/// Read one message attachment from a multipart body.
+///
+/// Like [`extract_single_image_field`] but for the broader attachment
+/// allow-list (images + PDF + Office), capturing the original filename and
+/// applying the per-type size cap. SVG is rejected (not valid model input).
+pub async fn extract_attachment_field(
+    mut multipart: Multipart,
+) -> Result<UploadedAttachment, AssetError> {
+    let field = with_timeout(multipart.next_field())
+        .await?
+        .ok_or(AssetError::MissingField)?;
+    if field.name() != Some("file") {
+        return Err(AssetError::MissingField);
+    }
+    let filename = field
+        .file_name()
+        .map(ToOwned::to_owned)
+        .ok_or(AssetError::MissingFilename)?;
+    let claimed = field
+        .content_type()
+        .and_then(AssetContentType::from_attachment_mime)
+        .ok_or_else(|| {
+            AssetError::ContentTypeNotAllowed(
+                field.content_type().unwrap_or("<missing>").to_owned(),
+            )
+        })?;
+
+    let bytes = with_timeout(field.bytes()).await?;
+
+    // Exactly one field, same as the avatar path.
+    if with_timeout(multipart.next_field()).await?.is_some() {
+        return Err(AssetError::TooManyFields);
+    }
+
+    validate_attachment_bytes(&bytes, claimed, claimed.attachment_max_bytes())?;
+
+    Ok(UploadedAttachment {
+        bytes,
+        content_type: claimed,
+        filename,
+    })
+}
+
+/// Size + magic-byte cross-check for a message attachment.
+///
+/// Images reuse the `infer` sniff; PDF and Office check their container
+/// signatures (`%PDF-`, the OOXML ZIP `PK\x03\x04`). Distinguishing xlsx from
+/// docx is left to the downstream parser/provider — both are valid ZIP
+/// containers here, so the boundary's job is to reject a non-container
+/// masquerading as one.
+pub fn validate_attachment_bytes(
+    bytes: &[u8],
+    claimed: AssetContentType,
+    max_bytes: usize,
+) -> Result<(), AssetError> {
+    if bytes.len() > max_bytes {
+        return Err(AssetError::TooLarge {
+            max: max_bytes,
+            got: bytes.len(),
+        });
+    }
+    if bytes.is_empty() {
+        return Err(AssetError::UnknownFileType);
+    }
+    let prefix = &bytes[..bytes.len().min(SNIFF_PREFIX_BYTES)];
+    if !attachment_magic_matches(prefix, claimed) {
+        return Err(AssetError::MagicByteMismatch {
+            claimed: claimed.as_mime(),
+        });
+    }
+    Ok(())
+}
+
+/// Whether `prefix` matches the claimed attachment content type.
+fn attachment_magic_matches(prefix: &[u8], claimed: AssetContentType) -> bool {
+    match claimed {
+        AssetContentType::Png => matches_image(prefix, "image/png"),
+        AssetContentType::Jpeg => matches_image(prefix, "image/jpeg"),
+        AssetContentType::Webp => matches_image(prefix, "image/webp"),
+        AssetContentType::Gif => matches_image(prefix, "image/gif"),
+        // SVG is not an accepted attachment type; never reached via
+        // `from_attachment_mime`, but fail closed if it ever is.
+        AssetContentType::Svg => false,
+        AssetContentType::Pdf => prefix.starts_with(b"%PDF-"),
+        // xlsx/docx are OOXML ZIP containers ("PK\x03\x04"). An empty
+        // (PK\x05\x06) or spanned (PK\x07\x08) archive is not a real
+        // document, so we require the local-file-header signature.
+        AssetContentType::Xlsx | AssetContentType::Docx => prefix.starts_with(b"PK\x03\x04"),
+        // Text has no magic bytes; require the prefix to be valid UTF-8 text so
+        // a binary payload can't masquerade as a text file.
+        AssetContentType::Text => looks_like_text(prefix),
+    }
+}
+
+/// Whether `prefix` is plausibly UTF-8 text: no NUL byte, and the bytes decode
+/// as UTF-8 except possibly for a codepoint truncated at the prefix boundary.
+fn looks_like_text(prefix: &[u8]) -> bool {
+    if prefix.contains(&0) {
+        return false;
+    }
+    match std::str::from_utf8(prefix) {
+        Ok(_) => true,
+        // `error_len() == None` means the only problem is an incomplete final
+        // codepoint (the prefix cut mid-character) — still valid text.
+        Err(e) => e.error_len().is_none(),
+    }
+}
+
+/// `infer`-based check that `prefix` is the given image mime.
+fn matches_image(prefix: &[u8], mime: &str) -> bool {
+    infer::get(prefix).is_some_and(|t| t.mime_type() == mime)
 }
 
 /// Pure byte-level validation: size + magic-byte cross-check.
@@ -245,5 +367,107 @@ mod tests {
             validate_image_bytes(b"", ImageContentType::Png, 1024),
             Err(AssetError::UnknownFileType)
         ));
+    }
+
+    const PDF_HEADER: &[u8] = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3";
+    const GIF_HEADER: &[u8] = b"GIF89a\x01\x00\x01\x00";
+    const ZIP_HEADER: &[u8] = b"PK\x03\x04\x14\x00\x06\x00";
+
+    #[test]
+    fn attachment_accepts_pdf() {
+        validate_attachment_bytes(PDF_HEADER, AssetContentType::Pdf, 1024).expect("pdf ok");
+    }
+
+    #[test]
+    fn attachment_accepts_office_zip_for_xlsx_and_docx() {
+        validate_attachment_bytes(ZIP_HEADER, AssetContentType::Xlsx, 1024).expect("xlsx ok");
+        validate_attachment_bytes(ZIP_HEADER, AssetContentType::Docx, 1024).expect("docx ok");
+    }
+
+    #[test]
+    fn attachment_accepts_gif_and_png() {
+        validate_attachment_bytes(GIF_HEADER, AssetContentType::Gif, 1024).expect("gif ok");
+        let png = pad(PNG_HEADER, 64);
+        validate_attachment_bytes(&png, AssetContentType::Png, 1024).expect("png ok");
+    }
+
+    #[test]
+    fn attachment_rejects_pdf_claimed_as_xlsx() {
+        assert!(matches!(
+            validate_attachment_bytes(PDF_HEADER, AssetContentType::Xlsx, 1024),
+            Err(AssetError::MagicByteMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn attachment_rejects_executable_claimed_as_pdf() {
+        assert!(matches!(
+            validate_attachment_bytes(b"MZ\x90\x00 not a pdf", AssetContentType::Pdf, 1024),
+            Err(AssetError::MagicByteMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn attachment_rejects_oversize() {
+        let big = pad(PDF_HEADER, 2048);
+        assert!(matches!(
+            validate_attachment_bytes(&big, AssetContentType::Pdf, 1024),
+            Err(AssetError::TooLarge { max: 1024, .. })
+        ));
+    }
+
+    #[test]
+    fn attachment_accepts_utf8_text() {
+        validate_attachment_bytes(b"# Notes\nkey = 1\n", AssetContentType::Text, 1024)
+            .expect("text ok");
+        // A truncated final codepoint (prefix cut mid-char) is still text.
+        validate_attachment_bytes(&[b'h', b'i', 0xE2, 0x82], AssetContentType::Text, 1024)
+            .expect("truncated codepoint ok");
+    }
+
+    #[test]
+    fn attachment_rejects_binary_claimed_as_text() {
+        assert!(matches!(
+            validate_attachment_bytes(b"\x00\x01\x02binary", AssetContentType::Text, 1024),
+            Err(AssetError::MagicByteMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn attachment_mime_strings_match_provider_strings() {
+        // Cross-layer drift guard: the asset-storage mime strings must equal
+        // the provider-side `AttachmentMime` strings, since the upload returns
+        // one and `/prompts` re-parses it through the other.
+        use crate::provider::AttachmentMime;
+        let pairs = [
+            (AssetContentType::Png, AttachmentMime::Png),
+            (AssetContentType::Jpeg, AttachmentMime::Jpeg),
+            (AssetContentType::Webp, AttachmentMime::Webp),
+            (AssetContentType::Gif, AttachmentMime::Gif),
+            (AssetContentType::Pdf, AttachmentMime::Pdf),
+            (AssetContentType::Xlsx, AttachmentMime::Xlsx),
+            (AssetContentType::Docx, AttachmentMime::Docx),
+            (AssetContentType::Text, AttachmentMime::Text),
+        ];
+        for (asset, provider) in pairs {
+            assert_eq!(asset.as_mime(), provider.as_mime());
+        }
+    }
+
+    #[test]
+    fn attachment_byte_caps_match_provider_caps() {
+        // The asset-layer caps mirror the provider-layer caps (the two cannot
+        // share a constant without an `assets → provider` cycle). Guard the
+        // hand-sync so a bump on one side can't silently diverge.
+        use crate::assets::limits as a;
+        use crate::provider::limits as p;
+        assert_eq!(
+            p::MAX_ATTACHMENT_IMAGE_BYTES,
+            u64::try_from(a::MAX_ATTACHMENT_IMAGE_BYTES).expect("usize fits u64"),
+        );
+        assert_eq!(
+            p::MAX_ATTACHMENT_FILE_BYTES,
+            u64::try_from(a::MAX_ATTACHMENT_FILE_BYTES).expect("usize fits u64"),
+        );
     }
 }

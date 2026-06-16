@@ -25,10 +25,18 @@ import { Markdown } from "../molecules/Markdown";
 import { ToolCallLine } from "../molecules/ToolCallLine";
 import { WireMcpRequestCard } from "./WireMcpRequestCard";
 import { MentionInput } from "../molecules/MentionInput";
+import { AttachmentBar } from "../molecules/AttachmentBar";
+import { AttachmentList } from "../molecules/AttachmentList";
 import { clockTime, formatMs } from "../../lib/time";
 import { cn, insertAtCaret } from "../../lib/utils";
 import { useResizableWidth } from "../../hooks/useResizableWidth";
-import type { Mentionable, ThreadSummary, ToolCallEntry } from "../../types/api";
+import { ATTACHMENT_ACCEPT, useAttachments } from "../../hooks/useAttachments";
+import type {
+  Attachment,
+  Mentionable,
+  ThreadSummary,
+  ToolCallEntry,
+} from "../../types/api";
 import type { Bubble, RootMessage } from "../../lib/foldHistory";
 import { DEMO_REPLY_META, type DemoReplyMeta } from "../../lib/demo";
 
@@ -94,7 +102,7 @@ export function ThreadPanel({
    *  `onFocusConsumed` once handled so a later scroll isn't yanked back. */
   focusRequestId?: string | null;
   onFocusConsumed?: () => void;
-  onReply?: (input: { content: string }) => void;
+  onReply?: (input: { content: string; attachments?: Attachment[] }) => void;
   onClose?: () => void;
 }) {
   const { width, dragging, panelRef, handleProps } = useResizableWidth({
@@ -106,6 +114,8 @@ export function ThreadPanel({
 
   const [reply, setReply] = useState("");
   const replyRef = useRef<HTMLTextAreaElement | null>(null);
+  const replyFileRef = useRef<HTMLInputElement | null>(null);
+  const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // "Jump to latest" affordance: shown only once the reader has scrolled up
   // away from the tail. Kept in sync by the scroll listener and the
@@ -118,10 +128,16 @@ export function ThreadPanel({
     el.scrollTo({ top: el.scrollHeight, behavior });
     setShowJump(false);
   };
+  const canSendReply =
+    (trimmed.length > 0 || att.ready.length > 0) &&
+    !pending &&
+    !att.busy &&
+    Boolean(thread);
   const sendReply = () => {
-    if (!trimmed || pending || !thread) return;
-    onReply?.({ content: trimmed });
+    if (!canSendReply) return;
+    onReply?.({ content: trimmed, attachments: att.ready });
     setReply("");
+    att.clear();
     // Pin to bottom after the optimistic bubble has had a chance to render.
     // Two RAFs cover both React commit and the bubble's measured layout.
     requestAnimationFrame(() => {
@@ -129,6 +145,10 @@ export function ThreadPanel({
     });
   };
   const insertAt = () => insertAtCaret(replyRef, reply, setReply, "@");
+  const onPickReplyFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) att.addFiles(e.target.files);
+    e.target.value = "";
+  };
 
   // Deep-link scroll: once a bubble with `focusRequestId` lands in the
   // rendered list, scroll the matching <article> into view and hold the
@@ -280,6 +300,11 @@ export function ThreadPanel({
                   className="mt-0.5 text-[13.5px]"
                   mentionNames={roster.map((m) => m.name)}
                 />
+                {rootMessage.attachments && rootMessage.attachments.length > 0 && (
+                  <div className="mt-1">
+                    <AttachmentList items={rootMessage.attachments} />
+                  </div>
+                )}
               </div>
             </article>
           )}
@@ -364,11 +389,28 @@ export function ThreadPanel({
             rows={1}
             maxHeight={140}
           />
+          <AttachmentBar items={att.items} onRemove={att.remove} />
+          <input
+            ref={replyFileRef}
+            type="file"
+            multiple
+            accept={ATTACHMENT_ACCEPT}
+            onChange={onPickReplyFiles}
+            className="hidden"
+          />
           <div className="flex items-center gap-1 border-t border-[var(--color-line)] px-2 py-1">
             <Button type="button" variant="ghost" size="xs" iconOnly aria-label="Mention" onClick={insertAt}>
               <AtSign className="h-3.5 w-3.5" />
             </Button>
-            <Button type="button" variant="ghost" size="xs" iconOnly aria-label="Attach">
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              iconOnly
+              aria-label="Attach"
+              disabled={!thread}
+              onClick={() => replyFileRef.current?.click()}
+            >
               <Paperclip className="h-3.5 w-3.5" />
             </Button>
             <Button type="button" variant="ghost" size="xs" iconOnly aria-label="Emoji">
@@ -379,7 +421,7 @@ export function ThreadPanel({
               variant="moss"
               size="sm"
               loading={pending}
-              disabled={!trimmed || pending || !thread}
+              disabled={!canSendReply}
               className="ml-auto"
             >
               {pending ? "sending" : (
@@ -475,6 +517,11 @@ function HumanReplyCard({
         className="mt-0.5 text-[13.5px]"
         mentionNames={rosterNames}
       />
+      {bubble.attachments && bubble.attachments.length > 0 && (
+        <div className="mt-1">
+          <AttachmentList items={bubble.attachments} />
+        </div>
+      )}
     </ReplyShell>
   );
 }

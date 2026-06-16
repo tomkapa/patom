@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  Attachment,
   McpWireRequest,
   ResponseChunk,
   ThreadStreamEnvelope,
@@ -28,6 +29,10 @@ export type PendingHuman = {
    *  while the mutation is in flight (optimistically treated as pending). */
   triggered?: boolean;
   text: string;
+  /** Image/file attachments on the optimistic bubble, so it renders them
+   *  immediately instead of flashing text-only until the persisted echo
+   *  lands (issue #187). */
+  attachments?: Attachment[];
   ts: string;
 };
 

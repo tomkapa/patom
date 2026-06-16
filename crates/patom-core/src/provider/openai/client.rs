@@ -11,6 +11,7 @@ use super::map_runtime_error;
 use crate::observability::gen_ai;
 use crate::provider::chat::{ChatRequest, ChatResponse, Usage};
 use crate::provider::error::ProviderError;
+use crate::provider::materialize::{HttpAttachmentSource, SharedAttachmentSource};
 use crate::provider::traits::LlmProvider;
 use crate::types::{ModelId, SecretString};
 
@@ -25,6 +26,8 @@ use crate::types::{ModelId, SecretString};
 pub struct OpenAiProvider {
     backend: crate::provider::ProviderId,
     client: Client<OpenAIConfig>,
+    /// Fetches attachment bytes for inlined `file` parts (issue #187).
+    source: SharedAttachmentSource,
 }
 
 impl std::fmt::Debug for OpenAiProvider {
@@ -54,9 +57,16 @@ impl OpenAiProvider {
         if let Some(url) = base_url {
             config = config.with_api_base(url);
         }
+        // expect: a default reqwest client (HTTPS) must build for the process to
+        // serve any request; failure here is an unrecoverable startup fault
+        // (CLAUDE.md §6), same posture as the rest of the composition root.
+        let source: SharedAttachmentSource = std::sync::Arc::new(
+            HttpAttachmentSource::new().expect("invariant: default attachment HTTP client builds"),
+        );
         Self {
             backend,
             client: Client::with_config(config),
+            source,
         }
     }
 
@@ -112,10 +122,12 @@ impl LlmProvider for OpenAiProvider {
     async fn send(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
         gen_ai::record_chat_request(self.backend.as_str(), &request);
 
+        let caps = request.model.capabilities();
+        let model_name = request.model.as_str();
         let mut messages = Vec::with_capacity(request.messages.len() + 1);
         messages.push(system_message(&request.system));
         for msg in request.messages {
-            messages.extend(message_to_wire(msg));
+            messages.extend(message_to_wire(msg, caps, model_name, self.source.as_ref()).await?);
         }
 
         // `.then(|| …)` defers the `.collect()` to the non-empty case so we don't

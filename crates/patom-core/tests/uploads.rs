@@ -551,3 +551,53 @@ async fn agent_avatar_upload_svg_rejected(pool: PgPool) {
     assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
     assert!(store.is_empty().await);
 }
+
+// ---- Message attachments (issue #187) ----
+
+const PDF_HEADER: &[u8] = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3";
+
+#[sqlx::test]
+async fn attachment_upload_pdf_returns_reference(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
+    let app = router(h.state.clone());
+    let body = build_multipart("application/pdf", &pad(PDF_HEADER, 512));
+    let req = upload_request("/api/uploads/attachment", &h.primary, body);
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("json");
+    assert_eq!(json["mime"], "application/pdf");
+    assert_eq!(json["filename"], "upload.bin");
+    assert_eq!(json["size"], 512);
+    let url = json["url"].as_str().expect("url field");
+    assert!(url.contains("/attachments/"), "url = {url}");
+    assert!(url.ends_with(".pdf"), "url = {url}");
+    assert_eq!(store.len().await, 1);
+}
+
+#[sqlx::test]
+async fn attachment_upload_rejects_disallowed_type(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
+    let app = router(h.state.clone());
+    // text/plain is not in the attachment allow-list.
+    let body = build_multipart("text/plain", b"just some text");
+    let req = upload_request("/api/uploads/attachment", &h.primary, body);
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert!(store.is_empty().await);
+}
+
+#[sqlx::test]
+async fn attachment_upload_magic_byte_mismatch_returns_400(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
+    let app = router(h.state.clone());
+    // Claims PDF but the bytes are not a PDF container.
+    let body = build_multipart("application/pdf", b"MZ\x90\x00 not a pdf at all");
+    let req = upload_request("/api/uploads/attachment", &h.primary, body);
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert!(store.is_empty().await);
+}

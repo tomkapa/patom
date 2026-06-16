@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { uuidv7 } from "../lib/utils";
 import { track } from "../lib/analytics";
-import type { TagRef } from "../types/api";
+import type { Attachment, TagRef } from "../types/api";
 
 type Vars = {
   thread_id?: string;
@@ -15,6 +15,8 @@ type Vars = {
   /** Who a fresh DM root is with (no `thread_id`, no `channel_id`). */
   counterpart?: TagRef;
   content: string;
+  /** Image/file attachment references (issue #187). */
+  attachments?: Attachment[];
   /** Caller-supplied so the optimistic bubble can be tagged with the same
    *  key the server sees. Auto-generated when omitted (channel-level
    *  submits that don't need an optimistic echo). */
@@ -40,6 +42,7 @@ export function useSubmitPrompt() {
         has_agent: agentTagged,
         has_channel: Boolean(v.channel_id),
         content_len: v.content.length,
+        attachment_count: v.attachments?.length ?? 0,
       });
       // `agent_invoked` is the actual outcome — the agents the backend woke,
       // not merely those tagged (a tag may not trigger).

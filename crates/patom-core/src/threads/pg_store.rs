@@ -865,7 +865,10 @@ fn user_to_assistant_blocks(blocks: Vec<UserContent>) -> Vec<AssistantContent> {
         .into_iter()
         .filter_map(|b| match b {
             UserContent::Text(t) => Some(AssistantContent::Text(t)),
-            UserContent::ToolResult(_) => None,
+            // Tool results and attachments never appear on the agent's own
+            // posted rows; drop defensively (an attachment is not valid
+            // assistant content to replay).
+            UserContent::ToolResult(_) | UserContent::Image(_) | UserContent::File(_) => None,
         })
         .collect()
 }

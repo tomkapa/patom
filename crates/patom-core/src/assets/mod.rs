@@ -16,6 +16,12 @@ pub mod s3_store;
 pub mod traits;
 
 pub use error::AssetError;
-pub use multipart::{UploadedImage, extract_single_image_field, validate_image_bytes};
+pub use multipart::{
+    UploadedAttachment, UploadedImage, extract_attachment_field, extract_single_image_field,
+    validate_attachment_bytes, validate_image_bytes,
+};
 pub use s3_store::{InMemoryAssetStore, S3AssetStore};
-pub use traits::{AssetKind, AssetStore, AssetUrl, ImageContentType, ObjectKey, SharedAssetStore};
+pub use traits::{
+    AssetContentType, AssetKind, AssetStore, AssetUrl, ImageContentType, ObjectKey,
+    SharedAssetStore,
+};

@@ -425,6 +425,16 @@ fn render_chat_message(message: &ChatMessage, out: &mut String) {
                         out.push_str(r.call_id.as_str());
                         out.push_str(if r.is_error { ": err]" } else { ": ok]" });
                     }
+                    UserContent::Image(a) => {
+                        out.push_str("[image: ");
+                        out.push_str(a.filename().as_str());
+                        out.push(']');
+                    }
+                    UserContent::File(a) => {
+                        out.push_str("[file: ");
+                        out.push_str(a.filename().as_str());
+                        out.push(']');
+                    }
                 }
             }
             out.push('\n');
@@ -467,6 +477,12 @@ fn map_for_viewer(stored: ChatMessage, is_self: bool) -> ChatMessage {
                         r.call_id.as_str(),
                         if r.is_error { "err" } else { "ok" }
                     )),
+                    UserContent::Image(a) => {
+                        AssistantContent::Text(format!("[image: {}]", a.filename().as_str()))
+                    }
+                    UserContent::File(a) => {
+                        AssistantContent::Text(format!("[file: {}]", a.filename().as_str()))
+                    }
                 })
                 .collect();
             ChatMessage::Assistant(assist)

@@ -5,6 +5,7 @@
 
 import { decodeBody } from "./chatBody";
 import type {
+  Attachment,
   McpWireRequest,
   Mentionable,
   ThreadMessage,
@@ -45,6 +46,9 @@ export type Bubble = {
   human_avatar_url: string | null;
   ts: string;
   text: string;
+  /** Image/file attachments on a human bubble (issue #187). Omitted on agent
+   *  / optimistic / streaming bubbles. */
+  attachments?: Attachment[];
   reasoning: string;
   tool_calls: ToolCallEntry[];
   /** Inline `WireMcpRequestCard` payloads emitted by
@@ -65,6 +69,8 @@ export type RootMessage = {
   avatar_url: string | null;
   ts: string;
   text: string;
+  /** Image/file attachments on the root human post (issue #187). */
+  attachments?: Attachment[];
 };
 
 export type FoldedHistory = {
@@ -320,8 +326,9 @@ export function foldHistory(
             decoded.text,
             participantName(m.receiver, agentsById, humansById),
           ),
+          attachments: decoded.attachments,
         };
-      } else if (decoded.text) {
+      } else if (decoded.text || decoded.attachments.length > 0) {
         bubbles.push({
           kind: "human",
           key: `h:${m.seq}:user`,
@@ -337,6 +344,7 @@ export function foldHistory(
             decoded.text,
             participantName(m.receiver, agentsById, humansById),
           ),
+          attachments: decoded.attachments,
           reasoning: "",
           tool_calls: [],
           wire_requests: [],

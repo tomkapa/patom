@@ -32,6 +32,21 @@ pub const MAX_AGENT_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 /// gets rejected at the boundary rather than wasting object-storage ops.
 pub const MAX_MCP_ICON_BYTES: usize = 256 * 1024;
 
+/// Upper bound on a single *image* message attachment (issue #187).
+///
+/// Mirrors `crate::provider::limits::MAX_ATTACHMENT_IMAGE_BYTES`; held here as
+/// its own constant because `assets` cannot depend on `provider` (that would
+/// cycle — `provider` already imports `assets::AssetUrl`). `/prompts`
+/// re-validates the reported size against the provider cap, so the two stay
+/// consistent by construction.
+pub const MAX_ATTACHMENT_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Upper bound on a single *file* (PDF/xlsx/docx) message attachment.
+///
+/// Issue #187. Mirrors `crate::provider::limits::MAX_ATTACHMENT_FILE_BYTES`;
+/// see [`MAX_ATTACHMENT_IMAGE_BYTES`] for why it is duplicated.
+pub const MAX_ATTACHMENT_FILE_BYTES: usize = 32 * 1024 * 1024;
+
 /// Cap on the bytes of magic-byte sniffing we feed `infer`.
 ///
 /// `infer` only inspects the first dozens of bytes for any signature it

@@ -4,23 +4,45 @@
 //! adding a new content variant is bounded.
 
 use claudius::{
-    ContentBlock, MessageParam, MessageRole, Model, StopReason as ClaudiusStop, TextBlock,
-    ToolParam, ToolResultBlock, ToolUnionParam, ToolUseBlock,
+    ContentBlock, DocumentBlock, DocumentSource, ImageBlock, MessageParam, MessageRole, Model,
+    StopReason as ClaudiusStop, TextBlock, ToolParam, ToolResultBlock, ToolUnionParam,
+    ToolUseBlock, UrlImageSource, UrlPdfSource,
 };
 
+use crate::provider::ModelCapabilities;
+use crate::provider::attachment::Attachment;
 use crate::provider::chat::{
     AssistantContent, ChatMessage, StopReason, ToolCall, ToolCallId, ToolSpec, UserContent,
 };
+use crate::provider::error::ProviderError;
+use crate::provider::materialize::{AttachmentSource, attachment_to_text};
 use crate::types::ToolName;
 
 /// Map a provider-agnostic message into a claudius `MessageParam`. Returns `None` for a
 /// message that would serialize to an empty block list — Anthropic rejects an
 /// empty-content message, so the caller drops it from the replayed history.
-pub(super) fn message_to_param(msg: ChatMessage) -> Option<MessageParam> {
+///
+/// Async + fallible because user attachments may need materializing (Office →
+/// extracted text) and gating: content the model cannot accept yields
+/// [`ProviderError::UnsupportedContent`] before dispatch (issue #187).
+pub(super) async fn message_to_param(
+    msg: ChatMessage,
+    caps: ModelCapabilities,
+    model: &str,
+    source: &dyn AttachmentSource,
+) -> Result<Option<MessageParam>, ProviderError> {
     match msg {
         ChatMessage::User(content) => {
-            let blocks = content.into_iter().map(user_content_to_block).collect();
-            Some(MessageParam::new_with_blocks(blocks, MessageRole::User))
+            let mut blocks = Vec::with_capacity(content.len());
+            // One block per content item; `for` (not `map`) because each step awaits
+            // (Office extraction) and may early-return on an unsupported kind.
+            for c in content {
+                blocks.push(user_content_to_block(c, caps, model, source).await?);
+            }
+            Ok(Some(MessageParam::new_with_blocks(
+                blocks,
+                MessageRole::User,
+            )))
         }
         ChatMessage::Assistant(content) => {
             let blocks: Vec<ContentBlock> = content
@@ -31,15 +53,20 @@ pub(super) fn message_to_param(msg: ChatMessage) -> Option<MessageParam> {
             // reasoning-only turn leaves an empty block list. Emitting an empty-content
             // assistant message is rejected and wedges the session on every replay, so
             // omit it from the wire entirely. The block stays persisted for audit.
-            (!blocks.is_empty())
-                .then(|| MessageParam::new_with_blocks(blocks, MessageRole::Assistant))
+            Ok((!blocks.is_empty())
+                .then(|| MessageParam::new_with_blocks(blocks, MessageRole::Assistant)))
         }
     }
 }
 
-fn user_content_to_block(c: UserContent) -> ContentBlock {
+async fn user_content_to_block(
+    c: UserContent,
+    caps: ModelCapabilities,
+    model: &str,
+    source: &dyn AttachmentSource,
+) -> Result<ContentBlock, ProviderError> {
     match c {
-        UserContent::Text(t) => ContentBlock::Text(TextBlock::new(t)),
+        UserContent::Text(t) => Ok(ContentBlock::Text(TextBlock::new(t))),
         UserContent::ToolResult(r) => {
             let mut block =
                 ToolResultBlock::new(r.call_id.as_str().to_string()).with_string_content(r.output);
@@ -48,9 +75,56 @@ fn user_content_to_block(c: UserContent) -> ContentBlock {
             if r.is_error {
                 block = block.with_error(true);
             }
-            ContentBlock::ToolResult(block)
+            Ok(ContentBlock::ToolResult(block))
         }
+        // Images ride as a URL source — Anthropic fetches the public asset URL,
+        // so no byte download here.
+        UserContent::Image(att) => {
+            reject_unless(caps.accepts(att.mime()), &att, model)?;
+            Ok(ContentBlock::Image(ImageBlock::new_with_url(
+                UrlImageSource::new(att.url().as_str().to_owned()),
+            )))
+        }
+        UserContent::File(att) => file_to_block(att, caps, model, source).await,
     }
+}
+
+/// Map a non-image file. PDF rides as a URL `document` block (native). Office
+/// (no native support) and plain-text files are fetched and rendered to a
+/// `TextBlock` — Office is parsed, text is UTF-8 decoded.
+async fn file_to_block(
+    att: Attachment,
+    caps: ModelCapabilities,
+    model: &str,
+    source: &dyn AttachmentSource,
+) -> Result<ContentBlock, ProviderError> {
+    reject_unless(caps.accepts(att.mime()), &att, model)?;
+    if att.mime().is_pdf() {
+        return Ok(ContentBlock::Document(DocumentBlock::new(
+            DocumentSource::UrlPdf(UrlPdfSource::new(att.url().as_str().to_owned())),
+        )));
+    }
+    // Office / text: fetch + render to text.
+    let bytes = source
+        .fetch(att.url())
+        .await
+        .map_err(|e| ProviderError::Attachment(e.to_string()))?;
+    let text = attachment_to_text(att.mime(), &bytes)
+        .map_err(|e| ProviderError::Attachment(e.to_string()))?;
+    let body = format!("[Attached file: {}]\n{text}", att.filename().as_str());
+    Ok(ContentBlock::Text(TextBlock::new(body)))
+}
+
+/// Capability gate: turn a `false` into a typed rejection carrying the rejected
+/// mime and the model it was routed to.
+fn reject_unless(ok: bool, att: &Attachment, model: &str) -> Result<(), ProviderError> {
+    if ok {
+        return Ok(());
+    }
+    Err(ProviderError::UnsupportedContent {
+        mime: att.mime().as_mime(),
+        model: model.to_owned(),
+    })
 }
 
 /// Reasoning blocks are observability-only on our side; we drop them when re-serializing
@@ -119,19 +193,100 @@ pub(super) fn map_stop_reason(stop: Option<ClaudiusStop>) -> StopReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::Model;
+    use crate::provider::attachment::RawAttachment;
+    use crate::provider::materialize::test_support::StubAttachmentSource;
 
-    #[test]
-    fn reasoning_only_assistant_message_is_dropped() {
+    const ASSET: &str = "https://assets.example/attachments/x.bin";
+
+    fn anthropic_caps() -> ModelCapabilities {
+        Model::try_from("claude-opus-4-7")
+            .expect("known")
+            .capabilities()
+    }
+
+    fn attachment(mime: &str, name: &str) -> Attachment {
+        Attachment::try_from(RawAttachment {
+            url: ASSET.to_owned(),
+            mime: mime.to_owned(),
+            filename: name.to_owned(),
+            size: 16,
+        })
+        .expect("valid")
+    }
+
+    #[tokio::test]
+    async fn reasoning_only_assistant_message_is_dropped() {
         // Reasoning blocks have no Anthropic signature to replay, so a reasoning-only
         // turn would serialize to an empty-content message — which Anthropic rejects and
         // which wedges the session on every replay. It must be omitted from the wire.
         let msg = ChatMessage::Assistant(vec![AssistantContent::Reasoning("secret".into())]);
-        assert!(message_to_param(msg).is_none());
+        let src = StubAttachmentSource::new();
+        let out = message_to_param(msg, anthropic_caps(), "claude-opus-4-7", &src)
+            .await
+            .expect("ok");
+        assert!(out.is_none());
     }
 
-    #[test]
-    fn assistant_message_with_text_is_kept() {
+    #[tokio::test]
+    async fn assistant_message_with_text_is_kept() {
         let msg = ChatMessage::Assistant(vec![AssistantContent::Text("hello".into())]);
-        assert!(message_to_param(msg).is_some());
+        let src = StubAttachmentSource::new();
+        let out = message_to_param(msg, anthropic_caps(), "claude-opus-4-7", &src)
+            .await
+            .expect("ok");
+        assert!(out.is_some());
+    }
+
+    #[tokio::test]
+    async fn image_becomes_url_image_block_without_fetch() {
+        // A stub with no registered bytes errors on fetch — so this passing
+        // proves the image path takes the URL branch and never downloads.
+        let msg = ChatMessage::User(vec![UserContent::Image(attachment("image/png", "a.png"))]);
+        let src = StubAttachmentSource::new();
+        let param = message_to_param(msg, anthropic_caps(), "claude-opus-4-7", &src)
+            .await
+            .expect("ok")
+            .expect("some");
+        let json = serde_json::to_value(&param).expect("ser");
+        assert_eq!(json["content"][0]["type"], "image");
+        assert_eq!(json["content"][0]["source"]["type"], "url");
+        assert_eq!(json["content"][0]["source"]["url"], ASSET);
+    }
+
+    #[tokio::test]
+    async fn pdf_becomes_url_document_block_without_fetch() {
+        let msg = ChatMessage::User(vec![UserContent::File(attachment(
+            "application/pdf",
+            "r.pdf",
+        ))]);
+        let src = StubAttachmentSource::new();
+        let param = message_to_param(msg, anthropic_caps(), "claude-opus-4-7", &src)
+            .await
+            .expect("ok")
+            .expect("some");
+        let json = serde_json::to_value(&param).expect("ser");
+        assert_eq!(json["content"][0]["type"], "document");
+        assert_eq!(json["content"][0]["source"]["type"], "url");
+    }
+
+    #[tokio::test]
+    async fn office_is_fetched_and_extracted_to_text() {
+        // Minimal valid .docx: a ZIP holding word/document.xml with one run.
+        let docx = crate::provider::materialize::test_support::tiny_docx("Hello sheet");
+        let msg = ChatMessage::User(vec![UserContent::File(attachment(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "memo.docx",
+        ))]);
+        let src = StubAttachmentSource::new().with(ASSET, docx);
+        let param = message_to_param(msg, anthropic_caps(), "claude-opus-4-7", &src)
+            .await
+            .expect("ok")
+            .expect("some");
+        let json = serde_json::to_value(&param).expect("ser");
+        assert_eq!(json["content"][0]["type"], "text");
+        let text = json["content"][0]["text"].as_str().expect("text");
+        assert!(text.contains("memo.docx"), "prefix: {text}");
+        assert!(text.contains("Hello sheet"), "body: {text}");
     }
 }

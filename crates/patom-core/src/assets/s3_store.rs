@@ -27,7 +27,7 @@ use crate::config::ObjectStorageSettings;
 
 use super::error::AssetError;
 use super::limits::{STORAGE_DELETE_TIMEOUT, STORAGE_PUT_TIMEOUT};
-use super::traits::{AssetStore, AssetUrl, ImageContentType, ObjectKey};
+use super::traits::{AssetContentType, AssetStore, AssetUrl, ObjectKey};
 
 /// S3-compatible connection bundle. Cheap to clone — the inner `S3Client`
 /// holds an `Arc` internally.
@@ -122,7 +122,7 @@ impl AssetStore for S3AssetStore {
         &self,
         key: ObjectKey,
         bytes: Bytes,
-        content_type: ImageContentType,
+        content_type: AssetContentType,
     ) -> Result<AssetUrl, AssetError> {
         // §6: assert positive *and* negative — bytes must be present and
         // bounded. The per-kind cap is enforced one layer up at the
@@ -228,7 +228,7 @@ where
 /// up a real object-storage bucket.
 pub struct InMemoryAssetStore {
     public_host: Arc<str>,
-    objects: tokio::sync::Mutex<std::collections::HashMap<String, (Bytes, ImageContentType)>>,
+    objects: tokio::sync::Mutex<std::collections::HashMap<String, (Bytes, AssetContentType)>>,
 }
 
 impl InMemoryAssetStore {
@@ -242,7 +242,7 @@ impl InMemoryAssetStore {
     }
 
     /// Test helper — peek at the stored bytes + content type for a key.
-    pub async fn get(&self, key: &ObjectKey) -> Option<(Bytes, ImageContentType)> {
+    pub async fn get(&self, key: &ObjectKey) -> Option<(Bytes, AssetContentType)> {
         self.objects.lock().await.get(key.as_str()).cloned()
     }
 
@@ -271,7 +271,7 @@ impl AssetStore for InMemoryAssetStore {
         &self,
         key: ObjectKey,
         bytes: Bytes,
-        content_type: ImageContentType,
+        content_type: AssetContentType,
     ) -> Result<AssetUrl, AssetError> {
         assert!(
             !bytes.is_empty(),

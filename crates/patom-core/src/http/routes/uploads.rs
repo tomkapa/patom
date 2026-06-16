@@ -19,18 +19,34 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::agents::AgentId;
-use crate::assets::{AssetKind, AssetUrl, ObjectKey, SharedAssetStore, extract_single_image_field};
+use crate::assets::limits::MAX_ATTACHMENT_FILE_BYTES;
+use crate::assets::{
+    AssetKind, AssetUrl, ObjectKey, SharedAssetStore, extract_attachment_field,
+    extract_single_image_field,
+};
 use crate::auth::{AuthError, Principal, Role, VisibilityTable, visible_to};
 use crate::mcp::{McpCatalogId, McpError};
+use crate::provider::FileName;
 use crate::types::AvatarUrl;
 
 use super::super::error::HttpError;
 use super::super::state::AppState;
 
-/// JSON envelope returned by both upload endpoints.
+/// JSON envelope returned by the avatar/icon upload endpoints.
 #[derive(Debug, Serialize)]
 struct UploadResponse {
     url: String,
+}
+
+/// JSON envelope returned by `POST /uploads/attachment`. Mirrors the
+/// `RawAttachment` shape `POST /prompts` consumes, so the FE can forward it
+/// verbatim (issue #187).
+#[derive(Debug, Serialize)]
+struct AttachmentUploadResponse {
+    url: String,
+    mime: String,
+    filename: String,
+    size: u64,
 }
 
 pub(super) fn router() -> Router<AppState> {
@@ -60,6 +76,12 @@ pub(super) fn router() -> Router<AppState> {
             "/uploads/agent-avatar/{agent_id}",
             post(upload_agent_avatar).layer(DefaultBodyLimit::max(
                 AssetKind::AgentAvatar.max_bytes() + MULTIPART_OVERHEAD,
+            )),
+        )
+        .route(
+            "/uploads/attachment",
+            post(upload_attachment).layer(DefaultBodyLimit::max(
+                MAX_ATTACHMENT_FILE_BYTES + MULTIPART_OVERHEAD,
             )),
         )
 }
@@ -99,7 +121,9 @@ async fn extract_and_store(
     let img = extract_single_image_field(multipart, kind).await?;
     let key = ObjectKey::derive(kind, stable_id, img.content_type)
         .map_err(crate::assets::AssetError::from)?;
-    let url = assets.put(key, img.bytes, img.content_type).await?;
+    // The store takes the broader `AssetContentType`; an avatar's
+    // `ImageContentType` widens losslessly.
+    let url = assets.put(key, img.bytes, img.content_type.into()).await?;
     Ok(url)
 }
 
@@ -216,5 +240,37 @@ async fn upload_agent_avatar(
     let avatar = AvatarUrl::try_from(url.as_str()).map_err(HttpError::Parse)?;
     Ok(Json(UploadResponse {
         url: avatar.as_str().to_owned(),
+    }))
+}
+
+/// Upload one message attachment (image / PDF / Office). Any signed-in user
+/// may attach to their own messages — no admin gate — and the object lands
+/// under a fresh, immutable `attachments/{uuid}.{ext}` key (unlike avatars,
+/// which overwrite a deterministic per-subject key). Returns the reference
+/// `POST /prompts` will consume (issue #187).
+async fn upload_attachment(
+    State(state): State<AppState>,
+    _principal: Principal,
+    multipart: Multipart,
+) -> Result<Json<AttachmentUploadResponse>, HttpError> {
+    let assets = assets_or_503(&state)?;
+    let att = extract_attachment_field(multipart).await?;
+    let size = u64::try_from(att.bytes.len()).unwrap_or(u64::MAX);
+    // Validate the filename through the same typed invariant `/prompts` uses,
+    // so a name it would reject fails fast here instead of at submit.
+    let filename = FileName::try_from(att.filename.as_str()).map_err(HttpError::Parse)?;
+    let key_raw = format!(
+        "attachments/{}.{}",
+        Uuid::new_v4(),
+        att.content_type.extension()
+    );
+    let key = ObjectKey::try_from(key_raw.as_str()).map_err(crate::assets::AssetError::from)?;
+    let mime = att.content_type.as_mime().to_owned();
+    let url = assets.put(key, att.bytes, att.content_type).await?;
+    Ok(Json(AttachmentUploadResponse {
+        url: url.as_str().to_owned(),
+        mime,
+        filename: filename.as_str().to_owned(),
+        size,
     }))
 }
