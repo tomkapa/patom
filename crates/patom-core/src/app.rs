@@ -112,6 +112,9 @@ pub struct Server {
     /// Optional Lark bridge worker — `Some` iff `settings.lark` is `Some`.
     /// `run_server` joins on `shutdown()` after HTTP exits.
     pub lark_bridge: Option<crate::lark::bridge::BridgeHandle>,
+    /// Optional Discord bridge worker — `Some` iff `settings.discord` is `Some`.
+    /// `run_server` joins on `shutdown()` after HTTP exits.
+    pub discord_bridge: Option<crate::discord::bridge::BridgeHandle>,
 }
 
 /// Pre-built collaborators shared by the agent and the runtime.
@@ -1011,6 +1014,113 @@ pub async fn build_server(
         }
     };
 
+    let (discord_app_state, discord_bridge_handle) = match settings.discord.as_ref() {
+        None => (None, None),
+        Some(cfg) => {
+            use crate::discord::app_store::{
+                PgDiscordAppStore, SharedBotTokenSource, SharedDiscordAppStore,
+            };
+            use crate::discord::channel_map::PgDiscordChannelStore;
+            use crate::discord::directory::PgDiscordDirectory;
+            use crate::discord::history::{HttpDiscordHistoryReader, SharedHistoryReader};
+            use crate::discord::poster::{HttpDiscordPoster, SharedDiscordPoster};
+            use crate::discord::ratelimit::RateLimiter;
+            use crate::discord::state::DiscordAppState;
+            use crate::discord::stream_pump::SharedDiscordPumpHandle;
+            use crate::discord::thread_map::PgDiscordThreadStore;
+            use crate::discord::thread_opener::{HttpDiscordThreadOpener, SharedThreadOpener};
+            use crate::discord::{bridge, stream_pump, ws_manager};
+
+            let discord_http = build_http_client()?;
+            let app_store = Arc::new(PgDiscordAppStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+                pieces.mcp_encryptor.clone(),
+            ));
+            let apps: SharedDiscordAppStore = app_store.clone();
+            let tokens: SharedBotTokenSource = app_store;
+            let directory: crate::discord::directory::SharedDiscordDirectory = Arc::new(
+                PgDiscordDirectory::new(pieces.pool.clone(), pieces.clock.clone()),
+            );
+            let channels = Arc::new(PgDiscordChannelStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+            ));
+            let discord_threads = Arc::new(PgDiscordThreadStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+            ));
+            // One rate limiter shared by the poster and the history reader (same
+            // bot/egress budget).
+            let limiter = Arc::new(RateLimiter::new());
+            let poster: SharedDiscordPoster = Arc::new(HttpDiscordPoster::new(
+                discord_http.clone(),
+                cfg.api_base.clone(),
+                tokens.clone(),
+                limiter.clone(),
+            ));
+            // Opens a thread on a top-level channel @mention; shares the same
+            // egress rate-limit budget as the poster + history reader.
+            let thread_opener: SharedThreadOpener = Arc::new(HttpDiscordThreadOpener::new(
+                discord_http.clone(),
+                cfg.api_base.clone(),
+                tokens.clone(),
+                limiter.clone(),
+            ));
+            let history: SharedHistoryReader = Arc::new(HttpDiscordHistoryReader::new(
+                discord_http.clone(),
+                cfg.api_base.clone(),
+                tokens.clone(),
+                limiter,
+            ));
+
+            let pump_handle: SharedDiscordPumpHandle = stream_pump::spawn(
+                stream_pump::PumpDeps {
+                    thread_stream: thread_stream.clone(),
+                    poster,
+                    directory: directory.clone(),
+                    apps: apps.clone(),
+                },
+                cancel.clone(),
+            );
+
+            let (bridge_handle, bridge_tx) = bridge::spawn(
+                bridge::BridgeDeps {
+                    apps: apps.clone(),
+                    directory,
+                    channels,
+                    threads: discord_threads,
+                    thread_store: pieces.threads.clone(),
+                    colleagues: pieces.colleagues.clone(),
+                    queue: pieces.queue.clone(),
+                    outbound: pump_handle.clone(),
+                    history,
+                    thread_opener,
+                },
+                cancel.clone(),
+            );
+
+            let ws_manager = ws_manager::spawn(
+                ws_manager::WsManagerDeps {
+                    apps: apps.clone(),
+                    tokens,
+                    http: discord_http,
+                    api_base: cfg.api_base.clone(),
+                    bridge_tx,
+                    pool: pieces.pool.clone(),
+                },
+                cancel.clone(),
+            );
+
+            let state = DiscordAppState {
+                apps,
+                stream_pump: pump_handle,
+                ws_manager,
+            };
+            (Some(state), Some(bridge_handle))
+        }
+    };
+
     // Object-storage seam — built once at startup from S3 settings when
     // present. Holding `None` is a first-class deployment shape; the
     // upload routes 503 cleanly instead of every other handler refusing
@@ -1099,6 +1209,7 @@ pub async fn build_server(
         index_html,
         slack: slack_app_state,
         lark: lark_app_state,
+        discord: discord_app_state,
         assets,
         orgs: orgs_store,
         mailer,
@@ -1120,6 +1231,7 @@ pub async fn build_server(
         http_addr: settings.http_addr,
         slack_bridge: slack_bridge_handle,
         lark_bridge: lark_bridge_handle,
+        discord_bridge: discord_bridge_handle,
     })
 }
 
@@ -1138,13 +1250,16 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
         http_addr,
         slack_bridge,
         lark_bridge,
+        discord_bridge,
     } = server;
     // The supervisor tasks that own the stream-pump JoinSets are held behind
-    // `state.slack`/`state.lark`. Clone the handles out before the state moves
-    // into the axum router so shutdown can still reach them.
+    // `state.slack`/`state.lark`/`state.discord`. Clone the handles out before
+    // the state moves into the axum router so shutdown can still reach them.
     let slack_pump_handle = state.slack.as_ref().map(|s| s.stream_pump.clone());
     let lark_pump_handle = state.lark.as_ref().map(|s| s.stream_pump.clone());
     let lark_ws_manager = state.lark.as_ref().map(|s| s.ws_manager.clone());
+    let discord_pump_handle = state.discord.as_ref().map(|s| s.stream_pump.clone());
+    let discord_ws_manager = state.discord.as_ref().map(|s| s.ws_manager.clone());
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(http_addr)
         .await
@@ -1192,6 +1307,20 @@ pub async fn run_server(server: Server, cancel: CancellationToken) -> Result<(),
     if let Some(pump) = lark_pump_handle {
         pump.shutdown().await;
         info!("lark.stream_pump.shutdown.complete");
+    }
+    // Discord: gateway manager first (stop holding the connections), then bridge,
+    // then pump — same ordering as Slack/Lark.
+    if let Some(manager) = discord_ws_manager {
+        manager.shutdown().await;
+        info!("discord.ws_manager.shutdown.complete");
+    }
+    if let Some(bridge) = discord_bridge {
+        bridge.shutdown().await;
+        info!("discord.bridge.shutdown.complete");
+    }
+    if let Some(pump) = discord_pump_handle {
+        pump.shutdown().await;
+        info!("discord.stream_pump.shutdown.complete");
     }
     workers.shutdown().await;
     info!("workers.shutdown.complete");
