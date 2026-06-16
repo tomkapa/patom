@@ -22,8 +22,12 @@
 //! mandatory `allowed_mentions` safety object and the Cloudflare invalid-request
 //! ban that aggregates across a shared egress IP (both handled in `poster.rs`).
 
+pub mod codec;
+pub mod connection;
 pub mod error;
+pub mod handshake;
 pub mod limits;
+pub mod transport;
 pub mod types;
 
 pub use error::DiscordError;
