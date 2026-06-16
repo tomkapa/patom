@@ -10,7 +10,10 @@ use patom::colleagues::{resolve_agent_colleague, resolve_user_colleague};
 use patom::provider::{
     AssistantContent, ChatMessage, ToolCall, ToolCallId, ToolResult, UserContent,
 };
-use patom::threads::{MessageKind, NewMessage, PgThreadStore, ThreadStore};
+use patom::threads::{
+    MAX_CONTEXT_MESSAGES, MAX_TOOL_RESULT_CHARS, MessageKind, NewMessage, PgThreadStore, Seq,
+    ThreadStore,
+};
 use patom::types::ToolName;
 use sqlx::PgPool;
 
@@ -71,6 +74,19 @@ fn user_text_present(ctx: &[ChatMessage], needle: &str) -> bool {
     })
 }
 
+fn first_tool_result_output(ctx: &[ChatMessage]) -> Option<String> {
+    for m in ctx {
+        if let ChatMessage::User(blocks) = m {
+            for b in blocks {
+                if let UserContent::ToolResult(r) = b {
+                    return Some(r.output.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn tool_use(owner: AgentId, call_id: &str) -> NewMessage {
     NewMessage {
         kind: MessageKind::ToolUse,
@@ -88,6 +104,10 @@ fn tool_use(owner: AgentId, call_id: &str) -> NewMessage {
 }
 
 fn tool_result(owner: AgentId, call_id: &str) -> NewMessage {
+    tool_result_with(owner, call_id, "search results")
+}
+
+fn tool_result_with(owner: AgentId, call_id: &str, output: &str) -> NewMessage {
     NewMessage {
         kind: MessageKind::ToolResult,
         sender: None,
@@ -95,12 +115,21 @@ fn tool_result(owner: AgentId, call_id: &str) -> NewMessage {
         receiver: None,
         body: ChatMessage::User(vec![UserContent::ToolResult(ToolResult {
             call_id: ToolCallId::try_from(call_id).expect("call id"),
-            output: "search results".into(),
+            output: output.into(),
             is_error: false,
         })]),
         request_id: None,
         idempotency_key: None,
     }
+}
+
+/// The per-thread feed seqs of `thread`, ascending.
+async fn thread_seqs(pool: &PgPool, thread: patom::threads::ThreadId) -> Vec<i64> {
+    sqlx::query_scalar("SELECT seq FROM thread_messages WHERE thread_id = $1 ORDER BY seq ASC")
+        .bind(thread)
+        .fetch_all(pool)
+        .await
+        .expect("seqs")
 }
 
 /// note 13: a peer's posted row can land between an agent's tool_use and its
@@ -284,4 +313,331 @@ async fn context_filters_private_rows_by_owner(pool: PgPool) {
         user_text_present(&ctx_b, "hi from A"),
         "A's post maps to User for B"
     );
+}
+
+/// Stage 3: `context_tail(since)` returns only feed rows with `seq > since`,
+/// still in chronological order. Everything at or before `since` is assumed
+/// already folded into a compaction summary the caller holds.
+#[sqlx::test]
+async fn context_tail_returns_only_rows_after_since(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
+    let caller = Caller::new(seed.user_id, seed.org_id);
+    let agent = seed.agent_id;
+    let col_a = resolve_agent_colleague(&pool, seed.org_id, agent)
+        .await
+        .expect("colleague a");
+    let col_h = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+    let thread = store
+        .create_thread(&caller, None, None, col_h, Some(col_a))
+        .await
+        .expect("thread");
+    store
+        .resolve_participation(&caller, thread, agent)
+        .await
+        .expect("participation");
+
+    for text in ["m1", "m2", "m3", "m4"] {
+        store
+            .append(&caller, thread, posted(col_h, Some(col_a), text, false))
+            .await
+            .expect("append");
+    }
+    let seqs = thread_seqs(&pool, thread).await;
+    assert_eq!(seqs.len(), 4);
+    let since = Seq::try_from(seqs[1]).expect("since"); // after m2
+
+    let tail = store
+        .context_tail(
+            thread,
+            agent,
+            col_a,
+            since,
+            &std::collections::HashMap::new(),
+        )
+        .await
+        .expect("tail");
+    assert_eq!(tail.len(), 2, "only m3 + m4 are past `since`");
+    let messages = tail.into_messages();
+    assert!(user_text_present(&messages, "m3"));
+    assert!(user_text_present(&messages, "m4"));
+    assert!(!user_text_present(&messages, "m1"));
+    assert!(!user_text_present(&messages, "m2"));
+}
+
+/// Stage 4: the windowing floor. A thread longer than `MAX_CONTEXT_MESSAGES`,
+/// with no summary, still yields a bounded tail — the most-recent window, oldest
+/// rows dropped. This is the correctness guarantee that holds with no LLM.
+#[sqlx::test]
+async fn context_tail_enforces_the_windowing_floor(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
+    let caller = Caller::new(seed.user_id, seed.org_id);
+    let agent = seed.agent_id;
+    let col_a = resolve_agent_colleague(&pool, seed.org_id, agent)
+        .await
+        .expect("colleague a");
+    let col_h = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+    let thread = store
+        .create_thread(&caller, None, None, col_h, Some(col_a))
+        .await
+        .expect("thread");
+    store
+        .resolve_participation(&caller, thread, agent)
+        .await
+        .expect("participation");
+
+    let cap = usize::try_from(MAX_CONTEXT_MESSAGES).expect("cap fits usize");
+    let total = cap + 5;
+    for i in 1..=total {
+        store
+            .append(
+                &caller,
+                thread,
+                posted(col_h, Some(col_a), &format!("m{i}"), false),
+            )
+            .await
+            .expect("append");
+    }
+
+    let tail = store
+        .context_tail(
+            thread,
+            agent,
+            col_a,
+            Seq::ZERO,
+            &std::collections::HashMap::new(),
+        )
+        .await
+        .expect("tail");
+    assert_eq!(tail.len(), cap, "tail is capped at the windowing floor");
+    let messages = tail.into_messages();
+    assert!(
+        !user_text_present(&messages, "m1"),
+        "the oldest message is windowed out"
+    );
+    assert!(
+        user_text_present(&messages, &format!("m{total}")),
+        "the most-recent message is kept"
+    );
+}
+
+/// Stage 6: an oversized `tool_result` is render-capped for the prompt, but the
+/// underlying `thread_messages` row is never mutated — a re-read returns the
+/// original bytes. Lossless: reduced for context, fully recoverable from the feed.
+#[sqlx::test]
+async fn heavy_tool_result_is_capped_for_prompt_but_feed_unchanged(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
+    let caller = Caller::new(seed.user_id, seed.org_id);
+    let agent = seed.agent_id;
+    let col_a = resolve_agent_colleague(&pool, seed.org_id, agent)
+        .await
+        .expect("colleague a");
+    let col_h = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+    let thread = store
+        .create_thread(&caller, None, None, col_h, Some(col_a))
+        .await
+        .expect("thread");
+    store
+        .resolve_participation(&caller, thread, agent)
+        .await
+        .expect("participation");
+
+    let big = "Z".repeat(MAX_TOOL_RESULT_CHARS + 10_000);
+    store
+        .append(&caller, thread, tool_use(agent, "c1"))
+        .await
+        .expect("tool_use");
+    store
+        .append(&caller, thread, tool_result_with(agent, "c1", &big))
+        .await
+        .expect("tool_result");
+
+    // Prompt rendering: capped + recoverability marker, smaller than the original.
+    let tail = store
+        .context_tail(
+            thread,
+            agent,
+            col_a,
+            Seq::ZERO,
+            &std::collections::HashMap::new(),
+        )
+        .await
+        .expect("tail");
+    let rendered = first_tool_result_output(&tail.into_messages()).expect("a tool_result");
+    assert!(
+        rendered.chars().count() < big.chars().count(),
+        "rendered body is capped"
+    );
+    assert!(
+        rendered.contains("omitted"),
+        "carries the recoverability marker"
+    );
+
+    // The immutable feed row is untouched — re-read returns the full bytes.
+    let body: serde_json::Value = sqlx::query_scalar(
+        "SELECT body FROM thread_messages WHERE thread_id = $1 AND kind = 'tool_result'",
+    )
+    .bind(thread)
+    .fetch_one(&pool)
+    .await
+    .expect("raw row");
+    let stored: ChatMessage = serde_json::from_value(body).expect("decode stored");
+    let stored_output = first_tool_result_output(std::slice::from_ref(&stored)).expect("stored");
+    assert_eq!(stored_output, big, "feed row is byte-for-byte unchanged");
+}
+
+/// Stage 7: the compaction store round-trips. `save_compaction` upserts and
+/// advances `covers_through_seq`; `bump_cooldown` records a failure without
+/// disturbing the summary; a later `save` clears the cooldown.
+#[sqlx::test]
+async fn compaction_store_round_trips(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
+    let caller = Caller::new(seed.user_id, seed.org_id);
+    let agent = seed.agent_id;
+    let col_a = resolve_agent_colleague(&pool, seed.org_id, agent)
+        .await
+        .expect("colleague a");
+    let col_h = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+    let thread = store
+        .create_thread(&caller, None, None, col_h, Some(col_a))
+        .await
+        .expect("thread");
+
+    // Cold: no compaction yet.
+    assert!(
+        store
+            .load_compaction(thread, agent)
+            .await
+            .expect("load")
+            .is_none(),
+        "no compaction before the first save"
+    );
+
+    // First save.
+    store
+        .save_compaction(
+            seed.org_id,
+            thread,
+            agent,
+            "summary v1",
+            Seq::try_from(5).expect("valid seq"),
+            10,
+        )
+        .await
+        .expect("save v1");
+    let c = store
+        .load_compaction(thread, agent)
+        .await
+        .expect("load")
+        .expect("some");
+    assert_eq!(c.summary, "summary v1");
+    assert_eq!(c.covers_through_seq, Seq::try_from(5).expect("valid seq"));
+    assert_eq!(c.failed_attempts, 0);
+    assert!(c.cooldown_until.is_none());
+
+    // Upsert advances covers_through_seq and replaces the summary.
+    store
+        .save_compaction(
+            seed.org_id,
+            thread,
+            agent,
+            "summary v2",
+            Seq::try_from(9).expect("valid seq"),
+            12,
+        )
+        .await
+        .expect("save v2");
+    let c = store
+        .load_compaction(thread, agent)
+        .await
+        .expect("load")
+        .expect("some");
+    assert_eq!(c.summary, "summary v2");
+    assert_eq!(c.covers_through_seq, Seq::try_from(9).expect("valid seq"));
+
+    // A failure bumps the cooldown but leaves the summary/coverage intact.
+    let until = chrono::DateTime::from_timestamp(2_000_000_000, 0).expect("ts");
+    store
+        .bump_cooldown(seed.org_id, thread, agent, until)
+        .await
+        .expect("bump");
+    let c = store
+        .load_compaction(thread, agent)
+        .await
+        .expect("load")
+        .expect("some");
+    assert_eq!(c.failed_attempts, 1);
+    assert_eq!(c.cooldown_until, Some(until));
+    assert_eq!(
+        c.summary, "summary v2",
+        "cooldown doesn't disturb the summary"
+    );
+    assert_eq!(c.covers_through_seq, Seq::try_from(9).expect("valid seq"));
+
+    // A subsequent success clears the cooldown.
+    store
+        .save_compaction(
+            seed.org_id,
+            thread,
+            agent,
+            "summary v3",
+            Seq::try_from(20).expect("valid seq"),
+            15,
+        )
+        .await
+        .expect("save v3");
+    let c = store
+        .load_compaction(thread, agent)
+        .await
+        .expect("load")
+        .expect("some");
+    assert_eq!(c.failed_attempts, 0);
+    assert!(c.cooldown_until.is_none());
+}
+
+/// Stage 7: `bump_cooldown` on a thread with no prior compaction inserts a
+/// minimal (empty-summary) cooldown row, so a cold thread whose first
+/// compaction fails still backs off instead of retrying every turn.
+#[sqlx::test]
+async fn bump_cooldown_inserts_when_cold(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
+    let caller = Caller::new(seed.user_id, seed.org_id);
+    let agent = seed.agent_id;
+    let col_a = resolve_agent_colleague(&pool, seed.org_id, agent)
+        .await
+        .expect("colleague a");
+    let col_h = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+    let thread = store
+        .create_thread(&caller, None, None, col_h, Some(col_a))
+        .await
+        .expect("thread");
+
+    let until = chrono::DateTime::from_timestamp(2_000_000_000, 0).expect("ts");
+    store
+        .bump_cooldown(seed.org_id, thread, agent, until)
+        .await
+        .expect("bump cold");
+    let c = store
+        .load_compaction(thread, agent)
+        .await
+        .expect("load")
+        .expect("some");
+    assert_eq!(c.summary, "");
+    assert_eq!(c.covers_through_seq, Seq::ZERO);
+    assert_eq!(c.failed_attempts, 1);
+    assert_eq!(c.cooldown_until, Some(until));
 }

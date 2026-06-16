@@ -19,7 +19,7 @@ mod refresher;
 mod registry;
 mod traits;
 
-pub use catalog::{CatalogEntry, MODEL_CATALOG, Model, UnknownModel};
+pub use catalog::{CatalogEntry, ContextWindow, MODEL_CATALOG, Model, UnknownModel};
 pub use chat::{
     AssistantContent, ChatMessage, ChatRequest, ChatResponse, Role, StopReason,
     TOOL_CALL_ID_MAX_BYTES, ToolCall, ToolCallId, ToolResult, ToolSpec, Usage, UserContent,

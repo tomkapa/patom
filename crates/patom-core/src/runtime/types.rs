@@ -248,6 +248,14 @@ crate::str_enum! {
         /// Single-contradiction resolution. Payload is
         /// [`RequestKindPayload::Resolution`].
         Resolution => "resolution",
+        /// **Metering-only label** for a context-compaction summarizer call
+        /// (#182). NOT an enqueued job: it never appears on a `prompt_requests`
+        /// row (the `prompt_requests.kind` CHECK still excludes it) and has no
+        /// [`RequestKindPayload`] variant. It exists solely so a summarizer
+        /// fold can record a `turn_metrics` row (billed to the org) distinct
+        /// from the turn that triggered it. Job-dispatch sites treat it as
+        /// unreachable.
+        Compaction => "compaction",
     }
 }
 

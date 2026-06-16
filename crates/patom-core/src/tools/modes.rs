@@ -40,6 +40,9 @@ impl RequestKindModes {
             RequestKind::Normal => Self::NORMAL,
             RequestKind::Reflection => Self::REFLECTION,
             RequestKind::Resolution => Self::RESOLUTION,
+            // Compaction is a metering-only label, not a tool-using turn — it
+            // exposes no tools, so it belongs to no mode (empty set).
+            RequestKind::Compaction => Self(0),
         }
     }
 

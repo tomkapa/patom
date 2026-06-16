@@ -42,3 +42,26 @@ pub const ROOT_SNIPPET_MAX_CHARS: i32 = 160;
 /// message; a saturation counter is unnecessary because the HTTP boundary
 /// rejects, not truncates.
 pub const MAX_TAGS_PER_MESSAGE: usize = 8;
+
+/// Hard cap on the verbatim message rows `context_tail` returns for one turn.
+///
+/// The **windowing floor** that bounds the model prompt with no LLM in the loop
+/// (#182, CLAUDE.md §5). Even a cold thread with no compaction summary yet, or a
+/// summarizer that is failing, cannot push an unbounded history at the provider:
+/// `context_tail` `LIMIT`s the read to this many most-recent rows. 200 is a deep
+/// working window (well past what fits a single coherent reply) while keeping the
+/// worst-case `thread_messages` scan and prompt size bounded; the rolling summary
+/// carries everything older.
+pub const MAX_CONTEXT_MESSAGES: i64 = 200;
+
+/// Prompt-render cap, in characters, on a single `tool_result` body.
+///
+/// A fat tool result (web fetch, large file read, big MCP payload) is the single
+/// biggest source of prompt bloat (#182). This caps only the **rendered** body —
+/// the full row always stays in the immutable `thread_messages` feed; an over-cap
+/// body is shown as `head + […omitted…] + tail` so it stays recoverable, never
+/// deleted. ~32k chars ≈ 8k tokens at the `chars/4` heuristic: room for a
+/// substantial result while a pathological one can't dominate the window.
+/// Semantic produce-time reduction is a companion feature; this is only the
+/// lossless safety net.
+pub const MAX_TOOL_RESULT_CHARS: usize = 32_000;
