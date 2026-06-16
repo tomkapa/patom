@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use patom::agents::{AgentName, AgentSystemPrompt, NewAgent, SharedAgentStore};
+use patom::assets::InMemoryAssetStore;
 use patom::clock::{SharedClock, SystemClock};
 use patom::http::{AppState, router};
 use patom::mcp::{McpRefresher, McpRegistry, PgMcpServerStore, SharedMcpServerStore};
@@ -25,6 +26,10 @@ use uuid::Uuid;
 
 mod common;
 use common::pg::{Seed, seed_tenant};
+
+/// Public host the test asset store serves from; attachment URLs must start
+/// with this origin to pass the `/prompts` SSRF guard (issue #187).
+const ASSET_HOST: &str = "https://assets.test.invalid";
 
 struct PromptsHarness {
     seed: Seed,
@@ -131,7 +136,8 @@ impl PromptsHarness {
             index_html: std::sync::Arc::from(""),
             slack: None,
             lark: None,
-            assets: None,
+            discord: None,
+            assets: Some(Arc::new(InMemoryAssetStore::new(ASSET_HOST))),
             orgs: std::sync::Arc::new(patom::orgs::PgOrgStore::new(pool.clone())),
             mailer: std::sync::Arc::new(patom::orgs::LogMailer),
             entitlements: std::sync::Arc::new(patom::entitlements::UnlimitedEntitlements),
@@ -585,4 +591,86 @@ async fn over_budget_org_is_rejected_with_429(pool: PgPool) {
     .await;
     assert_eq!(status, axum::http::StatusCode::ACCEPTED);
     assert!(body["request_id"].is_null());
+}
+
+// ── Attachment SSRF guard (issue #187) ───────────────────────────────────
+
+/// A `/prompts` attachment whose URL is NOT from the configured asset origin
+/// is rejected (400) before any write — defends against pointing the
+/// server-side fetch at an internal/metadata address.
+#[sqlx::test]
+async fn attachment_with_foreign_url_is_rejected(pool: PgPool) {
+    let h = PromptsHarness::new(pool.clone()).await;
+    let channel = seed_channel(&h).await;
+
+    let (status, _body) = post_json(
+        h.state.clone(),
+        "/api/prompts",
+        serde_json::json!({
+            "channel_id": channel,
+            "content": "look at this",
+            "attachments": [{
+                "url": "http://169.254.169.254/latest/meta-data/",
+                "mime": "image/png",
+                "filename": "x.png",
+                "size": 64,
+            }],
+            "idempotency_key": Uuid::new_v4().to_string(),
+        }),
+        &h.auth_cookie,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+    let (posted,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM thread_messages WHERE org_id = $1")
+            .bind(h.seed.org_id)
+            .fetch_one(&h.pool)
+            .await
+            .expect("count");
+    assert_eq!(posted, 0, "rejected attachment must not persist a row");
+}
+
+/// An attachment URL from the configured asset origin is accepted and the
+/// posted row carries an image content block.
+#[sqlx::test]
+async fn attachment_from_asset_origin_is_accepted(pool: PgPool) {
+    let h = PromptsHarness::new(pool.clone()).await;
+    let channel = seed_channel(&h).await;
+    let key = Uuid::new_v4().to_string();
+
+    let (status, _body) = post_json(
+        h.state.clone(),
+        "/api/prompts",
+        serde_json::json!({
+            "channel_id": channel,
+            "content": "look at this",
+            "attachments": [{
+                "url": format!("{ASSET_HOST}/attachments/abc.png"),
+                "mime": "image/png",
+                "filename": "shot.png",
+                "size": 64,
+            }],
+            "idempotency_key": key,
+        }),
+        &h.auth_cookie,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::ACCEPTED);
+
+    let (body,): (serde_json::Value,) = sqlx::query_as(
+        "SELECT body FROM thread_messages WHERE org_id = $1 AND idempotency_key = $2",
+    )
+    .bind(h.seed.org_id)
+    .bind(&key)
+    .fetch_one(&h.pool)
+    .await
+    .expect("posted row");
+    let kinds: Vec<&str> = body["contents"]
+        .as_array()
+        .expect("contents")
+        .iter()
+        .filter_map(|c| c["kind"].as_str())
+        .collect();
+    assert_eq!(kinds, vec!["text", "image"]);
 }

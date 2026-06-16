@@ -17,7 +17,9 @@ use crate::provider::{
     ChatMessage, ChatRequest, ChatResponse, SharedProvider, StopReason, ToolCall, ToolCallId,
     ToolResult, UserContent,
 };
-use crate::runtime::{IdempotencyKey, PromptRequestId, RequestKind, RequestKindPayload};
+use crate::runtime::{
+    IdempotencyKey, MetricKind, PromptRequestId, RequestKind, RequestKindPayload,
+};
 use crate::threads::{AgentThreadId, MessageKind, NewMessage, ThreadId};
 use crate::tools::{
     SharedTool, TOOL_RESULT_MAX_BYTES, ToolBox, ToolCallContext, ToolCallRow, ToolCallRowId,
@@ -69,8 +71,15 @@ impl Agent {
         self.billing_gate(caller.org_id, is_byo).await?;
         let started_at = self.clock().now_utc();
         let started_mono = Instant::now();
+        // An inline compaction reuses this turn's provider and meters under its
+        // `request_id` (#182). The turn's billing gate above covers its folds.
+        let routing = super::compaction::TurnRouting {
+            provider: &provider,
+            request_id,
+            org: caller.org_id,
+        };
         let request = self
-            .build_thread_request(claim_key, thread, viewer, kind_payload)
+            .build_thread_request(claim_key, thread, viewer, kind_payload, &routing)
             .await?;
         let response = self
             .call_provider(&provider, request, self.provider_timeout(), cancel)
@@ -80,7 +89,7 @@ impl Agent {
             request_id,
             Some(claim_key),
             caller.org_id,
-            kind_payload.kind(),
+            kind_payload.kind().into(),
             started_at,
             duration,
             &response,
@@ -275,6 +284,7 @@ impl Agent {
         thread: ThreadId,
         viewer: Participant,
         kind_payload: &RequestKindPayload,
+        routing: &super::compaction::TurnRouting<'_>,
     ) -> Result<ChatRequest, AgentError> {
         let span = tracing::Span::current();
         let agent_id = viewer.agent_id().ok_or_else(|| {
@@ -287,21 +297,36 @@ impl Agent {
         // the feed (sender attribution) and the system prompt (roster) name
         // people identically. Empty for web/background threads.
         let overrides = self.memory().display_overrides(Some(thread)).await;
-        // The feed read, the system-prompt compose, and the thread's participant
-        // roll-up hit independent stores; run all three concurrently so the turn
-        // pays one round-trip latency, not three.
-        let (messages, memory_system, participants) = tokio::join!(
-            self.threads()
-                .context_for_agent(thread, agent_id, viewer_colleague, &overrides),
+        // The bounded-context assembly (windowing floor + rolling summary, #182),
+        // the system-prompt compose, and the thread's participant roll-up hit
+        // independent stores; run all three concurrently so the turn pays one
+        // round-trip latency, not three.
+        let (ctx, memory_system, participants) = tokio::join!(
+            self.resolve_agent_context(
+                thread,
+                agent_id,
+                viewer_colleague,
+                &overrides,
+                state_id,
+                routing,
+            ),
             self.memory()
                 .system_prompt_for_thread(viewer, &overrides, kind_payload),
             self.threads().thread_participants(thread),
         );
-        let messages = messages?;
+        let ctx = ctx?;
         let memory_system = memory_system?;
+        let messages = ctx.messages;
         assert!(
             !messages.is_empty(),
             "thread turn must read at least one feed message"
+        );
+        // The windowing floor — bounded regardless of summary state (CLAUDE.md §6).
+        let context_cap =
+            usize::try_from(crate::threads::MAX_CONTEXT_MESSAGES).unwrap_or(usize::MAX);
+        assert!(
+            messages.len() <= context_cap,
+            "context tail must respect the windowing floor"
         );
         span.record("patom.history.count", messages.len());
 
@@ -336,19 +361,29 @@ impl Agent {
             }
             None => String::new(),
         };
-
-        // Both blocks sit in the per-turn tail (after `<memory>`), so they never
-        // perturb the org-stable prefix that drives prompt-cache hits.
-        let tail = match (participants_block.is_empty(), todos_block.is_empty()) {
-            (false, false) => format!("{participants_block}\n{todos_block}"),
-            (false, true) => participants_block,
-            (true, false) => todos_block,
-            (true, true) => String::new(),
-        };
-        let system: std::sync::Arc<str> = if tail.is_empty() {
-            memory_system
+        // The per-turn tail blocks sit after `<memory>`, so they never perturb
+        // the org-stable prefix that drives prompt-cache hits: the `<participants>`
+        // block, then the todo list, then the rolling compaction summary (#182).
+        let system: std::sync::Arc<str> = if participants_block.is_empty()
+            && todos_block.is_empty()
+            && ctx.summary.is_none()
+        {
+            memory_system // zero-copy fast path
         } else {
-            std::sync::Arc::from(format!("{memory_system}\n{tail}").as_str())
+            let mut s = memory_system.to_string();
+            if !participants_block.is_empty() {
+                s.push('\n');
+                s.push_str(&participants_block);
+            }
+            if !todos_block.is_empty() {
+                s.push('\n');
+                s.push_str(&todos_block);
+            }
+            if let Some(summary) = &ctx.summary {
+                s.push_str("\n\n## Earlier conversation (compacted)\n");
+                s.push_str(summary.as_str());
+            }
+            std::sync::Arc::from(s.as_str())
         };
         span.record("patom.system_prompt.bytes", system.len());
 
@@ -397,7 +432,7 @@ impl Agent {
             request_id,
             None,
             caller.org_id,
-            kind_payload.kind(),
+            kind_payload.kind().into(),
             started_at,
             duration,
             &response,
@@ -635,12 +670,12 @@ impl Agent {
     /// observability never blocks the user-visible path; the row going
     /// missing is one chart cell, not a turn replay).
     #[allow(clippy::too_many_arguments)] // recorder bundles per-call audit fields, not branching
-    async fn record_turn_metrics(
+    pub(super) async fn record_turn_metrics(
         &self,
         request_id: PromptRequestId,
         state_id: Option<AgentThreadId>,
         org_id: crate::auth::OrgId,
-        kind: RequestKind,
+        kind: MetricKind,
         started_at: chrono::DateTime<chrono::Utc>,
         duration: StdDuration,
         response: &ChatResponse,

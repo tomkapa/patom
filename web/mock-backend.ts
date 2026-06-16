@@ -575,6 +575,13 @@ type MockSender =
   | { kind: "agent"; colleague_id: string; agent_id: string }
   | { kind: "system" };
 
+type MockAttachment = {
+  url: string;
+  mime: string;
+  filename: string;
+  size: number;
+};
+
 type MockContentBlock =
   | { kind: "text"; value: string }
   | { kind: "reasoning"; value: string }
@@ -582,7 +589,9 @@ type MockContentBlock =
   | {
       kind: "tool_result";
       value: { call_id: string; output: string; is_error?: boolean };
-    };
+    }
+  | { kind: "image"; value: MockAttachment }
+  | { kind: "file"; value: MockAttachment };
 
 type MockBody =
   | { role: string; content: string }
@@ -1545,6 +1554,24 @@ const server = Bun.serve({
       return json({ url });
     }
 
+    // Message attachment upload (issue #187): echo the bytes back as a
+    // data URI so the preview can actually render the image/file the user
+    // picked, mirroring the `{url, mime, filename, size}` server response.
+    if (path === "/uploads/attachment" && method === "POST") {
+      const form = await req.formData();
+      const file = form.get("file");
+      if (!(file instanceof File)) return json({ error: "missing file" }, 400);
+      const buf = await file.arrayBuffer();
+      const b64 = Buffer.from(buf).toString("base64");
+      const mime = file.type || "application/octet-stream";
+      return json({
+        url: `data:${mime};base64,${b64}`,
+        mime,
+        filename: file.name,
+        size: file.size,
+      });
+    }
+
     const agentMatch = path.match(/^\/agents\/([^/]+)(\/.*)?$/);
     if (agentMatch) {
       const id = agentMatch[1]!;
@@ -2476,10 +2503,19 @@ const server = Bun.serve({
         channel_id?: string;
         counterpart?: { kind: "human" | "agent"; id: string };
         content?: string;
+        attachments?: {
+          url: string;
+          mime: string;
+          filename: string;
+          size: number;
+        }[];
         idempotency_key?: string;
       };
       const content = (body.content ?? "").trim();
-      if (!content) return json({ error: "content is empty" }, 400);
+      const attachments = body.attachments ?? [];
+      if (!content && attachments.length === 0) {
+        return json({ error: "content is empty" }, 400);
+      }
       const nowIso = new Date().toISOString();
       const clientKey = body.idempotency_key ?? crypto.randomUUID();
 
@@ -2544,7 +2580,18 @@ const server = Bun.serve({
                   user_id: firstTag.id,
                 }
               : null,
-        body: { role: "user", content },
+        body: {
+          role: "user",
+          contents: [
+            ...(content ? [{ kind: "text" as const, value: content }] : []),
+            ...attachments.map((a) => ({
+              kind: a.mime.startsWith("image/")
+                ? ("image" as const)
+                : ("file" as const),
+              value: a,
+            })),
+          ],
+        },
         created_at: nowIso,
         request_id: requestId,
         client_key: clientKey,

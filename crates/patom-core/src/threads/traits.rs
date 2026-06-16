@@ -112,6 +112,110 @@ crate::uuid_newtype! {
     pub ThreadMessageId
 }
 
+/// A `thread_messages.seq` value — the per-thread monotonic feed ordinal.
+///
+/// A newtype (CLAUDE.md §1) so a feed position can't be confused with any other
+/// `i64`. Used by the compaction read path: `context_tail` returns rows with
+/// `seq > since`, and a compaction records the highest `seq` it folded in as
+/// `covers_through_seq`. The underlying column is `BIGINT NOT NULL` and the
+/// generator starts at 1, so the value is always non-negative — the smart
+/// constructor enforces that. The legacy `feed(before_seq: Option<i64>)` cursor
+/// keeps its bare `i64` (a pure pagination bound, no invariant to protect).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Seq(i64);
+
+impl Seq {
+    /// The pre-feed origin — `seq > Seq::ZERO` selects the whole thread. Used as
+    /// the `since` bound when an agent has no compaction yet.
+    pub const ZERO: Self = Self(0);
+
+    /// The raw ordinal, for binding into SQL.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for Seq {
+    type Error = crate::types::ParseError;
+    fn try_from(raw: i64) -> Result<Self, Self::Error> {
+        if raw < 0 {
+            return Err(crate::types::ParseError::OutOfRange {
+                field: "seq",
+                detail: "must be non-negative",
+            });
+        }
+        Ok(Self(raw))
+    }
+}
+
+/// One row of an agent's windowed context: a chat message tagged with its [`Seq`].
+///
+/// The seq lets the compaction layer record how far into the feed an overflow cut
+/// reached (`covers_through_seq`) without re-querying.
+#[derive(Debug, Clone)]
+pub struct TailRow {
+    pub seq: Seq,
+    pub message: ChatMessage,
+}
+
+/// The bounded, perspective-mapped, tool-pair-repaired slice of a thread an
+/// agent reads on one turn — the output of [`ThreadStore::context_tail`].
+///
+/// Rows are oldest-first and capped at `MAX_CONTEXT_MESSAGES` (the windowing
+/// floor). `since`-filtered: only rows with `seq > since` are present, so a
+/// caller that already folded everything up to `since` into a summary sees only
+/// what is new.
+#[derive(Debug, Clone, Default)]
+pub struct ContextTail {
+    pub rows: Vec<TailRow>,
+}
+
+impl ContextTail {
+    /// Number of rows in the window.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether the window is empty (no feed rows past `since`).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Highest feed `seq` present in the window, if any.
+    #[must_use]
+    pub fn max_seq(&self) -> Option<Seq> {
+        self.rows.iter().map(|r| r.seq).max()
+    }
+
+    /// Drop the seqs, yielding just the messages in order (the request payload).
+    #[must_use]
+    pub fn into_messages(self) -> Vec<ChatMessage> {
+        self.rows.into_iter().map(|r| r.message).collect()
+    }
+}
+
+/// A loaded `thread_compactions` row — the rolling summary plus cooldown state.
+///
+/// `summary` is the raw stored text; the `agent_core` compaction layer wraps it in
+/// a `CompactionSummary` (which enforces the size cap) when it needs the typed
+/// invariant. Storage stays provider-free.
+#[derive(Debug, Clone)]
+pub struct ThreadCompaction {
+    pub summary: String,
+    /// Highest feed `seq` folded into `summary`; the read path passes this as
+    /// `since` so only newer rows are returned verbatim.
+    pub covers_through_seq: Seq,
+    pub summary_tokens: i32,
+    /// Consecutive summarizer failures; 0 after a success.
+    pub failed_attempts: i32,
+    /// While `now < cooldown_until` the caller skips the summarizer and serves
+    /// the floor + this (possibly stale) summary. `None` = no active cooldown.
+    pub cooldown_until: Option<DateTime<Utc>>,
+}
+
 crate::str_enum! {
     /// Feed row kind. `posted` rows are everyone's chat; the rest are one
     /// agent's private artifacts (owner-scoped). Single source of truth for the
@@ -296,13 +400,22 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
     /// the agent can tell speakers apart in a multi-party thread. `overrides`
     /// supplies per-platform labels (e.g. Slack handles) keyed by colleague
     /// id; senders absent from it fall back to their canonical name.
+    ///
+    /// Thin wrapper over [`context_tail`](ThreadStore::context_tail) with
+    /// `since = Seq::ZERO` (the whole thread, still bounded by the windowing
+    /// floor). Kept for callers that don't compact.
     async fn context_for_agent(
         &self,
         thread: ThreadId,
         agent: AgentId,
         viewer: ColleagueId,
         overrides: &HashMap<ColleagueId, ColleagueName>,
-    ) -> Result<Vec<ChatMessage>, ThreadError>;
+    ) -> Result<Vec<ChatMessage>, ThreadError> {
+        Ok(self
+            .context_tail(thread, agent, viewer, Seq::ZERO, overrides)
+            .await?
+            .into_messages())
+    }
 
     /// L1 participant context for `thread` (issue #183): who raised it and the
     /// distinct people who have posted, for the `<participants>` prompt block.
@@ -312,7 +425,89 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
         &self,
         thread: ThreadId,
     ) -> Result<ThreadParticipants, ThreadError>;
+
+    /// Build `agent`'s bounded LLM context for `thread`, returning only rows with
+    /// `seq > since` (everything older is assumed folded into a compaction
+    /// summary the caller holds). Same perspective-map + tool-pair repair as
+    /// [`context_for_agent`](ThreadStore::context_for_agent), plus:
+    ///  - a hard `LIMIT MAX_CONTEXT_MESSAGES` (the windowing floor — the prompt
+    ///    is bounded even with no summary and no LLM);
+    ///  - oversized `tool_result` bodies are render-capped to
+    ///    `MAX_TOOL_RESULT_CHARS` (the underlying feed row is never mutated);
+    ///  - each kept row carries its `seq` so the compaction layer can record
+    ///    `covers_through_seq` after a cut.
+    ///
+    /// Privileged read — an agent is org-global within its org.
+    async fn context_tail(
+        &self,
+        thread: ThreadId,
+        agent: AgentId,
+        viewer: ColleagueId,
+        since: Seq,
+        overrides: &HashMap<ColleagueId, ColleagueName>,
+    ) -> Result<ContextTail, ThreadError>;
+
+    /// Load the rolling compaction for `(thread, agent)`, or `None` if the agent
+    /// has never compacted this thread. Privileged point lookup (the PK is a
+    /// pair of globally-unique ids, so no cross-org leak).
+    async fn load_compaction(
+        &self,
+        thread: ThreadId,
+        agent: AgentId,
+    ) -> Result<Option<ThreadCompaction>, ThreadError>;
+
+    /// Upsert a successful compaction: replace the summary, advance
+    /// `covers_through_seq`, and clear the failure cooldown (`failed_attempts=0`,
+    /// `cooldown_until=NULL`). Privileged write — compaction is org-global agent
+    /// cognition; `org` stamps the row for RLS.
+    async fn save_compaction(
+        &self,
+        org: crate::auth::OrgId,
+        thread: ThreadId,
+        agent: AgentId,
+        summary: &str,
+        covers_through_seq: Seq,
+        summary_tokens: i32,
+    ) -> Result<(), ThreadError>;
+
+    /// Record a summarizer failure for `(thread, agent)`: increment
+    /// `failed_attempts` and set `cooldown_until` so the next turns skip the LLM
+    /// and serve the windowing floor. Inserts a minimal (empty-summary) row when
+    /// the agent had no prior compaction. Privileged write.
+    async fn bump_cooldown(
+        &self,
+        org: crate::auth::OrgId,
+        thread: ThreadId,
+        agent: AgentId,
+        cooldown_until: DateTime<Utc>,
+    ) -> Result<(), ThreadError>;
 }
 
 /// Cheap-clone handle so consumers hold the store without a generic parameter.
 pub type SharedThreadStore = Arc<dyn ThreadStore>;
+
+#[cfg(test)]
+mod seq_tests {
+    use super::Seq;
+
+    #[test]
+    fn zero_is_the_origin() {
+        assert_eq!(Seq::ZERO.get(), 0);
+    }
+
+    #[test]
+    fn parses_non_negative() {
+        assert_eq!(Seq::try_from(1).expect("valid").get(), 1);
+        assert_eq!(Seq::try_from(i64::MAX).expect("valid").get(), i64::MAX);
+    }
+
+    #[test]
+    fn rejects_negative() {
+        assert!(Seq::try_from(-1).is_err());
+    }
+
+    #[test]
+    fn orders_by_ordinal() {
+        assert!(Seq::try_from(2).expect("v") > Seq::try_from(1).expect("v"));
+    }
+}

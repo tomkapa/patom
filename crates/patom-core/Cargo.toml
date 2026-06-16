@@ -81,6 +81,8 @@ aws-config.workspace = true
 aws-credential-types.workspace = true
 infer.workspace = true
 bytes.workspace = true
+calamine.workspace = true
+zip.workspace = true
 lettre.workspace = true
 anyhow.workspace = true
 

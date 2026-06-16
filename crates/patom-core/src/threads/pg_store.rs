@@ -11,22 +11,26 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::agents::AgentId;
 use crate::auth::{Caller, UserId, run_as_user, run_privileged};
 use crate::channels::ChannelId;
 use crate::clock::SharedClock;
 use crate::colleagues::{ColleagueId, ColleagueKind, ColleagueName};
-use crate::provider::{AssistantContent, ChatMessage, UserContent};
+use crate::provider::{AssistantContent, ChatMessage, ToolCallId, UserContent};
 use crate::runtime::PromptRequestId;
 use crate::types::{MessageSender, Participant};
 
 use super::error::ThreadError;
-use super::limits::{MAX_THREAD_FEED, MAX_THREAD_LIST, ROOT_SNIPPET_MAX_CHARS};
+use super::limits::{
+    MAX_CONTEXT_MESSAGES, MAX_THREAD_FEED, MAX_THREAD_LIST, MAX_TOOL_RESULT_CHARS,
+    ROOT_SNIPPET_MAX_CHARS,
+};
 use super::traits::{
-    AgentThreadId, FeedMessage, MessageKind, NewMessage, RootSummary, ThreadId, ThreadListItem,
-    ThreadMessageId, ThreadParticipants, ThreadScope, ThreadStore,
+    AgentThreadId, ContextTail, FeedMessage, MessageKind, NewMessage, RootSummary, Seq, TailRow,
+    ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId, ThreadParticipants, ThreadScope,
+    ThreadStore,
 };
 
 /// Postgres-backed [`ThreadStore`].
@@ -53,21 +57,30 @@ impl fmt::Debug for PgThreadStore {
 }
 
 /// Context read: a `posted` row from anyone, or one of `agent`'s own private
-/// artifacts. `$1` thread, `$2` agent. Ordered by the per-thread feed seq.
-/// Resolves the sender's canonical display name (agent name / user
-/// display name / email local-part) so the feed can attribute speakers in
-/// a multi-party thread; the platform-label override is applied in Rust.
-/// Keep the COALESCE in sync with `colleagues::pg_store::display_name_expr!`
-/// (same rule, different table aliases).
-const CONTEXT_SQL: &str = "SELECT m.kind, m.sender_colleague_id, \
-            COALESCE(sa.name, su.display_name, split_part(su.email, '@', 1)) AS sender_name, \
-            m.body \
-     FROM thread_messages m \
-     LEFT JOIN colleagues sc ON sc.id = m.sender_colleague_id \
-     LEFT JOIN agents sa ON sa.id = sc.agent_id \
-     LEFT JOIN users  su ON su.id = sc.user_id \
-     WHERE m.thread_id = $1 AND (m.kind = 'posted' OR m.owner_agent_id = $2) \
-     ORDER BY m.seq ASC";
+/// artifacts, with `seq > since`. `$1` thread, `$2` agent, `$3` since-seq, `$4`
+/// row limit (the windowing floor, #182). The inner query takes the most-recent
+/// `$4` rows (`seq DESC LIMIT`); the outer flips them back to chronological
+/// `seq ASC` so the prompt reads old→new. Resolves the sender's canonical
+/// display name (agent name / user display name / email local-part) so the feed
+/// can attribute speakers in a multi-party thread; the platform-label override
+/// is applied in Rust. Keep the COALESCE in sync with
+/// `colleagues::pg_store::display_name_expr!` (same rule, different aliases).
+const CONTEXT_SQL: &str = "SELECT sub.seq, sub.kind, sub.sender_colleague_id, \
+            sub.sender_name, sub.body \
+     FROM ( \
+       SELECT m.seq, m.kind, m.sender_colleague_id, \
+              COALESCE(sa.name, su.display_name, split_part(su.email, '@', 1)) AS sender_name, \
+              m.body \
+       FROM thread_messages m \
+       LEFT JOIN colleagues sc ON sc.id = m.sender_colleague_id \
+       LEFT JOIN agents sa ON sa.id = sc.agent_id \
+       LEFT JOIN users  su ON su.id = sc.user_id \
+       WHERE m.thread_id = $1 AND (m.kind = 'posted' OR m.owner_agent_id = $2) \
+         AND m.seq > $3 \
+       ORDER BY m.seq DESC \
+       LIMIT $4 \
+     ) sub \
+     ORDER BY sub.seq ASC";
 
 /// The DM-visibility predicate: a channel-less thread is visible to its
 /// creator OR its counterpart. This is a **tenant-isolation** rule, repeated
@@ -604,15 +617,17 @@ impl ThreadStore for PgThreadStore {
         Ok(row.0)
     }
 
-    #[tracing::instrument(skip_all, name = "thread.context_for_agent", fields(patom.thread.id = %thread, patom.agent.id = %agent, patom.history.count = tracing::field::Empty))]
-    async fn context_for_agent(
+    #[tracing::instrument(skip_all, name = "thread.context_tail", fields(patom.thread.id = %thread, patom.agent.id = %agent, patom.depth = since.get(), patom.history.count = tracing::field::Empty))]
+    async fn context_tail(
         &self,
         thread: ThreadId,
         agent: AgentId,
         viewer: ColleagueId,
+        since: Seq,
         overrides: &HashMap<ColleagueId, ColleagueName>,
-    ) -> Result<Vec<ChatMessage>, ThreadError> {
+    ) -> Result<ContextTail, ThreadError> {
         type Row = (
+            i64,
             MessageKind,
             Option<ColleagueId>,
             Option<String>,
@@ -622,14 +637,17 @@ impl ThreadStore for PgThreadStore {
             Ok(sqlx::query_as(CONTEXT_SQL)
                 .bind(thread)
                 .bind(agent)
+                .bind(since.get())
+                .bind(MAX_CONTEXT_MESSAGES)
                 .fetch_all(&mut **tx)
                 .await?)
         })
         .await?;
-        tracing::Span::current().record("patom.history.count", rows.len());
 
-        let mut mapped: Vec<(MessageKind, ChatMessage)> = Vec::with_capacity(rows.len());
-        for (kind, sender, sender_name, body) in rows {
+        let mut mapped: Vec<(Seq, MessageKind, ChatMessage)> = Vec::with_capacity(rows.len());
+        for (raw_seq, kind, sender, sender_name, body) in rows {
+            let seq = Seq::try_from(raw_seq)
+                .map_err(|e| ThreadError::Backend(format!("decode feed seq: {e}")))?;
             let stored: ChatMessage = serde_json::from_value(body)
                 .map_err(|e| ThreadError::Backend(format!("deserialize message: {e}")))?;
             // Platform label wins over the canonical sender name; both are
@@ -638,13 +656,195 @@ impl ThreadStore for PgThreadStore {
                 .and_then(|s| overrides.get(&s))
                 .map(|n| n.as_str().to_owned())
                 .or(sender_name);
-            mapped.push((
-                kind,
-                map_row_for_viewer(kind, sender, label, stored, viewer),
-            ));
+            let mut message = map_row_for_viewer(kind, sender, label, stored, viewer);
+            // Prompt-only safety net: a fat tool_result is render-capped here;
+            // the immutable feed row is untouched (a re-read returns the bytes).
+            cap_tool_results_in_place(&mut message, seq);
+            mapped.push((seq, kind, message));
         }
-        Ok(repair_tool_pairs(mapped))
+
+        // Re-pair tool_use/tool_result, then drop any leading `tool_result`
+        // whose `tool_use` fell outside the window (the LIMIT can cut a pair's
+        // head) — the provider rejects an orphaned result.
+        let repaired = drop_orphan_tool_results(repair_tool_pairs(mapped));
+        let rows: Vec<TailRow> = repaired
+            .into_iter()
+            .map(|(seq, message)| TailRow { seq, message })
+            .collect();
+
+        // The windowing floor: the SQL LIMIT bounds the read, trims only shrink
+        // it, so the prompt is bounded regardless of summary state (CLAUDE.md §6,
+        // assert both directions of the invariant we rely on downstream).
+        let cap = usize::try_from(MAX_CONTEXT_MESSAGES).unwrap_or(usize::MAX);
+        assert!(
+            rows.len() <= cap,
+            "context_tail exceeded the windowing floor"
+        );
+        tracing::Span::current().record("patom.history.count", rows.len());
+        Ok(ContextTail { rows })
     }
+
+    #[tracing::instrument(skip_all, name = "thread.load_compaction", fields(patom.thread.id = %thread, patom.agent.id = %agent))]
+    async fn load_compaction(
+        &self,
+        thread: ThreadId,
+        agent: AgentId,
+    ) -> Result<Option<ThreadCompaction>, ThreadError> {
+        type Row = (String, i64, i32, i32, Option<DateTime<Utc>>);
+        let row: Option<Row> = run_privileged::<Option<Row>, ThreadError>(&self.pool, async |tx| {
+            Ok(sqlx::query_as(
+                "SELECT summary, covers_through_seq, summary_tokens, failed_attempts, \
+                        cooldown_until \
+                 FROM thread_compactions WHERE thread_id = $1 AND agent_id = $2",
+            )
+            .bind(thread)
+            .bind(agent)
+            .fetch_optional(&mut **tx)
+            .await?)
+        })
+        .await?;
+        let Some((summary, covers, summary_tokens, failed_attempts, cooldown_until)) = row else {
+            return Ok(None);
+        };
+        let covers_through_seq = Seq::try_from(covers)
+            .map_err(|e| ThreadError::Backend(format!("decode covers_through_seq: {e}")))?;
+        Ok(Some(ThreadCompaction {
+            summary,
+            covers_through_seq,
+            summary_tokens,
+            failed_attempts,
+            cooldown_until,
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.save_compaction", fields(patom.thread.id = %thread, patom.agent.id = %agent, patom.org.id = %org))]
+    async fn save_compaction(
+        &self,
+        org: crate::auth::OrgId,
+        thread: ThreadId,
+        agent: AgentId,
+        summary: &str,
+        covers_through_seq: Seq,
+        summary_tokens: i32,
+    ) -> Result<(), ThreadError> {
+        run_privileged::<(), ThreadError>(&self.pool, async |tx| {
+            sqlx::query(
+                "INSERT INTO thread_compactions \
+                     (thread_id, agent_id, org_id, summary, covers_through_seq, summary_tokens, \
+                      failed_attempts, cooldown_until, version, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, 0, NULL, 1, now()) \
+                 ON CONFLICT (thread_id, agent_id) DO UPDATE SET \
+                     summary = EXCLUDED.summary, \
+                     covers_through_seq = EXCLUDED.covers_through_seq, \
+                     summary_tokens = EXCLUDED.summary_tokens, \
+                     failed_attempts = 0, \
+                     cooldown_until = NULL, \
+                     version = thread_compactions.version + 1, \
+                     updated_at = now()",
+            )
+            .bind(thread)
+            .bind(agent)
+            .bind(org)
+            .bind(summary)
+            .bind(covers_through_seq.get())
+            .bind(summary_tokens)
+            .execute(&mut **tx)
+            .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.bump_cooldown", fields(patom.thread.id = %thread, patom.agent.id = %agent, patom.org.id = %org))]
+    async fn bump_cooldown(
+        &self,
+        org: crate::auth::OrgId,
+        thread: ThreadId,
+        agent: AgentId,
+        cooldown_until: DateTime<Utc>,
+    ) -> Result<(), ThreadError> {
+        run_privileged::<(), ThreadError>(&self.pool, async |tx| {
+            sqlx::query(
+                "INSERT INTO thread_compactions \
+                     (thread_id, agent_id, org_id, summary, covers_through_seq, summary_tokens, \
+                      failed_attempts, cooldown_until, version, updated_at) \
+                 VALUES ($1, $2, $3, '', 0, 0, 1, $4, 1, now()) \
+                 ON CONFLICT (thread_id, agent_id) DO UPDATE SET \
+                     failed_attempts = thread_compactions.failed_attempts + 1, \
+                     cooldown_until = $4, \
+                     updated_at = now()",
+            )
+            .bind(thread)
+            .bind(agent)
+            .bind(org)
+            .bind(cooldown_until)
+            .execute(&mut **tx)
+            .await?;
+            Ok(())
+        })
+        .await
+    }
+}
+
+/// Render-cap an oversized `tool_result` body **in place** for the prompt only.
+/// The full row stays in `thread_messages`; this rewrites the in-memory copy as
+/// `head + [… omitted N chars · thread seq S …] + tail` so the body stays
+/// recoverable (operator can fetch the row by thread + seq) but can't dominate
+/// the context window. No-op for bodies within `MAX_TOOL_RESULT_CHARS`.
+fn cap_tool_results_in_place(message: &mut ChatMessage, seq: Seq) {
+    let ChatMessage::User(contents) = message else {
+        return;
+    };
+    for content in contents.iter_mut() {
+        let UserContent::ToolResult(result) = content else {
+            continue;
+        };
+        if let Some(capped) = cap_tool_result_output(&result.output, seq) {
+            result.output = capped;
+        }
+    }
+}
+
+/// Build the capped rendering of an over-limit body, or `None` if it fits.
+/// Char-boundary safe (counts and slices by `char`, never bytes).
+fn cap_tool_result_output(output: &str, seq: Seq) -> Option<String> {
+    let total = output.chars().count();
+    if total <= MAX_TOOL_RESULT_CHARS {
+        return None;
+    }
+    let keep = MAX_TOOL_RESULT_CHARS / 2;
+    let head: String = output.chars().take(keep).collect();
+    let tail: String = output.chars().skip(total - keep).collect();
+    let omitted = total - keep - keep;
+    Some(format!(
+        "{head}\n[… omitted {omitted} chars · thread seq {} …]\n{tail}",
+        seq.get()
+    ))
+}
+
+/// Drop rows whose `tool_result` answers a `tool_use` that isn't in this window.
+/// After [`repair_tool_pairs`] a result follows its use, so a result whose call
+/// id appears nowhere among the window's `tool_use` rows is an orphan the LIMIT
+/// cut off; the provider would reject it.
+fn drop_orphan_tool_results(mut rows: Vec<(Seq, ChatMessage)>) -> Vec<(Seq, ChatMessage)> {
+    let mut call_ids: HashSet<ToolCallId> = HashSet::new();
+    for (_, message) in &rows {
+        if let ChatMessage::Assistant(contents) = message {
+            for content in contents {
+                if let AssistantContent::ToolCall(call) = content {
+                    call_ids.insert(call.id.clone());
+                }
+            }
+        }
+    }
+    rows.retain(|(_, message)| match message {
+        ChatMessage::User(contents) => match contents.first() {
+            Some(UserContent::ToolResult(result)) => call_ids.contains(&result.call_id),
+            _ => true,
+        },
+        ChatMessage::Assistant(_) => true,
+    });
+    rows
 }
 
 /// Re-pair an agent's `tool_use` with its `tool_result` (note 13).
@@ -658,22 +858,22 @@ impl ThreadStore for PgThreadStore {
 /// every other relative order intact. Only `posted`/`reasoning`/`system_note`
 /// rows ever interleave (never another `ToolUse`, since a turn closes its
 /// tool_use before the next), so the single-pending-result model is sufficient.
-fn repair_tool_pairs(rows: Vec<(MessageKind, ChatMessage)>) -> Vec<ChatMessage> {
-    let mut out: Vec<ChatMessage> = Vec::with_capacity(rows.len());
-    let mut deferred: Vec<ChatMessage> = Vec::new();
+fn repair_tool_pairs(rows: Vec<(Seq, MessageKind, ChatMessage)>) -> Vec<(Seq, ChatMessage)> {
+    let mut out: Vec<(Seq, ChatMessage)> = Vec::with_capacity(rows.len());
+    let mut deferred: Vec<(Seq, ChatMessage)> = Vec::new();
     let mut awaiting_result = false;
-    for (kind, msg) in rows {
+    for (seq, kind, msg) in rows {
         if awaiting_result {
             if kind == MessageKind::ToolResult {
-                out.push(msg); // the result, immediately after its tool_use
+                out.push((seq, msg)); // the result, immediately after its tool_use
                 awaiting_result = false;
                 out.append(&mut deferred); // flush rows that interleaved the pair
             } else {
-                deferred.push(msg); // hold a peer post until the pair closes
+                deferred.push((seq, msg)); // hold a peer post until the pair closes
             }
         } else {
             let is_tool_use = kind == MessageKind::ToolUse;
-            out.push(msg);
+            out.push((seq, msg));
             awaiting_result = is_tool_use;
         }
     }
@@ -900,7 +1100,10 @@ fn user_to_assistant_blocks(blocks: Vec<UserContent>) -> Vec<AssistantContent> {
         .into_iter()
         .filter_map(|b| match b {
             UserContent::Text(t) => Some(AssistantContent::Text(t)),
-            UserContent::ToolResult(_) => None,
+            // Tool results and attachments never appear on the agent's own
+            // posted rows; drop defensively (an attachment is not valid
+            // assistant content to replay).
+            UserContent::ToolResult(_) | UserContent::Image(_) | UserContent::File(_) => None,
         })
         .collect()
 }
