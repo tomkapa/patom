@@ -6,7 +6,12 @@
 -- top-level channel, or the thread id for a thread. There is no thread-vs-channel
 -- branching at the post seam.
 --
---   inbound:  lookup by (guild_id, container_id) — new thread or continuation.
+--   inbound:  lookup by (org_id, application_id, guild_id, container_id) — new
+--             thread or continuation. The key is scoped to the BOT (org +
+--             application), not just the Discord container: multiple bots — even
+--             across orgs — can share a guild/channel, and each must bind its OWN
+--             Patom thread for that container. A bare (guild_id, container_id) key
+--             would let one bot's binding shadow another's (and leak across orgs).
 --   outbound: the stream pump looks up by patom_thread_id — where to post — so
 --             that column is UNIQUE (which also supplies its index).
 --
@@ -25,7 +30,7 @@ CREATE TABLE discord_threads (
     patom_thread_id   UUID NOT NULL UNIQUE REFERENCES threads(id) ON DELETE CASCADE,
     backfill_complete BOOLEAN NOT NULL DEFAULT FALSE,
     created_at        TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (guild_id, container_id),
+    PRIMARY KEY (org_id, application_id, guild_id, container_id),
     FOREIGN KEY (org_id, application_id) REFERENCES discord_apps (org_id, application_id) ON DELETE CASCADE
 );
 

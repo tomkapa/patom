@@ -50,10 +50,14 @@ pub struct DiscordThreadBinding {
 
 #[async_trait]
 pub trait DiscordThreadStore: fmt::Debug + Send + Sync {
-    /// Inbound resolve: given `(guild_id, container_id)`, return the bound Patom
-    /// thread or `None` (no binding yet).
+    /// Inbound resolve: given the bot (`org_id`, `application_id`) and
+    /// `(guild_id, container_id)`, return the bound Patom thread or `None` (no
+    /// binding yet). Scoped to the bot so two bots sharing a guild/channel — even
+    /// across orgs — resolve their own bindings, not each other's.
     async fn lookup_by_container(
         &self,
+        org_id: OrgId,
+        application_id: &ApplicationId,
         guild_id: &GuildId,
         container_id: &ContainerId,
     ) -> Result<Option<DiscordThreadMapping>, DiscordError>;
@@ -89,8 +93,12 @@ pub trait DiscordThreadStore: fmt::Debug + Send + Sync {
     ) -> Result<(), DiscordError>;
 
     /// Mark a container's one-shot history backfill as complete. Idempotent.
+    /// Scoped to the bot (`org_id`, `application_id`) so it updates this bot's
+    /// binding, never another bot's row for the same container.
     async fn mark_backfilled(
         &self,
+        org_id: OrgId,
+        application_id: &ApplicationId,
         guild_id: &GuildId,
         container_id: &ContainerId,
     ) -> Result<(), DiscordError>;
@@ -123,6 +131,8 @@ impl fmt::Debug for PgDiscordThreadStore {
 impl DiscordThreadStore for PgDiscordThreadStore {
     async fn lookup_by_container(
         &self,
+        org_id: OrgId,
+        application_id: &ApplicationId,
         guild_id: &GuildId,
         container_id: &ContainerId,
     ) -> Result<Option<DiscordThreadMapping>, DiscordError> {
@@ -132,8 +142,11 @@ impl DiscordThreadStore for PgDiscordThreadStore {
                 Ok(sqlx::query_as(
                     "SELECT patom_thread_id, backfill_complete, is_thread \
                      FROM discord_threads \
-                     WHERE guild_id = $1 AND container_id = $2",
+                     WHERE org_id = $1 AND application_id = $2 \
+                       AND guild_id = $3 AND container_id = $4",
                 )
+                .bind(org_id)
+                .bind(application_id.as_str())
                 .bind(guild_id.as_str())
                 .bind(container_id.as_str())
                 .fetch_optional(&mut **tx)
@@ -192,7 +205,7 @@ impl DiscordThreadStore for PgDiscordThreadStore {
                 "INSERT INTO discord_threads \
                    (org_id, application_id, guild_id, container_id, parent_id, is_thread, patom_thread_id, created_at) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-                 ON CONFLICT (guild_id, container_id) DO NOTHING",
+                 ON CONFLICT (org_id, application_id, guild_id, container_id) DO NOTHING",
             )
             .bind(org_id)
             .bind(application_id.as_str())
@@ -211,14 +224,19 @@ impl DiscordThreadStore for PgDiscordThreadStore {
 
     async fn mark_backfilled(
         &self,
+        org_id: OrgId,
+        application_id: &ApplicationId,
         guild_id: &GuildId,
         container_id: &ContainerId,
     ) -> Result<(), DiscordError> {
         run_privileged::<(), DiscordError>(&self.pool, async |tx| {
             sqlx::query(
                 "UPDATE discord_threads SET backfill_complete = TRUE \
-                 WHERE guild_id = $1 AND container_id = $2",
+                 WHERE org_id = $1 AND application_id = $2 \
+                   AND guild_id = $3 AND container_id = $4",
             )
+            .bind(org_id)
+            .bind(application_id.as_str())
             .bind(guild_id.as_str())
             .bind(container_id.as_str())
             .execute(&mut **tx)

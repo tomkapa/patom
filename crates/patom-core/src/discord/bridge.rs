@@ -329,7 +329,7 @@ async fn resolve_conversation(
 ) -> Result<Conversation, DiscordError> {
     let in_owned_thread = deps
         .threads
-        .lookup_by_container(guild, &m.channel_id)
+        .lookup_by_container(app.org_id, &app.application_id, guild, &m.channel_id)
         .await?
         .is_some_and(|b| b.is_thread);
     // `already_thread` ends true when the container is a thread (or otherwise
@@ -490,7 +490,11 @@ async fn maybe_backfill(
 ) {
     match backfill_channel(deps, app, guild, channel, thread_id, before).await {
         Ok(()) => {
-            if let Err(e) = deps.threads.mark_backfilled(guild, channel).await {
+            if let Err(e) = deps
+                .threads
+                .mark_backfilled(app.org_id, &app.application_id, guild, channel)
+                .await
+            {
                 warn!(error = ?e, event = "discord.backfill.mark_failed");
             }
         }
@@ -601,7 +605,7 @@ async fn resolve_thread(
     // `backfill_complete` flag; a freshly-created one always needs backfill.
     if let Some(mapping) = deps
         .threads
-        .lookup_by_container(guild, &conv.container)
+        .lookup_by_container(app.org_id, &app.application_id, guild, &conv.container)
         .await?
     {
         return Ok((mapping.thread_id, !mapping.backfill_complete));
@@ -633,7 +637,9 @@ async fn resolve_thread(
     // sight; channels / DMs likewise.
     let opened = conv.parent.is_some();
     if opened {
-        deps.threads.mark_backfilled(guild, &conv.container).await?;
+        deps.threads
+            .mark_backfilled(app.org_id, &app.application_id, guild, &conv.container)
+            .await?;
     }
     Ok((thread, !opened))
 }

@@ -33,7 +33,11 @@ CREATE TABLE discord_apps (
     bot_user_id           TEXT NULL
                           CHECK (bot_user_id IS NULL OR octet_length(bot_user_id) BETWEEN 1 AND 32),
     created_at            TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (org_id, application_id)
+    PRIMARY KEY (org_id, application_id),
+    -- One bot per agent within an org (the doc invariant "one self-built Discord
+    -- application per agent"). Without this, `app_id_for_agent`'s LIMIT 1 would
+    -- silently pick an arbitrary row instead of enforcing the invariant.
+    UNIQUE (org_id, agent_id)
 );
 
 -- Reverse-lookup index: the gateway manager / bridge has only application_id and

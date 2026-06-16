@@ -360,15 +360,16 @@ async fn two_bots_in_one_guild_do_not_dedupe_each_others_mirror(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let caller = Caller::new(seed.user_id, seed.org_id);
     let rig = build_rig(&pool, &caller, seed.agent_id).await;
-    // A SECOND bot (app B) in the same org. (Same agent is fine — the bug is
-    // about the idempotency namespace, not agent identity.)
+    // A SECOND bot (app B) in the same org, speaking as a DISTINCT agent
+    // (discord_apps enforces one app per agent via UNIQUE (org_id, agent_id)).
+    let agent_b = common::pg::seed_agent(&pool, seed.org_id, "marketing-lead").await;
     rig.deps
         .apps
         .register(
             &caller,
             NewDiscordApp {
                 application_id: ApplicationId::try_from(APP_ID_B).expect("app b"),
-                agent_id: seed.agent_id,
+                agent_id: agent_b,
                 bot_token: BotToken::try_from("MTk4N.example.tokenb".to_owned()).expect("token b"),
             },
         )
@@ -420,5 +421,57 @@ async fn two_bots_in_one_guild_do_not_dedupe_each_others_mirror(pool: PgPool) {
     assert_eq!(
         count(&pool, "SELECT COUNT(*) FROM prompt_requests").await,
         1,
+    );
+}
+
+#[sqlx::test]
+async fn two_bots_bind_distinct_threads_for_same_container(pool: PgPool) {
+    // Regression (multi-bot/-org scoping): two bots that both ingest an AMBIENT
+    // message in the SAME channel must each bind their OWN Patom thread. A
+    // binding keyed only by (guild, container) lets the first bot's row shadow
+    // the second's (ON CONFLICT DO NOTHING), routing B's events into A's thread.
+    let seed = seed_tenant(&pool).await;
+    let caller = Caller::new(seed.user_id, seed.org_id);
+    let rig = build_rig(&pool, &caller, seed.agent_id).await;
+    let agent_b = common::pg::seed_agent(&pool, seed.org_id, "marketing-lead").await;
+    rig.deps
+        .apps
+        .register(
+            &caller,
+            NewDiscordApp {
+                application_id: ApplicationId::try_from(APP_ID_B).expect("app b"),
+                agent_id: agent_b,
+                bot_token: BotToken::try_from("MTk4N.example.tokenb".to_owned()).expect("token b"),
+            },
+        )
+        .await
+        .expect("register app b");
+
+    // An ambient message (no mention) in the shared channel, delivered to both
+    // bots' connections.
+    bridge::process_event(
+        &rig.deps,
+        message_dispatch("3001", "hello team", &[], Some(GUILD_ID)),
+    )
+    .await
+    .expect("via bot A");
+    let mut dispatch_b = message_dispatch("3001", "hello team", &[], Some(GUILD_ID));
+    dispatch_b.application_id = ApplicationId::try_from(APP_ID_B).expect("app b id");
+    dispatch_b.bot_user_id = DiscordUserId::try_from(BOT_USER_ID_B).expect("bot b id");
+    bridge::process_event(&rig.deps, dispatch_b)
+        .await
+        .expect("via bot B");
+
+    // Two distinct bindings for the SAME container — one per bot — pointing at
+    // distinct Patom threads. Pre-fix this was a single shared row.
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT COUNT(DISTINCT patom_thread_id) FROM discord_threads \
+             WHERE container_id = '333333333333333333'"
+        )
+        .await,
+        2,
+        "each bot binds its own Patom thread for the shared channel",
     );
 }

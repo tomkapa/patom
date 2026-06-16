@@ -130,6 +130,19 @@ impl DiscordDirectory for PgDiscordDirectory {
         let synthetic_email = format!("discord-{discord_user}@shadow.invalid");
 
         run_privileged::<ShadowColleague, DiscordError>(&self.pool, async move |tx| {
+            // 0. Serialize first-sight per (org, user) for the duration of this
+            //    transaction. Without it, two concurrent first-sight events for the
+            //    same Discord user (e.g. the same message delivered to two of the
+            //    org's bot connections) both fall through the fast path and mint a
+            //    user/org_member/colleague; the handle upsert's loser keeps the
+            //    winner's row but we'd return the loser's orphaned ids. The xact
+            //    lock releases on commit/rollback; the waiter then takes the fast
+            //    path below and returns the canonical ids.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("discord-shadow:{org_id}:{discord_user}"))
+                .execute(&mut **tx)
+                .await?;
+
             // 1. Fast path: an existing handle → its colleague + shadow user.
             let existing: Option<(ColleagueId, UserId)> = sqlx::query_as(
                 "SELECT h.colleague_id, c.user_id \
