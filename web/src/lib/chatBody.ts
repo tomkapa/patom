@@ -2,13 +2,15 @@
 // Backend wire shape: `{role, contents: [{kind, value}]}` — see
 // src/provider/chat.rs.
 
-import type { ChatMessageBody } from "../types/api";
+import type { Attachment, ChatMessageBody } from "../types/api";
 
 export type DecodedBody = {
   text: string;
   reasoning: string;
   toolCalls: { id: string; name: string; input: unknown }[];
   toolResults: { call_id: string; output: string; is_error?: boolean }[];
+  /** Image/file attachments on a user message, in order (issue #187). */
+  attachments: Attachment[];
 };
 
 export function decodeBody(body: ChatMessageBody | undefined): DecodedBody {
@@ -17,6 +19,7 @@ export function decodeBody(body: ChatMessageBody | undefined): DecodedBody {
     reasoning: "",
     toolCalls: [],
     toolResults: [],
+    attachments: [],
   };
   if (!body) return out;
 
@@ -34,6 +37,10 @@ export function decodeBody(body: ChatMessageBody | undefined): DecodedBody {
           break;
         case "tool_result":
           out.toolResults.push(c.value);
+          break;
+        case "image":
+        case "file":
+          out.attachments.push(c.value);
           break;
       }
     }

@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentToolCallList,
   AgentTurnsList,
+  Attachment,
   Channel,
   ChannelMember,
   TurnDetail,
@@ -475,6 +476,8 @@ export const api = {
      *  `channel_id` is given. */
     counterpart?: TagRef;
     content: string;
+    /** Image/file attachment references from `uploadAttachment` (issue #187). */
+    attachments?: Attachment[];
     idempotency_key: string;
   }) =>
     request<SubmitPromptResponse>("/prompts", {
@@ -561,6 +564,17 @@ export const api = {
     return request<ToolCallList>(
       `/mcp-servers/${serverId}/tool-calls${q ? `?${q}` : ""}`,
     );
+  },
+
+  /** Upload one message attachment (image / PDF / Office). Returns the
+   *  reference to pass back in `submitPrompt({ attachments })` (issue #187). */
+  uploadAttachment: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<Attachment>("/uploads/attachment", {
+      method: "POST",
+      body: form,
+    });
   },
 
   /** Upload a new avatar for the signed-in user. The backend writes the

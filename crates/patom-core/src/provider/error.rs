@@ -26,4 +26,17 @@ pub enum ProviderError {
 
     #[error("provider returned data we could not parse: {0}")]
     Decode(String),
+
+    /// A message carried attachment content of a kind the target model does
+    /// not accept (issue #187). Raised by the converter *before* dispatch so a
+    /// text-only backend on the shared OpenAI wire path (DeepSeek) never
+    /// receives an image/file part. `mime` is the rejected content type;
+    /// `model` is the catalog name it was routed to.
+    #[error("model `{model}` does not accept `{mime}` input")]
+    UnsupportedContent { mime: &'static str, model: String },
+
+    /// Failed to fetch or transform an attachment's bytes before dispatch
+    /// (download error, oversize body, or Office text-extraction failure).
+    #[error("attachment processing failed: {0}")]
+    Attachment(String),
 }

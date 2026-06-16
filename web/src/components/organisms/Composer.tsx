@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { AtSign, Code, Hash, Paperclip, Send, Smile } from "lucide-react";
 import { Button } from "../atoms/Button";
 import { MentionInput, matchMentions } from "../molecules/MentionInput";
+import { AttachmentBar } from "../molecules/AttachmentBar";
+import { ATTACHMENT_ACCEPT, useAttachments } from "../../hooks/useAttachments";
 import { cn, insertAtCaret } from "../../lib/utils";
-import type { Mentionable } from "../../types/api";
+import type { Attachment, Mentionable } from "../../types/api";
 
 export type ComposerSubmit = {
   content: string;
@@ -11,6 +13,8 @@ export type ComposerSubmit = {
    *  invoked by the backend; humans render as mentions. Empty is a plain
    *  post — that's fine, nobody is required to be tagged. */
   tags: Mentionable[];
+  /** Uploaded image/file references to send with the message (issue #187). */
+  attachments: Attachment[];
 };
 
 export function Composer({
@@ -46,6 +50,8 @@ export function Composer({
 }) {
   const [value, setValue] = useState("");
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const att = useAttachments();
 
   // Load externally-supplied text into the box (welcome CTA, retry, …)
   // and place the caret at the end so the user can edit or just hit send.
@@ -66,14 +72,32 @@ export function Composer({
   }, [prefillNonce]);
 
   const trimmed = value.trim();
+  // Send needs either text or at least one finished upload, and no upload
+  // still in flight.
+  const canSend =
+    (trimmed.length > 0 || att.ready.length > 0) &&
+    !pending &&
+    !disabled &&
+    !att.busy;
 
   const send = () => {
-    if (!trimmed || pending || disabled) return;
-    onSubmit({ content: trimmed, tags: matchMentions(value, roster) });
+    if (!canSend) return;
+    onSubmit({
+      content: trimmed,
+      tags: matchMentions(value, roster),
+      attachments: att.ready,
+    });
     setValue("");
+    att.clear();
   };
 
   const insertAt = () => insertAtCaret(taRef, value, setValue, "@");
+
+  const onPickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) att.addFiles(e.target.files);
+    // Reset so picking the same file again re-fires `change`.
+    e.target.value = "";
+  };
 
   const placeholder =
     mode === "dm" && dmCounterpart
@@ -109,8 +133,20 @@ export function Composer({
           disabled={disabled}
           textRef={taRef}
         />
+        <AttachmentBar items={att.items} onRemove={att.remove} />
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          accept={ATTACHMENT_ACCEPT}
+          onChange={onPickFiles}
+          className="hidden"
+        />
         <div className="flex items-center gap-1 border-t border-[var(--color-line)] px-2 py-1.5">
-          <ToolBtn label="Attach">
+          <ToolBtn
+            label="Attach"
+            onClick={() => fileRef.current?.click()}
+          >
             <Paperclip className="h-3.5 w-3.5" />
           </ToolBtn>
           <ToolBtn label="Emoji">
@@ -130,7 +166,7 @@ export function Composer({
             variant="moss"
             size="md"
             loading={pending}
-            disabled={!trimmed || pending || disabled}
+            disabled={!canSend}
             className="ml-auto"
           >
             {pending ? (

@@ -36,7 +36,8 @@ use crate::agents::AgentId;
 use crate::auth::{AuthError, Caller, OrgId, Principal, UserId, begin_as_user};
 use crate::channels::ChannelId;
 use crate::colleagues::ColleagueId;
-use crate::provider::{ChatMessage, UserContent};
+use crate::provider::limits::MAX_ATTACHMENTS_PER_MESSAGE;
+use crate::provider::{Attachment, ChatMessage, RawAttachment, UserContent};
 use crate::runtime::{
     IdempotencyKey, NewTrigger, PromptRequestId, RequestKindPayload, RequestStatus,
 };
@@ -79,7 +80,12 @@ pub(super) struct SubmitPromptParams {
     pub thread_id: Option<ThreadId>,
     /// Explicit @tags, in message order. Agents trigger; humans render.
     pub tags: Vec<TagTarget>,
-    pub content: Prompt,
+    /// The text body. `None` for an attachment-only message (issue #187) —
+    /// at least one of `content` / `attachments` must be present.
+    pub content: Option<Prompt>,
+    /// Image/file attachments accompanying the text, in display order
+    /// (issue #187). Empty for a plain text prompt.
+    pub attachments: Vec<Attachment>,
     pub idempotency_key: IdempotencyKey,
     /// Post the new thread into this channel. Honored only when `thread_id`
     /// is `None` (a new root); a channel on a continuation is meaningless
@@ -114,6 +120,29 @@ struct ResolvedTag {
     agent: Option<AgentId>,
 }
 
+/// Build the user message body: the optional text block followed by one
+/// image/file block per attachment, classified by mime (issue #187). Text
+/// leads so the prompt reads naturally before its attachments on every
+/// provider. At least one of `content` / `attachments` must be present.
+fn user_content(content: Option<&Prompt>, attachments: &[Attachment]) -> Vec<UserContent> {
+    let mut out = Vec::with_capacity(usize::from(content.is_some()) + attachments.len());
+    if let Some(c) = content {
+        out.push(UserContent::Text(c.as_str().to_owned()));
+    }
+    for att in attachments {
+        out.push(if att.mime().is_image() {
+            UserContent::Image(att.clone())
+        } else {
+            UserContent::File(att.clone())
+        });
+    }
+    assert!(
+        !out.is_empty(),
+        "invariant: handler requires text or attachments"
+    );
+    out
+}
+
 /// Principal-free prompt submission. The public `POST /prompts` handler
 /// extracts a `Principal` and delegates here; the OAuth callback (which
 /// has no cookie session) constructs `SubmitPromptParams` directly.
@@ -124,6 +153,10 @@ pub(super) async fn submit_internal(
     assert!(
         params.tags.len() <= MAX_TAGS_PER_MESSAGE,
         "invariant: handler caps tags before submit_internal"
+    );
+    assert!(
+        params.attachments.len() <= MAX_ATTACHMENTS_PER_MESSAGE,
+        "invariant: handler caps attachments before submit_internal"
     );
     let caller = Caller::new(params.user_id, params.org_id);
     let store = PgThreadStore::new(state.pool.clone(), state.clock.clone());
@@ -193,9 +226,10 @@ pub(super) async fn submit_internal(
                     sender: Some(sender),
                     owner_agent_id: None,
                     receiver: tags.first().map(|t| t.colleague),
-                    body: ChatMessage::User(vec![UserContent::Text(
-                        params.content.as_str().to_owned(),
-                    )]),
+                    body: ChatMessage::User(user_content(
+                        params.content.as_ref(),
+                        &params.attachments,
+                    )),
                     request_id: None,
                     idempotency_key: Some(params.idempotency_key.clone()),
                 },
@@ -529,6 +563,10 @@ struct SubmitPromptRequest {
     #[serde(default)]
     counterpart: Option<TagRefWire>,
     content: String,
+    /// Image/file attachment references (issue #187). Each was uploaded via
+    /// `POST /uploads/attachment`, which returned `{url, mime, filename, size}`.
+    #[serde(default)]
+    attachments: Vec<RawAttachment>,
     idempotency_key: String,
 }
 
@@ -548,8 +586,6 @@ async fn submit_prompt(
     principal: Principal,
     Json(payload): Json<SubmitPromptRequest>,
 ) -> Result<(StatusCode, Json<SubmitPromptResponse>), HttpError> {
-    let content =
-        Prompt::try_from(payload.content).map_err(|e| HttpError::BadRequest(e.to_string()))?;
     let idempotency_key = IdempotencyKey::try_from(payload.idempotency_key)
         .map_err(|e| HttpError::BadRequest(e.to_string()))?;
     if payload.tags.len() > MAX_TAGS_PER_MESSAGE {
@@ -558,6 +594,50 @@ async fn submit_prompt(
             payload.tags.len()
         )));
     }
+    if payload.attachments.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(HttpError::BadRequest(format!(
+            "too many attachments: max {MAX_ATTACHMENTS_PER_MESSAGE}, got {}",
+            payload.attachments.len()
+        )));
+    }
+    // Parse each attachment reference at the boundary (CLAUDE.md §1): a bad
+    // url/mime/filename/size is rejected here, before any write.
+    let attachments = payload
+        .attachments
+        .into_iter()
+        .map(Attachment::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| HttpError::BadRequest(e.to_string()))?;
+
+    // SSRF guard (issue #187): the attachment URL is later fetched
+    // server-side (Office → text, OpenAI base64 inlining) or handed to the
+    // provider to fetch. The client supplies it as plain JSON, so constrain
+    // it to our own asset origin — only `POST /uploads/attachment` mints a
+    // legitimate reference (`{public_host}/attachments/…`). Without this a
+    // signed-in user could point it at `http://169.254.169.254/…` and
+    // exfiltrate internal/metadata responses through the model.
+    if !attachments.is_empty() {
+        let store = state
+            .assets
+            .as_ref()
+            .ok_or(HttpError::AssetStorageMissing)?;
+        let prefix = format!("{}/", store.public_host());
+        for att in &attachments {
+            if !att.url().as_str().starts_with(&prefix) {
+                return Err(HttpError::BadRequest(
+                    "attachment url is not from the asset store".to_owned(),
+                ));
+            }
+        }
+    }
+
+    // Text is optional when at least one attachment is present (issue #187);
+    // otherwise an empty body is rejected by the `Prompt` smart constructor.
+    let content = if payload.content.trim().is_empty() && !attachments.is_empty() {
+        None
+    } else {
+        Some(Prompt::try_from(payload.content).map_err(|e| HttpError::BadRequest(e.to_string()))?)
+    };
 
     let outcome = submit_internal(
         &state,
@@ -567,6 +647,7 @@ async fn submit_prompt(
             thread_id: payload.thread_id.map(ThreadId::from),
             tags: payload.tags.into_iter().map(TagTarget::from).collect(),
             content,
+            attachments,
             idempotency_key,
             channel_id: payload.channel_id.map(ChannelId::from),
             counterpart: payload.counterpart.map(TagTarget::from),
@@ -610,4 +691,55 @@ async fn cancel_request(
     }
     state.queue.request_cancellation(request_id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn att(mime: &str, name: &str) -> Attachment {
+        Attachment::try_from(RawAttachment {
+            url: "https://assets.example/attachments/x.bin".to_owned(),
+            mime: mime.to_owned(),
+            filename: name.to_owned(),
+            size: 64,
+        })
+        .expect("valid")
+    }
+
+    #[test]
+    fn user_content_text_only_is_single_text_block() {
+        let prompt = Prompt::try_from("hello").expect("non-empty");
+        let blocks = user_content(Some(&prompt), &[]);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(blocks[0], UserContent::Text(_)));
+    }
+
+    #[test]
+    fn user_content_classifies_attachments_by_mime() {
+        let prompt = Prompt::try_from("see attached").expect("non-empty");
+        let atts = vec![
+            att("image/png", "a.png"),
+            att("application/pdf", "b.pdf"),
+            att(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "c.xlsx",
+            ),
+        ];
+        let blocks = user_content(Some(&prompt), &atts);
+        assert_eq!(blocks.len(), 4);
+        assert!(matches!(blocks[0], UserContent::Text(_)));
+        assert!(matches!(blocks[1], UserContent::Image(_)));
+        assert!(matches!(blocks[2], UserContent::File(_)));
+        assert!(matches!(blocks[3], UserContent::File(_)));
+    }
+
+    #[test]
+    fn user_content_attachment_only_omits_text_block() {
+        // Issue #187: an image with no caption is a single Image block, no
+        // empty Text block ahead of it.
+        let blocks = user_content(None, &[att("image/png", "a.png")]);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(blocks[0], UserContent::Image(_)));
+    }
 }

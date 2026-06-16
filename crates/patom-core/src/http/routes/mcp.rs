@@ -1628,7 +1628,9 @@ async fn do_auto_continue(
             org_id: pending.org_id,
             thread_id: Some(resume.thread_id),
             tags: vec![super::prompts::TagTarget::Agent(resume.agent_id)],
-            content,
+            content: Some(content),
+            // OAuth-resume replays a text continuation; no attachments.
+            attachments: Vec::new(),
             idempotency_key,
             // OAuth-resume continues an existing thread, so it's never a new
             // channel root / DM root.

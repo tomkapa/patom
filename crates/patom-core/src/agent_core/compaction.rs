@@ -92,6 +92,12 @@ fn message_chars(message: &ChatMessage) -> usize {
                 let len = match content {
                     UserContent::Text(text) => text.len(),
                     UserContent::ToolResult(result) => result.output.len(),
+                    // Attachments are references, not text — their real token
+                    // cost isn't derivable from the reference (precise
+                    // attachment tokenization is the calibration follow-up,
+                    // #195). Count the mime label so they aren't invisible to
+                    // the estimate; the windowing floor is the hard bound.
+                    UserContent::Image(att) | UserContent::File(att) => att.mime().as_mime().len(),
                 };
                 chars = chars.saturating_add(len);
             }
@@ -352,6 +358,16 @@ fn render_messages_for_summary(messages: &[ChatMessage]) -> String {
                             out.push_str("Tool result: ");
                             out.push_str(&result.output);
                             out.push('\n');
+                        }
+                        UserContent::Image(att) => {
+                            out.push_str("Image attachment (");
+                            out.push_str(att.mime().as_mime());
+                            out.push_str(")\n");
+                        }
+                        UserContent::File(att) => {
+                            out.push_str("File attachment (");
+                            out.push_str(att.mime().as_mime());
+                            out.push_str(")\n");
                         }
                     }
                 }
@@ -835,7 +851,9 @@ mod tests {
             match &req.messages[0] {
                 ChatMessage::User(c) => match &c[0] {
                     UserContent::Text(t) => t.clone(),
-                    UserContent::ToolResult(_) => String::new(),
+                    UserContent::ToolResult(_) | UserContent::Image(_) | UserContent::File(_) => {
+                        String::new()
+                    }
                 },
                 ChatMessage::Assistant(_) => String::new(),
             }

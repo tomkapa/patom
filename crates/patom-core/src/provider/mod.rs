@@ -5,6 +5,7 @@
 //! implementing the trait — `Agent::reply` does not change.
 
 pub mod anthropic;
+pub mod attachment;
 pub mod catalog;
 mod chat;
 mod credentials;
@@ -12,6 +13,7 @@ mod embedding;
 mod error;
 pub mod id;
 pub mod limits;
+pub mod materialize;
 pub mod openai;
 mod overlay;
 mod pg_credentials;
@@ -19,8 +21,10 @@ mod refresher;
 mod registry;
 mod traits;
 
+pub use attachment::{Attachment, AttachmentMime, FileName, RawAttachment};
 pub use catalog::{
-    CatalogEntry, ContextWindow, InvalidContextWindow, MODEL_CATALOG, Model, UnknownModel,
+    CatalogEntry, ContextWindow, InvalidContextWindow, MODEL_CATALOG, Model, ModelCapabilities,
+    UnknownModel,
 };
 pub use chat::{
     AssistantContent, ChatMessage, ChatRequest, ChatResponse, Role, StopReason,
@@ -33,6 +37,9 @@ pub use credentials::{
 pub use embedding::{EmbeddingProvider, SharedEmbeddingProvider, embed_one};
 pub use error::ProviderError;
 pub use id::ProviderId;
+pub use materialize::{
+    AttachmentError, AttachmentSource, HttpAttachmentSource, SharedAttachmentSource,
+};
 pub use overlay::{OrgProviderOverlay, build_byo_client};
 pub use pg_credentials::PgOrgProviderCredentialStore;
 pub use refresher::{ProviderRefreshTrigger, ProviderRefresher};
