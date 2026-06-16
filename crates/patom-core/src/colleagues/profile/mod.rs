@@ -8,14 +8,19 @@
 mod error;
 mod limits;
 mod pg_store;
+mod render;
 mod store;
 mod types;
 
 pub use error::ProfileError;
 pub use limits::{
-    DEFAULT_SEARCH_COLLEAGUE_K, MAX_EXPERTISE, MAX_PREFERENCES, MAX_PROFILE_FETCH,
-    MAX_PROFILE_TEXT, MAX_ROLE, PROFILE_SNIPPET_LEN, SEARCH_COLLEAGUE_K,
+    DEFAULT_SEARCH_COLLEAGUE_K, MAX_EXPERTISE, MAX_PARTICIPANTS_INLINE, MAX_PREFERENCES,
+    MAX_PROFILE_FETCH, MAX_PROFILE_TEXT, MAX_ROLE, PROFILE_SNIPPET_LEN, SEARCH_COLLEAGUE_K,
 };
 pub use pg_store::PgProfileStore;
+pub use render::{
+    PARTICIPANTS_TAG_CLOSE, PARTICIPANTS_TAG_OPEN, ParticipantLine, profile_snippet,
+    render_participants_block,
+};
 pub use store::{ProfileStore, SharedProfileStore};
 pub use types::{ColleagueMatch, ColleagueProfile, Expertise, Preferences, ProfileText, Role};

@@ -273,6 +273,7 @@ impl Collaborators {
             agents.clone(),
             cache,
             colleagues.clone(),
+            profiles.clone(),
             roster_cache,
             display_names,
             memory_loader.clone(),

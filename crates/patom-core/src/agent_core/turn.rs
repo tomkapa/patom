@@ -303,6 +303,22 @@ impl Agent {
         );
         span.record("patom.history.count", messages.len());
 
+        // L1 + L2: the `<participants>` block — who raised the thread and who
+        // has posted, enriched with their shared profiles. A thread-store outage
+        // degrades to empty (enrichment, not load-bearing); the block render
+        // degrades independently inside `participants_block`.
+        let participants_block = match self.threads().thread_participants(thread).await {
+            Ok(participants) => {
+                self.memory()
+                    .participants_block(&participants, viewer_colleague, &overrides)
+                    .await
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "thread.participants.error");
+                String::new()
+            }
+        };
+
         // Fold the agent's per-thread todo list (keyed on `state_id`, the
         // participation id) into the system-prompt tail. Empty / missing-store
         // cases render to the empty string, so `format!` leaves no trailing
@@ -317,10 +333,18 @@ impl Agent {
             }
             None => String::new(),
         };
-        let system: std::sync::Arc<str> = if todos_block.is_empty() {
+
+        // Both blocks sit in the per-turn tail (after `<memory>`), so they never
+        // perturb the org-stable prefix that drives prompt-cache hits.
+        let tail: String = [participants_block, todos_block]
+            .into_iter()
+            .filter(|b| !b.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let system: std::sync::Arc<str> = if tail.is_empty() {
             memory_system
         } else {
-            std::sync::Arc::from(format!("{memory_system}\n{todos_block}").as_str())
+            std::sync::Arc::from(format!("{memory_system}\n{tail}").as_str())
         };
         span.record("patom.system_prompt.bytes", system.len());
 

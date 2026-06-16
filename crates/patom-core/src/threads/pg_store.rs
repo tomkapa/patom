@@ -26,7 +26,7 @@ use super::error::ThreadError;
 use super::limits::{MAX_THREAD_FEED, MAX_THREAD_LIST, ROOT_SNIPPET_MAX_CHARS};
 use super::traits::{
     AgentThreadId, FeedMessage, MessageKind, NewMessage, RootSummary, ThreadId, ThreadListItem,
-    ThreadMessageId, ThreadScope, ThreadStore,
+    ThreadMessageId, ThreadParticipants, ThreadScope, ThreadStore,
 };
 
 /// Postgres-backed [`ThreadStore`].
@@ -464,6 +464,41 @@ impl ThreadStore for PgThreadStore {
             .await?;
         row.map(|(counterpart,)| counterpart)
             .ok_or(ThreadError::NotFound(thread))
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.participants", fields(patom.thread.id = %thread))]
+    async fn thread_participants(
+        &self,
+        thread: ThreadId,
+    ) -> Result<ThreadParticipants, ThreadError> {
+        // Privileged read — the agent worker is org-global within its org. The
+        // creator is a point lookup; senders are the distinct `posted` authors
+        // in first-seen order, capped (§5).
+        let cap = i64::try_from(crate::colleagues::MAX_PARTICIPANTS_INLINE).unwrap_or(i64::MAX);
+        run_privileged::<ThreadParticipants, ThreadError>(&self.pool, async |tx| {
+            let creator: Option<(Option<ColleagueId>,)> =
+                sqlx::query_as("SELECT created_by_colleague_id FROM threads WHERE id = $1")
+                    .bind(thread)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            let creator = creator.and_then(|(c,)| c);
+
+            let senders: Vec<(ColleagueId,)> = sqlx::query_as(
+                "SELECT sender_colleague_id FROM thread_messages \
+                  WHERE thread_id = $1 AND kind = 'posted' AND sender_colleague_id IS NOT NULL \
+                  GROUP BY sender_colleague_id \
+                  ORDER BY MIN(seq) ASC \
+                  LIMIT $2",
+            )
+            .bind(thread)
+            .bind(cap)
+            .fetch_all(&mut **tx)
+            .await?;
+            let senders = senders.into_iter().map(|(s,)| s).collect();
+
+            Ok(ThreadParticipants { creator, senders })
+        })
+        .await
     }
 
     #[tracing::instrument(skip_all, name = "thread.channel_of", fields(patom.thread.id = %thread))]

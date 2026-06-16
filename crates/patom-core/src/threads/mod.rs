@@ -17,5 +17,5 @@ pub use limits::{
 pub use pg_store::PgThreadStore;
 pub use traits::{
     AgentThreadId, FeedMessage, MessageKind, NewMessage, RootSummary, SharedThreadStore, ThreadId,
-    ThreadListItem, ThreadMessageId, ThreadScope, ThreadStore,
+    ThreadListItem, ThreadMessageId, ThreadParticipants, ThreadScope, ThreadStore,
 };

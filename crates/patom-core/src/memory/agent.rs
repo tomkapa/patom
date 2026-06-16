@@ -29,12 +29,14 @@ use crate::agents::{AgentId, AgentPromptCache, SharedAgentStore};
 use crate::auth::{OrganizationRule, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use crate::clock::SharedClock;
 use crate::colleagues::{
-    ColleagueError, ColleagueId, ColleagueRosterCache, SharedColleagueStore,
-    SharedThreadDisplayNames, render_roster_block,
+    ColleagueError, ColleagueId, ColleagueKind, ColleagueName, ColleagueRef, ColleagueRosterCache,
+    MAX_PARTICIPANTS_INLINE, PROFILE_SNIPPET_LEN, ParticipantLine, SharedColleagueStore,
+    SharedProfileStore, SharedThreadDisplayNames, profile_snippet, render_participants_block,
+    render_roster_block,
 };
 use crate::prompts::Prompts;
 use crate::runtime::{RequestKind, RequestKindPayload};
-use crate::threads::ThreadId;
+use crate::threads::{ThreadId, ThreadParticipants};
 use crate::types::Participant;
 
 use super::loader::MemorySectionLoader;
@@ -95,6 +97,8 @@ pub struct AgentMemory {
     agents: SharedAgentStore,
     prompt_cache: AgentPromptCache,
     colleagues: SharedColleagueStore,
+    /// Org-shared profile board — feeds the L2 snippets in `<participants>`.
+    profiles: SharedProfileStore,
     roster_cache: ColleagueRosterCache,
     /// Per-thread display-name overrides (e.g. Slack handles in a
     /// Slack-rooted thread). Keyed by colleague id; identity is unchanged.
@@ -117,6 +121,7 @@ impl AgentMemory {
         agents: SharedAgentStore,
         prompt_cache: AgentPromptCache,
         colleagues: SharedColleagueStore,
+        profiles: SharedProfileStore,
         roster_cache: ColleagueRosterCache,
         display_names: SharedThreadDisplayNames,
         loader: MemorySectionLoader,
@@ -129,6 +134,7 @@ impl AgentMemory {
             agents,
             prompt_cache,
             colleagues,
+            profiles,
             roster_cache,
             display_names,
             loader,
@@ -182,6 +188,94 @@ impl AgentMemory {
         // The roster cache stays canonical and shared; per-platform labels
         // (e.g. Slack handles) apply per render, keyed by colleague id.
         Ok(render_roster_block(&roster, viewer, overrides))
+    }
+
+    /// Build the `<participants>` lines for the thread: the raiser + distinct
+    /// posters (viewer excluded), each enriched with their shared profile.
+    /// Fallible so the public method can degrade the whole block to empty; the
+    /// profile lookup degrades independently (names still render without L2).
+    async fn try_participants_block(
+        &self,
+        participants: &ThreadParticipants,
+        viewer: ColleagueId,
+        overrides: &std::collections::HashMap<ColleagueId, ColleagueName>,
+    ) -> Result<String, ColleagueError> {
+        // Ordered, deduped, viewer-excluded: creator first, then posters.
+        let mut ordered: Vec<ColleagueId> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(viewer);
+        if let Some(creator) = participants.creator
+            && seen.insert(creator)
+        {
+            ordered.push(creator);
+        }
+        for &sender in &participants.senders {
+            if ordered.len() >= MAX_PARTICIPANTS_INLINE {
+                break;
+            }
+            if seen.insert(sender) {
+                ordered.push(sender);
+            }
+        }
+        if ordered.is_empty() {
+            return Ok(String::new());
+        }
+
+        // Names + kinds from the org roster (cached, shared with `<colleagues>`).
+        let org = self.colleagues.read(viewer).await?.org_id();
+        let roster = self.roster_cache.get_or_load(org, &self.colleagues).await?;
+        let by_id: std::collections::HashMap<ColleagueId, &ColleagueRef> =
+            roster.iter().map(|c| (c.id, c)).collect();
+
+        // L2: profiles for the humans on the list. Degrades independently — a
+        // board outage drops snippets, never names.
+        let human_ids: Vec<ColleagueId> = ordered
+            .iter()
+            .copied()
+            .filter(|id| {
+                by_id
+                    .get(id)
+                    .is_some_and(|c| c.kind == ColleagueKind::Human)
+            })
+            .collect();
+        let profiles = match self.profiles.get_many(&human_ids).await {
+            Ok(map) => map,
+            Err(e) => {
+                tracing::warn!(error = %e, "participants.profiles.error");
+                std::collections::HashMap::new()
+            }
+        };
+
+        let mut lines: Vec<ParticipantLine> = Vec::with_capacity(ordered.len());
+        for id in ordered {
+            let Some(colleague) = by_id.get(&id) else {
+                continue;
+            };
+            let name = overrides
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| colleague.display_name.clone());
+            let snippet = if colleague.kind == ColleagueKind::Human {
+                profiles
+                    .get(&id)
+                    .and_then(|p| profile_snippet(p, PROFILE_SNIPPET_LEN))
+            } else {
+                None
+            };
+            lines.push(ParticipantLine {
+                name,
+                kind: colleague.kind,
+                snippet,
+                raised_thread: participants.creator == Some(id),
+            });
+        }
+
+        // §5 saturation signal for the inline list.
+        tracing::debug!(
+            patom.participants.block.size = lines.len(),
+            "participants.block.size"
+        );
+        Ok(render_participants_block(&lines))
     }
 }
 
@@ -249,6 +343,24 @@ impl Memory for AgentMemory {
         match thread {
             Some(t) => self.display_names.overrides_for_thread(t).await,
             None => std::collections::HashMap::new(),
+        }
+    }
+
+    async fn participants_block(
+        &self,
+        participants: &ThreadParticipants,
+        viewer: ColleagueId,
+        overrides: &std::collections::HashMap<ColleagueId, ColleagueName>,
+    ) -> String {
+        match self
+            .try_participants_block(participants, viewer, overrides)
+            .await
+        {
+            Ok(block) => block,
+            Err(e) => {
+                tracing::warn!(error = %e, "participants.block.error");
+                String::new()
+            }
         }
     }
 }

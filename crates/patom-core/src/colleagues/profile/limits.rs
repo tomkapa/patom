@@ -36,6 +36,13 @@ pub const MAX_PROFILE_FETCH: usize = 256;
 /// result list of [`SEARCH_COLLEAGUE_K`] stays compact in the prompt.
 pub const PROFILE_SNIPPET_LEN: usize = 160;
 
+/// Max people named inline in the `<participants>` block before it is truncated.
+///
+/// A thread with more than this many distinct speakers is rare; past it, naming
+/// everyone costs more per-turn tokens than it informs, and the roster /
+/// `search_colleague` cover the rest. Saturation is emitted as a field.
+pub const MAX_PARTICIPANTS_INLINE: usize = 32;
+
 /// Result cap for `search_colleague`, reused as the tool's `limit` upper bound.
 ///
 /// Matches the agent-search bound (1..=8) so the unified search returns a
