@@ -364,27 +364,25 @@ impl Agent {
         // The per-turn tail blocks sit after `<memory>`, so they never perturb
         // the org-stable prefix that drives prompt-cache hits: the `<participants>`
         // block, then the todo list, then the rolling compaction summary (#182).
-        let system: std::sync::Arc<str> = if participants_block.is_empty()
-            && todos_block.is_empty()
-            && ctx.summary.is_none()
-        {
-            memory_system // zero-copy fast path
-        } else {
-            let mut s = memory_system.to_string();
-            if !participants_block.is_empty() {
-                s.push('\n');
-                s.push_str(&participants_block);
-            }
-            if !todos_block.is_empty() {
-                s.push('\n');
-                s.push_str(&todos_block);
-            }
-            if let Some(summary) = &ctx.summary {
-                s.push_str("\n\n## Earlier conversation (compacted)\n");
-                s.push_str(summary.as_str());
-            }
-            std::sync::Arc::from(s.as_str())
-        };
+        let system: std::sync::Arc<str> =
+            if participants_block.is_empty() && todos_block.is_empty() && ctx.summary.is_none() {
+                memory_system // zero-copy fast path
+            } else {
+                let mut s = memory_system.to_string();
+                if !participants_block.is_empty() {
+                    s.push('\n');
+                    s.push_str(&participants_block);
+                }
+                if !todos_block.is_empty() {
+                    s.push('\n');
+                    s.push_str(&todos_block);
+                }
+                if let Some(summary) = &ctx.summary {
+                    s.push_str("\n\n## Earlier conversation (compacted)\n");
+                    s.push_str(summary.as_str());
+                }
+                std::sync::Arc::from(s.as_str())
+            };
         span.record("patom.system_prompt.bytes", system.len());
 
         let tools = self.tools().specs_for(kind_payload.kind());
