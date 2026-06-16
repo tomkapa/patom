@@ -253,7 +253,12 @@ mod tests {
     fn compose_rejects_all_empty() {
         let p = ColleagueProfile::new(ColleagueId::new(), None, None, None, None);
         let err = compose_profile_text(&p).expect_err("all-empty is not writable");
-        assert!(matches!(err, ParseError::Empty { field: "profile_text" }));
+        assert!(matches!(
+            err,
+            ParseError::Empty {
+                field: "profile_text"
+            }
+        ));
     }
 
     #[test]

@@ -123,18 +123,17 @@ impl ProfileStore for PgProfileStore {
         let profile_text = compose_profile_text(profile)?;
 
         // Phase 1 — verify org membership + decide whether to reuse the vector.
-        let (in_org, existing_text, has_emb) =
-            run_privileged::<(bool, Option<String>, Option<bool>), ProfileError>(
-                &self.pool,
-                async |tx| {
-                    Ok(sqlx::query_as(PRE_UPSERT_SQL)
-                        .bind(subject)
-                        .bind(org)
-                        .fetch_one(&mut **tx)
-                        .await?)
-                },
-            )
-            .await?;
+        let (in_org, existing_text, has_emb) = run_privileged::<
+            (bool, Option<String>, Option<bool>),
+            ProfileError,
+        >(&self.pool, async |tx| {
+            Ok(sqlx::query_as(PRE_UPSERT_SQL)
+                .bind(subject)
+                .bind(org)
+                .fetch_one(&mut **tx)
+                .await?)
+        })
+        .await?;
         if !in_org {
             return Err(ProfileError::SubjectNotInOrg { subject });
         }

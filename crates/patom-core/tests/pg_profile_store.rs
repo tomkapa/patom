@@ -101,7 +101,10 @@ async fn upsert_then_get_many_round_trips(pool: PgPool) {
     let map = store.get_many(&[human]).await.expect("get_many");
     let got = map.get(&human).expect("profile present");
     assert_eq!(got.role().expect("role").as_str(), "Product Manager");
-    assert_eq!(got.expertise().expect("expertise").as_str(), "billing, pricing");
+    assert_eq!(
+        got.expertise().expect("expertise").as_str(),
+        "billing, pricing"
+    );
     assert_eq!(got.preferences().expect("prefs").as_str(), "async-first");
     assert_eq!(got.updated_by(), Some(agent), "provenance recorded");
 }
@@ -150,21 +153,45 @@ async fn upsert_skips_reembed_on_identical_text(pool: PgPool) {
     let shared: SharedEmbeddingProvider = counter.clone();
     let store = store(&pool, shared);
 
-    let first =
-        ColleagueProfile::new(human, Some(role("PM")), Some(expertise("billing")), None, None);
-    store.upsert(seed.org_id, &first).await.expect("first upsert");
+    let first = ColleagueProfile::new(
+        human,
+        Some(role("PM")),
+        Some(expertise("billing")),
+        None,
+        None,
+    );
+    store
+        .upsert(seed.org_id, &first)
+        .await
+        .expect("first upsert");
     assert_eq!(counter.calls(), 1, "first write embeds");
 
     // Identical composed text → reuse the stored vector, no embed call.
-    let same =
-        ColleagueProfile::new(human, Some(role("PM")), Some(expertise("billing")), None, None);
-    store.upsert(seed.org_id, &same).await.expect("identical upsert");
+    let same = ColleagueProfile::new(
+        human,
+        Some(role("PM")),
+        Some(expertise("billing")),
+        None,
+        None,
+    );
+    store
+        .upsert(seed.org_id, &same)
+        .await
+        .expect("identical upsert");
     assert_eq!(counter.calls(), 1, "identical text skips re-embed");
 
     // Changed field → text differs → re-embed.
-    let changed =
-        ColleagueProfile::new(human, Some(role("PM")), Some(expertise("pricing")), None, None);
-    store.upsert(seed.org_id, &changed).await.expect("changed upsert");
+    let changed = ColleagueProfile::new(
+        human,
+        Some(role("PM")),
+        Some(expertise("pricing")),
+        None,
+        None,
+    );
+    store
+        .upsert(seed.org_id, &changed)
+        .await
+        .expect("changed upsert");
     assert_eq!(counter.calls(), 2, "changed text re-embeds");
 }
 

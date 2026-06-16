@@ -58,9 +58,9 @@ use crate::scheduling::{
 use crate::tools::system::{
     CancelScheduledTaskTool, CreateAgentTool, ListScheduledTasksTool, MemoryForgetTool,
     MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool, PgSessionTodoStore,
-    RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchAgentsTool, SearchToolsTool,
-    SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool, WebFetchTool,
-    WebSearchTool,
+    ProfileWriteTool, RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchAgentsTool,
+    SearchToolsTool, SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool,
+    WebFetchTool, WebSearchTool,
 };
 use crate::tools::{ToolBox, ToolRegistry};
 
@@ -205,6 +205,13 @@ impl Collaborators {
 
         let colleagues: crate::colleagues::SharedColleagueStore =
             Arc::new(crate::colleagues::PgColleagueStore::new(pool.clone()));
+
+        let profiles: crate::colleagues::SharedProfileStore =
+            Arc::new(crate::colleagues::PgProfileStore::new(
+                pool.clone(),
+                clock.clone(),
+                embedding_provider.clone(),
+            ));
 
         let cache = AgentPromptCache::new(
             AGENT_PROMPT_CACHE_CAP,
@@ -363,6 +370,7 @@ impl Collaborators {
             dag: dag.clone(),
             agents: agents.clone(),
             colleagues: colleagues.clone(),
+            profiles: profiles.clone(),
             sink: sink.clone(),
             memory_tools,
             todo_tools,
@@ -509,6 +517,7 @@ struct BuiltinToolDeps<'a> {
     dag: SharedDagBudget,
     agents: SharedAgentStore,
     colleagues: crate::colleagues::SharedColleagueStore,
+    profiles: crate::colleagues::SharedProfileStore,
     sink: SharedResponseSink,
     memory_tools: MemoryToolDeps,
     todo_tools: TodoToolDeps,
@@ -544,6 +553,7 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.sink.clone(),
         )))
         .with(Arc::new(MemoryWriteTool::new(deps.memory_tools.clone())))
+        .with(Arc::new(ProfileWriteTool::new(deps.profiles.clone())))
         .with(Arc::new(MemoryUpdateTool::new(deps.memory_tools.clone())))
         .with(Arc::new(MemoryForgetTool::new(deps.memory_tools.clone())))
         .with(Arc::new(MemoryValidateTool::new(deps.memory_tools.clone())))

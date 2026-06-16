@@ -26,6 +26,7 @@
 
 mod create_agent;
 mod memory;
+mod profile_write;
 mod request_user_wire_mcp;
 mod scheduling;
 mod search_agents;
@@ -40,6 +41,7 @@ pub use memory::{
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
     RecallTool,
 };
+pub use profile_write::ProfileWriteTool;
 pub use request_user_wire_mcp::RequestUserWireMcpTool;
 pub use scheduling::{CancelScheduledTaskTool, ListScheduledTasksTool, ScheduleTaskTool};
 pub use search_agents::SearchAgentsTool;
