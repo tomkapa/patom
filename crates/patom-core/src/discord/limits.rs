@@ -31,6 +31,18 @@ pub const DISCORD_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 /// any later redelivery safe.
 pub const DISCORD_INBOUND_QUEUE: usize = 256;
 
+/// Cap on a single inbound message's mirrored text (§5).
+///
+/// Every string crossing the trust boundary is bounded. Discord's own message
+/// cap is 2000 (4000 with Nitro); this leaves generous head-room while bounding
+/// a hostile frame.
+pub const DISCORD_INBOUND_CONTENT_MAX: usize = 16_384;
+
+/// Cap on a stored display name (matches the `discord_user_handles.display_name`
+/// column CHECK). Discord enforces ≤32, but a hostile frame is truncated here so
+/// the DB CHECK can never reject a mint.
+pub const DISCORD_DISPLAY_NAME_MAX: usize = 256;
+
 /// Finite reconnect budget per bot (§5). A permanently-broken app stops retrying
 /// instead of spinning forever; a *fatal* close (4004/4013/4014) stops
 /// immediately regardless.

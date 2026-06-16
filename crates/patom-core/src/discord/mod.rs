@@ -23,11 +23,17 @@
 //! ban that aggregates across a shared egress IP (both handled in `poster.rs`).
 
 pub mod app_store;
+pub mod bridge;
+pub mod channel_map;
 pub mod codec;
 pub mod connection;
+pub mod directory;
 pub mod error;
+pub mod event;
 pub mod handshake;
 pub mod limits;
+pub mod roster;
+pub mod thread_map;
 pub mod transport;
 pub mod types;
 
