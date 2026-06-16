@@ -183,6 +183,10 @@ pub struct AppState {
     /// `None` otherwise. The admin route 404s and the WS manager stays
     /// un-spawned when `None`, so deployments without Lark stay first-class.
     pub lark: Option<crate::lark::LarkAppState>,
+    /// Discord adapter wiring — `Some` when `PATOM_DISCORD_ENABLED` is set,
+    /// `None` otherwise. The admin route 404s and the gateway manager stays
+    /// un-spawned when `None`, so deployments without Discord stay first-class.
+    pub discord: Option<crate::discord::DiscordAppState>,
     /// Object-storage seam for user avatars and MCP catalog icons.
     /// `Some` when `PATOM_S3_*` env vars are configured; `None` makes
     /// the upload routes 503 with "asset storage not configured".

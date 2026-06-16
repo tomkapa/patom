@@ -111,6 +111,24 @@ pub async fn seed_tenant(pool: &PgPool) -> Seed {
     }
 }
 
+/// Seed an additional named agent into `org_id`, returning its id. Useful for
+/// tests that need a second agent beyond [`seed_tenant`]'s default (e.g. two
+/// Discord bots, each speaking as a distinct agent).
+pub async fn seed_agent(pool: &PgPool, org_id: OrgId, name: &str) -> AgentId {
+    agent_store(pool.clone(), SystemClock::shared())
+        .seed_preset(
+            org_id,
+            AgentSeed {
+                name: AgentName::try_from(name).expect("valid name"),
+                system_prompt: AgentSystemPrompt::try_from("test prompt").expect("valid prompt"),
+                description: AgentDescription::try_from("Test agent.").expect("valid description"),
+                avatar_url: None,
+            },
+        )
+        .await
+        .expect("seed agent")
+}
+
 /// Construct a `PgAgentStore` wired with the fake embedding provider used
 /// by every test path. Returns the concrete `Arc<PgAgentStore>`; callers
 /// that need the trait object can coerce with `as SharedAgentStore`.
