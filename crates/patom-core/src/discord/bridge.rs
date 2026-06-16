@@ -49,6 +49,9 @@ use super::types::{ContainerId, DiscordUserId, GuildId};
 pub struct AttachRequest {
     pub thread_id: ThreadId,
     pub org_id: OrgId,
+    /// The bot that delivered the trigger — the fallback poster when the
+    /// replying agent has no Discord bot of its own.
+    pub application_id: super::types::ApplicationId,
     pub container_id: ContainerId,
     /// The triggering message, so the reply can be a Discord reply.
     pub reply_to: super::types::DiscordMessageId,
@@ -207,11 +210,10 @@ async fn handle_message(
     )
     .await?;
 
-    let body_text: String = m
-        .content
-        .chars()
-        .take(DISCORD_INBOUND_CONTENT_MAX)
-        .collect();
+    // Rewrite `<@id>` markers to readable `@Name` so the agent reads who is
+    // referenced (the mention objects carry the names — no DB lookup).
+    let rendered = super::mention::render_inbound(&m.content, &m.mention_names());
+    let body_text: String = rendered.chars().take(DISCORD_INBOUND_CONTENT_MAX).collect();
     let idem = IdempotencyKey::try_from(format!(
         "discord:{}:{}",
         guild.as_str(),
@@ -346,6 +348,7 @@ async fn enqueue_and_attach(
         .attach(AttachRequest {
             thread_id,
             org_id: app.org_id,
+            application_id: app.application_id.clone(),
             container_id: m.channel_id.clone(),
             reply_to: m.message_id.clone(),
         })

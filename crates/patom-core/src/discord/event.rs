@@ -50,11 +50,6 @@ struct Member {
     nick: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct Mention {
-    id: DiscordUserId,
-}
-
 /// A `MESSAGE_CREATE` (or the same shape from a history backfill).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(from = "RawMessage")]
@@ -69,8 +64,9 @@ pub struct InboundMessage {
     pub member_nick: Option<String>,
     /// Empty without the `MESSAGE_CONTENT` intent (except DMs / bot-own / @-mentions).
     pub content: String,
-    /// The user snowflakes explicitly `@`-mentioned.
-    pub mentions: Vec<DiscordUserId>,
+    /// The full user objects explicitly `@`-mentioned (id + name, for rendering
+    /// `<@id>` → `@Name`).
+    pub mentions: Vec<Author>,
     /// Present (the webhook's id) when the message was webhook-authored.
     pub webhook_id: Option<String>,
 }
@@ -88,7 +84,7 @@ struct RawMessage {
     #[serde(default)]
     content: String,
     #[serde(default)]
-    mentions: Vec<Mention>,
+    mentions: Vec<Author>,
     #[serde(default)]
     webhook_id: Option<String>,
 }
@@ -102,7 +98,7 @@ impl From<RawMessage> for InboundMessage {
             author: raw.author,
             member_nick: raw.member.and_then(|m| m.nick),
             content: raw.content,
-            mentions: raw.mentions.into_iter().map(|m| m.id).collect(),
+            mentions: raw.mentions,
             webhook_id: raw.webhook_id,
         }
     }
@@ -112,7 +108,17 @@ impl InboundMessage {
     /// Whether the message `@`-mentions the given bot user.
     #[must_use]
     pub fn mentions_bot(&self, bot_user_id: &DiscordUserId) -> bool {
-        self.mentions.iter().any(|m| m == bot_user_id)
+        self.mentions.iter().any(|m| m.id == *bot_user_id)
+    }
+
+    /// `(id, display_name)` pairs for the mentioned users, for rewriting `<@id>`
+    /// markers to readable `@Name` (drops a mention with no resolvable name).
+    #[must_use]
+    pub fn mention_names(&self) -> Vec<(DiscordUserId, String)> {
+        self.mentions
+            .iter()
+            .filter_map(|a| a.display_name(None).map(|n| (a.id.clone(), n)))
+            .collect()
     }
 }
 
