@@ -10,7 +10,7 @@ use crate::agents::AgentStoreError;
 use crate::auth::{LanguageResolverError, RuleResolverError};
 use crate::colleagues::{ColleagueError, ColleagueId, ColleagueName};
 use crate::runtime::RequestKindPayload;
-use crate::threads::ThreadId;
+use crate::threads::{ThreadId, ThreadParticipants};
 use crate::types::Participant;
 
 #[derive(Debug, Error)]
@@ -68,6 +68,19 @@ pub trait Memory: Send + Sync + fmt::Debug {
         &self,
         thread: Option<ThreadId>,
     ) -> HashMap<ColleagueId, ColleagueName>;
+
+    /// Render the per-turn `<participants>` block (L1 + L2, issue #183) from the
+    /// thread's resolved [`ThreadParticipants`]: who raised the thread and who
+    /// has posted, each enriched with their shared profile. The `viewer` is
+    /// excluded. Enrichment only — any lookup failure degrades to the empty
+    /// string (no block), never failing the turn; the caller folds the result
+    /// into the prompt's per-turn tail.
+    async fn participants_block(
+        &self,
+        participants: &ThreadParticipants,
+        viewer: ColleagueId,
+        overrides: &HashMap<ColleagueId, ColleagueName>,
+    ) -> String;
 }
 
 pub type SharedMemory = Arc<dyn Memory>;

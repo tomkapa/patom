@@ -252,6 +252,18 @@ pub struct NewMessage {
     pub idempotency_key: Option<crate::runtime::IdempotencyKey>,
 }
 
+/// L1 participant context for a thread: who raised it and who has spoken.
+///
+/// `senders` is the distinct set of colleagues that have posted, in first-seen
+/// order, capped by the store. `creator` is the colleague who opened the thread
+/// (may also appear in `senders`). The prompt layer dedups and enriches these
+/// into the `<participants>` block.
+#[derive(Debug, Clone, Default)]
+pub struct ThreadParticipants {
+    pub creator: Option<ColleagueId>,
+    pub senders: Vec<ColleagueId>,
+}
+
 /// Storage trait for the thread feed. Implementations must be thread-safe.
 #[async_trait]
 pub trait ThreadStore: fmt::Debug + Send + Sync {
@@ -404,6 +416,15 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
             .await?
             .into_messages())
     }
+
+    /// L1 participant context for `thread` (issue #183): who raised it and the
+    /// distinct people who have posted, for the `<participants>` prompt block.
+    /// Privileged read — the agent worker is org-global within its org; the
+    /// caller scopes by already holding the thread. Senders are capped.
+    async fn thread_participants(
+        &self,
+        thread: ThreadId,
+    ) -> Result<ThreadParticipants, ThreadError>;
 
     /// Build `agent`'s bounded LLM context for `thread`, returning only rows with
     /// `seq > since` (everything older is assumed folded into a compaction

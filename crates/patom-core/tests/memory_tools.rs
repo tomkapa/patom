@@ -75,6 +75,11 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
         agents,
         prompt_cache,
         colleagues,
+        Arc::new(patom::colleagues::PgProfileStore::new(
+            pool.clone(),
+            clock.clone(),
+            common::embedding::FakeEmbeddingProvider::shared(),
+        )),
         roster_cache,
         Arc::new(patom::colleagues::NoThreadDisplayNames),
         loader.clone(),
@@ -489,6 +494,11 @@ async fn handle_round_trips_through_session_cache(pool: PgPool) {
         agents,
         AgentPromptCache::new(2, Duration::from_mins(1), SystemClock::shared()),
         Arc::new(patom::colleagues::PgColleagueStore::new(pool.clone())),
+        Arc::new(patom::colleagues::PgProfileStore::new(
+            pool.clone(),
+            SystemClock::shared(),
+            common::embedding::FakeEmbeddingProvider::shared(),
+        )),
         patom::colleagues::ColleagueRosterCache::new(
             16,
             Duration::from_mins(1),

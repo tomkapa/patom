@@ -29,7 +29,7 @@ crate::uuid_newtype! {
 /// Role-shaped agent name (doc/agent_discovery_plan.md §6).
 ///
 /// Globally unique on `lower(name)`; the model addresses peers by this name
-/// in `send_message` and `search_agents`, and the renderer surfaces it in
+/// in `send_message` and `search_colleague`, and the renderer surfaces it in
 /// the `<colleagues>` block and in `<memory>` Collaborator entries. The wire
 /// label is preserved as-is; case-insensitivity is enforced by the
 /// `agents_name_lower_unique` index.
@@ -152,7 +152,7 @@ impl fmt::Debug for AgentSystemPrompt {
 /// agent is for (doc/agent_discovery_plan.md §5).
 ///
 /// Required, non-empty. Distinct from [`AgentSystemPrompt`]: this is for
-/// *being found* (embedded for `search_agents`); the system prompt is for
+/// *being found* (embedded for `search_colleague`); the system prompt is for
 /// *being the agent*. The two surfaces evolve for different reasons —
 /// description is a clean positive statement of role; the system prompt
 /// can carry negations, examples, style guidance that hurt embedding
@@ -222,18 +222,6 @@ impl<'de> Deserialize<'de> for AgentDescription {
         let raw = String::deserialize(deserializer)?;
         Self::try_from(raw).map_err(serde::de::Error::custom)
     }
-}
-
-/// Slim `(id, name, description)` projection for the `search_agents` tool.
-///
-/// Distinct from [`AgentRecord`] so similarity search does not pay the
-/// round-trip / decode cost for `system_prompt` (up to 64 KiB), the MCP
-/// allowlist, and the timestamp columns.
-#[derive(Debug, Clone)]
-pub struct AgentCard {
-    pub id: AgentId,
-    pub name: AgentName,
-    pub description: AgentDescription,
 }
 
 /// Snapshot of a single row in the `agents` table.

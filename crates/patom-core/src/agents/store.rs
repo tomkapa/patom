@@ -10,7 +10,7 @@ use crate::types::AvatarUrl;
 
 use super::error::AgentStoreError;
 use super::types::{
-    AgentCard, AgentDescription, AgentId, AgentName, AgentRecord, AgentSeed, AgentSystemPrompt,
+    AgentDescription, AgentId, AgentName, AgentRecord, AgentSeed, AgentSystemPrompt,
     AllowedMcpTools,
 };
 
@@ -159,20 +159,6 @@ pub trait AgentStore: fmt::Debug + Send + Sync {
         &self,
         org_id: OrgId,
     ) -> Result<Vec<(AgentId, AgentName)>, AgentStoreError>;
-
-    /// Top-K cosine-similarity search over agents' description
-    /// embeddings, restricted to rows in the viewer's org. Returns slim
-    /// cards sorted by descending similarity, capped at `k`, with
-    /// `viewer` excluded at the SQL boundary so the caller never pays
-    /// decode cost for the self row. Rows whose embedding is null (not
-    /// yet backfilled) are skipped — the caller treats an empty result
-    /// as a degraded layer rather than an error.
-    async fn search_by_description(
-        &self,
-        embedding: &[f32],
-        viewer: AgentId,
-        k: usize,
-    ) -> Result<Vec<AgentCard>, AgentStoreError>;
 }
 
 /// Cheap-clone handle so collaborators can hold the store without a generic

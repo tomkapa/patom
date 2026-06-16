@@ -80,7 +80,7 @@ struct AgentResponse {
     name: String,
     system_prompt: String,
     /// Operator-curated, model-facing one-sentence blurb embedded for
-    /// `search_agents`. Always present — the column is `NOT NULL`.
+    /// `search_colleague`. Always present — the column is `NOT NULL`.
     description: String,
     /// Per-agent MCP tool allowlist, keyed by server id. `null` value =
     /// every tool from that server; otherwise the explicit list of remote
@@ -131,7 +131,7 @@ struct CreateAgentRequest {
     name: String,
     system_prompt: String,
     /// Required, non-empty (doc/agent_discovery_plan.md §5.2). Embedded
-    /// for `search_agents`.
+    /// for `search_colleague`.
     description: String,
     /// MCP tools the new agent may use, keyed by server id. `null` =
     /// every tool from that server; otherwise the explicit list of remote
@@ -470,7 +470,7 @@ impl AgentRowForList {
 // index from migration 25). Joined to `mcp_servers` to project the
 // per-row connection id + alias. Scoped to MCP traffic by
 // `tc.mcp_server_id IS NOT NULL` — `tool_calls` is shared with system
-// tools (send_message, search_agents, …) that record a null
+// tools (send_message, search_colleague, …) that record a null
 // `mcp_server_id`, and rows from deleted connections (`ON DELETE SET
 // NULL`) collapse to the same shape. Both drop out here so the per-agent
 // "Recent activity" panel renders only resolvable connection chips.
@@ -534,7 +534,7 @@ async fn list_agent_tool_calls(
     let mut tx = crate::auth::begin_as(&state.pool, &principal).await?;
     // `tc.mcp_server_id IS NOT NULL` scopes the audit list to MCP traffic.
     // The `tool_calls` table is shared with system tools (send_message,
-    // search_agents, …) which record rows with a null `mcp_server_id`; the
+    // search_colleague, …) which record rows with a null `mcp_server_id`; the
     // per-agent "Recent activity" panel surfaces connection chips, so
     // those rows are filtered out at the source. Rows whose connection was
     // deleted (`ON DELETE SET NULL`) also drop out — acceptable because

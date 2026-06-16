@@ -43,4 +43,17 @@ impl Memory for StaticMemory {
     {
         std::collections::HashMap::new()
     }
+
+    async fn participants_block(
+        &self,
+        _participants: &crate::threads::ThreadParticipants,
+        _viewer: crate::colleagues::ColleagueId,
+        _overrides: &std::collections::HashMap<
+            crate::colleagues::ColleagueId,
+            crate::colleagues::ColleagueName,
+        >,
+    ) -> String {
+        // The static prompt carries no participant context.
+        String::new()
+    }
 }

@@ -297,10 +297,11 @@ impl Agent {
         // the feed (sender attribution) and the system prompt (roster) name
         // people identically. Empty for web/background threads.
         let overrides = self.memory().display_overrides(Some(thread)).await;
-        // The bounded-context assembly (windowing floor + rolling summary, #182)
-        // and the system-prompt compose hit independent stores; run them
-        // concurrently so the turn pays one round-trip latency, not two.
-        let (ctx, memory_system) = tokio::join!(
+        // The bounded-context assembly (windowing floor + rolling summary, #182),
+        // the system-prompt compose, and the thread's participant roll-up hit
+        // independent stores; run all three concurrently so the turn pays one
+        // round-trip latency, not three.
+        let (ctx, memory_system, participants) = tokio::join!(
             self.resolve_agent_context(
                 thread,
                 agent_id,
@@ -311,6 +312,7 @@ impl Agent {
             ),
             self.memory()
                 .system_prompt_for_thread(viewer, &overrides, kind_payload),
+            self.threads().thread_participants(thread),
         );
         let ctx = ctx?;
         let memory_system = memory_system?;
@@ -328,6 +330,23 @@ impl Agent {
         );
         span.record("patom.history.count", messages.len());
 
+        // L1 + L2: the `<participants>` block — who raised the thread and who
+        // has posted, enriched with their shared profiles. The participant read
+        // above overlapped the feed/prompt reads; only the (cache-warm) render
+        // happens here. A thread-store outage degrades to empty (enrichment, not
+        // load-bearing); the block render degrades independently.
+        let participants_block = match participants {
+            Ok(participants) => {
+                self.memory()
+                    .participants_block(&participants, viewer_colleague, &overrides)
+                    .await
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "thread.participants.error");
+                String::new()
+            }
+        };
+
         // Fold the agent's per-thread todo list (keyed on `state_id`, the
         // participation id) into the system-prompt tail. Empty / missing-store
         // cases render to the empty string, so `format!` leaves no trailing
@@ -342,22 +361,28 @@ impl Agent {
             }
             None => String::new(),
         };
-        // Fold the rolling compaction summary into the protected head (#182):
-        // old context as a system section, recent context as the verbatim tail.
-        let system: std::sync::Arc<str> = if todos_block.is_empty() && ctx.summary.is_none() {
-            memory_system // zero-copy fast path
-        } else {
-            let mut s = memory_system.to_string();
-            if !todos_block.is_empty() {
-                s.push('\n');
-                s.push_str(&todos_block);
-            }
-            if let Some(summary) = &ctx.summary {
-                s.push_str("\n\n## Earlier conversation (compacted)\n");
-                s.push_str(summary.as_str());
-            }
-            std::sync::Arc::from(s.as_str())
-        };
+        // The per-turn tail blocks sit after `<memory>`, so they never perturb
+        // the org-stable prefix that drives prompt-cache hits: the `<participants>`
+        // block, then the todo list, then the rolling compaction summary (#182).
+        let system: std::sync::Arc<str> =
+            if participants_block.is_empty() && todos_block.is_empty() && ctx.summary.is_none() {
+                memory_system // zero-copy fast path
+            } else {
+                let mut s = memory_system.to_string();
+                if !participants_block.is_empty() {
+                    s.push('\n');
+                    s.push_str(&participants_block);
+                }
+                if !todos_block.is_empty() {
+                    s.push('\n');
+                    s.push_str(&todos_block);
+                }
+                if let Some(summary) = &ctx.summary {
+                    s.push_str("\n\n## Earlier conversation (compacted)\n");
+                    s.push_str(summary.as_str());
+                }
+                std::sync::Arc::from(s.as_str())
+            };
         span.record("patom.system_prompt.bytes", system.len());
 
         let tools = self.tools().specs_for(kind_payload.kind());

@@ -68,7 +68,7 @@ pub fn render_speaking_with(counterpart: &ColleagueRef) -> String {
 ///
 /// Returns `String::new()` when the org has no peers visible to the viewer (the
 /// empty envelope is omitted entirely). Above [`MAX_ROSTER_INLINE`] peers the
-/// block degrades to a one-line notice pointing the model at `search_agents`.
+/// block degrades to a one-line notice pointing the model at `search_colleague`.
 /// `overrides` substitutes a platform-specific display *label* for a
 /// colleague (e.g. a Slack handle in a Slack-rooted thread), keyed by the
 /// canonical [`ColleagueId`]. Identity is unchanged — only the rendered
@@ -91,7 +91,7 @@ pub fn render_roster_block<S: std::hash::BuildHasher>(
         out.push_str(ROSTER_TAG_OPEN);
         let _ = write!(
             &mut out,
-            "{n} colleagues available; use `search_agents` to find one.",
+            "{n} colleagues available; use `search_colleague` to find one.",
             n = peers.len(),
         );
         out.push_str(ROSTER_TAG_CLOSE);
@@ -113,7 +113,7 @@ pub fn render_roster_block<S: std::hash::BuildHasher>(
     out.push_str(
         "Your colleagues. Address one with `send_message` (by id), record what \
          you learn about one with `memory_write` (pass its id as `subject`), or \
-         look one up with `search_agents`:\n",
+         look one up with `search_colleague`:\n",
     );
     for (i, c) in peers.iter().enumerate() {
         if i > 0 {
@@ -226,7 +226,7 @@ mod tests {
             roster.push(cref(ColleagueKind::Human, &format!("person_{i:03}")));
         }
         let block = render_roster_block(&roster, viewer, &HashMap::new());
-        assert!(block.contains("search_agents"), "degrades: {block}");
+        assert!(block.contains("search_colleague"), "degrades: {block}");
         assert!(!block.contains("person_000"), "no inline names: {block}");
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! The recruiter (default agent) reaches for this tool after scoping the
 //! role with the customer, ruling out the existing `<colleagues>` block + top
-//! `search_agents` result, and getting an explicit "go" on the draft.
+//! `search_colleague` result, and getting an explicit "go" on the draft.
 //!
 //! Per design, the tool:
 //! * Always writes `is_default = false` — promoting the default stays an
@@ -36,7 +36,7 @@ use crate::types::ToolName;
 
 const TOOL_NAME: &str = "create_agent";
 const TOOL_DESCRIPTION: &str = "Hire a new agent into the team. Use this only after \
-    you've ruled out the names in your `<colleagues>` block and the top `search_agents` \
+    you've ruled out the names in your `<colleagues>` block and the top `search_colleague` \
     result, and only after the customer has explicitly approved the draft.\n\
     \n\
     Inputs:\n\
@@ -46,7 +46,7 @@ const TOOL_DESCRIPTION: &str = "Hire a new agent into the team. Use this only af
       what each peer is good at, the escalation order, and the kinds of things the \
       hire should pay attention to and remember as they work.\n\
     - `description`: one sentence other agents read when deciding whether to delegate \
-      here. Operator-facing, model-readable; embedded for `search_agents`.\n\
+      here. Operator-facing, model-readable; embedded for `search_colleague`.\n\
     - `allowed_mcp_tools` (optional): object mapping MCP catalog id \
       (e.g. \"notion\", \"linear\" — see `search_tools`) to either \
       `null` (= every tool from that catalog's wired connection) or an \

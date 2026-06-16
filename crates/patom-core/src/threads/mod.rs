@@ -18,5 +18,5 @@ pub use pg_store::PgThreadStore;
 pub use traits::{
     AgentThreadId, ContextTail, FeedMessage, MessageKind, NewMessage, RootSummary, Seq,
     SharedThreadStore, TailRow, ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId,
-    ThreadScope, ThreadStore,
+    ThreadParticipants, ThreadScope, ThreadStore,
 };

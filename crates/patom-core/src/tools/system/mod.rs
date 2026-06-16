@@ -15,8 +15,10 @@
 //!   [`CancelScheduledTaskTool`]. Persist a future wake-up; the
 //!   `ScheduledTaskScheduler` enqueues a `prompt_requests` row at fire
 //!   time so the agent receives a fresh turn.
-//! * **Agents** — [`SearchAgentsTool`] for discovery; [`CreateAgentTool`]
-//!   for hiring (the recruiter's primary capability).
+//! * **Colleagues** — [`SearchColleagueTool`] for discovery (agents + profiled
+//!   humans, one ranked list); [`CreateAgentTool`] for hiring (the recruiter's
+//!   primary capability); [`ProfileWriteTool`] to record a colleague's shared
+//!   role/expertise/preferences on the org board.
 //! * **Built-in capabilities** — [`WebFetchTool`] and [`WebSearchTool`].
 //!
 //! Registration lives in the composition root (`src/app.rs`) — there is
@@ -26,9 +28,10 @@
 
 mod create_agent;
 mod memory;
+mod profile_write;
 mod request_user_wire_mcp;
 mod scheduling;
-mod search_agents;
+mod search_colleague;
 mod search_tools;
 mod send_message;
 pub mod todos;
@@ -40,9 +43,10 @@ pub use memory::{
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
     RecallTool,
 };
+pub use profile_write::ProfileWriteTool;
 pub use request_user_wire_mcp::RequestUserWireMcpTool;
 pub use scheduling::{CancelScheduledTaskTool, ListScheduledTasksTool, ScheduleTaskTool};
-pub use search_agents::SearchAgentsTool;
+pub use search_colleague::SearchColleagueTool;
 pub use search_tools::SearchToolsTool;
 pub use send_message::SendMessageTool;
 pub use todos::{
