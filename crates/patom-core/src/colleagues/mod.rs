@@ -33,9 +33,10 @@ pub use limits::{
 pub use overrides::{NoThreadDisplayNames, SharedThreadDisplayNames, ThreadDisplayNames};
 pub use pg_store::{PgColleagueStore, resolve_agent_colleague, resolve_user_colleague};
 pub use profile::{
-    ColleagueMatch, ColleagueProfile, Expertise, MAX_EXPERTISE, MAX_PREFERENCES, MAX_PROFILE_FETCH,
-    MAX_PROFILE_TEXT, MAX_ROLE, PROFILE_SNIPPET_LEN, PgProfileStore, Preferences, ProfileError,
-    ProfileStore, ProfileText, Role, SEARCH_COLLEAGUE_K, SharedProfileStore,
+    ColleagueMatch, ColleagueProfile, DEFAULT_SEARCH_COLLEAGUE_K, Expertise, MAX_EXPERTISE,
+    MAX_PREFERENCES, MAX_PROFILE_FETCH, MAX_PROFILE_TEXT, MAX_ROLE, PROFILE_SNIPPET_LEN,
+    PgProfileStore, Preferences, ProfileError, ProfileStore, ProfileText, Role, SEARCH_COLLEAGUE_K,
+    SharedProfileStore,
 };
 pub use render::{
     ROSTER_TAG_CLOSE, ROSTER_TAG_OPEN, SPEAKING_WITH_TAG_CLOSE, SPEAKING_WITH_TAG_OPEN,

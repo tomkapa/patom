@@ -13,8 +13,8 @@ mod types;
 
 pub use error::ProfileError;
 pub use limits::{
-    MAX_EXPERTISE, MAX_PREFERENCES, MAX_PROFILE_FETCH, MAX_PROFILE_TEXT, MAX_ROLE,
-    PROFILE_SNIPPET_LEN, SEARCH_COLLEAGUE_K,
+    DEFAULT_SEARCH_COLLEAGUE_K, MAX_EXPERTISE, MAX_PREFERENCES, MAX_PROFILE_FETCH,
+    MAX_PROFILE_TEXT, MAX_ROLE, PROFILE_SNIPPET_LEN, SEARCH_COLLEAGUE_K,
 };
 pub use pg_store::PgProfileStore;
 pub use store::{ProfileStore, SharedProfileStore};

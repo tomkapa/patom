@@ -336,7 +336,7 @@ async fn lists_tool_calls_for_agent_across_connections_with_server_alias(pool: P
 
 #[sqlx::test]
 async fn excludes_non_mcp_tool_calls(pool: PgPool) {
-    // System tools (send_message, search_agents, …) record audit rows with
+    // System tools (send_message, search_colleague, …) record audit rows with
     // a null mcp_server_id. The per-agent "Recent activity" panel only
     // surfaces MCP traffic, so the endpoint must filter those rows out at
     // the SQL level — otherwise the cursor cap shrinks unpredictably and
@@ -374,7 +374,7 @@ async fn excludes_non_mcp_tool_calls(pool: PgPool) {
     })
     .await;
     insert_tool_call(ToolCallSeed {
-        tool_name: "search_agents",
+        tool_name: "search_colleague",
         started_at: now - chrono::Duration::seconds(2),
         ..base
     })

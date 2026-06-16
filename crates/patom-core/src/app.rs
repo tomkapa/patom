@@ -58,7 +58,7 @@ use crate::scheduling::{
 use crate::tools::system::{
     CancelScheduledTaskTool, CreateAgentTool, ListScheduledTasksTool, MemoryForgetTool,
     MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool, PgSessionTodoStore,
-    ProfileWriteTool, RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchAgentsTool,
+    ProfileWriteTool, RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchColleagueTool,
     SearchToolsTool, SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool,
     WebFetchTool, WebSearchTool,
 };
@@ -562,8 +562,8 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.embedding_provider.clone(),
         )))
         .with(Arc::new(TodoWriteTool::new(deps.todo_tools)))
-        .with(Arc::new(SearchAgentsTool::new(
-            deps.agents.clone(),
+        .with(Arc::new(SearchColleagueTool::new(
+            deps.profiles.clone(),
             deps.embedding_provider,
         )))
         .with(Arc::new(CreateAgentTool::new(

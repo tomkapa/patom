@@ -21,7 +21,7 @@ pub const COLLEAGUE_NAME_MAX_LEN: usize = 200;
 pub const COLLEAGUE_ROSTER_FETCH_MAX: i64 = 1024;
 
 /// Max colleagues rendered inline in the `<colleagues>` roster block before it
-/// degrades to a one-line `search_agents` affordance (§5).
+/// degrades to a one-line `search_colleague` affordance (§5).
 ///
 /// Twice the former agent-only inline cap (128) because the roster now folds
 /// humans in alongside agents, so an org's inline list is naturally larger.

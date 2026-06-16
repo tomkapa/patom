@@ -41,3 +41,9 @@ pub const PROFILE_SNIPPET_LEN: usize = 160;
 /// Matches the agent-search bound (1..=8) so the unified search returns a
 /// focused, actable shortlist rather than a roster dump.
 pub const SEARCH_COLLEAGUE_K: u8 = 8;
+
+/// Default `search_colleague` result count when the model omits `limit`.
+///
+/// Four is enough to compare a shortlist without flooding the turn; the model
+/// raises it (up to [`SEARCH_COLLEAGUE_K`]) when it wants a wider net.
+pub const DEFAULT_SEARCH_COLLEAGUE_K: u8 = 4;

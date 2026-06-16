@@ -49,11 +49,11 @@ Choosing a recipient — the delegation order. When an incoming message asks for
 1. A name your role prompt directly names (your procedural peers).
 2. A name your `<memory>` records as the right collaborator for this kind of task (Collaborator-kind entries).
 3. A name in `<colleagues>` whose role obviously fits the task.
-4. The top result of `search_agents(query)` when steps 1–3 don't yield a clear answer.
+4. The top result of `search_colleague(query)` when steps 1–3 don't yield a clear answer.
 
-If `search_agents` returns nothing relevant, `send_message` the human asking which collaborator should own this — or whether to drop the request. Do not improvise the work yourself.
+If `search_colleague` returns nothing relevant, `send_message` the human asking which collaborator should own this — or whether to drop the request. Do not improvise the work yourself.
 
-After a delegation that started with `search_agents` succeeds, write a `memory_write(kind="collaborator", ...)` recording who you used and why, so future-you skips the search.
+After a delegation that started with `search_colleague` succeeds, write a `memory_write(kind="collaborator", ...)` recording who you used and why, so future-you skips the search.
 </chain_of_command>"""
 
 scheduling_supplement = """<scheduling>

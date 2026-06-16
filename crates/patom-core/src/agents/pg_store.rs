@@ -8,7 +8,7 @@
 //! `description` is embedded synchronously before opening a transaction on every
 //! create / description-update path (doc/agent_discovery_plan.md §5.3) — same
 //! pattern the memory store uses (CLAUDE.md §5). The embedding backs
-//! `search_agents`; a row whose description embed call fails never lands, so
+//! `search_colleague`; a row whose description embed call fails never lands, so
 //! discovery cannot silently skip an agent.
 
 use std::fmt;
@@ -27,7 +27,7 @@ use super::error::AgentStoreError;
 use super::prompt_versions::PromptVersionId;
 use super::store::{AgentStore, AgentUpdate, NewAgent};
 use super::types::{
-    AgentCard, AgentDescription, AgentId, AgentName, AgentRecord, AgentSeed, AgentSystemPrompt,
+    AgentDescription, AgentId, AgentName, AgentRecord, AgentSeed, AgentSystemPrompt,
     AllowedMcpTools,
 };
 use crate::types::AvatarUrl;
@@ -92,7 +92,7 @@ impl PgAgentStore {
 
     /// Embed `description` synchronously. Errors propagate so the
     /// mutation aborts before the row lands; no `<colleagues>` entry is
-    /// discoverable via `search_agents` without a vector to match.
+    /// discoverable via `search_colleague` without a vector to match.
     async fn embed(&self, description: &str) -> Result<Vec<f32>, AgentStoreError> {
         embed_one(self.embeddings.as_ref(), description)
             .await
@@ -419,54 +419,6 @@ impl AgentStore for PgAgentStore {
         let mut out = Vec::with_capacity(rows.len());
         for (id, name) in rows {
             out.push((id, AgentName::try_from(name)?));
-        }
-        Ok(out)
-    }
-
-    async fn search_by_description(
-        &self,
-        embedding: &[f32],
-        viewer: AgentId,
-        k: usize,
-    ) -> Result<Vec<AgentCard>, AgentStoreError> {
-        if embedding.is_empty() || k == 0 {
-            return Ok(Vec::new());
-        }
-        let limit = i64::try_from(k).unwrap_or(i64::MAX);
-        let embedding_lit = pg_vector::encode(embedding);
-
-        // Caller-excluded at the SQL boundary so the self row never lands
-        // in the projection — keeps the three caller-excluded surfaces
-        // (`<colleagues>`, `search_agents`, `send_message`) consistent. The
-        // org-scope subquery restricts results to the viewer's tenant.
-        let rows = run_privileged::<Vec<(AgentId, String, String)>, AgentStoreError>(
-            &self.pool,
-            async |tx| {
-                Ok(sqlx::query_as(
-                    "SELECT id, name, description \
-                     FROM agents \
-                     WHERE description_embedding IS NOT NULL \
-                       AND id <> $3 \
-                       AND org_id = (SELECT org_id FROM agents WHERE id = $3) \
-                     ORDER BY description_embedding <=> $1::vector ASC \
-                     LIMIT $2",
-                )
-                .bind(embedding_lit)
-                .bind(limit)
-                .bind(viewer)
-                .fetch_all(&mut **tx)
-                .await?)
-            },
-        )
-        .await?;
-
-        let mut out = Vec::with_capacity(rows.len());
-        for (id, name, description) in rows {
-            out.push(AgentCard {
-                id,
-                name: AgentName::try_from(name)?,
-                description: AgentDescription::try_from(description)?,
-            });
         }
         Ok(out)
     }
