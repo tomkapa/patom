@@ -11,6 +11,13 @@
 /// [`ThreadStore::list_threads`]: super::ThreadStore::list_threads
 pub const MAX_THREAD_LIST: i64 = 200;
 
+/// Upper bound on the channels listed in an agent's `<channels>` context block.
+///
+/// A roster this long is already past what fits inline in a turn prompt (#178);
+/// the renderer degrades to a "use a tool to list" pointer past it, mirroring
+/// `<colleagues>`. Bounds the `channels_for_colleague` scan too.
+pub const MAX_CHANNELS_FOR_COLLEAGUE: i64 = 100;
+
 /// Upper bound on a single [`ThreadStore::feed`] page (the G2 flat-feed read).
 ///
 /// Caps the rows one HTTP history read ships to the FE (CLAUDE.md §5),

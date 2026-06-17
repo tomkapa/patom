@@ -24,6 +24,17 @@ use crate::clock::SharedClock;
 use super::error::LarkError;
 use super::types::{LarkChatId, TenantKey};
 
+/// Reverse projection used by the outbound router: where a Patom channel lives
+/// on Lark.
+///
+/// The inverse of [`LarkChannelStore::ensure_channel`]'s mapping, keyed on the
+/// `lark_channels.channel_id` unique index.
+#[derive(Debug, Clone)]
+pub struct LarkChannelBinding {
+    pub tenant_key: TenantKey,
+    pub chat_id: LarkChatId,
+}
+
 #[async_trait]
 pub trait LarkChannelStore: fmt::Debug + Send + Sync {
     /// Get-or-create the Patom channel mirroring a Lark chat, and ensure
@@ -37,6 +48,14 @@ pub trait LarkChannelStore: fmt::Debug + Send + Sync {
         chat_id: &LarkChatId,
         user_id: UserId,
     ) -> Result<ChannelId, LarkError>;
+
+    /// Reverse lookup used by the outbound router: given a Patom `channel_id`,
+    /// return the Lark `(tenant_key, chat_id)` it mirrors — or `None` when this
+    /// channel is not Lark-backed (it lives only on the web / another surface).
+    async fn lookup_by_channel(
+        &self,
+        channel_id: ChannelId,
+    ) -> Result<Option<LarkChannelBinding>, LarkError>;
 }
 
 pub type SharedLarkChannelStore = Arc<dyn LarkChannelStore>;
@@ -116,6 +135,29 @@ impl LarkChannelStore for PgLarkChannelStore {
             Ok(channel_id)
         })
         .await
+    }
+
+    async fn lookup_by_channel(
+        &self,
+        channel_id: ChannelId,
+    ) -> Result<Option<LarkChannelBinding>, LarkError> {
+        type Row = (String, String);
+        let row: Option<Row> = run_privileged::<Option<Row>, LarkError>(&self.pool, async |tx| {
+            Ok(sqlx::query_as(
+                "SELECT tenant_key, chat_id FROM lark_channels WHERE channel_id = $1",
+            )
+            .bind(channel_id)
+            .fetch_optional(&mut **tx)
+            .await?)
+        })
+        .await?;
+        let Some((tenant_key, chat_id)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(LarkChannelBinding {
+            tenant_key: TenantKey::try_from(tenant_key)?,
+            chat_id: LarkChatId::try_from(chat_id)?,
+        }))
     }
 }
 

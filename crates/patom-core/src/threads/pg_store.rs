@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::agents::AgentId;
 use crate::auth::{Caller, UserId, run_as_user, run_privileged};
-use crate::channels::ChannelId;
+use crate::channels::{ChannelId, ChannelName};
 use crate::clock::SharedClock;
 use crate::colleagues::{ColleagueId, ColleagueKind, ColleagueName};
 use crate::provider::{AssistantContent, ChatMessage, ToolCallId, UserContent};
@@ -24,13 +24,13 @@ use crate::types::{MessageSender, Participant};
 
 use super::error::ThreadError;
 use super::limits::{
-    MAX_CONTEXT_MESSAGES, MAX_THREAD_FEED, MAX_THREAD_LIST, MAX_TOOL_RESULT_CHARS,
-    ROOT_SNIPPET_MAX_CHARS,
+    MAX_CHANNELS_FOR_COLLEAGUE, MAX_CONTEXT_MESSAGES, MAX_THREAD_FEED, MAX_THREAD_LIST,
+    MAX_TOOL_RESULT_CHARS, ROOT_SNIPPET_MAX_CHARS,
 };
 use super::traits::{
-    AgentThreadId, ContextTail, FeedMessage, MessageKind, NewMessage, RootSummary, Seq, TailRow,
-    ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId, ThreadParticipants, ThreadScope,
-    ThreadStore,
+    AgentThreadId, ChannelRef, ContextTail, FeedMessage, MessageKind, NewMessage, RootSummary, Seq,
+    TailRow, ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId, ThreadParticipants,
+    ThreadScope, ThreadStore,
 };
 
 /// Postgres-backed [`ThreadStore`].
@@ -423,6 +423,103 @@ impl ThreadStore for PgThreadStore {
             })
             .await?;
         row.map(|(ok,)| ok).ok_or(ThreadError::NotFound(thread))
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.colleague_in_channel", fields(patom.channel.id = %channel, patom.colleague.id = %colleague))]
+    async fn colleague_in_channel(
+        &self,
+        channel: ChannelId,
+        colleague: ColleagueId,
+    ) -> Result<bool, ThreadError> {
+        // Union of human (channel_members, joined through the colleague's user)
+        // and agent (channel_agent_members) membership. Privileged — the pair is
+        // fully qualified and the channel's org bounds it.
+        let row: (bool,) = run_privileged::<(bool,), ThreadError>(&self.pool, async |tx| {
+            Ok(sqlx::query_as(
+                "SELECT EXISTS ( \
+                       SELECT 1 FROM channel_agent_members am \
+                       WHERE am.channel_id = $1 AND am.colleague_id = $2 \
+                   ) OR EXISTS ( \
+                       SELECT 1 FROM channel_members m \
+                       JOIN colleagues c ON c.user_id = m.user_id AND c.org_id = m.org_id \
+                       WHERE m.channel_id = $1 AND c.id = $2 \
+                   )",
+            )
+            .bind(channel)
+            .bind(colleague)
+            .fetch_one(&mut **tx)
+            .await?)
+        })
+        .await?;
+        Ok(row.0)
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.channels_for_colleague", fields(patom.colleague.id = %colleague, patom.channel.count = tracing::field::Empty))]
+    async fn channels_for_colleague(
+        &self,
+        org: crate::auth::OrgId,
+        colleague: ColleagueId,
+    ) -> Result<Vec<ChannelRef>, ThreadError> {
+        let rows: Vec<(ChannelId, String)> =
+            run_privileged::<Vec<(ChannelId, String)>, ThreadError>(&self.pool, async |tx| {
+                Ok(sqlx::query_as(
+                    "SELECT ch.id, ch.name FROM channels ch \
+                     WHERE ch.org_id = $1 AND ch.archived_at IS NULL \
+                       AND ( \
+                           EXISTS ( \
+                               SELECT 1 FROM channel_agent_members am \
+                               WHERE am.channel_id = ch.id AND am.colleague_id = $2 \
+                           ) OR EXISTS ( \
+                               SELECT 1 FROM channel_members m \
+                               JOIN colleagues c ON c.user_id = m.user_id AND c.org_id = m.org_id \
+                               WHERE m.channel_id = ch.id AND c.id = $2 \
+                           ) \
+                       ) \
+                     ORDER BY ch.name \
+                     LIMIT $3",
+                )
+                .bind(org)
+                .bind(colleague)
+                .bind(MAX_CHANNELS_FOR_COLLEAGUE)
+                .fetch_all(&mut **tx)
+                .await?)
+            })
+            .await?;
+        tracing::Span::current().record("patom.channel.count", rows.len());
+        rows.into_iter()
+            .map(|(id, name)| {
+                // The name was CHECK-validated on write, so a parse failure here
+                // is a corrupt row, not expected input — surface it as Backend.
+                let name = ChannelName::try_from(name.as_str())
+                    .map_err(|e| ThreadError::Backend(format!("invalid channel name: {e}")))?;
+                Ok(ChannelRef { id, name })
+            })
+            .collect()
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.add_agent_to_channel", fields(patom.channel.id = %channel, patom.colleague.id = %colleague))]
+    async fn add_agent_to_channel(
+        &self,
+        org: crate::auth::OrgId,
+        channel: ChannelId,
+        colleague: ColleagueId,
+    ) -> Result<(), ThreadError> {
+        let now = self.now();
+        run_privileged::<(), ThreadError>(&self.pool, async |tx| {
+            sqlx::query(
+                "INSERT INTO channel_agent_members (channel_id, colleague_id, org_id, added_at) \
+                 VALUES ($1, $2, $3, $4) \
+                 ON CONFLICT (channel_id, colleague_id) DO NOTHING",
+            )
+            .bind(channel)
+            .bind(colleague)
+            .bind(org)
+            .bind(now)
+            .execute(&mut **tx)
+            .await?;
+            Ok(())
+        })
+        .await
     }
 
     #[tracing::instrument(skip_all, name = "thread.feed", fields(patom.thread.id = %thread, patom.feed.count = tracing::field::Empty))]

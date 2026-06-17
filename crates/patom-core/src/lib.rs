@@ -27,6 +27,7 @@ pub mod mcp;
 pub mod memory;
 pub mod observability;
 pub mod orgs;
+pub mod outbound;
 pub mod pg_vector;
 pub mod prompts;
 pub mod provider;

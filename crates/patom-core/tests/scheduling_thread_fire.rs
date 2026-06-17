@@ -142,6 +142,7 @@ async fn fire_creates_thread_and_agent_posts_summary_tagging_owner(pool: PgPool)
             dag.clone(),
             colleagues.clone(),
             sink.clone(),
+            Arc::new(patom::outbound::NoopOutboundRouter),
         )))
         .build();
     let threads_for_factory = threads.clone();
@@ -203,6 +204,7 @@ async fn fire_creates_thread_and_agent_posts_summary_tagging_owner(pool: PgPool)
         queue.clone(),
         threads.clone(),
         colleagues.clone(),
+        Arc::new(patom::outbound::NoopOutboundRouter),
         clock.clone(),
         Duration::from_millis(50),
         None,

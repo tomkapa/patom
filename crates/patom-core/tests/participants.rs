@@ -61,6 +61,10 @@ fn agent_memory(pool: &PgPool) -> AgentMemory {
         Arc::new(Prompts::load()),
         language,
         rule,
+        Arc::new(patom::threads::PgThreadStore::new(
+            pool.clone(),
+            clock.clone(),
+        )),
         clock,
     )
 }
