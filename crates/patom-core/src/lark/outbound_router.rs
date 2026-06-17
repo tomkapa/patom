@@ -105,6 +105,9 @@ impl LarkOutboundRouter {
             .attach(AttachRequest {
                 thread_id: thread,
                 org_id: org,
+                // Proactive delivery has no triggering user; a connect link
+                // here degrades to the web-UI pointer.
+                user_id: None,
                 app_id,
                 // A proactive / continuation post is top-level — no threaded reply.
                 recipient: LarkRecipient::Chat {
@@ -126,6 +129,7 @@ impl LarkOutboundRouter {
             .attach(AttachRequest {
                 thread_id: thread,
                 org_id: org,
+                user_id: None,
                 app_id,
                 recipient: LarkRecipient::Dm { open_id },
             })

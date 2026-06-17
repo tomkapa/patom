@@ -51,7 +51,7 @@ Lark/Discord populate `resume_ctx` and the agent resumes with zero new resume co
 `do_slack_ping` (`mcp.rs:1658`) is dispatched on `slack_ctx.is_some()`. We add
 `lark_ctx` / `discord_ctx` + `do_lark_ping` / `do_discord_ping`. The pending row is in
 table `mcp_oauth_pending` with **all-or-none CHECK constraints** per context group
-(migration 34, renamed 64). Adding columns ⇒ **migration 86** + matching CHECK + matching
+(migration 34, renamed 64). Adding columns ⇒ **migration 89** + matching CHECK + matching
 validation in `PendingCtxRow::into_ctx` (`state_adapter.rs:284`).
 
 ### Platform user id is available at AttachRequest build time, but not threaded
@@ -82,7 +82,7 @@ the attach site. The platform user id itself is **not** needed in claims (it's d
 Lark and Discord are near-identical; build Lark first, then mirror to Discord. Each step
 is red→green→refactor.
 
-### Phase 0 — shared OAuth-callback ping plumbing (migration 86)
+### Phase 0 — shared OAuth-callback ping plumbing (migration 89)
 1. `LarkPingCtx { tenant_key, chat_id, reply_to: Option<..> }` and
    `DiscordPingCtx { application_id, channel_id, reply_to: Option<..> }` in
    `state_adapter.rs`. Add `lark_ctx`/`discord_ctx: Option<..>` to `PatomPendingCtx`.
@@ -140,7 +140,7 @@ is red→green→refactor.
 New:
 - `crates/patom-core/src/lark/connect_link.rs`
 - `crates/patom-core/src/discord/connect_link.rs`
-- `crates/patom-core/migrations/00000000000086_mcp_oauth_pending_chat_ctx.{up,down}.sql`
+- `crates/patom-core/migrations/00000000000089_mcp_oauth_pending_chat_ctx.{up,down}.sql`
 
 Modified:
 - `lark/stream_pump.rs`, `lark/bridge.rs`, `lark/limits.rs`, `lark/mod.rs`

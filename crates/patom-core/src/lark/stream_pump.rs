@@ -69,8 +69,10 @@ pub struct AttachRequest {
     pub org_id: OrgId,
     /// The Patom user who triggered this thread — the shadow-minted owner of
     /// any MCP wiring an agent requests here (embedded in the connect link so
-    /// the OAuth flow installs against the right org/user).
-    pub user_id: UserId,
+    /// the OAuth flow installs against the right org/user). `None` for a
+    /// proactive / scheduled outbound attach with no triggering user; a
+    /// `WireMcpRequest` on such a thread degrades to the web-UI pointer.
+    pub user_id: Option<UserId>,
     /// The bot whose `tenant_access_token` posts the reply.
     pub app_id: LarkAppId,
     /// Where the reply lands.
@@ -370,10 +372,10 @@ fn build_connect_message(
     else {
         return None;
     };
-    // Only OAuth2 catalogs get a signed connect link; the rest point at the
-    // web UI (Lark can't host a secret-entry form).
+    // Only OAuth2 catalogs get a signed connect link; the rest (and any thread
+    // we can't mint a link for — see `build_connect_url`) point at the web UI.
     let url = match auth_kind {
-        McpAuthKind::OAuth2 => Some(build_connect_url(deps, req, catalog_id, *from)),
+        McpAuthKind::OAuth2 => build_connect_url(deps, req, catalog_id, *from),
         McpAuthKind::StaticHeaders | McpAuthKind::None => None,
     };
     Some(render_connect_message(
@@ -389,12 +391,20 @@ fn build_connect_message(
 /// catalog, the resolved Patom `(org, user)` that owns the wiring, the Lark
 /// chat (so the OAuth callback pings back), and the Patom thread + agent (so
 /// the universal auto-continue resumes the right loop).
+///
+/// Returns `None` — degrading to the web-UI pointer — when the link can't be
+/// targeted: a proactive attach with no triggering `user_id`, or a DM
+/// recipient (the ping-back is `chat_id`-keyed, which a DM doesn't carry).
 fn build_connect_url(
     deps: &PumpDeps,
     req: &AttachRequest,
     catalog_id: &McpCatalogId,
     agent_id: AgentId,
-) -> String {
+) -> Option<String> {
+    let user_id = req.user_id?;
+    let LarkRecipient::Chat { chat_id, reply_to } = &req.recipient else {
+        return None;
+    };
     let exp = deps
         .clock
         .now_unix_secs()
@@ -402,16 +412,16 @@ fn build_connect_url(
     let claims = LarkConnectClaims {
         catalog_id: catalog_id.clone(),
         org_id: req.org_id,
-        user_id: req.user_id,
+        user_id,
         app_id: req.app_id.clone(),
-        chat_id: req.chat_id.clone(),
-        reply_to: req.reply_to.clone(),
+        chat_id: chat_id.clone(),
+        reply_to: reply_to.clone(),
         thread_id: req.thread_id,
         agent_id,
     };
     let token = sign_connect(deps.connect_secret.expose().as_bytes(), &claims, exp);
     let base = deps.connect_url_base.trim_end_matches('/');
-    format!("{base}/lark/mcp/connect?token={token}")
+    Some(format!("{base}/lark/mcp/connect?token={token}"))
 }
 
 /// Render a reply for Lark: rewrite inline `@Name` to `<at>`, then prepend an

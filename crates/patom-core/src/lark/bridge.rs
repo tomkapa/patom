@@ -434,7 +434,7 @@ async fn enqueue_and_attach(
         .attach(AttachRequest {
             thread_id,
             org_id: app.org_id,
-            user_id: acting_user_id,
+            user_id: Some(acting_user_id),
             app_id: m.app_id.clone(),
             recipient: LarkRecipient::Chat {
                 chat_id: m.chat_id.clone(),

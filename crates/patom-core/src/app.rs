@@ -1174,7 +1174,7 @@ pub async fn build_server(
                     apps.clone(),
                     directory.clone(),
                     discord_dms,
-                    poster,
+                    poster.clone(),
                     pieces.threads.clone(),
                     pump_handle.clone(),
                 ),

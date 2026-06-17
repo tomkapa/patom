@@ -314,8 +314,10 @@ fn build_connect_message(
     else {
         return None;
     };
+    // Only OAuth2 catalogs get a signed connect link; the rest (and any thread
+    // we can't mint a link for — see `build_connect_url`) point at the web UI.
     let url = match auth_kind {
-        McpAuthKind::OAuth2 => Some(build_connect_url(deps, req, catalog_id, *from)),
+        McpAuthKind::OAuth2 => build_connect_url(deps, req, catalog_id, *from),
         McpAuthKind::StaticHeaders | McpAuthKind::None => None,
     };
     Some(render_connect_message(
@@ -331,12 +333,16 @@ fn build_connect_message(
 /// catalog, the resolved Patom `(org, user)`, the Discord channel (so the
 /// OAuth callback pings back), and the Patom thread + agent (so the universal
 /// auto-continue resumes the right loop).
+///
+/// Returns `None` — degrading to the web-UI pointer — for a proactive attach
+/// with no triggering `user_id` (no owner to install the wiring against).
 fn build_connect_url(
     deps: &PumpDeps,
     req: &AttachRequest,
     catalog_id: &McpCatalogId,
     agent_id: AgentId,
-) -> String {
+) -> Option<String> {
+    let user_id = req.user_id?;
     let exp = deps
         .clock
         .now_unix_secs()
@@ -344,7 +350,7 @@ fn build_connect_url(
     let claims = DiscordConnectClaims {
         catalog_id: catalog_id.clone(),
         org_id: req.org_id,
-        user_id: req.user_id,
+        user_id,
         application_id: req.application_id.clone(),
         container_id: req.container_id.clone(),
         reply_to: req.reply_to.clone(),
@@ -353,7 +359,7 @@ fn build_connect_url(
     };
     let token = sign_connect(deps.connect_secret.expose().as_bytes(), &claims, exp);
     let base = deps.connect_url_base.trim_end_matches('/');
-    format!("{base}/discord/mcp/connect?token={token}")
+    Some(format!("{base}/discord/mcp/connect?token={token}"))
 }
 
 /// Render an outbound reply: rewrite inline `@Name` to `<@id>` (collecting the

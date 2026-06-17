@@ -70,8 +70,10 @@ pub struct AttachRequest {
     pub org_id: OrgId,
     /// The Patom user who triggered this thread — the shadow-minted owner of
     /// any MCP wiring an agent requests here (embedded in the connect link so
-    /// the OAuth flow installs against the right org/user).
-    pub user_id: UserId,
+    /// the OAuth flow installs against the right org/user). `None` for a
+    /// proactive / scheduled outbound attach with no triggering user; a
+    /// `WireMcpRequest` on such a thread degrades to the web-UI pointer.
+    pub user_id: Option<UserId>,
     /// The bot that delivered the trigger — the fallback poster when the
     /// replying agent has no Discord bot of its own.
     pub application_id: super::types::ApplicationId,
@@ -804,7 +806,7 @@ async fn enqueue_and_attach(
         .attach(AttachRequest {
             thread_id,
             org_id: app.org_id,
-            user_id: acting_user_id,
+            user_id: Some(acting_user_id),
             application_id: app.application_id.clone(),
             container_id: conv.container.clone(),
             reply_to: conv.reply_to.clone(),
