@@ -152,7 +152,7 @@ const CHANNEL_FEED_SQL: &str = "SELECT m.created_at, \
      LEFT JOIN users  su ON su.id = sc.user_id \
      WHERE t.channel_id = $1 AND m.kind = 'posted' \
        AND ($2::timestamptz IS NULL OR m.created_at >= $2) \
-     ORDER BY m.created_at DESC \
+     ORDER BY m.created_at DESC, m.id DESC \
      LIMIT $3";
 
 /// `list_threads` page with the timeline enrichment: the root posted row's

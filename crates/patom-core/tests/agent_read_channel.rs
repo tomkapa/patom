@@ -186,6 +186,30 @@ async fn empty_window_returns_benign_note(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn out_of_range_limit_is_rejected_at_the_boundary(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let agent = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
+        .await
+        .expect("agent colleague");
+    let chan = make_channel(&pool, seed.org_id, "engineering").await;
+    add_agent_member(&pool, &seed, chan, agent).await;
+
+    let tool = ReadChannelTool::new(store(&pool));
+    let ctx = agent_ctx(
+        agent_participant(&pool, seed.org_id, seed.agent_id).await,
+        &seed,
+    );
+    let err = tool
+        .execute(json!({ "channel": chan.as_uuid(), "limit": 9999 }), &ctx)
+        .await
+        .expect_err("a limit past the cap is rejected at parse time");
+    assert!(
+        matches!(err, ToolError::Json(_) | ToolError::InvalidInput(_)),
+        "out-of-range limit is a model-correctable parse rejection"
+    );
+}
+
+#[sqlx::test]
 async fn non_agent_caller_is_rejected(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let agent = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)

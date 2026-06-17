@@ -32,7 +32,7 @@ use crate::channels::ChannelId;
 use crate::threads::{
     ChannelFeedRow, DEFAULT_READ_CHANNEL_MESSAGES, MAX_READ_CHANNEL_MESSAGES, SharedThreadStore,
 };
-use crate::types::ToolName;
+use crate::types::{ParseError, ToolName};
 
 use super::super::limits::{TOOL_RESULT_MAX_BYTES, truncate_to_char_boundary};
 use super::super::traits::{Tool, ToolCallContext, ToolError};
@@ -52,6 +52,46 @@ const TOOL_DESCRIPTION: &str = "Read the recent message history of a channel you
     Some lines may read `(no readable content)` — those are messages the bot ingested without \
     text (e.g. when the platform's message-content access isn't granted); summarise what you can.";
 
+/// Row cap for one `read_channel` call. Parsed at the JSON boundary (CLAUDE.md
+/// §1) — holding a `ReadChannelLimit` proves the value is in
+/// `1..=MAX_READ_CHANNEL_MESSAGES`, so the core never sees an out-of-range cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReadChannelLimit(i64);
+
+impl ReadChannelLimit {
+    fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl Default for ReadChannelLimit {
+    fn default() -> Self {
+        // The default is in range by construction (a small positive constant).
+        Self(i64::from(DEFAULT_READ_CHANNEL_MESSAGES))
+    }
+}
+
+impl TryFrom<i64> for ReadChannelLimit {
+    type Error = ParseError;
+    fn try_from(n: i64) -> Result<Self, Self::Error> {
+        if (1..=MAX_READ_CHANNEL_MESSAGES).contains(&n) {
+            Ok(Self(n))
+        } else {
+            Err(ParseError::OutOfRange {
+                field: "read_channel_limit",
+                detail: "1..=MAX_READ_CHANNEL_MESSAGES",
+            })
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ReadChannelLimit {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let n = i64::deserialize(d)?;
+        Self::try_from(n).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct Input {
     /// The channel to read — a member channel from the `<channels>` block.
@@ -60,9 +100,9 @@ struct Input {
     /// recent `limit` messages.
     #[serde(default)]
     since: Option<DateTime<Utc>>,
-    /// Row cap, clamped to `1..=MAX_READ_CHANNEL_MESSAGES`.
+    /// Row cap, validated to `1..=MAX_READ_CHANNEL_MESSAGES` at parse time.
     #[serde(default)]
-    limit: Option<i64>,
+    limit: ReadChannelLimit,
 }
 
 /// Agent channel-history read tool. Holds only the thread store: the membership
@@ -136,6 +176,7 @@ impl ReadChannelTool {
             .colleague_in_channel(input.channel, viewer)
             .await
             .map_err(|e| {
+                tracing::error!(error = ?e, event = "read_channel.membership_check.failed");
                 set_outcome("backend_error");
                 ToolError::Backend(format!("read_channel: membership check: {e}"))
             })?;
@@ -146,15 +187,13 @@ impl ReadChannelTool {
             ));
         }
 
-        let limit = input
-            .limit
-            .unwrap_or_else(|| i64::from(DEFAULT_READ_CHANNEL_MESSAGES))
-            .clamp(1, MAX_READ_CHANNEL_MESSAGES);
+        // `limit` was bounds-validated at the JSON boundary (ReadChannelLimit).
         let rows = self
             .threads
-            .channel_feed(input.channel, input.since, limit)
+            .channel_feed(input.channel, input.since, input.limit.get())
             .await
             .map_err(|e| {
+                tracing::error!(error = ?e, event = "read_channel.channel_feed.failed");
                 set_outcome("backend_error");
                 ToolError::Backend(format!("read_channel: read: {e}"))
             })?;

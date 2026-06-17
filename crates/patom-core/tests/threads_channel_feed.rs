@@ -98,38 +98,33 @@ fn at(h: u32, m: u32) -> DateTime<Utc> {
         .expect("unambiguous")
 }
 
-#[sqlx::test]
-async fn unions_threads_filters_since_and_caps_limit(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
+/// Shared fixture: a digest channel with two threads (ambient + a mention
+/// sub-thread) carrying three human posts at 09:00 / 09:30 / 10:00, plus one
+/// post in an unrelated channel. Returns the store + the digest channel id.
+async fn seeded_channel(pool: &PgPool) -> (PgThreadStore, ChannelId) {
+    let seed = seed_tenant(pool).await;
     let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
-    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+    let human = resolve_user_colleague(pool, seed.org_id, seed.user_id)
         .await
         .expect("human colleague");
 
-    let chan = make_channel(&pool, seed.org_id, "engineering").await;
-    let other = make_channel(&pool, seed.org_id, "random").await;
-    // Two threads in the digest channel (ambient + a mention sub-thread) and one
-    // in an unrelated channel.
-    let t1 = make_thread(&pool, &seed, chan, human).await;
-    let t2 = make_thread(&pool, &seed, chan, human).await;
-    let t_other = make_thread(&pool, &seed, other, human).await;
+    let chan = make_channel(pool, seed.org_id, "engineering").await;
+    let other = make_channel(pool, seed.org_id, "random").await;
+    let t1 = make_thread(pool, &seed, chan, human).await;
+    let t2 = make_thread(pool, &seed, chan, human).await;
+    let t_other = make_thread(pool, &seed, other, human).await;
 
-    post_at(&pool, &seed, t1, 1, Some(human), "earliest", at(9, 0)).await;
-    post_at(&pool, &seed, t2, 1, Some(human), "middle", at(9, 30)).await;
-    post_at(&pool, &seed, t1, 2, Some(human), "latest", at(10, 0)).await;
-    post_at(
-        &pool,
-        &seed,
-        t_other,
-        1,
-        Some(human),
-        "elsewhere",
-        at(9, 45),
-    )
-    .await;
+    post_at(pool, &seed, t1, 1, Some(human), "earliest", at(9, 0)).await;
+    post_at(pool, &seed, t2, 1, Some(human), "middle", at(9, 30)).await;
+    post_at(pool, &seed, t1, 2, Some(human), "latest", at(10, 0)).await;
+    post_at(pool, &seed, t_other, 1, Some(human), "elsewhere", at(9, 45)).await;
 
-    // Whole channel, no floor: both threads unioned, oldest→newest, the other
-    // channel excluded.
+    (store, chan)
+}
+
+#[sqlx::test]
+async fn unions_channel_threads_chronologically_excluding_other_channels(pool: PgPool) {
+    let (store, chan) = seeded_channel(&pool).await;
     let all = store
         .channel_feed(chan, None, 100)
         .await
@@ -140,63 +135,96 @@ async fn unions_threads_filters_since_and_caps_limit(pool: PgPool) {
         vec!["earliest", "middle", "latest"],
         "unions both threads in chronological order, excludes the other channel"
     );
+}
+
+#[sqlx::test]
+async fn resolves_human_author_display_name(pool: PgPool) {
+    let (store, chan) = seeded_channel(&pool).await;
+    let all = store
+        .channel_feed(chan, None, 100)
+        .await
+        .expect("channel feed");
     assert!(
         all.iter().all(|r| r.author.is_some()),
         "human-authored rows resolve a display name"
     );
+}
 
-    // `since` floor drops anything strictly older than the cursor.
+#[sqlx::test]
+async fn since_filter_keeps_rows_at_or_after_cursor(pool: PgPool) {
+    let (store, chan) = seeded_channel(&pool).await;
     let recent = store
         .channel_feed(chan, Some(at(9, 30)), 100)
         .await
         .expect("since feed");
-    let recent_previews: Vec<&str> = recent.iter().map(|r| r.body_preview.as_str()).collect();
+    let previews: Vec<&str> = recent.iter().map(|r| r.body_preview.as_str()).collect();
     assert_eq!(
-        recent_previews,
+        previews,
         vec!["middle", "latest"],
         "since filter keeps rows at/after the cursor"
     );
+}
 
-    // `limit` caps to the most-recent N (still returned oldest→newest).
+#[sqlx::test]
+async fn limit_caps_to_the_newest_rows(pool: PgPool) {
+    let (store, chan) = seeded_channel(&pool).await;
     let capped = store.channel_feed(chan, None, 1).await.expect("limit feed");
     assert_eq!(capped.len(), 1, "limit caps the page");
     assert_eq!(capped[0].body_preview, "latest", "keeps the newest row");
 }
 
 #[sqlx::test]
-async fn body_preview_capped_and_system_author_is_none(pool: PgPool) {
+async fn oversized_body_is_preview_capped_in_sql(pool: PgPool) {
     let seed = seed_tenant(&pool).await;
     let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
     let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
         .await
         .expect("human colleague");
-
     let chan = make_channel(&pool, seed.org_id, "verbose").await;
     let t = make_thread(&pool, &seed, chan, human).await;
 
     let cap = usize::try_from(READ_CHANNEL_BODY_MAX_CHARS).expect("cap fits usize");
-    let long = "x".repeat(cap * 3);
-    post_at(&pool, &seed, t, 1, Some(human), &long, at(9, 0)).await;
-    // A System-authored row (NULL sender) — e.g. a synthetic note — resolves no
-    // display name.
-    post_at(&pool, &seed, t, 2, None, "system speaks", at(9, 1)).await;
+    post_at(
+        &pool,
+        &seed,
+        t,
+        1,
+        Some(human),
+        &"x".repeat(cap * 3),
+        at(9, 0),
+    )
+    .await;
 
     let rows = store
         .channel_feed(chan, None, 100)
         .await
         .expect("channel feed");
-    assert_eq!(rows.len(), 2);
     assert_eq!(
         rows[0].body_preview.chars().count(),
         cap,
         "an oversized body is preview-capped in SQL, not shipped whole"
     );
+}
+
+#[sqlx::test]
+async fn system_sender_row_has_no_author(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
+    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+    let chan = make_channel(&pool, seed.org_id, "system-room").await;
+    let t = make_thread(&pool, &seed, chan, human).await;
+
+    // A System-authored row (NULL sender) — e.g. a synthetic note.
+    post_at(&pool, &seed, t, 1, None, "system speaks", at(9, 0)).await;
+
+    let rows = store
+        .channel_feed(chan, None, 100)
+        .await
+        .expect("channel feed");
     assert!(
-        rows[0].author.is_some(),
-        "the human row keeps its author name"
-    );
-    assert!(
-        rows[1].author.is_none(),
+        rows[0].author.is_none(),
         "a System-sender row has no display name"
     );
 }
