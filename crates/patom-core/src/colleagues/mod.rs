@@ -36,8 +36,9 @@ pub use profile::{
     ColleagueMatch, ColleagueProfile, DEFAULT_SEARCH_COLLEAGUE_K, Expertise, MAX_EXPERTISE,
     MAX_NOTES_PER_PARTICIPANT, MAX_PARTICIPANTS_INLINE, MAX_PREFERENCES, MAX_PROFILE_FETCH,
     MAX_PROFILE_TEXT, MAX_ROLE, PARTICIPANTS_TAG_CLOSE, PARTICIPANTS_TAG_OPEN, PROFILE_SNIPPET_LEN,
-    ParticipantLine, PgProfileStore, Preferences, ProfileError, ProfileStore, ProfileText, Role,
-    SEARCH_COLLEAGUE_K, SharedProfileStore, profile_snippet, render_participants_block,
+    ParticipantLine, ParticipantNote, ParticipantNotes, ParticipantSnippet, PgProfileStore,
+    Preferences, ProfileError, ProfileStore, ProfileText, Role, SEARCH_COLLEAGUE_K,
+    SharedProfileStore, profile_snippet, render_participants_block,
 };
 pub use render::{
     ROSTER_TAG_CLOSE, ROSTER_TAG_OPEN, SPEAKING_WITH_TAG_CLOSE, SPEAKING_WITH_TAG_OPEN,

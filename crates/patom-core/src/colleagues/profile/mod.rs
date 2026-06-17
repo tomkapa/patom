@@ -20,8 +20,8 @@ pub use limits::{
 };
 pub use pg_store::PgProfileStore;
 pub use render::{
-    PARTICIPANTS_TAG_CLOSE, PARTICIPANTS_TAG_OPEN, ParticipantLine, profile_snippet,
-    render_participants_block,
+    PARTICIPANTS_TAG_CLOSE, PARTICIPANTS_TAG_OPEN, ParticipantLine, ParticipantNote,
+    ParticipantNotes, ParticipantSnippet, profile_snippet, render_participants_block,
 };
 pub use store::{ProfileStore, SharedProfileStore};
 pub use types::{ColleagueMatch, ColleagueProfile, Expertise, Preferences, ProfileText, Role};
