@@ -11,7 +11,10 @@ use std::sync::Arc;
 use patom::auth::{Caller, OrgId, UserId};
 use patom::channels::ChannelId;
 use patom::clock::SystemClock;
-use patom::colleagues::{PgColleagueStore, SharedColleagueStore, resolve_user_colleague};
+use patom::colleagues::{
+    ColleagueId, PgColleagueStore, SharedColleagueStore, resolve_agent_colleague,
+    resolve_user_colleague,
+};
 use patom::runtime::{
     PgDagBudget, PgPromptQueue, PgResponseHub, PromptRequestId, RequestKindPayload,
     SharedDagBudget, SharedPromptQueue, SharedResponseSink,
@@ -23,7 +26,9 @@ use serde_json::json;
 use sqlx::PgPool;
 
 mod common;
-use common::pg::{agent_participant, seed_tenant};
+use common::pg::{
+    agent_participant, seed_agent, seed_agent_thread_state, seed_prompt_request, seed_tenant,
+};
 
 /// Insert a second human into the org. The `org_members` trigger mints their
 /// colleague and adds them to `#general` — but NOT to any channel created
@@ -98,7 +103,14 @@ async fn send_to_human_non_member_rejected_no_autoadd(pool: PgPool) {
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
     let sink: SharedResponseSink = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let colleagues: SharedColleagueStore = Arc::new(PgColleagueStore::new(pool.clone()));
-    let tool = SendMessageTool::new(threads.clone(), queue, dag, colleagues, sink);
+    let tool = SendMessageTool::new(
+        threads.clone(),
+        queue,
+        dag,
+        colleagues,
+        sink,
+        Arc::new(patom::outbound::NoopOutboundRouter),
+    );
 
     let ctx = ToolCallContext {
         claim_key: patom::runtime::ClaimKey::from(state.as_uuid()),
@@ -204,7 +216,14 @@ async fn send_message_agent_to_agent_inside_dm_triggers_and_posts(pool: PgPool) 
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
     let sink: SharedResponseSink = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let colleagues: SharedColleagueStore = Arc::new(PgColleagueStore::new(pool.clone()));
-    let tool = SendMessageTool::new(threads.clone(), queue.clone(), dag, colleagues, sink);
+    let tool = SendMessageTool::new(
+        threads.clone(),
+        queue.clone(),
+        dag,
+        colleagues,
+        sink,
+        Arc::new(patom::outbound::NoopOutboundRouter),
+    );
 
     // The specialist's colleague id — addressing is now by id only.
     let second_colleague = patom::colleagues::resolve_agent_colleague(&pool, seed.org_id, second)
@@ -305,7 +324,14 @@ async fn send_message_dm_human_receiver_outside_pair_rejected(pool: PgPool) {
     let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
     let sink: SharedResponseSink = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
     let colleagues: SharedColleagueStore = Arc::new(PgColleagueStore::new(pool.clone()));
-    let tool = SendMessageTool::new(threads.clone(), queue.clone(), dag, colleagues, sink);
+    let tool = SendMessageTool::new(
+        threads.clone(),
+        queue.clone(),
+        dag,
+        colleagues,
+        sink,
+        Arc::new(patom::outbound::NoopOutboundRouter),
+    );
 
     // A real root trigger so the posted egress row's request FK resolves.
     let root = enqueue_root(&queue, &threads, &pool, &seed, thread).await;
@@ -447,7 +473,14 @@ async fn channel_thread_tool(
         .resolve_participation(&caller, thread, seed.agent_id)
         .await
         .expect("participation");
-    let tool = SendMessageTool::new(threads.clone(), queue, dag, colleagues, sink);
+    let tool = SendMessageTool::new(
+        threads.clone(),
+        queue,
+        dag,
+        colleagues,
+        sink,
+        Arc::new(patom::outbound::NoopOutboundRouter),
+    );
 
     let ctx = ToolCallContext {
         claim_key: patom::runtime::ClaimKey::from(state.as_uuid()),
@@ -500,4 +533,199 @@ async fn enqueue_root(
         })
         .await
         .expect("enqueue root")
+}
+
+// --- `to` target (#178) -----------------------------------------------------
+
+/// Build a `send_message` tool wired with real PG stores + a noop router.
+fn build_tool(pool: &PgPool, clock: &patom::clock::SharedClock) -> SendMessageTool {
+    SendMessageTool::new(
+        Arc::new(PgThreadStore::new(pool.clone(), clock.clone())),
+        Arc::new(PgPromptQueue::new(pool.clone(), clock.clone())),
+        Arc::new(PgDagBudget::new(pool.clone())),
+        Arc::new(PgColleagueStore::new(pool.clone())),
+        Arc::new(PgResponseHub::new(pool.clone(), clock.clone())),
+        Arc::new(patom::outbound::NoopOutboundRouter),
+    )
+}
+
+/// A `ToolCallContext` for `seed.agent`, with a real `prompt_requests` row so a
+/// posted feed row satisfies its FK. `thread_id` is `None` — a `to` target does
+/// not read the running thread.
+async fn agent_ctx(pool: &PgPool, seed: &common::pg::Seed) -> ToolCallContext {
+    let state = seed_agent_thread_state(pool, seed.org_id, seed.agent_id).await;
+    let request_id =
+        seed_prompt_request(pool, state, seed.agent_id, seed.org_id, seed.user_id).await;
+    ToolCallContext {
+        claim_key: patom::runtime::ClaimKey::from(state.as_uuid()),
+        thread_id: None,
+        state_id: Some(state),
+        viewer: agent_participant(pool, seed.org_id, seed.agent_id).await,
+        root_request_id: request_id,
+        request_id,
+        kind_payload: RequestKindPayload::Normal {},
+        acting_user_id: seed.user_id,
+        org_id: seed.org_id,
+    }
+}
+
+async fn make_channel(pool: &PgPool, seed: &common::pg::Seed, name: &str) -> ChannelId {
+    let channel = ChannelId::new();
+    sqlx::query(
+        "INSERT INTO channels (id, org_id, name, created_by_user_id, created_at) \
+         VALUES ($1, $2, $3, $4, now())",
+    )
+    .bind(channel)
+    .bind(seed.org_id)
+    .bind(name)
+    .bind(seed.user_id)
+    .execute(pool)
+    .await
+    .expect("create channel");
+    channel
+}
+
+async fn add_agent_member(
+    pool: &PgPool,
+    seed: &common::pg::Seed,
+    channel: ChannelId,
+    agent: ColleagueId,
+) {
+    sqlx::query(
+        "INSERT INTO channel_agent_members (channel_id, colleague_id, org_id, added_at) \
+         VALUES ($1, $2, $3, now())",
+    )
+    .bind(channel)
+    .bind(agent)
+    .bind(seed.org_id)
+    .execute(pool)
+    .await
+    .expect("add agent member");
+}
+
+#[sqlx::test]
+async fn to_channel_member_starts_new_thread(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let clock = SystemClock::shared();
+    let agent_colleague = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
+        .await
+        .expect("agent colleague");
+    let channel = make_channel(&pool, &seed, "eng-room").await;
+    add_agent_member(&pool, &seed, channel, agent_colleague).await;
+
+    let tool = build_tool(&pool, &clock);
+    let ctx = agent_ctx(&pool, &seed).await;
+    tool.execute(
+        json!({ "content": "kicking off here", "to": { "channel": channel } }),
+        &ctx,
+    )
+    .await
+    .expect("member posts to channel");
+
+    let (threads_in_channel,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM threads WHERE channel_id = $1")
+            .bind(channel)
+            .fetch_one(&pool)
+            .await
+            .expect("count threads");
+    assert_eq!(
+        threads_in_channel, 1,
+        "a channel target starts one new thread"
+    );
+
+    let (posted,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM thread_messages m JOIN threads t ON t.id = m.thread_id \
+         WHERE t.channel_id = $1 AND m.kind = 'posted'",
+    )
+    .bind(channel)
+    .fetch_one(&pool)
+    .await
+    .expect("count posted");
+    assert_eq!(posted, 1, "the message landed in the new channel thread");
+}
+
+#[sqlx::test]
+async fn to_channel_non_member_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let clock = SystemClock::shared();
+    // A channel the agent is NOT a member of.
+    let channel = make_channel(&pool, &seed, "secret-room").await;
+
+    let tool = build_tool(&pool, &clock);
+    let ctx = agent_ctx(&pool, &seed).await;
+    let err = tool
+        .execute(
+            json!({ "content": "let me in", "to": { "channel": channel } }),
+            &ctx,
+        )
+        .await
+        .expect_err("non-member agent is rejected");
+    assert!(
+        err.to_string().contains("not a member"),
+        "rejection names the membership gate, got: {err}"
+    );
+
+    let (threads_in_channel,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM threads WHERE channel_id = $1")
+            .bind(channel)
+            .fetch_one(&pool)
+            .await
+            .expect("count threads");
+    assert_eq!(threads_in_channel, 0, "no thread created on rejection");
+}
+
+#[sqlx::test]
+async fn to_dm_human_creates_dm_thread(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let clock = SystemClock::shared();
+    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human colleague");
+
+    let tool = build_tool(&pool, &clock);
+    let ctx = agent_ctx(&pool, &seed).await;
+    tool.execute(
+        json!({ "content": "a quick question", "to": { "dm": human } }),
+        &ctx,
+    )
+    .await
+    .expect("dm to a human");
+
+    let (dm_threads,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM threads WHERE channel_id IS NULL \
+           AND dm_counterpart_colleague_id = $1",
+    )
+    .bind(human)
+    .fetch_one(&pool)
+    .await
+    .expect("count dm threads");
+    assert_eq!(
+        dm_threads, 1,
+        "a dm target opens one DM thread to the human"
+    );
+}
+
+#[sqlx::test]
+async fn to_dm_agent_rejected(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let clock = SystemClock::shared();
+    // A second agent — DM targets must be humans.
+    let other_agent = seed_agent(&pool, seed.org_id, "peer-bot").await;
+    let other_colleague = resolve_agent_colleague(&pool, seed.org_id, other_agent)
+        .await
+        .expect("other agent colleague");
+
+    let tool = build_tool(&pool, &clock);
+    let ctx = agent_ctx(&pool, &seed).await;
+    let err = tool
+        .execute(
+            json!({ "content": "hey peer", "to": { "dm": other_colleague } }),
+            &ctx,
+        )
+        .await
+        .expect_err("an agent dm target is rejected");
+    assert!(
+        err.to_string().contains("must be a human"),
+        "rejection names the human-only DM rule, got: {err}"
+    );
 }

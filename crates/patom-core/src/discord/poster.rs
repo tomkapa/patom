@@ -93,6 +93,16 @@ pub trait DiscordPoster: fmt::Debug + Send + Sync {
     /// Post a reply, chunking to the 2000-char cap. Returns the issued message
     /// ids in order.
     async fn post(&self, req: PostRequest) -> Result<Vec<DiscordMessageId>, DiscordError>;
+
+    /// Open (or fetch the existing) DM channel with `recipient` for `bot`
+    /// (`POST /users/@me/channels`), returning the DM channel snowflake. The
+    /// outbound router (#178, arm 3) binds the returned id so subsequent turns
+    /// post to the same channel without re-opening it.
+    async fn create_dm(
+        &self,
+        application_id: &ApplicationId,
+        recipient: &DiscordUserId,
+    ) -> Result<ContainerId, DiscordError>;
 }
 
 pub type SharedDiscordPoster = Arc<dyn DiscordPoster>;
@@ -150,6 +160,11 @@ struct WireBody<'a> {
     message_reference: Option<WireMessageReference<'a>>,
 }
 
+#[derive(Serialize)]
+struct WireCreateDm<'a> {
+    recipient_id: &'a str,
+}
+
 #[derive(Deserialize)]
 struct WirePostResponse {
     id: String,
@@ -193,6 +208,53 @@ impl DiscordPoster for HttpDiscordPoster {
             ids.push(id);
         }
         Ok(ids)
+    }
+
+    async fn create_dm(
+        &self,
+        application_id: &ApplicationId,
+        recipient: &DiscordUserId,
+    ) -> Result<ContainerId, DiscordError> {
+        if self.limiter.invalid_budget_exhausted() {
+            return Err(DiscordError::RateLimited {
+                retry_after_secs: DISCORD_RETRY_AFTER_CAP_SECS,
+            });
+        }
+        let token = self.tokens.token(application_id).await?;
+        let url = format!("{}/users/@me/channels", self.api_base);
+        let body = serde_json::to_vec(&WireCreateDm {
+            recipient_id: recipient.as_str(),
+        })?;
+        self.limiter.acquire(application_id).await;
+        let send = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bot {}", token.expose()))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send();
+        let resp = match tokio::time::timeout(DISCORD_POST_TIMEOUT, send).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return Err(DiscordError::PostTimeout(DISCORD_POST_TIMEOUT)),
+        };
+        let status = resp.status();
+        if matches!(status.as_u16(), 401 | 403 | 429) {
+            self.limiter.record_invalid();
+        }
+        if !status.is_success() {
+            return Err(DiscordError::PostFailed {
+                status: status.as_u16(),
+                body: read_text(resp).await,
+            });
+        }
+        let bytes = match tokio::time::timeout(DISCORD_POST_TIMEOUT, resp.bytes()).await {
+            Ok(Ok(b)) => b,
+            Ok(Err(e)) => return Err(DiscordError::Http(e)),
+            Err(_) => return Err(DiscordError::PostTimeout(DISCORD_POST_TIMEOUT)),
+        };
+        let parsed: WirePostResponse = serde_json::from_slice(&bytes)?;
+        Ok(ContainerId::try_from(parsed.id)?)
     }
 }
 
@@ -346,13 +408,18 @@ fn backoff(attempt: u8) -> Duration {
 /// Test poster that records every request and returns stub ids.
 pub struct FakeDiscordPoster {
     inner: Mutex<Vec<PostRequest>>,
+    dms: Mutex<Vec<(ApplicationId, DiscordUserId)>>,
 }
+
+/// The deterministic DM channel snowflake the fake returns from `create_dm`.
+const FAKE_DM_CHANNEL: &str = "900000000000000001";
 
 impl FakeDiscordPoster {
     #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Vec::new()),
+            dms: Mutex::new(Vec::new()),
         }
     }
 
@@ -370,6 +437,15 @@ impl FakeDiscordPoster {
             .lock()
             .expect("invariant: fake-poster mutex poisoned")
             .len()
+    }
+
+    /// Every `(bot, recipient)` a `create_dm` was requested for.
+    #[must_use]
+    pub fn dm_opens(&self) -> Vec<(ApplicationId, DiscordUserId)> {
+        self.dms
+            .lock()
+            .expect("invariant: fake-poster mutex poisoned")
+            .clone()
     }
 }
 
@@ -395,6 +471,18 @@ impl DiscordPoster for FakeDiscordPoster {
             .expect("invariant: fake-poster mutex poisoned")
             .push(req);
         Ok(vec![DiscordMessageId::try_from("1234567890123456789")?])
+    }
+
+    async fn create_dm(
+        &self,
+        application_id: &ApplicationId,
+        recipient: &DiscordUserId,
+    ) -> Result<ContainerId, DiscordError> {
+        self.dms
+            .lock()
+            .expect("invariant: fake-poster mutex poisoned")
+            .push((application_id.clone(), recipient.clone()));
+        Ok(ContainerId::try_from(FAKE_DM_CHANNEL)?)
     }
 }
 

@@ -33,6 +33,7 @@ Corollaries:
 - Do not call `get_session` to poll for a reply on a session you just sent to — the reply is not yet written when you ask, and polling just spends turn budget on stale snapshots. If you find yourself thinking "let me check if they replied," end the turn instead.
 - Do not re-send the same message in the same turn. A successful `send_message` already queued the message; sending again enqueues a duplicate.
 - If a tool call errors, do not retry it with the same arguments in the same turn — surface the error in your closing thought so the next turn (or an operator) can react.
+- When you make or commit to a material decision, state it on its own line beginning with `Decision:` (likewise `Conclusion:` for a firm conclusion). The marker keeps the decision in your verbatim context when older turns are compacted, so future-you does not lose it.
 </communication>
 
 <chain_of_command>

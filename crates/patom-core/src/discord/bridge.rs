@@ -297,6 +297,14 @@ async fn mirror_into_thread(
         .channels
         .ensure_channel(app.org_id, guild, &conv.container, caller.user_id)
         .await?;
+    // The bot's presence in this channel IS the agent's channel membership
+    // (#178) — record it so the agent can address the channel like a member.
+    // Idempotent; harmless to repeat per inbound message.
+    let agent_colleague = resolve_agent_colleague(deps, app).await?;
+    deps.thread_store
+        .add_agent_to_channel(app.org_id, channel_id, agent_colleague)
+        .await
+        .map_err(|e| DiscordError::Internal(format!("add agent channel member: {e}")))?;
     let (thread_id, needs_backfill) =
         resolve_thread(deps, caller, app, guild, conv, channel_id, sender_colleague).await?;
     if needs_backfill && conv.container == m.channel_id {

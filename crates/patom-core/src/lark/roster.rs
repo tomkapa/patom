@@ -54,6 +54,7 @@ pub async fn sync_on_join(deps: &BridgeDeps, ev: &ChatMemberEvent) -> Result<(),
         return Ok(());
     }
     // Lengths match → positional pairing is sound.
+    let mut channel_id = None;
     for ((user_raw, name), (open_raw, _)) in by_user.iter().zip(by_open.iter()) {
         let (Ok(user_id), Ok(open_id)) = (
             LarkUserId::try_from(user_raw.as_str()),
@@ -66,9 +67,25 @@ pub async fn sync_on_join(deps: &BridgeDeps, ev: &ChatMemberEvent) -> Result<(),
             .directory
             .resolve_or_mint(app.org_id, &ev.tenant_key, &user_id, &open_id, display)
             .await?;
-        deps.channels
-            .ensure_channel(app.org_id, &ev.tenant_key, &ev.chat_id, shadow.user_id)
-            .await?;
+        channel_id = Some(
+            deps.channels
+                .ensure_channel(app.org_id, &ev.tenant_key, &ev.chat_id, shadow.user_id)
+                .await?,
+        );
+    }
+    // The bot's presence in this chat IS the agent's channel membership (#178):
+    // write the agent colleague as a member so it can address the channel like a
+    // human. Idempotent; skipped only if the chat had no syncable members.
+    if let Some(channel_id) = channel_id {
+        let agent_colleague = deps
+            .colleagues
+            .resolve_agent(app.org_id, app.agent_id)
+            .await
+            .map_err(|e| LarkError::Internal(format!("resolve agent colleague: {e}")))?;
+        deps.thread_store
+            .add_agent_to_channel(app.org_id, channel_id, agent_colleague)
+            .await
+            .map_err(|e| LarkError::Internal(format!("add agent channel member: {e}")))?;
     }
     Ok(())
 }

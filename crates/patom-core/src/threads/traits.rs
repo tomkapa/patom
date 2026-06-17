@@ -19,13 +19,20 @@ use chrono::{DateTime, Utc};
 
 use crate::agents::AgentId;
 use crate::auth::{Caller, UserId};
-use crate::channels::ChannelId;
+use crate::channels::{ChannelId, ChannelName};
 use crate::colleagues::{ColleagueId, ColleagueName};
 use crate::provider::ChatMessage;
 use crate::runtime::PromptRequestId;
 use crate::types::{MessageSender, Participant};
 
 use super::error::ThreadError;
+
+/// A channel a colleague belongs to — the `<channels>` context block row (#178).
+#[derive(Debug, Clone)]
+pub struct ChannelRef {
+    pub id: ChannelId,
+    pub name: ChannelName,
+}
 
 /// A thread's listing row — the membership-scoped feed index (P7).
 ///
@@ -333,6 +340,38 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
         thread: ThreadId,
         user_id: UserId,
     ) -> Result<bool, ThreadError>;
+
+    /// Whether `colleague` (human OR agent) is a member of `channel` — the
+    /// colleague-keyed authority check for an agent addressing a channel (#178).
+    /// A human matches via `channel_members` (joined through its colleague); an
+    /// agent matches via `channel_agent_members`. Privileged: the `(channel,
+    /// colleague)` pair is fully qualified, and the channel's org bounds it.
+    async fn colleague_in_channel(
+        &self,
+        channel: ChannelId,
+        colleague: ColleagueId,
+    ) -> Result<bool, ThreadError>;
+
+    /// The channels `colleague` is a member of in `org` — the `<channels>`
+    /// context block's source (#178). Union of human (`channel_members`) and
+    /// agent (`channel_agent_members`) membership, active channels only,
+    /// bounded by `MAX_CHANNELS_FOR_COLLEAGUE`. Privileged.
+    async fn channels_for_colleague(
+        &self,
+        org: crate::auth::OrgId,
+        colleague: ColleagueId,
+    ) -> Result<Vec<ChannelRef>, ThreadError>;
+
+    /// Record an agent `colleague` as a member of `channel` (#178). Idempotent
+    /// (`ON CONFLICT DO NOTHING`). The roster sync calls this when a bot joins a
+    /// mirrored chat — "bot present in chat X" ⇒ "agent member of channel X".
+    /// Privileged: the write is app-keyed, not caller-authenticated.
+    async fn add_agent_to_channel(
+        &self,
+        org: crate::auth::OrgId,
+        channel: ChannelId,
+        colleague: ColleagueId,
+    ) -> Result<(), ThreadError>;
 
     /// The DM counterpart colleague of `thread`, or `None` for a channel
     /// thread / a legacy DM with no counterpart. Returns

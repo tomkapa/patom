@@ -40,7 +40,7 @@ use super::limits::LARK_INBOUND_QUEUE;
 use super::mention;
 use super::resource::{LarkResourceKind, SharedResourceFetcher};
 use super::roster;
-use super::stream_pump::{AttachRequest, SharedLarkPumpHandle};
+use super::stream_pump::{AttachRequest, LarkRecipient, SharedLarkPumpHandle};
 use super::thread_map::SharedLarkThreadStore;
 use super::token::SharedTokenProvider;
 use super::types::{LarkOpenId, LarkThreadId};
@@ -436,8 +436,10 @@ async fn enqueue_and_attach(
             org_id: app.org_id,
             user_id: acting_user_id,
             app_id: m.app_id.clone(),
-            chat_id: m.chat_id.clone(),
-            reply_to: Some(m.message_id.clone()),
+            recipient: LarkRecipient::Chat {
+                chat_id: m.chat_id.clone(),
+                reply_to: Some(m.message_id.clone()),
+            },
         })
         .await;
     info!(

@@ -147,6 +147,7 @@ pub async fn build_harness(pool: PgPool, provider: Arc<ScriptedProvider>) -> Wor
             dag.clone(),
             colleagues.clone(),
             sink.clone(),
+            Arc::new(patom::outbound::NoopOutboundRouter),
         )))
         .build();
     let toolbox = ToolBox::from_builtins(tool_registry);

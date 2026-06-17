@@ -56,4 +56,22 @@ impl Memory for StaticMemory {
         // The static prompt carries no participant context.
         String::new()
     }
+
+    async fn agent_persona(&self, _agent: crate::agents::AgentId) -> Option<Arc<str>> {
+        // Every session shares one prompt — it is the persona lens for all agents.
+        Some(self.prompt.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::AgentId;
+
+    #[tokio::test]
+    async fn agent_persona_returns_the_static_prompt() {
+        let memory = StaticMemory::new("you are a terse assistant");
+        let persona = memory.agent_persona(AgentId::new()).await;
+        assert_eq!(persona.as_deref(), Some("you are a terse assistant"));
+    }
 }

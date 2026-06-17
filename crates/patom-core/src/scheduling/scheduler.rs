@@ -28,6 +28,7 @@ use tracing::{info, warn};
 
 use crate::auth::Caller;
 use crate::clock::SharedClock;
+use crate::outbound::SharedOutboundRouter;
 use crate::provider::{ChatMessage, UserContent};
 use crate::runtime::{IdempotencyKey, NewTrigger, RequestKindPayload, SharedPromptQueue};
 use crate::threads::{MessageKind, NewMessage, SharedThreadStore};
@@ -58,6 +59,7 @@ impl ScheduledTaskScheduler {
         queue: SharedPromptQueue,
         threads: SharedThreadStore,
         colleagues: crate::colleagues::SharedColleagueStore,
+        outbound: SharedOutboundRouter,
         clock: SharedClock,
         parent: CancellationToken,
     ) -> Self {
@@ -66,6 +68,7 @@ impl ScheduledTaskScheduler {
             queue,
             threads,
             colleagues,
+            outbound,
             clock,
             scheduled_task_poll_interval(),
             Some(parent),
@@ -75,11 +78,13 @@ impl ScheduledTaskScheduler {
     /// Spawn with an explicit poll cadence — tests use this to avoid
     /// waiting the production 30s; production callers use [`Self::spawn`].
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_cadence(
         store: SharedScheduledTaskStore,
         queue: SharedPromptQueue,
         threads: SharedThreadStore,
         colleagues: crate::colleagues::SharedColleagueStore,
+        outbound: SharedOutboundRouter,
         clock: SharedClock,
         poll_interval: Duration,
         parent: Option<CancellationToken>,
@@ -89,6 +94,7 @@ impl ScheduledTaskScheduler {
             queue,
             threads,
             colleagues,
+            outbound,
             clock,
             batch_limit: SCHEDULED_TASK_BATCH_LIMIT,
         });
@@ -110,6 +116,10 @@ struct SchedulerInner {
     queue: SharedPromptQueue,
     threads: SharedThreadStore,
     colleagues: crate::colleagues::SharedColleagueStore,
+    /// Attaches the outbound surface pump for a fired thread (#178). Without
+    /// this the agent's reply reaches only the web feed — the original
+    /// "scheduled task ran, nothing on Lark/Discord" bug.
+    outbound: SharedOutboundRouter,
     clock: SharedClock,
     batch_limit: usize,
 }
@@ -184,6 +194,19 @@ impl SchedulerInner {
                 kind_payload: RequestKindPayload::Normal {},
             })
             .await?;
+
+        // Attach outbound delivery for the freshly-created thread so the
+        // agent's reply reaches the task's external surface (Lark/Discord),
+        // not just the web feed. Best-effort — the composite logs per-surface
+        // failures and a web-only thread is a no-op. This is the fix for
+        // "scheduled task ran, nothing on Lark/Discord" (#178).
+        if let Err(e) = self.outbound.ensure_delivery(task.org_id, thread).await {
+            warn!(
+                error = ?e,
+                patom.thread.id = %thread,
+                "scheduling.ensure_delivery.error",
+            );
+        }
 
         // Advance the cursor from the materialised schedule against `now`, not
         // the stored cursor — keeps cadence anchored to wall time rather than

@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use std::collections::HashMap;
 
-use crate::agents::AgentStoreError;
+use crate::agents::{AgentId, AgentStoreError};
 use crate::auth::{LanguageResolverError, RuleResolverError};
 use crate::colleagues::{ColleagueError, ColleagueId, ColleagueName};
 use crate::runtime::RequestKindPayload;
@@ -81,6 +81,17 @@ pub trait Memory: Send + Sync + fmt::Debug {
         viewer: ColleagueId,
         overrides: &HashMap<ColleagueId, ColleagueName>,
     ) -> String;
+
+    /// The agent's configured system prompt (its role/persona definition — not
+    /// the per-turn composed prompt with roster/date/language), for use as a
+    /// *salience lens* by the compaction summarizer (#202): it biases which facts
+    /// a fold keeps toward what matters to this agent, without the summarizer
+    /// adopting the persona or following its instructions.
+    ///
+    /// `None` when no persona is resolvable (e.g. a lookup failure); the fold
+    /// then uses the neutral summarizer prompt. Cache-warm and never turn-fatal:
+    /// compaction is best-effort, so this degrades to `None` rather than erroring.
+    async fn agent_persona(&self, agent: AgentId) -> Option<Arc<str>>;
 }
 
 pub type SharedMemory = Arc<dyn Memory>;
