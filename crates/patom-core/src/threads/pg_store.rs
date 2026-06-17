@@ -24,13 +24,13 @@ use crate::types::{MessageSender, Participant};
 
 use super::error::ThreadError;
 use super::limits::{
-    MAX_CHANNELS_FOR_COLLEAGUE, MAX_CONTEXT_MESSAGES, MAX_THREAD_FEED, MAX_THREAD_LIST,
-    MAX_TOOL_RESULT_CHARS, ROOT_SNIPPET_MAX_CHARS,
+    MAX_CHANNELS_FOR_COLLEAGUE, MAX_CONTEXT_MESSAGES, MAX_READ_CHANNEL_MESSAGES, MAX_THREAD_FEED,
+    MAX_THREAD_LIST, MAX_TOOL_RESULT_CHARS, READ_CHANNEL_BODY_MAX_CHARS, ROOT_SNIPPET_MAX_CHARS,
 };
 use super::traits::{
-    AgentThreadId, ChannelRef, ContextTail, FeedMessage, MessageKind, NewMessage, RootSummary, Seq,
-    TailRow, ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId, ThreadParticipants,
-    ThreadScope, ThreadStore,
+    AgentThreadId, ChannelFeedRow, ChannelRef, ContextTail, FeedMessage, MessageKind, NewMessage,
+    RootSummary, Seq, TailRow, ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId,
+    ThreadParticipants, ThreadScope, ThreadStore,
 };
 
 /// Postgres-backed [`ThreadStore`].
@@ -132,6 +132,28 @@ const FEED_SQL: &str = concat!(
      ORDER BY m.seq DESC \
      LIMIT $5"
 );
+
+/// Channel-level history read — the `read_channel` digest source (#199).
+/// `posted` rows from **every** thread bound to `$1` (the ambient channel
+/// thread plus every @mention sub-thread share `threads.channel_id`), newest
+/// first for the `$3` LIMIT, with `$2` an optional `created_at` floor. The body
+/// is preview-capped in SQL (`LEFT`, $-bound to `$4`) so an unbounded `TEXT`
+/// never crosses the wire (§5/§10). The sender's canonical display name is
+/// resolved exactly as `CONTEXT_SQL` (agent name / user display name / email
+/// local-part); a System row (NULL sender) yields a NULL name. The caller flips
+/// the DESC page back to chronological order.
+const CHANNEL_FEED_SQL: &str = "SELECT m.created_at, \
+            COALESCE(sa.name, su.display_name, split_part(su.email, '@', 1)) AS sender_name, \
+            LEFT(m.body->'contents'->0->>'value', $4) AS preview \
+     FROM thread_messages m \
+     JOIN threads t ON t.id = m.thread_id \
+     LEFT JOIN colleagues sc ON sc.id = m.sender_colleague_id \
+     LEFT JOIN agents sa ON sa.id = sc.agent_id \
+     LEFT JOIN users  su ON su.id = sc.user_id \
+     WHERE t.channel_id = $1 AND m.kind = 'posted' \
+       AND ($2::timestamptz IS NULL OR m.created_at >= $2) \
+     ORDER BY m.created_at DESC \
+     LIMIT $3";
 
 /// `list_threads` page with the timeline enrichment: the root posted row's
 /// snippet + sender satellites (LATERAL, first `posted` by `seq`) and the
@@ -555,6 +577,55 @@ impl ThreadStore for PgThreadStore {
         rows.reverse();
         tracing::Span::current().record("patom.feed.count", rows.len());
         rows.into_iter().map(feed_row_to_message).collect()
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.channel_feed", fields(patom.channel.id = %channel, patom.feed.count = tracing::field::Empty))]
+    async fn channel_feed(
+        &self,
+        channel: ChannelId,
+        since: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<Vec<ChannelFeedRow>, ThreadError> {
+        // One channel-feed row: (created_at, resolved sender name, body preview).
+        type Row = (DateTime<Utc>, Option<String>, Option<String>);
+        // §5: clamp the caller's limit into the bounded window so a stray value
+        // can't widen the scan; assert both ends of the invariant.
+        let cap = limit.clamp(1, MAX_READ_CHANNEL_MESSAGES);
+        assert!(cap >= 1, "invariant: channel_feed reads at least one row");
+        assert!(
+            cap <= MAX_READ_CHANNEL_MESSAGES,
+            "invariant: channel_feed respects its window cap"
+        );
+        // Privileged: the channel id is fully qualified (globally unique) and the
+        // `read_channel` tool gates membership before calling, so no caller
+        // principal is threaded here.
+        let mut rows: Vec<Row> = run_privileged::<Vec<Row>, ThreadError>(&self.pool, async |tx| {
+            Ok(sqlx::query_as(CHANNEL_FEED_SQL)
+                .bind(channel)
+                .bind(since)
+                .bind(cap)
+                .bind(READ_CHANNEL_BODY_MAX_CHARS)
+                .fetch_all(&mut **tx)
+                .await?)
+        })
+        .await?;
+        // The SQL LIMIT bounds the batch; assert it held so a query change that
+        // drops the LIMIT trips here rather than shipping an unbounded page (§6).
+        assert!(
+            i64::try_from(rows.len()).unwrap_or(i64::MAX) <= cap,
+            "invariant: channel_feed respects its LIMIT"
+        );
+        // Query is DESC for the keyset LIMIT; a digest reads oldest→newest.
+        rows.reverse();
+        tracing::Span::current().record("patom.feed.count", rows.len());
+        Ok(rows
+            .into_iter()
+            .map(|(created_at, author, preview)| ChannelFeedRow {
+                created_at,
+                author,
+                body_preview: preview.unwrap_or_default(),
+            })
+            .collect())
     }
 
     #[tracing::instrument(skip_all, name = "thread.dm_counterpart", fields(patom.thread.id = %thread))]

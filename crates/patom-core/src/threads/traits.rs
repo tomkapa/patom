@@ -101,6 +101,24 @@ pub struct FeedMessage {
     pub created_at: DateTime<Utc>,
 }
 
+/// One row of a channel-level history read — the `read_channel` digest source
+/// (#199).
+///
+/// Unlike [`FeedMessage`] (one thread's full feed for the display boundary),
+/// this is a lean, channel-wide slice of `posted` chat across every thread bound
+/// to the channel, for an agent to summarise on a cadence. `author` is the
+/// sender's resolved display name (`None` for the synthetic System sender);
+/// `body_preview` is the message text capped at
+/// [`super::limits::READ_CHANNEL_BODY_MAX_CHARS`] in SQL — empty when the row
+/// carries no readable text (e.g. an ambient message ingested without the
+/// platform's message-content grant).
+#[derive(Debug, Clone)]
+pub struct ChannelFeedRow {
+    pub created_at: DateTime<Utc>,
+    pub author: Option<String>,
+    pub body_preview: String,
+}
+
 crate::uuid_newtype! {
     /// Opaque thread identifier (`threads.id`).
     pub ThreadId
@@ -394,6 +412,21 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
         before_seq: Option<i64>,
         limit: u32,
     ) -> Result<Vec<FeedMessage>, ThreadError>;
+
+    /// Recent `posted` messages across **every thread bound to `channel`**, the
+    /// channel-level read backing the `read_channel` digest tool (#199). Rows
+    /// are returned oldest-first, only those with `created_at >= since` (or all
+    /// recent when `since` is `None`), hard-capped at `limit` (itself clamped to
+    /// [`super::limits::MAX_READ_CHANNEL_MESSAGES`]). Each body is preview-capped
+    /// in SQL. Privileged read — the caller is an agent (org-global) and the
+    /// `read_channel` tool gates on channel membership before calling; the
+    /// channel id is globally unique so no cross-org row leaks.
+    async fn channel_feed(
+        &self,
+        channel: ChannelId,
+        since: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<Vec<ChannelFeedRow>, ThreadError>;
 
     /// The channel a thread belongs to, or `None` for a DM thread. Returns
     /// [`ThreadError::NotFound`] if the thread is missing. Privileged read —
