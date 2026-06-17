@@ -37,6 +37,7 @@ use sqlx::PgPool;
 
 struct Fixture {
     deps: MemoryToolDeps,
+    memory: AgentMemory,
     loader: MemorySectionLoader,
     store: SharedMemoryStore,
     state_id: AgentThreadId,
@@ -71,7 +72,7 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
     let language_resolver: SharedOrgLanguageResolver =
         Arc::new(StaticOrgLanguageResolver::new(Language::En));
     let rule_resolver: SharedOrgRuleResolver = Arc::new(StaticOrgRuleResolver::new(None));
-    let _memory = AgentMemory::new(
+    let memory = AgentMemory::new(
         agents,
         prompt_cache,
         colleagues,
@@ -95,6 +96,7 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
             .expect("seed agent colleague");
     Fixture {
         deps: MemoryToolDeps::new(loader.clone()),
+        memory,
         loader,
         store,
         state_id,
@@ -520,6 +522,16 @@ async fn handle_round_trips_through_session_cache(pool: PgPool) {
         .await
         .expect("resolve");
     assert_eq!(resolved, Some(written.memory_id));
+}
+
+#[sqlx::test]
+async fn agent_persona_returns_the_agents_system_prompt(pool: PgPool) {
+    use patom::memory::Memory;
+    let seed = seed_tenant(&pool).await;
+    let f = fixture(&pool, &seed).await;
+    // `seed_tenant` stores the default agent with this exact persona.
+    let persona = f.memory.agent_persona(f.agent_id).await;
+    assert_eq!(persona.as_deref(), Some("test default prompt"));
 }
 
 /// Build a ToolCallContext with a Resolution `kind_payload` attached.

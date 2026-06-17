@@ -101,6 +101,40 @@ pub const COMPACTION_COOLDOWN: Duration = Duration::from_mins(5);
 /// Enforced by `CompactionSummary` (truncates to fit).
 pub const MAX_SUMMARY_TOKENS: u32 = 4_000;
 
+/// Number of founding rows (smallest `seq`) carried verbatim at the front of an
+/// agent's compacted context, never folded into the summary (#202).
+///
+/// The opening message of a thread sets the task framing; losing it to a fold
+/// strands every later turn. One message is the founding prompt — enough to
+/// anchor intent without re-bloating the prompt. (Persisting the anchor across
+/// later folds is Phase 2; in Phase 1 it survives while still in the window.)
+pub const SEED_ANCHOR_MSGS: u64 = 1;
+
+/// Extra estimated tokens the verbatim keep-window may overrun to retain an
+/// *important* row — a failed tool result or an explicit decision (#202).
+///
+/// Small relative to the keep budget (~half the per-turn budget): enough to pull
+/// one or two recent error/decision rows wholly into the kept tail without
+/// meaningfully widening the prompt.
+pub const IMPORTANCE_KEEP_SLACK: u32 = 2_000;
+
+/// Consecutive summarizer failures for one `(thread, agent)` before an alert
+/// (a `tracing::error!` the OTel bridge raises to span-status ERROR) fires (#202).
+///
+/// One or two transient provider failures are routine (the turn degrades to the
+/// windowing floor); three in a row means the summarizer is durably broken for
+/// this pair and a human should look.
+pub const COMPACTION_FAILURE_ALERT_THRESHOLD: i32 = 3;
+
+/// Line-start markers (matched case-insensitively, after trimming) that flag an
+/// assistant message as recording an explicit decision worth retaining
+/// verbatim past budget (#202).
+///
+/// A bounded allowlist (CLAUDE.md §5) — deliberately small and literal, not a
+/// fuzzy heuristic. The fold/persona prompt asks the agent to prefix material
+/// decisions with `Decision:` so these actually appear.
+pub const DECISION_MARKERS: &[&str] = &["decision:", "decided:", "conclusion:"];
+
 // §5: defaults must always parse cleanly through their newtype constructors. Pinned at
 // compile time so a future bump cannot silently invert the relationship.
 const _: () = assert!(DEFAULT_MAX_OUTPUT_TOKENS > 0);
@@ -116,3 +150,9 @@ const _: () = assert!(MAX_SUMMARY_TOKENS <= SUMMARIZER_INPUT_BUDGET);
 // A single fold must be allowed to take at least as long as the whole pass is.
 const _: () = assert!(COMPACTION_LLM_TIMEOUT.as_secs() <= MAX_COMPACTION_WALL_CLOCK.as_secs());
 const _: () = assert!(COMPACTION_COOLDOWN.as_secs() > 0);
+// The seed anchor must carry at least the founding message.
+const _: () = assert!(SEED_ANCHOR_MSGS >= 1);
+// Slack is a nudge, not a second budget — it must stay under the summary cap.
+const _: () = assert!(IMPORTANCE_KEEP_SLACK < MAX_SUMMARY_TOKENS);
+const _: () = assert!(COMPACTION_FAILURE_ALERT_THRESHOLD > 0);
+const _: () = assert!(!DECISION_MARKERS.is_empty());
