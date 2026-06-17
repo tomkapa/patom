@@ -12,6 +12,7 @@ mod credentials;
 mod embedding;
 mod error;
 pub mod id;
+pub mod ingest;
 pub mod limits;
 pub mod materialize;
 pub mod openai;
@@ -37,6 +38,7 @@ pub use credentials::{
 pub use embedding::{EmbeddingProvider, SharedEmbeddingProvider, embed_one};
 pub use error::ProviderError;
 pub use id::ProviderId;
+pub use ingest::{FetchError, FetchedBytes, IngestError, get_capped, ingest_attachment};
 pub use materialize::{
     AttachmentError, AttachmentSource, HttpAttachmentSource, SharedAttachmentSource,
 };

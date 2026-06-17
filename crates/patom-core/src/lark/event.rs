@@ -7,12 +7,21 @@
 
 use serde::Deserialize;
 
+use crate::provider::limits::MAX_ATTACHMENTS_PER_MESSAGE;
+
 use super::error::LarkError;
 use super::mention::AtToken;
+use super::resource::LarkResourceKind;
 use super::types::{
-    LarkAppId, LarkChatId, LarkEventId, LarkMessageId, LarkOpenId, LarkThreadId, LarkUserId,
-    TenantKey,
+    LarkAppId, LarkChatId, LarkEventId, LarkFileKey, LarkMessageId, LarkOpenId, LarkThreadId,
+    LarkUserId, TenantKey,
 };
+
+/// Upper bound on rich-text (`post`) elements scanned for text + embedded
+/// images. A `post` can nest many runs; the cap bounds the walk (CLAUDE.md §5)
+/// — well above any human-authored message, so it only ever truncates a
+/// pathological payload.
+const LARK_POST_MAX_ELEMENTS: usize = 4096;
 
 /// A decoded inbound event, narrowed to the live-path cases.
 #[derive(Debug, Clone)]
@@ -47,9 +56,27 @@ pub struct InboundMessage {
     pub message_id: LarkMessageId,
     /// The reply-thread anchor, when the message is in a topic/thread.
     pub thread_id: Option<LarkThreadId>,
-    /// The extracted text body (empty for non-text message types).
+    /// The extracted text body (empty for image/file; the flattened runs for a
+    /// rich-text `post`).
     pub text: String,
+    /// Image/file resources attached to the message (issue #187): standalone
+    /// image/file messages and images embedded in a `post`. The bridge
+    /// downloads + re-hosts the supported ones as model input.
+    pub resources: Vec<LarkResource>,
     pub mentions: Vec<AtToken>,
+}
+
+/// A downloadable resource referenced by an inbound message.
+#[derive(Debug, Clone)]
+pub struct LarkResource {
+    /// The `image_key` (images) or `file_key` (files) — the path param to the
+    /// resource-download endpoint. A typed id (CLAUDE.md §1), parsed at the
+    /// boundary so a malformed key never reaches the fetcher.
+    pub file_key: LarkFileKey,
+    pub kind: LarkResourceKind,
+    /// The original filename: file messages carry `file_name`; `None` for
+    /// images (the bridge synthesizes one from the downloaded content type).
+    pub filename: Option<String>,
 }
 
 /// A chat-membership event, reduced to what a roster sync needs.
@@ -99,12 +126,8 @@ fn parse_message(header: &Header, ev: &Event) -> Result<InboundMessage, LarkErro
     let sender_user_id = opt_id(sender.sender_id.user_id.as_deref())
         .map(LarkUserId::try_from)
         .transpose()?;
-    let text = message
-        .message_type
-        .as_deref()
-        .filter(|t| *t == "text")
-        .and_then(|_| extract_text(message.content.as_deref()))
-        .unwrap_or_default();
+    let (text, resources) =
+        parse_content(message.message_type.as_deref(), message.content.as_deref());
     let mentions = message
         .mentions
         .iter()
@@ -138,8 +161,114 @@ fn parse_message(header: &Header, ev: &Event) -> Result<InboundMessage, LarkErro
             .map(|s| LarkThreadId::try_from(s.as_str()))
             .transpose()?,
         text,
+        resources,
         mentions,
     })
+}
+
+/// Extract the body text and any downloadable resources from a message's
+/// `message_type` + `content` (a JSON string). Only the model-consumable kinds
+/// are handled — `text`, `image`, `file`, and rich-text `post` (its runs are
+/// flattened to text and its embedded images captured). Audio/video and
+/// anything else yield no resources.
+fn parse_content(message_type: Option<&str>, content: Option<&str>) -> (String, Vec<LarkResource>) {
+    let Some(mt) = message_type else {
+        return (String::new(), Vec::new());
+    };
+    let raw = content.unwrap_or_default();
+    match mt {
+        "text" => (extract_text(content).unwrap_or_default(), Vec::new()),
+        "image" => {
+            let resources = parse_image_key(raw)
+                .map(|file_key| {
+                    vec![LarkResource {
+                        file_key,
+                        kind: LarkResourceKind::Image,
+                        filename: None,
+                    }]
+                })
+                .unwrap_or_default();
+            (String::new(), resources)
+        }
+        "file" => {
+            let resources = parse_file(raw)
+                .map(|(file_key, filename)| {
+                    vec![LarkResource {
+                        file_key,
+                        kind: LarkResourceKind::File,
+                        filename,
+                    }]
+                })
+                .unwrap_or_default();
+            (String::new(), resources)
+        }
+        "post" => parse_post(raw),
+        _ => (String::new(), Vec::new()),
+    }
+}
+
+/// `image_key` from an `image` message's content (`{"image_key":"img_v3_…"}`),
+/// parsed through the [`LarkFileKey`] boundary (drops a malformed key).
+fn parse_image_key(raw: &str) -> Option<LarkFileKey> {
+    let parsed: ContentImage = serde_json::from_str(raw).ok()?;
+    parsed.image_key.and_then(|k| LarkFileKey::try_from(k).ok())
+}
+
+/// `(file_key, file_name)` from a `file` message's content
+/// (`{"file_key":"file_v3_…","file_name":"report.pdf"}`). The key is parsed
+/// through the [`LarkFileKey`] boundary.
+fn parse_file(raw: &str) -> Option<(LarkFileKey, Option<String>)> {
+    let parsed: ContentFile = serde_json::from_str(raw).ok()?;
+    let key = LarkFileKey::try_from(parsed.file_key?).ok()?;
+    let name = parsed.file_name.filter(|n| !n.is_empty());
+    Some((key, name))
+}
+
+/// Flatten a `post` message: concatenate its text runs (one newline per row)
+/// and capture embedded `img` keys as image resources. Bounded by
+/// [`LARK_POST_MAX_ELEMENTS`] and [`MAX_ATTACHMENTS_PER_MESSAGE`] (§5); a larger
+/// post is truncated, not rejected.
+fn parse_post(raw: &str) -> (String, Vec<LarkResource>) {
+    let Ok(post) = serde_json::from_str::<ContentPost>(raw) else {
+        return (String::new(), Vec::new());
+    };
+    let mut text = String::new();
+    let mut resources = Vec::new();
+    let mut processed = 0usize;
+    for row in &post.content {
+        for el in row {
+            // Graceful cap (operating input, not a programmer error): stop the
+            // walk rather than crash on a pathologically large post.
+            if processed >= LARK_POST_MAX_ELEMENTS {
+                return (text.trim().to_owned(), resources);
+            }
+            processed += 1;
+            match el.tag.as_str() {
+                "text" | "a" => {
+                    if let Some(t) = &el.text {
+                        text.push_str(t);
+                    }
+                }
+                "img" => {
+                    if resources.len() < MAX_ATTACHMENTS_PER_MESSAGE
+                        && let Some(key) = el
+                            .image_key
+                            .as_deref()
+                            .and_then(|k| LarkFileKey::try_from(k).ok())
+                    {
+                        resources.push(LarkResource {
+                            file_key: key,
+                            kind: LarkResourceKind::Image,
+                            filename: None,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        text.push('\n');
+    }
+    (text.trim().to_owned(), resources)
 }
 
 fn parse_member(header: &Header, event: Option<&Event>) -> Result<ChatMemberEvent, LarkError> {
@@ -263,6 +392,38 @@ struct ContentText {
     text: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ContentImage {
+    #[serde(default)]
+    image_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ContentFile {
+    #[serde(default)]
+    file_key: Option<String>,
+    #[serde(default)]
+    file_name: Option<String>,
+}
+
+/// A rich-text `post` body: rows of inline elements. Field names mirror Lark's
+/// wire JSON verbatim.
+#[derive(Deserialize)]
+struct ContentPost {
+    #[serde(default)]
+    content: Vec<Vec<PostElement>>,
+}
+
+#[derive(Deserialize)]
+struct PostElement {
+    #[serde(default)]
+    tag: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    image_key: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +494,70 @@ mod tests {
             parse_event(payload).expect("parse"),
             LarkEvent::Other
         ));
+    }
+
+    fn message_payload(message_type: &str, content_json: &str) -> Vec<u8> {
+        // `content_json` is the inner content object; embed it as a JSON string.
+        let content_escaped = serde_json::to_string(content_json).expect("escape");
+        format!(
+            r#"{{"header":{{"event_id":"e","event_type":"im.message.receive_v1","tenant_key":"tk","app_id":"cli"}},
+               "event":{{"sender":{{"sender_id":{{"open_id":"ou_x","user_id":"u_x"}},"sender_type":"user"}},
+                 "message":{{"message_id":"om_1","chat_id":"oc","chat_type":"p2p","message_type":"{message_type}","content":{content_escaped}}}}}}}"#
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn parses_image_message_into_resource() {
+        let payload = message_payload("image", r#"{"image_key":"img_v3_abc"}"#);
+        let LarkEvent::Message(m) = parse_event(&payload).expect("parse") else {
+            panic!("message");
+        };
+        assert_eq!(m.text, "");
+        assert_eq!(m.resources.len(), 1);
+        assert_eq!(m.resources[0].file_key.as_str(), "img_v3_abc");
+        assert_eq!(m.resources[0].kind, LarkResourceKind::Image);
+        assert!(m.resources[0].filename.is_none());
+    }
+
+    #[test]
+    fn parses_file_message_into_resource_with_name() {
+        let payload = message_payload(
+            "file",
+            r#"{"file_key":"file_v3_xyz","file_name":"report.pdf"}"#,
+        );
+        let LarkEvent::Message(m) = parse_event(&payload).expect("parse") else {
+            panic!("message");
+        };
+        assert_eq!(m.resources.len(), 1);
+        assert_eq!(m.resources[0].file_key.as_str(), "file_v3_xyz");
+        assert_eq!(m.resources[0].kind, LarkResourceKind::File);
+        assert_eq!(m.resources[0].filename.as_deref(), Some("report.pdf"));
+    }
+
+    #[test]
+    fn parses_post_flattening_text_and_capturing_images() {
+        let content = r#"{"title":"Update","content":[
+            [{"tag":"text","text":"Please review "},{"tag":"a","text":"the doc","href":"http://x"}],
+            [{"tag":"img","image_key":"img_v3_p1"}]
+        ]}"#;
+        let payload = message_payload("post", content);
+        let LarkEvent::Message(m) = parse_event(&payload).expect("parse") else {
+            panic!("message");
+        };
+        assert!(m.text.contains("Please review the doc"), "got {:?}", m.text);
+        assert_eq!(m.resources.len(), 1);
+        assert_eq!(m.resources[0].file_key.as_str(), "img_v3_p1");
+        assert_eq!(m.resources[0].kind, LarkResourceKind::Image);
+    }
+
+    #[test]
+    fn audio_message_yields_no_resources() {
+        let payload = message_payload("audio", r#"{"file_key":"file_v3_a","duration":1200}"#);
+        let LarkEvent::Message(m) = parse_event(&payload).expect("parse") else {
+            panic!("message");
+        };
+        assert!(m.text.is_empty());
+        assert!(m.resources.is_empty(), "audio is not a model input");
     }
 }

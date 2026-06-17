@@ -18,6 +18,7 @@ use std::time::Duration;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 
+use patom::assets::InMemoryAssetStore;
 use patom::auth::{Caller, run_privileged};
 use patom::clock::{SharedClock, SystemClock};
 use patom::colleagues::PgColleagueStore;
@@ -26,14 +27,15 @@ use patom::lark::app_store::{NewLarkApp, PgLarkAppStore, SharedLarkAppStore};
 use patom::lark::bridge::{self, BridgeDeps, InboundWork};
 use patom::lark::channel_map::PgLarkChannelStore;
 use patom::lark::directory::PgLarkDirectory;
-use patom::lark::event::{InboundMessage, LarkEvent};
+use patom::lark::event::{InboundMessage, LarkEvent, LarkResource};
 use patom::lark::poster::{FakeLarkPoster, SharedLarkPoster};
+use patom::lark::resource::{FakeResourceFetcher, LarkResourceKind, SharedResourceFetcher};
 use patom::lark::stream_pump::{self, PumpDeps};
 use patom::lark::thread_map::PgLarkThreadStore;
 use patom::lark::token::{FakeTokenProvider, SharedTokenProvider};
 use patom::lark::types::{
-    LarkAppId, LarkAppSecret, LarkChatId, LarkEventId, LarkMessageId, LarkOpenId, LarkUserId,
-    TenantKey,
+    LarkAppId, LarkAppSecret, LarkChatId, LarkEventId, LarkFileKey, LarkMessageId, LarkOpenId,
+    LarkUserId, TenantKey,
 };
 use patom::provider::{AssistantContent, ChatResponse, StopReason, ToolCall, ToolCallId};
 use patom::runtime::{PgThreadStream, SharedPromptQueue, SharedThreadStream};
@@ -74,6 +76,10 @@ fn final_text(s: &str) -> ChatResponse {
 struct LarkRig {
     deps: BridgeDeps,
     fake: Arc<FakeLarkPoster>,
+    /// In-memory asset store backing the bridge's resource re-hosting.
+    assets: Arc<InMemoryAssetStore>,
+    /// Canned-bytes fetcher; populate per-`file_key` before driving a test.
+    fetcher: Arc<FakeResourceFetcher>,
 }
 
 async fn build_rig(
@@ -119,6 +125,9 @@ async fn build_rig(
         CancellationToken::new(),
     );
 
+    let assets = Arc::new(InMemoryAssetStore::new("https://asset.example"));
+    let fetcher = Arc::new(FakeResourceFetcher::new());
+    let resource_fetcher: SharedResourceFetcher = fetcher.clone();
     let deps = BridgeDeps {
         apps,
         directory,
@@ -131,8 +140,15 @@ async fn build_rig(
         token_provider,
         http: reqwest::Client::new(),
         api_base: "https://open.larksuite.com".to_owned(),
+        assets: Some(assets.clone()),
+        resource_fetcher,
     };
-    LarkRig { deps, fake }
+    LarkRig {
+        deps,
+        fake,
+        assets,
+        fetcher,
+    }
 }
 
 /// A `p2p` (DM) message — a trigger on its own, no mention needed.
@@ -150,6 +166,7 @@ fn dm_message(event_id: &str, text: &str) -> InboundWork {
             message_id: LarkMessageId::try_from("om_dm_1").expect("message id"),
             thread_id: None,
             text: text.to_owned(),
+            resources: Vec::new(),
             mentions: Vec::new(),
         })),
         bot_open_id: Some(LarkOpenId::try_from("ou_bot").expect("bot open id")),
@@ -311,6 +328,7 @@ async fn ambient_group_message_ingests_without_trigger(pool: PgPool) {
             message_id: LarkMessageId::try_from("om_amb_1").expect("message id"),
             thread_id: None,
             text: "just chatting, no mention".to_owned(),
+            resources: Vec::new(),
             mentions: Vec::new(),
         })),
         bot_open_id: Some(LarkOpenId::try_from("ou_bot").expect("bot open id")),
@@ -342,4 +360,71 @@ async fn ambient_group_message_ingests_without_trigger(pool: PgPool) {
     // Give any (erroneous) async work a moment, then assert no post happened.
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(rig.fake.count(), 0, "ambient message posts no reply");
+}
+
+/// Minimal valid PNG prefix padded out — enough to pass the magic-byte sniff.
+fn png_bytes() -> Vec<u8> {
+    let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    v.resize(128, 0);
+    v
+}
+
+#[sqlx::test]
+async fn ambient_image_message_is_downloaded_and_rehosted(pool: PgPool) {
+    // No scripted turns: an ambient (no-mention) message must not run the agent,
+    // so the worker pool never holds a shadow turn open.
+    let provider = Arc::new(ScriptedProvider::new(vec![]));
+    let h = build_harness(pool.clone(), provider).await;
+    let clock: SharedClock = SystemClock::shared();
+    let caller = Caller::new(h.default_user_id, h.default_org_id);
+    let rig = build_rig(&pool, &clock, h.queue.clone(), h.default_agent_id, &caller).await;
+
+    // The image resource's bytes are served by the fake, keyed on the image_key.
+    rig.fetcher
+        .insert("img_v3_pic", png_bytes(), Some("image/png"));
+
+    let work = InboundWork {
+        event: LarkEvent::Message(Box::new(InboundMessage {
+            event_id: LarkEventId::try_from("evt-img").expect("event id"),
+            app_id: LarkAppId::try_from(APP_ID).expect("app id"),
+            tenant_key: TenantKey::try_from(TENANT).expect("tenant"),
+            sender_open_id: LarkOpenId::try_from("ou_bob").expect("open id"),
+            sender_user_id: Some(LarkUserId::try_from("u_bob").expect("user id")),
+            sender_type: "user".to_owned(),
+            chat_id: LarkChatId::try_from("oc_group").expect("chat id"),
+            chat_type: "group".to_owned(),
+            message_id: LarkMessageId::try_from("om_img_1").expect("message id"),
+            thread_id: None,
+            text: String::new(),
+            resources: vec![LarkResource {
+                file_key: LarkFileKey::try_from("img_v3_pic").expect("file key"),
+                kind: LarkResourceKind::Image,
+                filename: None,
+            }],
+            mentions: Vec::new(),
+        })),
+        bot_open_id: Some(LarkOpenId::try_from("ou_bot").expect("bot open id")),
+    };
+    bridge::process_event(&rig.deps, work)
+        .await
+        .expect("process image");
+
+    // The image was downloaded and re-hosted exactly once…
+    assert_eq!(rig.assets.len().await, 1, "one object stored");
+    // …and the mirrored body carries an image block at the re-hosted asset URL.
+    let body = run_privileged::<String, sqlx::Error>(&pool, async |tx| {
+        sqlx::query_scalar("SELECT body::text FROM thread_messages WHERE kind = 'posted' LIMIT 1")
+            .fetch_one(&mut **tx)
+            .await
+    })
+    .await
+    .expect("body");
+    assert!(
+        body.contains("\"image\""),
+        "body has an image block: {body}"
+    );
+    assert!(
+        body.contains("https://asset.example/attachments/"),
+        "image points at the re-hosted asset: {body}",
+    );
 }

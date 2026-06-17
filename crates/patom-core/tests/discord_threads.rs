@@ -122,6 +122,8 @@ async fn build_rig(
         outbound: outbound_seam,
         history,
         thread_opener,
+        assets: None,
+        attachment_fetcher: Arc::new(patom::discord::attachment::FakeAttachmentFetcher::new()),
     };
     Rig {
         deps,

@@ -130,11 +130,7 @@ fn user_content(content: Option<&Prompt>, attachments: &[Attachment]) -> Vec<Use
         out.push(UserContent::Text(c.as_str().to_owned()));
     }
     for att in attachments {
-        out.push(if att.mime().is_image() {
-            UserContent::Image(att.clone())
-        } else {
-            UserContent::File(att.clone())
-        });
+        out.push(UserContent::from(att.clone()));
     }
     assert!(
         !out.is_empty(),

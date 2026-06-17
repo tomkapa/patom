@@ -141,6 +141,21 @@ pub enum UserContent {
     File(Attachment),
 }
 
+impl From<Attachment> for UserContent {
+    /// Classify an attachment into the block it rides in: images become
+    /// [`UserContent::Image`], every other supported type (PDF / Office / text)
+    /// becomes [`UserContent::File`]. The provider converters materialise each
+    /// at dispatch. One definition shared by the `/prompts` route and the
+    /// Discord/Lark bridges so the rule can't drift across entry points.
+    fn from(att: Attachment) -> Self {
+        if att.mime().is_image() {
+            Self::Image(att)
+        } else {
+            Self::File(att)
+        }
+    }
+}
+
 /// Content allowed in an assistant-role message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]

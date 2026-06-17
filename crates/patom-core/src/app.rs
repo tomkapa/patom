@@ -930,6 +930,17 @@ pub async fn build_server(
         }
     };
 
+    // Object-storage seam — built once at startup from S3 settings when
+    // present. Holding `None` is a first-class deployment shape; the upload
+    // routes 503 cleanly and the chat-platform bridges drop attachments rather
+    // than fail. Built here (above the chat adapters) so Lark/Discord can
+    // re-host inbound attachments through the same store. CLAUDE.md §9: pool
+    // sized + endpoint resolved at boot.
+    let assets: Option<SharedAssetStore> = settings.object_storage.as_ref().map(|cfg| {
+        let store: SharedAssetStore = Arc::new(S3AssetStore::new(cfg));
+        store
+    });
+
     // Lark adapter — built only when `PATOM_LARK_ENABLED` is set. Per-bot
     // credentials are DB-registered (encrypted) via `/api/lark/apps`, so the
     // only env config is the feature flag + the API host. We build the stores,
@@ -943,6 +954,7 @@ pub async fn build_server(
             use crate::lark::channel_map::PgLarkChannelStore;
             use crate::lark::directory::PgLarkDirectory;
             use crate::lark::poster::{HttpLarkPoster, SharedLarkPoster};
+            use crate::lark::resource::{HttpResourceFetcher, SharedResourceFetcher};
             use crate::lark::state::LarkAppState;
             use crate::lark::thread_map::PgLarkThreadStore;
             use crate::lark::token::{AppSecretSource, CachingTokenProvider, SharedTokenProvider};
@@ -975,6 +987,10 @@ pub async fn build_server(
             ));
             let poster: SharedLarkPoster =
                 Arc::new(HttpLarkPoster::new(lark_http.clone(), cfg.api_base.clone()));
+            let resource_fetcher: SharedResourceFetcher = Arc::new(HttpResourceFetcher::new(
+                lark_http.clone(),
+                cfg.api_base.clone(),
+            ));
 
             let pump_handle = stream_pump::spawn(
                 stream_pump::PumpDeps {
@@ -1000,6 +1016,8 @@ pub async fn build_server(
                     token_provider: token_provider.clone(),
                     http: lark_http.clone(),
                     api_base: cfg.api_base.clone(),
+                    assets: assets.clone(),
+                    resource_fetcher,
                 },
                 cancel.clone(),
             );
@@ -1031,6 +1049,7 @@ pub async fn build_server(
             use crate::discord::app_store::{
                 PgDiscordAppStore, SharedBotTokenSource, SharedDiscordAppStore,
             };
+            use crate::discord::attachment::{HttpAttachmentFetcher, SharedAttachmentFetcher};
             use crate::discord::channel_map::PgDiscordChannelStore;
             use crate::discord::directory::PgDiscordDirectory;
             use crate::discord::history::{HttpDiscordHistoryReader, SharedHistoryReader};
@@ -1084,6 +1103,8 @@ pub async fn build_server(
                 tokens.clone(),
                 limiter,
             ));
+            let attachment_fetcher: SharedAttachmentFetcher =
+                Arc::new(HttpAttachmentFetcher::new(discord_http.clone()));
 
             let pump_handle: SharedDiscordPumpHandle = stream_pump::spawn(
                 stream_pump::PumpDeps {
@@ -1107,6 +1128,8 @@ pub async fn build_server(
                     outbound: pump_handle.clone(),
                     history,
                     thread_opener,
+                    assets: assets.clone(),
+                    attachment_fetcher,
                 },
                 cancel.clone(),
             );
@@ -1131,15 +1154,6 @@ pub async fn build_server(
             (Some(state), Some(bridge_handle))
         }
     };
-
-    // Object-storage seam — built once at startup from S3 settings when
-    // present. Holding `None` is a first-class deployment shape; the
-    // upload routes 503 cleanly instead of every other handler refusing
-    // to start. CLAUDE.md §9: pool sized + endpoint resolved at boot.
-    let assets: Option<SharedAssetStore> = settings.object_storage.as_ref().map(|cfg| {
-        let store: SharedAssetStore = Arc::new(S3AssetStore::new(cfg));
-        store
-    });
 
     let orgs_store: crate::orgs::SharedOrgStore =
         Arc::new(crate::orgs::PgOrgStore::new(pieces.pool.clone()));

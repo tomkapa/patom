@@ -117,6 +117,8 @@ async fn build_deps(
         outbound,
         history,
         thread_opener,
+        assets: None,
+        attachment_fetcher: Arc::new(patom::discord::attachment::FakeAttachmentFetcher::new()),
     }
 }
 

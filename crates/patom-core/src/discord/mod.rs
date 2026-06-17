@@ -24,6 +24,7 @@
 
 pub mod admin_routes;
 pub mod app_store;
+pub mod attachment;
 pub mod bridge;
 pub mod channel_map;
 pub mod codec;

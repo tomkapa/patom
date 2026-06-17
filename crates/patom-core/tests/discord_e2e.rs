@@ -129,6 +129,8 @@ async fn build_rig(
         outbound: pump,
         history: Arc::new(patom::discord::history::FakeHistoryReader::empty()),
         thread_opener,
+        assets: None,
+        attachment_fetcher: Arc::new(patom::discord::attachment::FakeAttachmentFetcher::new()),
     };
     DiscordRig { deps, fake }
 }

@@ -19,11 +19,14 @@
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, info, info_span, warn};
+use tracing::{Instrument, debug, info, info_span, warn};
 
+use crate::assets::{AssetContentType, SharedAssetStore};
 use crate::auth::{Caller, UserId};
 use crate::channels::ChannelId;
 use crate::colleagues::{ColleagueId, SharedColleagueStore};
+use crate::provider::ingest::ingest_attachment;
+use crate::provider::limits::MAX_ATTACHMENTS_PER_MESSAGE;
 use crate::provider::{ChatMessage, UserContent};
 use crate::runtime::{IdempotencyKey, NewTrigger, RequestKindPayload, SharedPromptQueue};
 use crate::threads::{MessageKind, NewMessage, SharedThreadStore, ThreadId, ThreadMessageId};
@@ -32,9 +35,10 @@ use super::app_store::{LarkApp, SharedLarkAppStore};
 use super::channel_map::SharedLarkChannelStore;
 use super::directory::SharedLarkDirectory;
 use super::error::LarkError;
-use super::event::{InboundMessage, LarkEvent};
+use super::event::{InboundMessage, LarkEvent, LarkResource};
 use super::limits::LARK_INBOUND_QUEUE;
 use super::mention;
+use super::resource::{LarkResourceKind, SharedResourceFetcher};
 use super::roster;
 use super::stream_pump::{AttachRequest, SharedLarkPumpHandle};
 use super::thread_map::SharedLarkThreadStore;
@@ -65,6 +69,11 @@ pub struct BridgeDeps {
     pub token_provider: SharedTokenProvider,
     pub http: reqwest::Client,
     pub api_base: String,
+    /// Object store for re-hosting inbound resources as model input. `None` when
+    /// no asset store is configured — resources are then dropped (text mirrors).
+    pub assets: Option<SharedAssetStore>,
+    /// Downloads an inbound resource's bytes from the Lark resource endpoint.
+    pub resource_fetcher: SharedResourceFetcher,
 }
 
 impl std::fmt::Debug for BridgeDeps {
@@ -184,6 +193,7 @@ async fn handle_message(
     // bot's own trigger mention) so the agent reads who is referenced and can
     // match them against its roster.
     let body_text = mention::render_inbound(&m.text, &m.mentions, bot_oid);
+    let body = build_user_message(deps, &m, body_text).await;
     let idem = IdempotencyKey::try_from(format!(
         "lark:{}:{}",
         m.tenant_key.as_str(),
@@ -204,7 +214,7 @@ async fn handle_message(
                 sender: Some(shadow.colleague_id),
                 owner_agent_id: None,
                 receiver,
-                body: ChatMessage::User(vec![UserContent::Text(body_text)]),
+                body: ChatMessage::User(body),
                 request_id: None,
                 idempotency_key: Some(idem.clone()),
             },
@@ -226,6 +236,109 @@ async fn handle_message(
         .await?;
     }
     Ok(())
+}
+
+/// Assemble the user-message content: the rendered text (when non-empty)
+/// followed by every supported resource re-hosted as model input. The feed must
+/// never be empty (the agent turn asserts a non-empty body), so a message with
+/// neither text nor a usable resource falls back to one empty text block.
+async fn build_user_message(
+    deps: &BridgeDeps,
+    m: &InboundMessage,
+    body_text: String,
+) -> Vec<UserContent> {
+    let mut content = Vec::new();
+    if !body_text.is_empty() {
+        content.push(UserContent::Text(body_text));
+    }
+    if !m.resources.is_empty() {
+        append_resources(deps, m, &mut content).await;
+    }
+    if content.is_empty() {
+        content.push(UserContent::Text(String::new()));
+    }
+    content
+}
+
+/// Fetch + re-host each supported resource, pushing it as a `UserContent` block.
+/// Best-effort and bounded ([`MAX_ATTACHMENTS_PER_MESSAGE`], §5): an unsupported
+/// type is skipped, a token/fetch/ingest failure is logged and skipped — neither
+/// drops the message itself.
+async fn append_resources(deps: &BridgeDeps, m: &InboundMessage, content: &mut Vec<UserContent>) {
+    let Some(store) = deps.assets.as_ref() else {
+        warn!(
+            count = m.resources.len(),
+            event = "lark.bridge.attachments_no_store",
+        );
+        return;
+    };
+    // One tenant token covers every resource download for this message.
+    let token = match deps.token_provider.token(&m.app_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(error = ?e, event = "lark.bridge.attachment_token_failed");
+            return;
+        }
+    };
+    for res in m.resources.iter().take(MAX_ATTACHMENTS_PER_MESSAGE) {
+        match ingest_lark_resource(deps, store, token.expose(), m, res).await {
+            Ok(Some(block)) => content.push(block),
+            Ok(None) => debug!(event = "lark.bridge.attachment_unsupported"),
+            Err(e) => warn!(error = ?e, event = "lark.bridge.attachment_skipped"),
+        }
+    }
+}
+
+/// Resolve one Lark resource to a model-input block, or `Ok(None)` when the type
+/// is unsupported. A `file` whose name has no model-input extension is skipped
+/// *before* downloading; an `image`'s type is learned from the response
+/// content-type.
+async fn ingest_lark_resource(
+    deps: &BridgeDeps,
+    store: &SharedAssetStore,
+    token: &str,
+    m: &InboundMessage,
+    res: &LarkResource,
+) -> Result<Option<UserContent>, LarkError> {
+    // A `file` resolves its type from the filename *before* the fetch, so an
+    // unsupported file (zip/video/…) costs no download. An `image` carries no
+    // filename, so its type is learned from the response Content-Type.
+    let file_type = match res.kind {
+        LarkResourceKind::File => match res
+            .filename
+            .as_deref()
+            .and_then(AssetContentType::from_attachment_extension)
+        {
+            Some(ct) => Some(ct),
+            None => return Ok(None),
+        },
+        LarkResourceKind::Image => None,
+    };
+    let fetched = deps
+        .resource_fetcher
+        .fetch(
+            token,
+            m.message_id.as_str(),
+            res.file_key.as_str(),
+            res.kind,
+        )
+        .await?;
+    let Some(content_type) = file_type.or_else(|| {
+        fetched
+            .content_type
+            .as_deref()
+            .and_then(AssetContentType::from_attachment_mime)
+    }) else {
+        return Ok(None);
+    };
+    let filename = res
+        .filename
+        .clone()
+        .unwrap_or_else(|| format!("attachment.{}", content_type.extension()));
+    let attachment = ingest_attachment(store, &filename, content_type, fetched.bytes)
+        .await
+        .map_err(|e| LarkError::Internal(format!("attachment ingest: {e}")))?;
+    Ok(Some(UserContent::from(attachment)))
 }
 
 /// The Lark thread anchor: the message's `thread_id` if it is in a topic, else

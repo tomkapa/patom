@@ -31,6 +31,7 @@ pub mod limits;
 pub mod mention;
 pub mod pbbp2;
 pub mod poster;
+pub mod resource;
 pub mod roster;
 pub mod state;
 pub mod stream_pump;
