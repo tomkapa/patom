@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use patom::agents::{AgentPromptCache, SharedAgentStore};
+use patom::agents::{AgentId, AgentPromptCache, SharedAgentStore};
 use patom::auth::{Language, OrgId, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use patom::clock::{SharedClock, SystemClock};
 use patom::colleagues::{
@@ -17,16 +17,20 @@ use patom::colleagues::{
     PgProfileStore, ProfileStore, Role, SharedColleagueStore, SharedProfileStore,
     resolve_agent_colleague, resolve_user_colleague,
 };
-use patom::memory::{AgentMemory, Memory, MemorySectionLoader, PgMemoryStore, SharedMemoryStore};
+use patom::memory::{
+    AgentMemory, Memory, MemoryContent, MemoryKind, MemoryMutation, MemorySectionLoader,
+    MemoryState, MemoryStore, MutationSource, PgMemoryStore, SharedMemoryStore,
+};
 use patom::prompts::Prompts;
 use patom::threads::{PgThreadStore, ThreadId, ThreadParticipants, ThreadStore};
+use patom::types::Participant;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 mod common;
 use common::embedding::FakeEmbeddingProvider;
 use common::lang::StaticOrgLanguageResolver;
-use common::pg::seed_tenant;
+use common::pg::{seed_agent, seed_tenant};
 use common::rule::StaticOrgRuleResolver;
 
 fn agent_memory(pool: &PgPool) -> AgentMemory {
@@ -75,6 +79,36 @@ fn profile_store(pool: &PgPool) -> PgProfileStore {
         SystemClock::shared(),
         FakeEmbeddingProvider::shared(),
     )
+}
+
+fn memory_store(pool: &PgPool) -> PgMemoryStore {
+    PgMemoryStore::new(
+        pool.clone(),
+        SystemClock::shared(),
+        FakeEmbeddingProvider::shared(),
+    )
+}
+
+/// Write one private `collaborator` note `agent` holds about `subject`.
+async fn write_collaborator_note(
+    store: &PgMemoryStore,
+    agent: AgentId,
+    subject: ColleagueId,
+    body: &str,
+    state: MemoryState,
+) {
+    store
+        .apply(MemoryMutation::Write {
+            agent,
+            kind: MemoryKind::Collaborator,
+            content: MemoryContent::try_from(body).expect("note content"),
+            state,
+            pinned: false,
+            subject: Some(subject),
+            source: MutationSource::Operator,
+        })
+        .await
+        .expect("write collaborator note");
 }
 
 /// Insert a DM thread raised by `creator` (counterpart `agent`), plus one posted
@@ -174,7 +208,11 @@ async fn participants_block_enriches_human_flags_raiser_excludes_viewer(pool: Pg
         senders: vec![human, agent],
     };
     let block = memory
-        .participants_block(&participants, agent, &HashMap::new())
+        .participants_block(
+            &participants,
+            Participant::agent(agent, seed.agent_id),
+            &HashMap::new(),
+        )
         .await;
 
     assert!(block.contains("<participants>"), "block rendered: {block}");
@@ -207,7 +245,158 @@ async fn participants_block_empty_when_only_viewer(pool: PgPool) {
         senders: vec![agent],
     };
     let block = memory
-        .participants_block(&participants, agent, &HashMap::new())
+        .participants_block(
+            &participants,
+            Participant::agent(agent, seed.agent_id),
+            &HashMap::new(),
+        )
         .await;
     assert!(block.is_empty(), "viewer-only yields no block: {block}");
+}
+
+#[sqlx::test]
+async fn collaborator_query_scopes_to_agent_kind_and_subject(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human");
+    // A second agent in the same org, writing its own note about the same human.
+    let other_agent_id = seed_agent(&pool, seed.org_id, "other-agent").await;
+
+    let store = memory_store(&pool);
+    write_collaborator_note(
+        &store,
+        seed.agent_id,
+        human,
+        "mine about human",
+        MemoryState::Held,
+    )
+    .await;
+    write_collaborator_note(
+        &store,
+        other_agent_id,
+        human,
+        "theirs about human",
+        MemoryState::Held,
+    )
+    .await;
+    // A non-collaborator memory (no subject) the viewer holds — must not match.
+    store
+        .apply(MemoryMutation::Write {
+            agent: seed.agent_id,
+            kind: MemoryKind::Identity,
+            content: MemoryContent::try_from("I am terse").expect("content"),
+            state: MemoryState::Held,
+            pinned: false,
+            subject: None,
+            source: MutationSource::Operator,
+        })
+        .await
+        .expect("write identity memory");
+
+    let rows = store
+        .collaborator_memories_for_subjects(seed.agent_id, &[human])
+        .await
+        .expect("query");
+    assert_eq!(
+        rows.len(),
+        1,
+        "only the viewer's collaborator note: {rows:?}"
+    );
+    assert_eq!(rows[0].content.as_str(), "mine about human");
+    assert_eq!(rows[0].subject, Some(human));
+
+    // Empty subject set short-circuits to no rows.
+    let none = store
+        .collaborator_memories_for_subjects(seed.agent_id, &[])
+        .await
+        .expect("empty");
+    assert!(none.is_empty(), "empty subjects → no rows");
+}
+
+#[sqlx::test]
+async fn participants_block_surfaces_private_notes_for_present_people(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
+        .await
+        .expect("human");
+    let agent = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
+        .await
+        .expect("agent");
+    // A peer agent that is *also* a thread participant and a note subject.
+    let peer_id = seed_agent(&pool, seed.org_id, "peer-agent").await;
+    let peer = resolve_agent_colleague(&pool, seed.org_id, peer_id)
+        .await
+        .expect("peer");
+
+    let store = memory_store(&pool);
+    // Four notes about the human (cap is 3) spanning states, plus one about the
+    // peer agent — proving the overlay covers agent subjects too.
+    write_collaborator_note(
+        &store,
+        seed.agent_id,
+        human,
+        "human-alpha",
+        MemoryState::Validated,
+    )
+    .await;
+    write_collaborator_note(
+        &store,
+        seed.agent_id,
+        human,
+        "human-beta",
+        MemoryState::Held,
+    )
+    .await;
+    write_collaborator_note(
+        &store,
+        seed.agent_id,
+        human,
+        "human-gamma",
+        MemoryState::Held,
+    )
+    .await;
+    write_collaborator_note(
+        &store,
+        seed.agent_id,
+        human,
+        "human-delta",
+        MemoryState::Tentative,
+    )
+    .await;
+    write_collaborator_note(&store, seed.agent_id, peer, "peer-note", MemoryState::Held).await;
+
+    let memory = agent_memory(&pool);
+    let participants = ThreadParticipants {
+        creator: Some(human),
+        senders: vec![human, peer],
+    };
+    let block = memory
+        .participants_block(
+            &participants,
+            Participant::agent(agent, seed.agent_id),
+            &HashMap::new(),
+        )
+        .await;
+
+    assert!(
+        block.contains("(you noted) human-alpha"),
+        "validated human note kept: {block}"
+    );
+    assert!(
+        block.contains("(you noted) peer-note"),
+        "agent-subject note surfaced: {block}"
+    );
+    // The cap keeps the three highest-priority/freshest notes, dropping the
+    // lone Tentative one.
+    assert!(
+        !block.contains("human-delta"),
+        "cap drops the lowest-priority note: {block}"
+    );
+    // 3 kept for the human + 1 for the peer agent.
+    assert_eq!(
+        block.matches("(you noted)").count(),
+        4,
+        "per-person cap applied: {block}"
+    );
 }

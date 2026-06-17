@@ -30,9 +30,9 @@ use crate::auth::{OrgId, OrganizationRule, SharedOrgLanguageResolver, SharedOrgR
 use crate::clock::SharedClock;
 use crate::colleagues::{
     ColleagueError, ColleagueId, ColleagueKind, ColleagueName, ColleagueRef, ColleagueRosterCache,
-    MAX_PARTICIPANTS_INLINE, MAX_ROSTER_INLINE, PROFILE_SNIPPET_LEN, ParticipantLine,
-    SharedColleagueStore, SharedProfileStore, SharedThreadDisplayNames, profile_snippet,
-    render_participants_block, render_roster_block,
+    MAX_NOTES_PER_PARTICIPANT, MAX_PARTICIPANTS_INLINE, MAX_ROSTER_INLINE, PROFILE_SNIPPET_LEN,
+    ParticipantLine, SharedColleagueStore, SharedProfileStore, SharedThreadDisplayNames,
+    profile_snippet, render_participants_block, render_roster_block,
 };
 use crate::prompts::Prompts;
 use crate::runtime::{RequestKind, RequestKindPayload};
@@ -40,6 +40,7 @@ use crate::threads::{ChannelRef, SharedThreadStore, ThreadId, ThreadParticipants
 use crate::types::Participant;
 
 use super::loader::MemorySectionLoader;
+use super::store::MemoryRow;
 use super::traits::{Memory, MemoryError};
 use super::types::{MemoryHandle, MemoryId};
 
@@ -259,32 +260,18 @@ impl AgentMemory {
     }
 
     /// Build the `<participants>` lines for the thread: the raiser + distinct
-    /// posters (viewer excluded), each enriched with their shared profile.
-    /// Fallible so the public method can degrade the whole block to empty; the
-    /// profile lookup degrades independently (names still render without L2).
+    /// posters (viewer excluded), each enriched with their shared profile (L2)
+    /// and the viewer agent's own private collaborator notes (#193). Fallible so
+    /// the public method can degrade the whole block to empty; the profile and
+    /// note lookups degrade independently (names still render without either).
     async fn try_participants_block(
         &self,
-        participants: &ThreadParticipants,
+        agent: AgentId,
         viewer: ColleagueId,
+        participants: &ThreadParticipants,
         overrides: &std::collections::HashMap<ColleagueId, ColleagueName>,
     ) -> Result<String, ColleagueError> {
-        // Ordered, deduped, viewer-excluded: creator first, then posters.
-        let mut ordered: Vec<ColleagueId> = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        seen.insert(viewer);
-        if let Some(creator) = participants.creator
-            && seen.insert(creator)
-        {
-            ordered.push(creator);
-        }
-        for &sender in &participants.senders {
-            if ordered.len() >= MAX_PARTICIPANTS_INLINE {
-                break;
-            }
-            if seen.insert(sender) {
-                ordered.push(sender);
-            }
-        }
+        let ordered = ordered_participants(participants, viewer);
         if ordered.is_empty() {
             return Ok(String::new());
         }
@@ -295,8 +282,10 @@ impl AgentMemory {
         let by_id: std::collections::HashMap<ColleagueId, &ColleagueRef> =
             roster.iter().map(|c| (c.id, c)).collect();
 
-        // L2: profiles for the humans on the list. Degrades independently — a
-        // board outage drops snippets, never names.
+        // L2 shared profiles (humans only) and the private note overlay (anyone
+        // the agent has notes about, including agents) are independent reads;
+        // run them concurrently. Each degrades on its own — a board / store
+        // outage drops snippets or notes, never names.
         let human_ids: Vec<ColleagueId> = ordered
             .iter()
             .copied()
@@ -306,13 +295,14 @@ impl AgentMemory {
                     .is_some_and(|c| c.kind == ColleagueKind::Human)
             })
             .collect();
-        let profiles = match self.profiles.get_many(&human_ids).await {
-            Ok(map) => map,
-            Err(e) => {
-                tracing::warn!(error = %e, "participants.profiles.error");
-                std::collections::HashMap::new()
-            }
-        };
+        let (profiles, mut notes) = tokio::join!(
+            self.profiles.get_many(&human_ids),
+            self.collaborator_notes(agent, &ordered),
+        );
+        let profiles = profiles.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "participants.profiles.error");
+            std::collections::HashMap::new()
+        });
 
         let mut lines: Vec<ParticipantLine> = Vec::with_capacity(ordered.len());
         for id in ordered {
@@ -334,6 +324,7 @@ impl AgentMemory {
                 name,
                 kind: colleague.kind,
                 snippet,
+                notes: notes.remove(&id).unwrap_or_default(),
                 raised_thread: participants.creator == Some(id),
             });
         }
@@ -345,6 +336,112 @@ impl AgentMemory {
         );
         Ok(render_participants_block(&lines))
     }
+
+    /// The viewer agent's private collaborator notes about each of `ordered`,
+    /// grouped by subject and capped per person (#193). Enrichment: a store
+    /// outage degrades to an empty map (no notes), never failing the turn —
+    /// same posture as the profile lookup above.
+    async fn collaborator_notes(
+        &self,
+        agent: AgentId,
+        ordered: &[ColleagueId],
+    ) -> std::collections::HashMap<ColleagueId, Vec<String>> {
+        let rows = match self
+            .loader
+            .store()
+            .collaborator_memories_for_subjects(agent, ordered)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(error = %e, "participants.notes.error");
+                return std::collections::HashMap::new();
+            }
+        };
+        let mut by_subject: std::collections::HashMap<ColleagueId, Vec<&MemoryRow>> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            if let Some(subject) = row.subject {
+                by_subject.entry(subject).or_default().push(row);
+            }
+        }
+        by_subject
+            .into_iter()
+            .map(|(subject, subject_rows)| {
+                let notes = notes_from_rows(
+                    &subject_rows,
+                    MAX_NOTES_PER_PARTICIPANT,
+                    PROFILE_SNIPPET_LEN,
+                );
+                (subject, notes)
+            })
+            .collect()
+    }
+}
+
+/// Ordered, deduped, viewer-excluded participant ids: the creator first, then
+/// distinct posters, capped at [`MAX_PARTICIPANTS_INLINE`]. Pure so the block
+/// builder stays short and the ordering is unit-testable without a store.
+fn ordered_participants(
+    participants: &ThreadParticipants,
+    viewer: ColleagueId,
+) -> Vec<ColleagueId> {
+    let mut ordered: Vec<ColleagueId> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(viewer);
+    if let Some(creator) = participants.creator
+        && seen.insert(creator)
+    {
+        ordered.push(creator);
+    }
+    for &sender in &participants.senders {
+        if ordered.len() >= MAX_PARTICIPANTS_INLINE {
+            break;
+        }
+        if seen.insert(sender) {
+            ordered.push(sender);
+        }
+    }
+    ordered
+}
+
+/// Select and render one person's collaborator notes for the `<participants>`
+/// overlay (#193): the freshest, highest-confidence notes first, capped to
+/// `max_notes` and each truncated to `max_len` bytes. Pure — unit-testable
+/// without a store.
+///
+/// Ordering mirrors the composer's stable-layer selection: state priority
+/// (Core > Validated > Held > Tentative), then recency. The two assertions
+/// bracket the cap (§6).
+fn notes_from_rows(rows: &[&MemoryRow], max_notes: usize, max_len: usize) -> Vec<String> {
+    let mut ordered: Vec<&MemoryRow> = rows.to_vec();
+    ordered.sort_by(|a, b| {
+        b.state
+            .priority()
+            .cmp(&a.state.priority())
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
+    let notes: Vec<String> = ordered
+        .into_iter()
+        .take(max_notes)
+        .map(|row| {
+            // Per-person budget mirrors the profile snippet cap
+            // (PROFILE_SNIPPET_LEN); the shared util snaps to a char boundary.
+            let mut text = row.content.as_str().to_owned();
+            crate::tools::truncate_to_char_boundary(&mut text, max_len);
+            text
+        })
+        .collect();
+    assert!(
+        notes.len() <= max_notes,
+        "invariant: per-participant note cap {max_notes} overshot ({})",
+        notes.len()
+    );
+    assert!(
+        notes.len() <= rows.len(),
+        "invariant: notes cannot exceed source rows"
+    );
+    notes
 }
 
 impl std::fmt::Debug for AgentMemory {
@@ -436,11 +533,19 @@ impl Memory for AgentMemory {
     async fn participants_block(
         &self,
         participants: &ThreadParticipants,
-        viewer: ColleagueId,
+        viewer: Participant,
         overrides: &std::collections::HashMap<ColleagueId, ColleagueName>,
     ) -> String {
+        // The thread turn-builder only reaches here with an agent viewer
+        // (`agent_core::turn::build_thread_request`). Should that ever not hold,
+        // this block is pure enrichment — degrade to empty rather than fail the
+        // turn, the same posture as every other lookup here.
+        let (Some(viewer_colleague), Some(agent)) = (viewer.colleague_id(), viewer.agent_id())
+        else {
+            return String::new();
+        };
         match self
-            .try_participants_block(participants, viewer, overrides)
+            .try_participants_block(agent, viewer_colleague, participants, overrides)
             .await
         {
             Ok(block) => block,
@@ -562,5 +667,78 @@ impl AgentMemory {
         out.push_str(memory_str);
 
         Arc::from(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone, Utc};
+
+    use super::*;
+    use crate::memory::{MemoryContent, MemoryId, MemoryKind, MemoryState};
+
+    fn collaborator_row(
+        subject: ColleagueId,
+        content: &str,
+        state: MemoryState,
+        ts_secs: i64,
+    ) -> MemoryRow {
+        MemoryRow {
+            id: MemoryId::new(),
+            agent_id: AgentId::new(),
+            org_id: OrgId::new(),
+            kind: MemoryKind::Collaborator,
+            content: MemoryContent::try_from(content).expect("valid content"),
+            state,
+            pinned: false,
+            subject: Some(subject),
+            source_turn_id: None,
+            created_at: Utc.timestamp_opt(ts_secs, 0).single().expect("ts"),
+            last_validated_at: Utc.timestamp_opt(ts_secs, 0).single().expect("ts"),
+            last_accessed_at: Utc.timestamp_opt(ts_secs, 0).single().expect("ts"),
+            access_count: 0,
+        }
+    }
+
+    #[test]
+    fn notes_ordered_by_state_then_recency_and_capped() {
+        let s = ColleagueId::new();
+        let held_old = collaborator_row(s, "held-old", MemoryState::Held, 100);
+        let validated = collaborator_row(s, "validated", MemoryState::Validated, 50);
+        let held_new = collaborator_row(s, "held-new", MemoryState::Held, 200);
+        let tentative = collaborator_row(s, "tentative", MemoryState::Tentative, 300);
+        let rows = [&held_old, &validated, &held_new, &tentative];
+
+        let notes = notes_from_rows(&rows, MAX_NOTES_PER_PARTICIPANT, PROFILE_SNIPPET_LEN);
+        // Cap of 3 drops the lowest-priority (tentative) note.
+        assert_eq!(notes.len(), 3);
+        // Validated (higher state) first; within Held, newer before older.
+        assert_eq!(notes, vec!["validated", "held-new", "held-old"]);
+        assert!(!notes.iter().any(|n| n == "tentative"));
+    }
+
+    #[test]
+    fn notes_truncated_to_len() {
+        let s = ColleagueId::new();
+        let long = "x".repeat(PROFILE_SNIPPET_LEN + 50);
+        let row = collaborator_row(s, &long, MemoryState::Held, 1);
+        let notes = notes_from_rows(&[&row], MAX_NOTES_PER_PARTICIPANT, PROFILE_SNIPPET_LEN);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].len() <= PROFILE_SNIPPET_LEN);
+    }
+
+    #[test]
+    fn ordered_participants_dedups_excludes_viewer_and_caps() {
+        let viewer = ColleagueId::new();
+        let creator = ColleagueId::new();
+        let other = ColleagueId::new();
+        let participants = ThreadParticipants {
+            creator: Some(creator),
+            // viewer + creator repeated; viewer must be dropped, dups collapsed.
+            senders: vec![creator, viewer, other, other],
+        };
+        let ordered = ordered_participants(&participants, viewer);
+        assert_eq!(ordered, vec![creator, other], "creator first, then posters");
+        assert!(!ordered.contains(&viewer), "viewer excluded");
     }
 }

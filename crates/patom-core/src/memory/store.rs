@@ -390,6 +390,22 @@ pub trait MemoryStore: fmt::Debug + Send + Sync {
     /// ascending.
     async fn list(&self, agent: AgentId) -> Result<Vec<MemoryRow>, MemoryStoreError>;
 
+    /// The agent's private `Collaborator` memories about the given `subjects`,
+    /// most-recent first — the source for the per-person `<participants>`
+    /// overlay (#193, doc/colleague-profiles-and-search-plan.md §1).
+    ///
+    /// Bounded both ways: the caller passes the already-capped participant set
+    /// (`subjects.len() <= MAX_PARTICIPANTS_INLINE`) and the result cannot
+    /// exceed one agent's row quota (`<= MAX_MEMORIES_PER_AGENT`). An empty
+    /// `subjects` returns an empty vector without touching the database. Only
+    /// `Collaborator` rows carry a subject, but the query filters on `kind`
+    /// explicitly so the contract is legible at the call site.
+    async fn collaborator_memories_for_subjects(
+        &self,
+        agent: AgentId,
+        subjects: &[ColleagueId],
+    ) -> Result<Vec<MemoryRow>, MemoryStoreError>;
+
     /// Fetch a single materialized row. Returns `None` if forgotten or
     /// never existed.
     async fn get(&self, id: MemoryId) -> Result<Option<MemoryRow>, MemoryStoreError>;

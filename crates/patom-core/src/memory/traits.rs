@@ -69,16 +69,19 @@ pub trait Memory: Send + Sync + fmt::Debug {
         thread: Option<ThreadId>,
     ) -> HashMap<ColleagueId, ColleagueName>;
 
-    /// Render the per-turn `<participants>` block (L1 + L2, issue #183) from the
-    /// thread's resolved [`ThreadParticipants`]: who raised the thread and who
-    /// has posted, each enriched with their shared profile. The `viewer` is
-    /// excluded. Enrichment only — any lookup failure degrades to the empty
-    /// string (no block), never failing the turn; the caller folds the result
-    /// into the prompt's per-turn tail.
+    /// Render the per-turn `<participants>` block (L1 + L2 + private overlay)
+    /// from the thread's resolved [`ThreadParticipants`]: who raised the thread
+    /// and who has posted, each enriched with their shared profile (#183) and
+    /// the viewer agent's own private `collaborator` notes about them (#193).
+    /// The `viewer` is a [`Participant`] — it carries both the colleague id
+    /// (for exclusion) and the agent id (the notes are keyed by it) — and is
+    /// itself excluded from the list. Enrichment only: any lookup failure
+    /// degrades to the empty string (no block), never failing the turn; the
+    /// caller folds the result into the prompt's per-turn tail.
     async fn participants_block(
         &self,
         participants: &ThreadParticipants,
-        viewer: ColleagueId,
+        viewer: Participant,
         overrides: &HashMap<ColleagueId, ColleagueName>,
     ) -> String;
 

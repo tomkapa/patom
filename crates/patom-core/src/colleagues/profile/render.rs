@@ -7,6 +7,7 @@
 //! org-stable prefix — to preserve prompt-cache hits.
 
 use crate::colleagues::{ColleagueKind, ColleagueName};
+use crate::tools::truncate_to_char_boundary;
 
 use super::limits::MAX_PARTICIPANTS_INLINE;
 use super::types::ColleagueProfile;
@@ -23,6 +24,11 @@ pub struct ParticipantLine {
     /// One-line "who they are" summary (profile for humans, none for agents —
     /// an agent's description already shows in `<colleagues>`).
     pub snippet: Option<String>,
+    /// The viewer agent's own private `collaborator` notes about this person
+    /// (#193) — "what *I* learned working with them". Already capped and
+    /// truncated by the caller; rendered as sub-bullets beneath the person.
+    /// Empty when the agent holds no notes about them.
+    pub notes: Vec<String>,
     /// True for the colleague who opened the thread ("raised this").
     pub raised_thread: bool,
 }
@@ -47,14 +53,7 @@ pub fn profile_snippet(profile: &ColleagueProfile, max: usize) -> Option<String>
         return None;
     }
     let mut joined = parts.join("; ");
-    if joined.len() > max {
-        // Truncate on a char boundary at or below `max`.
-        let mut end = max;
-        while end > 0 && !joined.is_char_boundary(end) {
-            end -= 1;
-        }
-        joined.truncate(end);
-    }
+    truncate_to_char_boundary(&mut joined, max);
     Some(joined)
 }
 
@@ -96,6 +95,12 @@ pub fn render_participants_block(lines: &[ParticipantLine]) -> String {
         if line.raised_thread {
             out.push_str(" — raised this thread");
         }
+        // Private collaborator notes (#193) sit as indented sub-bullets under
+        // the person, so each entry reads as "who they are" + "what I learned".
+        for note in &line.notes {
+            out.push_str("\n  • (you noted) ");
+            out.push_str(note);
+        }
     }
 
     out.push_str(PARTICIPANTS_TAG_CLOSE);
@@ -117,6 +122,7 @@ mod tests {
             name: ColleagueName::try_from(name).expect("name"),
             kind,
             snippet: snippet.map(ToOwned::to_owned),
+            notes: Vec::new(),
             raised_thread: raised,
         }
     }
@@ -182,5 +188,38 @@ mod tests {
     fn profile_snippet_none_when_empty() {
         let p = ColleagueProfile::new(ColleagueId::new(), None, None, None, None);
         assert!(profile_snippet(&p, 160).is_none());
+    }
+
+    #[test]
+    fn renders_private_notes_as_sub_bullets() {
+        let mut pa = line("Pa", ColleagueKind::Human, Some("Product Manager"), true);
+        pa.notes = vec![
+            "prefers terse async updates".to_owned(),
+            "burned by the Q2 estimate".to_owned(),
+        ];
+        let block = render_participants_block(&[pa]);
+        assert!(
+            block.contains("- Pa (human) — Product Manager — raised this thread"),
+            "profile line precedes notes: {block}"
+        );
+        assert!(
+            block.contains("\n  • (you noted) prefers terse async updates"),
+            "first note as sub-bullet: {block}"
+        );
+        assert!(
+            block.contains("\n  • (you noted) burned by the Q2 estimate"),
+            "second note as sub-bullet: {block}"
+        );
+    }
+
+    #[test]
+    fn no_notes_means_no_sub_bullets() {
+        let block = render_participants_block(&[line(
+            "Mina",
+            ColleagueKind::Human,
+            Some("Designer"),
+            false,
+        )]);
+        assert!(!block.contains("(you noted)"), "no note bullets: {block}");
     }
 }

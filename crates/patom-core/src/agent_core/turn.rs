@@ -338,7 +338,7 @@ impl Agent {
         let participants_block = match participants {
             Ok(participants) => {
                 self.memory()
-                    .participants_block(&participants, viewer_colleague, &overrides)
+                    .participants_block(&participants, viewer, &overrides)
                     .await
             }
             Err(e) => {
