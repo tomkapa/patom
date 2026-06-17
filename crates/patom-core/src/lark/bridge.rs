@@ -316,7 +316,12 @@ async fn ingest_lark_resource(
     };
     let fetched = deps
         .resource_fetcher
-        .fetch(token, m.message_id.as_str(), &res.file_key, res.kind)
+        .fetch(
+            token,
+            m.message_id.as_str(),
+            res.file_key.as_str(),
+            res.kind,
+        )
         .await?;
     let Some(content_type) = file_type.or_else(|| {
         fetched

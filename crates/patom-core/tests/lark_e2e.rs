@@ -34,8 +34,8 @@ use patom::lark::stream_pump::{self, PumpDeps};
 use patom::lark::thread_map::PgLarkThreadStore;
 use patom::lark::token::{FakeTokenProvider, SharedTokenProvider};
 use patom::lark::types::{
-    LarkAppId, LarkAppSecret, LarkChatId, LarkEventId, LarkMessageId, LarkOpenId, LarkUserId,
-    TenantKey,
+    LarkAppId, LarkAppSecret, LarkChatId, LarkEventId, LarkFileKey, LarkMessageId, LarkOpenId,
+    LarkUserId, TenantKey,
 };
 use patom::provider::{AssistantContent, ChatResponse, StopReason, ToolCall, ToolCallId};
 use patom::runtime::{PgThreadStream, SharedPromptQueue, SharedThreadStream};
@@ -397,7 +397,7 @@ async fn ambient_image_message_is_downloaded_and_rehosted(pool: PgPool) {
             thread_id: None,
             text: String::new(),
             resources: vec![LarkResource {
-                file_key: "img_v3_pic".to_owned(),
+                file_key: LarkFileKey::try_from("img_v3_pic").expect("file key"),
                 kind: LarkResourceKind::Image,
                 filename: None,
             }],

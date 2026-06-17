@@ -135,6 +135,13 @@ lark_string_newtype! {
     LarkEventId, "lark_event_id"
 }
 
+lark_string_newtype! {
+    /// A Lark message-resource key — an `image_key` (`img_v3_…`) or `file_key`
+    /// (`file_v3_…`) carried by an inbound message and used as the path param to
+    /// the resource-download endpoint (issue #187).
+    LarkFileKey, "lark_file_key"
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Secrets
 // ─────────────────────────────────────────────────────────────────────────

@@ -14,7 +14,8 @@
 //! the platform fetchers wrap with their own auth (CLAUDE.md §5 — every I/O
 //! await is bounded in time *and* size).
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use futures::StreamExt as _;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -137,17 +138,22 @@ pub async fn get_capped(
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(ToOwned::to_owned);
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| FetchError::Transport(e.to_string()))?;
-        // A lying / absent Content-Length is still caught after the read.
-        let got = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if got > max {
-            return Err(FetchError::TooLarge { max, got });
+        // Bound size *during* the read, not after: a server that omits or lies
+        // about Content-Length can't exhaust memory by streaming an unbounded
+        // body (CLAUDE.md §5 — cap eagerly, in space as well as time).
+        let mut got: u64 = 0;
+        let mut buf = BytesMut::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| FetchError::Transport(e.to_string()))?;
+            got = got.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+            if got > max {
+                return Err(FetchError::TooLarge { max, got });
+            }
+            buf.extend_from_slice(&chunk);
         }
         Ok(FetchedBytes {
-            bytes,
+            bytes: buf.freeze(),
             content_type,
         })
     };

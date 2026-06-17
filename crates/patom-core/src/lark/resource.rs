@@ -81,17 +81,25 @@ impl ResourceFetcher for HttpResourceFetcher {
         file_key: &str,
         kind: LarkResourceKind,
     ) -> Result<FetchedBytes, LarkError> {
-        let url = format!(
-            "{base}/open-apis/im/v1/messages/{mid}/resources/{key}",
-            base = self.api_base,
-            mid = message_id,
-            key = file_key,
-        );
-        let req = self
-            .http
-            .get(&url)
-            .query(&[("type", kind.type_param())])
-            .bearer_auth(token);
+        // Build the URL through the segment API so `message_id`/`file_key` are
+        // percent-encoded as path components — a reserved character can never
+        // produce a malformed or ambiguous request.
+        let mut url = reqwest::Url::parse(&self.api_base)
+            .map_err(|e| LarkError::ResourceFetch(format!("invalid api_base: {e}")))?;
+        url.path_segments_mut()
+            .map_err(|()| LarkError::ResourceFetch("api_base cannot be a base url".to_owned()))?
+            .pop_if_empty()
+            .extend([
+                "open-apis",
+                "im",
+                "v1",
+                "messages",
+                message_id,
+                "resources",
+                file_key,
+            ]);
+        url.query_pairs_mut().append_pair("type", kind.type_param());
+        let req = self.http.get(url).bearer_auth(token);
         get_capped(req, MAX_ATTACHMENT_FILE_BYTES)
             .await
             .map_err(|e| LarkError::ResourceFetch(e.to_string()))

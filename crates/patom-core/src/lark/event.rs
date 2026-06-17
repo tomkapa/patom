@@ -13,8 +13,8 @@ use super::error::LarkError;
 use super::mention::AtToken;
 use super::resource::LarkResourceKind;
 use super::types::{
-    LarkAppId, LarkChatId, LarkEventId, LarkMessageId, LarkOpenId, LarkThreadId, LarkUserId,
-    TenantKey,
+    LarkAppId, LarkChatId, LarkEventId, LarkFileKey, LarkMessageId, LarkOpenId, LarkThreadId,
+    LarkUserId, TenantKey,
 };
 
 /// Upper bound on rich-text (`post`) elements scanned for text + embedded
@@ -70,8 +70,9 @@ pub struct InboundMessage {
 #[derive(Debug, Clone)]
 pub struct LarkResource {
     /// The `image_key` (images) or `file_key` (files) — the path param to the
-    /// resource-download endpoint.
-    pub file_key: String,
+    /// resource-download endpoint. A typed id (CLAUDE.md §1), parsed at the
+    /// boundary so a malformed key never reaches the fetcher.
+    pub file_key: LarkFileKey,
     pub kind: LarkResourceKind,
     /// The original filename: file messages carry `file_name`; `None` for
     /// images (the bridge synthesizes one from the downloaded content type).
@@ -206,17 +207,19 @@ fn parse_content(message_type: Option<&str>, content: Option<&str>) -> (String, 
     }
 }
 
-/// `image_key` from an `image` message's content (`{"image_key":"img_v3_…"}`).
-fn parse_image_key(raw: &str) -> Option<String> {
+/// `image_key` from an `image` message's content (`{"image_key":"img_v3_…"}`),
+/// parsed through the [`LarkFileKey`] boundary (drops a malformed key).
+fn parse_image_key(raw: &str) -> Option<LarkFileKey> {
     let parsed: ContentImage = serde_json::from_str(raw).ok()?;
-    parsed.image_key.filter(|k| !k.is_empty())
+    parsed.image_key.and_then(|k| LarkFileKey::try_from(k).ok())
 }
 
 /// `(file_key, file_name)` from a `file` message's content
-/// (`{"file_key":"file_v3_…","file_name":"report.pdf"}`).
-fn parse_file(raw: &str) -> Option<(String, Option<String>)> {
+/// (`{"file_key":"file_v3_…","file_name":"report.pdf"}`). The key is parsed
+/// through the [`LarkFileKey`] boundary.
+fn parse_file(raw: &str) -> Option<(LarkFileKey, Option<String>)> {
     let parsed: ContentFile = serde_json::from_str(raw).ok()?;
-    let key = parsed.file_key.filter(|k| !k.is_empty())?;
+    let key = LarkFileKey::try_from(parsed.file_key?).ok()?;
     let name = parsed.file_name.filter(|n| !n.is_empty());
     Some((key, name))
 }
@@ -248,10 +251,13 @@ fn parse_post(raw: &str) -> (String, Vec<LarkResource>) {
                 }
                 "img" => {
                     if resources.len() < MAX_ATTACHMENTS_PER_MESSAGE
-                        && let Some(key) = el.image_key.as_ref().filter(|k| !k.is_empty())
+                        && let Some(key) = el
+                            .image_key
+                            .as_deref()
+                            .and_then(|k| LarkFileKey::try_from(k).ok())
                     {
                         resources.push(LarkResource {
-                            file_key: key.clone(),
+                            file_key: key,
                             kind: LarkResourceKind::Image,
                             filename: None,
                         });
@@ -509,7 +515,7 @@ mod tests {
         };
         assert_eq!(m.text, "");
         assert_eq!(m.resources.len(), 1);
-        assert_eq!(m.resources[0].file_key, "img_v3_abc");
+        assert_eq!(m.resources[0].file_key.as_str(), "img_v3_abc");
         assert_eq!(m.resources[0].kind, LarkResourceKind::Image);
         assert!(m.resources[0].filename.is_none());
     }
@@ -524,7 +530,7 @@ mod tests {
             panic!("message");
         };
         assert_eq!(m.resources.len(), 1);
-        assert_eq!(m.resources[0].file_key, "file_v3_xyz");
+        assert_eq!(m.resources[0].file_key.as_str(), "file_v3_xyz");
         assert_eq!(m.resources[0].kind, LarkResourceKind::File);
         assert_eq!(m.resources[0].filename.as_deref(), Some("report.pdf"));
     }
@@ -541,7 +547,7 @@ mod tests {
         };
         assert!(m.text.contains("Please review the doc"), "got {:?}", m.text);
         assert_eq!(m.resources.len(), 1);
-        assert_eq!(m.resources[0].file_key, "img_v3_p1");
+        assert_eq!(m.resources[0].file_key.as_str(), "img_v3_p1");
         assert_eq!(m.resources[0].kind, LarkResourceKind::Image);
     }
 
