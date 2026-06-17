@@ -32,8 +32,10 @@ use tracing::{info, warn};
 
 use crate::agents::AgentId;
 use crate::auth::Caller;
+use crate::channels::ChannelId;
 use crate::colleagues::{ColleagueError, ColleagueId, SharedColleagueStore};
 use crate::observability::log::preview;
+use crate::outbound::SharedOutboundRouter;
 use crate::runtime::{
     IdempotencyKey, NewTrigger, PromptError, PromptRequestId, ResponseChunk, SharedDagBudget,
     SharedPromptQueue, SharedResponseSink,
@@ -53,6 +55,23 @@ struct SendMessageInput {
     receiver: Option<ColleagueId>,
     /// The message body. Same `PROMPT_MAX_BYTES` cap as the HTTP boundary.
     content: String,
+    /// Where to deliver (#178). Omitted = the current thread (back-compat). A
+    /// `channel` target starts a NEW thread in that channel (membership-gated); a
+    /// `dm` target opens a 1:1 with a human.
+    #[serde(default)]
+    to: Option<Target>,
+}
+
+/// A `send_message` destination (#178). Externally tagged so the wire shape is
+/// `{ "channel": "<uuid>" }` or `{ "dm": "<uuid>" }` — a sum, not two optional
+/// fields (CLAUDE.md §1).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Target {
+    /// Start a new top-level thread in a channel the agent is a member of.
+    Channel(ChannelId),
+    /// Open / address a 1:1 DM with a human colleague.
+    Dm(ColleagueId),
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +96,8 @@ pub struct SendMessageTool {
     dag: SharedDagBudget,
     colleagues: SharedColleagueStore,
     sink: SharedResponseSink,
+    /// Ensures the resolved thread reaches its external surface (#178).
+    outbound: SharedOutboundRouter,
 }
 
 const TOOL_NAME: &str = "send_message";
@@ -85,13 +106,17 @@ const TOOL_NAME: &str = "send_message";
 /// synthetic counterpart for background cognition and never receives deliveries.
 const ERR_SYSTEM_RECEIVER: &str = "send_message: cannot deliver to System";
 
-const TOOL_DESCRIPTION: &str = "Send a message in the current thread. \
-    Use this for ALL communication — plain assistant text is not delivered. \
-    Arguments: `receiver` (optional) is the colleague id (a uuid) shown in your \
-    `<colleagues>` block — any colleague, human or agent; to reply to the person \
-    who prompted you, use their id from `<speaking-with>`. Omit `receiver` to \
-    post an untagged message to the thread. `content` is the message body. You \
-    cannot message a human who is not a member of this channel.";
+const TOOL_DESCRIPTION: &str = "Send a message. Use this for ALL communication — \
+    plain assistant text is not delivered. Choose the most appropriate place, \
+    like a colleague would. Arguments: `receiver` (optional) is the colleague id \
+    (a uuid) shown in your `<colleagues>` block — any colleague, human or agent; \
+    to reply to the person who prompted you, use their id from `<speaking-with>`. \
+    Omit `receiver` to post untagged. `content` is the message body. `to` \
+    (optional) chooses where to deliver: omit it to post in the CURRENT thread; \
+    `{\"channel\": \"<id>\"}` starts a NEW thread in a channel from your \
+    `<channels>` block (you must be a member); `{\"dm\": \"<id>\"}` opens a direct \
+    message with a human. You cannot message a human who is not a member of the \
+    channel, post to a channel you do not belong to, or DM an agent.";
 
 impl std::fmt::Debug for SendMessageTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -100,7 +125,7 @@ impl std::fmt::Debug for SendMessageTool {
 }
 
 impl SendMessageTool {
-    /// Construct the tool from its five shared collaborators.
+    /// Construct the tool from its shared collaborators.
     #[must_use]
     pub fn new(
         threads: SharedThreadStore,
@@ -108,6 +133,7 @@ impl SendMessageTool {
         dag: SharedDagBudget,
         colleagues: SharedColleagueStore,
         sink: SharedResponseSink,
+        outbound: SharedOutboundRouter,
     ) -> Self {
         let name = ToolName::try_from(TOOL_NAME).expect("invariant: send_message is a valid name");
         let input_schema = Arc::new(json!({
@@ -119,7 +145,16 @@ impl SendMessageTool {
                     "format": "uuid",
                     "description": "Colleague id (human or agent) from your <colleagues> block. Omit to post untagged to the thread."
                 },
-                "content": { "type": "string", "maxLength": PROMPT_MAX_BYTES }
+                "content": { "type": "string", "maxLength": PROMPT_MAX_BYTES },
+                "to": {
+                    "description": "Where to deliver. Omit for the current thread. {\"channel\": \"<uuid>\"} starts a new thread in a channel you belong to; {\"dm\": \"<uuid>\"} DMs a human.",
+                    "type": "object",
+                    "properties": {
+                        "channel": { "type": "string", "format": "uuid" },
+                        "dm": { "type": "string", "format": "uuid" }
+                    },
+                    "additionalProperties": false
+                }
             },
             "additionalProperties": false
         }));
@@ -132,6 +167,7 @@ impl SendMessageTool {
             dag,
             colleagues,
             sink,
+            outbound,
         }
     }
 
@@ -142,10 +178,11 @@ impl SendMessageTool {
     /// rejects self / System targets.
     async fn validate(
         &self,
-        input: SendMessageInput,
+        content: String,
+        receiver: Option<ColleagueId>,
         ctx: &ToolCallContext,
     ) -> Result<(Prompt, Option<Participant>, AgentId), ToolError> {
-        let content = Prompt::try_from(input.content).map_err(|e| {
+        let content = Prompt::try_from(content).map_err(|e| {
             set_outcome("invalid_input");
             ToolError::InvalidInput(e.to_string())
         })?;
@@ -156,7 +193,7 @@ impl SendMessageTool {
             ToolError::InvalidInput("send_message: caller must be an agent".into())
         })?;
 
-        let Some(id) = input.receiver else {
+        let Some(id) = receiver else {
             return Ok((content, None, viewer_agent_id));
         };
         let receiver = self.resolve_colleague(id, ctx).await?;
@@ -219,18 +256,23 @@ impl SendMessageTool {
         input: SendMessageInput,
         ctx: &ToolCallContext,
     ) -> Result<SendMessageOutput, ToolError> {
+        let SendMessageInput {
+            receiver,
+            content,
+            to,
+        } = input;
         // `from` is the authoring agent, validated + returned by `validate`.
-        let (content, receiver, from) = self.validate(input, ctx).await?;
-        // The egress posts to the thread the claim is running in.
-        let thread = ctx.thread_id.ok_or_else(|| {
-            set_outcome("invalid_input");
-            ToolError::Backend("send_message: no thread context on this call".into())
-        })?;
-        tracing::Span::current().record("patom.thread.id", tracing::field::display(thread));
+        let (content, receiver, from) = self.validate(content, receiver, ctx).await?;
         let caller = Caller::new(ctx.acting_user_id, ctx.org_id);
+        // Resolve where to deliver: the current thread (default) or a freshly
+        // located/created channel / DM thread (#178).
+        let thread = self
+            .resolve_or_create_target(ctx, &caller, from, to)
+            .await?;
+        tracing::Span::current().record("patom.thread.id", tracing::field::display(thread));
         let sender = ctx.viewer.colleague_id();
 
-        match receiver {
+        let out = match receiver {
             None => {
                 self.post(
                     &caller,
@@ -243,7 +285,7 @@ impl SendMessageTool {
                 )
                 .await?;
                 set_outcome("posted_untagged");
-                Ok(self.posted(thread, None))
+                self.posted(thread, None)
             }
             Some(Participant::Human {
                 colleague_id,
@@ -259,7 +301,7 @@ impl SendMessageTool {
                     user_id,
                     &content,
                 )
-                .await
+                .await?
             }
             Some(Participant::Agent {
                 colleague_id,
@@ -275,13 +317,89 @@ impl SendMessageTool {
                     agent_id,
                     &content,
                 )
-                .await
+                .await?
             }
             Some(Participant::System) => {
                 set_outcome("invalid_input");
-                Err(ToolError::InvalidInput(ERR_SYSTEM_RECEIVER.into()))
+                return Err(ToolError::InvalidInput(ERR_SYSTEM_RECEIVER.into()));
             }
-        }
+        };
+
+        // Ensure the resolved thread reaches its external surface (Lark/Discord).
+        // Best-effort: the durable feed row + web SSE already happened; a stuck
+        // surface must not fail the tool call. The composite logs per-surface
+        // failures and is a no-op for a web-only thread (#178).
+        let _ = self.outbound.ensure_delivery(ctx.org_id, thread).await;
+        Ok(out)
+    }
+
+    /// Resolve the destination thread: the current thread (`to` omitted), a new
+    /// top-level thread in a channel the agent belongs to, or a 1:1 DM with a
+    /// human. Membership-gates a channel target; rejects an agent DM target
+    /// (agent↔agent stays in shared channels/threads). For a created thread the
+    /// agent's participation is resolved so the worker can drive it.
+    async fn resolve_or_create_target(
+        &self,
+        ctx: &ToolCallContext,
+        caller: &Caller,
+        from: AgentId,
+        to: Option<Target>,
+    ) -> Result<ThreadId, ToolError> {
+        let Some(target) = to else {
+            return ctx.thread_id.ok_or_else(|| {
+                set_outcome("invalid_input");
+                ToolError::Backend("send_message: no thread context on this call".into())
+            });
+        };
+        let creator = ctx.viewer.colleague_id().ok_or_else(|| {
+            set_outcome("invalid_input");
+            ToolError::InvalidInput("send_message: caller must be a colleague".into())
+        })?;
+        let (channel_id, dm_counterpart) = match target {
+            Target::Channel(channel_id) => {
+                let member = self
+                    .threads
+                    .colleague_in_channel(channel_id, creator)
+                    .await
+                    .map_err(|e| {
+                        set_outcome("backend_error");
+                        ToolError::Backend(format!("send_message: membership check: {e}"))
+                    })?;
+                if !member {
+                    set_outcome("agent_not_member");
+                    return Err(ToolError::InvalidInput(
+                        "send_message: you are not a member of that channel".into(),
+                    ));
+                }
+                (Some(channel_id), None)
+            }
+            Target::Dm(counterpart) => {
+                let participant = self.resolve_colleague(counterpart, ctx).await?;
+                let Participant::Human { colleague_id, .. } = participant else {
+                    set_outcome("invalid_input");
+                    return Err(ToolError::InvalidInput(
+                        "send_message: a dm target must be a human colleague".into(),
+                    ));
+                };
+                (None, Some(colleague_id))
+            }
+        };
+        let thread = self
+            .threads
+            .create_thread(caller, channel_id, None, creator, dm_counterpart)
+            .await
+            .map_err(|e| {
+                set_outcome("backend_error");
+                ToolError::Backend(format!("send_message: create thread: {e}"))
+            })?;
+        self.threads
+            .resolve_participation(caller, thread, from)
+            .await
+            .map_err(|e| {
+                set_outcome("backend_error");
+                ToolError::Backend(format!("send_message: resolve participation: {e}"))
+            })?;
+        Ok(thread)
     }
 
     /// Human receiver: gate on channel membership (no auto-add), then post.

@@ -168,6 +168,10 @@ struct Collaborators {
     /// Per-agent organization-rule lookup used by `AgentMemory` to
     /// render the `<organization-rule>` tag on every turn.
     rule_resolver: SharedOrgRuleResolver,
+    /// Outbound-delivery slot handed to `send_message` (#178). The real
+    /// composite is installed by `build_server` once the chat-surface pumps
+    /// exist (tools are built before the pumps).
+    outbound_deferred: Arc<crate::outbound::DeferredOutboundRouter>,
 }
 
 impl Collaborators {
@@ -283,6 +287,7 @@ impl Collaborators {
             prompts.clone(),
             language_resolver.clone(),
             rule_resolver.clone(),
+            threads.clone(),
             clock.clone(),
         ));
 
@@ -366,6 +371,9 @@ impl Collaborators {
         let todos_store: SharedSessionTodoStore =
             Arc::new(PgSessionTodoStore::new(pool.clone(), clock.clone()));
         let todo_tools = TodoToolDeps::new(todos_store.clone());
+        // The outbound router is composed later (after the chat-surface pumps);
+        // hand `send_message` a deferred slot now, install the composite then.
+        let outbound_deferred = Arc::new(crate::outbound::DeferredOutboundRouter::new());
         let builtin_tools = build_builtin_tools(BuiltinToolDeps {
             http,
             settings,
@@ -376,6 +384,7 @@ impl Collaborators {
             colleagues: colleagues.clone(),
             profiles: profiles.clone(),
             sink: sink.clone(),
+            outbound: outbound_deferred.clone(),
             memory_tools,
             todo_tools,
             embedding_provider,
@@ -421,6 +430,7 @@ impl Collaborators {
             prompts,
             language_resolver,
             rule_resolver,
+            outbound_deferred,
         })
     }
 }
@@ -523,6 +533,8 @@ struct BuiltinToolDeps<'a> {
     colleagues: crate::colleagues::SharedColleagueStore,
     profiles: crate::colleagues::SharedProfileStore,
     sink: SharedResponseSink,
+    /// Outbound-delivery seam handed to `send_message` (#178).
+    outbound: crate::outbound::SharedOutboundRouter,
     memory_tools: MemoryToolDeps,
     todo_tools: TodoToolDeps,
     embedding_provider: SharedEmbeddingProvider,
@@ -555,6 +567,7 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.dag.clone(),
             deps.colleagues.clone(),
             deps.sink.clone(),
+            deps.outbound.clone(),
         )))
         .with(Arc::new(MemoryWriteTool::new(deps.memory_tools.clone())))
         .with(Arc::new(ProfileWriteTool::new(deps.profiles.clone())))
@@ -792,17 +805,9 @@ pub async fn build_server(
         cancel.clone(),
     );
 
-    // Scheduling — agent-driven scheduled tasks. Polls the
-    // `scheduled_tasks` table on a fixed cadence and enqueues a
-    // `prompt_requests` row for each due fire.
-    let scheduling_scheduler = ScheduledTaskScheduler::spawn(
-        pieces.scheduled_tasks.clone(),
-        pieces.queue.clone(),
-        pieces.threads.clone(),
-        pieces.colleagues.clone(),
-        pieces.clock.clone(),
-        cancel.clone(),
-    );
+    // Scheduling — agent-driven scheduled tasks — is spawned further down,
+    // after the chat-platform pumps build the `CompositeOutboundRouter` it
+    // needs to deliver a fired thread to Lark/Discord (#178). See below.
 
     // Single-process fan-in subscriber for the chat-UI thread stream. Owns
     // its own LISTEN connection on the shared pool; tied to the same cancel
@@ -812,6 +817,12 @@ pub async fn build_server(
         PgThreadStream::spawn(pieces.pool.clone(), CancellationToken::new())
             .await
             .map_err(|source| AppError::DbConnect { source })?;
+
+    // Per-surface outbound routers (#178). Each enabled chat adapter pushes its
+    // router below; the composite (built after the adapter blocks) lets the
+    // scheduler and tools ensure delivery for a thread without knowing which
+    // surface it belongs to.
+    let mut outbound_routers: Vec<crate::outbound::SharedOutboundRouter> = Vec::new();
 
     let jwt =
         JwtSigner::new(&settings.auth.jwt_secret, pieces.clock.clone()).map_err(AppError::Auth)?;
@@ -953,6 +964,7 @@ pub async fn build_server(
             use crate::lark::app_store::{PgLarkAppStore, SharedLarkAppStore};
             use crate::lark::channel_map::PgLarkChannelStore;
             use crate::lark::directory::PgLarkDirectory;
+            use crate::lark::dm_map::PgLarkDmStore;
             use crate::lark::poster::{HttpLarkPoster, SharedLarkPoster};
             use crate::lark::resource::{HttpResourceFetcher, SharedResourceFetcher};
             use crate::lark::state::LarkAppState;
@@ -985,6 +997,10 @@ pub async fn build_server(
                 pieces.pool.clone(),
                 pieces.clock.clone(),
             ));
+            let lark_dms = Arc::new(PgLarkDmStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+            ));
             let poster: SharedLarkPoster =
                 Arc::new(HttpLarkPoster::new(lark_http.clone(), cfg.api_base.clone()));
             let resource_fetcher: SharedResourceFetcher = Arc::new(HttpResourceFetcher::new(
@@ -1002,6 +1018,21 @@ pub async fn build_server(
                 },
                 cancel.clone(),
             );
+
+            // Outbound router for this surface (#178): resolves a thread to its
+            // Lark chat or opens a DM by open_id, attaching the pump from any
+            // trigger source.
+            outbound_routers.push(Arc::new(
+                crate::lark::outbound_router::LarkOutboundRouter::new(
+                    lark_threads.clone(),
+                    channels.clone(),
+                    apps.clone(),
+                    directory.clone(),
+                    lark_dms,
+                    pieces.threads.clone(),
+                    pump_handle.clone(),
+                ),
+            ));
 
             let (bridge_handle, bridge_tx) = bridge::spawn(
                 bridge::BridgeDeps {
@@ -1052,6 +1083,7 @@ pub async fn build_server(
             use crate::discord::attachment::{HttpAttachmentFetcher, SharedAttachmentFetcher};
             use crate::discord::channel_map::PgDiscordChannelStore;
             use crate::discord::directory::PgDiscordDirectory;
+            use crate::discord::dm_map::PgDiscordDmStore;
             use crate::discord::history::{HttpDiscordHistoryReader, SharedHistoryReader};
             use crate::discord::poster::{HttpDiscordPoster, SharedDiscordPoster};
             use crate::discord::ratelimit::RateLimiter;
@@ -1077,6 +1109,10 @@ pub async fn build_server(
                 pieces.clock.clone(),
             ));
             let discord_threads = Arc::new(PgDiscordThreadStore::new(
+                pieces.pool.clone(),
+                pieces.clock.clone(),
+            ));
+            let discord_dms = Arc::new(PgDiscordDmStore::new(
                 pieces.pool.clone(),
                 pieces.clock.clone(),
             ));
@@ -1109,12 +1145,28 @@ pub async fn build_server(
             let pump_handle: SharedDiscordPumpHandle = stream_pump::spawn(
                 stream_pump::PumpDeps {
                     thread_stream: thread_stream.clone(),
-                    poster,
+                    poster: poster.clone(),
                     directory: directory.clone(),
                     apps: apps.clone(),
                 },
                 cancel.clone(),
             );
+
+            // Outbound router for this surface (#178): resolves a thread to its
+            // Discord channel or opens a DM, attaching the pump from any trigger
+            // source.
+            outbound_routers.push(Arc::new(
+                crate::discord::outbound_router::DiscordOutboundRouter::new(
+                    discord_threads.clone(),
+                    channels.clone(),
+                    apps.clone(),
+                    directory.clone(),
+                    discord_dms,
+                    poster,
+                    pieces.threads.clone(),
+                    pump_handle.clone(),
+                ),
+            ));
 
             let (bridge_handle, bridge_tx) = bridge::spawn(
                 bridge::BridgeDeps {
@@ -1154,6 +1206,35 @@ pub async fn build_server(
             (Some(state), Some(bridge_handle))
         }
     };
+
+    // Compose the per-surface routers into one seam (#178). A no-surface
+    // deployment gets the noop, so the scheduler and tools always hold a
+    // `SharedOutboundRouter` and never branch on `Option`.
+    let outbound_router: crate::outbound::SharedOutboundRouter = if outbound_routers.is_empty() {
+        Arc::new(crate::outbound::NoopOutboundRouter)
+    } else {
+        Arc::new(crate::outbound::CompositeOutboundRouter::new(
+            outbound_routers,
+        ))
+    };
+    // Install the composed router into the slot `send_message`'s tool was built
+    // with earlier (the tool predates the pumps). From here a proactive
+    // `send_message` to a channel/DM reaches the external surface (#178).
+    pieces.outbound_deferred.set(outbound_router.clone());
+
+    // Scheduling — agent-driven scheduled tasks. Spawned here (after the chat
+    // adapters) so it can ensure outbound delivery of a fired thread via the
+    // composite router. Polls `scheduled_tasks` on a fixed cadence and enqueues
+    // a `prompt_requests` row for each due fire.
+    let scheduling_scheduler = ScheduledTaskScheduler::spawn(
+        pieces.scheduled_tasks.clone(),
+        pieces.queue.clone(),
+        pieces.threads.clone(),
+        pieces.colleagues.clone(),
+        outbound_router.clone(),
+        pieces.clock.clone(),
+        cancel.clone(),
+    );
 
     let orgs_store: crate::orgs::SharedOrgStore =
         Arc::new(crate::orgs::PgOrgStore::new(pieces.pool.clone()));

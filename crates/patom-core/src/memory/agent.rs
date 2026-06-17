@@ -26,17 +26,17 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::agents::{AgentId, AgentPromptCache, SharedAgentStore};
-use crate::auth::{OrganizationRule, SharedOrgLanguageResolver, SharedOrgRuleResolver};
+use crate::auth::{OrgId, OrganizationRule, SharedOrgLanguageResolver, SharedOrgRuleResolver};
 use crate::clock::SharedClock;
 use crate::colleagues::{
     ColleagueError, ColleagueId, ColleagueKind, ColleagueName, ColleagueRef, ColleagueRosterCache,
-    MAX_PARTICIPANTS_INLINE, PROFILE_SNIPPET_LEN, ParticipantLine, SharedColleagueStore,
-    SharedProfileStore, SharedThreadDisplayNames, profile_snippet, render_participants_block,
-    render_roster_block,
+    MAX_PARTICIPANTS_INLINE, MAX_ROSTER_INLINE, PROFILE_SNIPPET_LEN, ParticipantLine,
+    SharedColleagueStore, SharedProfileStore, SharedThreadDisplayNames, profile_snippet,
+    render_participants_block, render_roster_block,
 };
 use crate::prompts::Prompts;
 use crate::runtime::{RequestKind, RequestKindPayload};
-use crate::threads::{ThreadId, ThreadParticipants};
+use crate::threads::{ChannelRef, SharedThreadStore, ThreadId, ThreadParticipants};
 use crate::types::Participant;
 
 use super::loader::MemorySectionLoader;
@@ -67,6 +67,51 @@ pub const DATE_TAG_CLOSE: &str = "\n</date>";
 /// other per-org stable-for-this-turn fields.
 pub const LANGUAGE_TAG_OPEN: &str = "<language>\n";
 pub const LANGUAGE_TAG_CLOSE: &str = "\n</language>";
+
+/// `<channels>` lists the channels the agent is a member of (#178), so it can
+/// start a thread in one via `send_message` `to: {"channel": <id>}`. Sits with
+/// `<colleagues>` in the per-agent stable prefix.
+const CHANNELS_TAG_OPEN: &str = "<channels>\n";
+const CHANNELS_TAG_CLOSE: &str = "\n</channels>";
+
+/// Render the `<channels>` block from the agent's channel memberships. Empty
+/// string when the agent belongs to no channels (no envelope, no blank line).
+/// Above [`MAX_ROSTER_INLINE`] channels it degrades to a one-line pointer,
+/// mirroring `<colleagues>`.
+fn render_channels_block(channels: &[ChannelRef]) -> String {
+    use std::fmt::Write;
+    if channels.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str(CHANNELS_TAG_OPEN);
+    if channels.len() > MAX_ROSTER_INLINE {
+        let _ = write!(
+            out,
+            "{n} channels available; address one with `send_message` `to`.",
+            n = channels.len(),
+        );
+        out.push_str(CHANNELS_TAG_CLOSE);
+        return out;
+    }
+    out.push_str(
+        "Channels you belong to. Start a new thread in one with `send_message` \
+         (`to`: {\"channel\": \"<id>\"}):\n",
+    );
+    for (i, c) in channels.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let _ = write!(
+            out,
+            "- {name} — channel, id {id}",
+            name = c.name.as_str(),
+            id = c.id.as_uuid(),
+        );
+    }
+    out.push_str(CHANNELS_TAG_CLOSE);
+    out
+}
 
 /// `strftime` pattern for the `<date>` body.
 ///
@@ -107,6 +152,8 @@ pub struct AgentMemory {
     prompts: Arc<Prompts>,
     language_resolver: SharedOrgLanguageResolver,
     rule_resolver: SharedOrgRuleResolver,
+    /// Source of the agent's channel memberships for the `<channels>` block (#178).
+    threads: SharedThreadStore,
     clock: SharedClock,
 }
 
@@ -128,6 +175,7 @@ impl AgentMemory {
         prompts: Arc<Prompts>,
         language_resolver: SharedOrgLanguageResolver,
         rule_resolver: SharedOrgRuleResolver,
+        threads: SharedThreadStore,
         clock: SharedClock,
     ) -> Self {
         Self {
@@ -141,6 +189,7 @@ impl AgentMemory {
             prompts,
             language_resolver,
             rule_resolver,
+            threads,
             clock,
         }
     }
@@ -166,17 +215,17 @@ impl AgentMemory {
 
     /// Render the `<colleagues>` colleague-roster block for the viewer.
     ///
-    /// Resolves the viewer's org from its colleague row, then renders the
-    /// org-wide roster (humans + agents) from the bounded TTL cache, excluding
-    /// the viewer itself. Returns a fallible result so the caller can degrade
-    /// to an empty block on a directory outage — the roster is an enrichment,
-    /// not load-bearing for the turn.
+    /// Renders the org-wide roster (humans + agents) from the bounded TTL cache,
+    /// excluding the viewer itself. Returns a fallible result so the caller can
+    /// degrade to an empty block on a directory outage — the roster is an
+    /// enrichment, not load-bearing for the turn. `org` is resolved once by the
+    /// caller and shared with [`channels_block`](Self::channels_block).
     async fn roster_block(
         &self,
+        org: OrgId,
         viewer: ColleagueId,
         overrides: &std::collections::HashMap<ColleagueId, crate::colleagues::ColleagueName>,
     ) -> Result<String, ColleagueError> {
-        let org = self.colleagues.read(viewer).await?.org_id();
         let roster = self.roster_cache.get_or_load(org, &self.colleagues).await?;
         // §5 saturation signal — no OTel Meter infra yet, so the bound is
         // watched via a structured event the OTel bridge exports.
@@ -188,6 +237,25 @@ impl AgentMemory {
         // The roster cache stays canonical and shared; per-platform labels
         // (e.g. Slack handles) apply per render, keyed by colleague id.
         Ok(render_roster_block(&roster, viewer, overrides))
+    }
+
+    /// Render the `<channels>` block: the channels the viewer is a member of, so
+    /// it can address one via `send_message` `to: {channel}` (#178). Fallible so
+    /// the caller degrades to an empty block on a store outage (enrichment, not
+    /// load-bearing). `org` is resolved once by the caller and shared with
+    /// [`roster_block`](Self::roster_block).
+    async fn channels_block(&self, org: OrgId, viewer: ColleagueId) -> Result<String, MemoryError> {
+        let channels = self
+            .threads
+            .channels_for_colleague(org, viewer)
+            .await
+            .map_err(|e| MemoryError::Backend(format!("channels_for_colleague: {e}")))?;
+        tracing::debug!(
+            patom.channels.size = channels.len(),
+            patom.org.id = %org,
+            "channels.block.size"
+        );
+        Ok(render_channels_block(&channels))
     }
 
     /// Build the `<participants>` lines for the thread: the raiser + distinct
@@ -312,11 +380,29 @@ impl Memory for AgentMemory {
         // rehomed onto the thread feed (degrades empty; enrichment, not
         // load-bearing). The `<colleagues>` roster still renders.
         let memory_section = self.loader.load_stable(agent_id, kind_payload).await?;
-        let roster = match self.roster_block(viewer_colleague, overrides).await {
-            Ok(block) => block,
+        // Resolve the viewer's org once and render the `<colleagues>` and
+        // `<channels>` blocks concurrently — both are per-(org, viewer) reads on
+        // every turn, independent of each other, and both degrade to empty.
+        let (roster, channels) = match self.colleagues.read(viewer_colleague).await {
+            Ok(colleague) => {
+                let org = colleague.org_id();
+                let (roster, channels) = tokio::join!(
+                    self.roster_block(org, viewer_colleague, overrides),
+                    self.channels_block(org, viewer_colleague),
+                );
+                let roster = roster.unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "colleagues.roster.error");
+                    String::new()
+                });
+                let channels = channels.unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "channels.block.error");
+                    String::new()
+                });
+                (roster, channels)
+            }
             Err(e) => {
-                tracing::warn!(error = %e, "colleagues.roster.error");
-                String::new()
+                tracing::warn!(error = %e, "colleagues.viewer_org.error");
+                (String::new(), String::new())
             }
         };
         let language = self.language_resolver.language_for_agent(agent_id).await?;
@@ -330,6 +416,7 @@ impl Memory for AgentMemory {
             role.as_str(),
             org_rule.as_ref().map(OrganizationRule::as_str),
             &roster,
+            &channels,
             "",
             directive.as_ref(),
             memory_section.text(),
@@ -389,6 +476,7 @@ impl AgentMemory {
         role_str: &str,
         org_rule: Option<&str>,
         roster: &str,
+        channels: &str,
         speaking_with: &str,
         directive_str: &str,
         memory_str: &str,
@@ -400,6 +488,8 @@ impl AgentMemory {
         let rule_sep = newline_sep(rule_open);
         let memory_sep = newline_sep(memory_str);
         let roster_sep = newline_sep(roster);
+        // `<channels>` sits with `<colleagues>` in the per-agent stable prefix.
+        let channels_sep = newline_sep(channels);
         // Per-turn tail (after `<language>`) — keeping it out of the org-stable
         // prefix preserves prompt-cache hits across the agent's other turns.
         let speaking_with_sep = newline_sep(speaking_with);
@@ -423,6 +513,8 @@ impl AgentMemory {
                 + rule_sep.len()
                 + roster.len()
                 + roster_sep.len()
+                + channels.len()
+                + channels_sep.len()
                 + ROLE_TAG_OPEN.len()
                 + role_str.len()
                 + ROLE_TAG_CLOSE.len()
@@ -451,6 +543,8 @@ impl AgentMemory {
         out.push_str(rule_sep);
         out.push_str(roster);
         out.push_str(roster_sep);
+        out.push_str(channels);
+        out.push_str(channels_sep);
         out.push_str(ROLE_TAG_OPEN);
         out.push_str(role_str);
         out.push_str(ROLE_TAG_CLOSE);

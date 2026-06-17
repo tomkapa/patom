@@ -24,6 +24,17 @@ use crate::clock::SharedClock;
 use super::error::DiscordError;
 use super::types::{ContainerId, GuildId};
 
+/// Reverse projection used by the outbound router: where a Patom channel lives
+/// on Discord.
+///
+/// The inverse of [`DiscordChannelStore::ensure_channel`]'s mapping, keyed on
+/// the `discord_channels.channel_id` unique index.
+#[derive(Debug, Clone)]
+pub struct DiscordChannelBinding {
+    pub guild_id: GuildId,
+    pub discord_channel_id: ContainerId,
+}
+
 #[async_trait]
 pub trait DiscordChannelStore: fmt::Debug + Send + Sync {
     /// Get-or-create the Patom channel mirroring a Discord channel, and ensure
@@ -36,6 +47,15 @@ pub trait DiscordChannelStore: fmt::Debug + Send + Sync {
         discord_channel_id: &ContainerId,
         user_id: UserId,
     ) -> Result<ChannelId, DiscordError>;
+
+    /// Reverse lookup used by the outbound router: given a Patom `channel_id`,
+    /// return the Discord `(guild_id, container_id)` it mirrors — or `None` when
+    /// this channel is not Discord-backed (it lives only on the web / another
+    /// surface).
+    async fn lookup_by_channel(
+        &self,
+        channel_id: ChannelId,
+    ) -> Result<Option<DiscordChannelBinding>, DiscordError>;
 }
 
 pub type SharedDiscordChannelStore = Arc<dyn DiscordChannelStore>;
@@ -117,6 +137,31 @@ impl DiscordChannelStore for PgDiscordChannelStore {
             Ok(channel_id)
         })
         .await
+    }
+
+    async fn lookup_by_channel(
+        &self,
+        channel_id: ChannelId,
+    ) -> Result<Option<DiscordChannelBinding>, DiscordError> {
+        type Row = (String, String);
+        let row: Option<Row> =
+            run_privileged::<Option<Row>, DiscordError>(&self.pool, async |tx| {
+                Ok(sqlx::query_as(
+                    "SELECT guild_id, discord_channel_id \
+                     FROM discord_channels WHERE channel_id = $1",
+                )
+                .bind(channel_id)
+                .fetch_optional(&mut **tx)
+                .await?)
+            })
+            .await?;
+        let Some((guild_id, discord_channel_id)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(DiscordChannelBinding {
+            guild_id: GuildId::try_from(guild_id)?,
+            discord_channel_id: ContainerId::try_from(discord_channel_id)?,
+        }))
     }
 }
 

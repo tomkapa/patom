@@ -36,7 +36,7 @@ use super::limits::{
     LARK_MAX_POST_CHARS, LARK_POST_MAX_RETRIES, LARK_POST_TIMEOUT, LARK_RETRY_AFTER_CAP_SECS,
 };
 use super::token::TenantAccessToken;
-use super::types::{LarkChatId, LarkMessageId};
+use super::types::{LarkChatId, LarkMessageId, LarkOpenId};
 
 /// What the bridge / stream pump hands to the poster.
 ///
@@ -56,6 +56,16 @@ pub struct PostRequest {
 pub trait LarkPoster: fmt::Debug + Send + Sync {
     /// Post a single message. Returns the Lark-issued `message_id` on success.
     async fn post(&self, req: PostRequest) -> Result<LarkMessageId, LarkError>;
+
+    /// Send a DM to a recipient by `open_id` (`receive_id_type=open_id`), which
+    /// Lark routes to the (auto-created) p2p chat — no chat pre-creation. Used
+    /// by the outbound router's DM arm (#178). No threading: a DM is flat.
+    async fn post_dm(
+        &self,
+        token: TenantAccessToken,
+        open_id: &LarkOpenId,
+        text: &str,
+    ) -> Result<LarkMessageId, LarkError>;
 }
 
 /// Shared handle to a [`LarkPoster`].
@@ -66,6 +76,7 @@ pub type SharedLarkPoster = Arc<dyn LarkPoster>;
 // ──────────────────────────────────────────────────────────────────────
 
 const CREATE_PATH: &str = "/open-apis/im/v1/messages?receive_id_type=chat_id";
+const CREATE_OPEN_PATH: &str = "/open-apis/im/v1/messages?receive_id_type=open_id";
 const REPLY_PATH_PREFIX: &str = "/open-apis/im/v1/messages/";
 const REPLY_PATH_SUFFIX: &str = "/reply";
 
@@ -152,7 +163,36 @@ impl LarkPoster for HttpLarkPoster {
             })?;
             (url, body)
         };
+        self.send_with_retry(&url, &json_body, &req.token).await
+    }
 
+    async fn post_dm(
+        &self,
+        token: TenantAccessToken,
+        open_id: &LarkOpenId,
+        text: &str,
+    ) -> Result<LarkMessageId, LarkError> {
+        let clipped = clip_chars(text, LARK_MAX_POST_CHARS);
+        let content = json!({ "text": clipped }).to_string();
+        let url = format!("{}{CREATE_OPEN_PATH}", self.api_base);
+        let body = serde_json::to_vec(&WireCreateBody {
+            receive_id: open_id.as_str(),
+            msg_type: "text",
+            content: &content,
+        })?;
+        self.send_with_retry(&url, &body, &token).await
+    }
+}
+
+impl HttpLarkPoster {
+    /// POST `json_body` to `url` with the bot bearer, retrying 429 (Retry-After)
+    /// and 5xx (bounded backoff). Shared by `post` and `post_dm`.
+    async fn send_with_retry(
+        &self,
+        url: &str,
+        json_body: &[u8],
+        token: &TenantAccessToken,
+    ) -> Result<LarkMessageId, LarkError> {
         let mut attempt: u8 = 0;
         loop {
             assert!(
@@ -161,10 +201,10 @@ impl LarkPoster for HttpLarkPoster {
             );
             let send = self
                 .http
-                .post(&url)
-                .bearer_auth(req.token.expose())
+                .post(url)
+                .bearer_auth(token.expose())
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(json_body.clone())
+                .body(json_body.to_vec())
                 .send();
             let resp = match tokio::time::timeout(LARK_POST_TIMEOUT, send).await {
                 Ok(Ok(r)) => r,
@@ -291,6 +331,7 @@ fn backoff(attempt: u8) -> Duration {
 /// Exposed (not `#[cfg(test)]`) so integration tests in `tests/` can reach it.
 pub struct FakeLarkPoster {
     inner: Mutex<Vec<PostRequest>>,
+    dms: Mutex<Vec<(LarkOpenId, String)>>,
 }
 
 impl FakeLarkPoster {
@@ -298,6 +339,7 @@ impl FakeLarkPoster {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Vec::new()),
+            dms: Mutex::new(Vec::new()),
         }
     }
 
@@ -317,6 +359,15 @@ impl FakeLarkPoster {
             .lock()
             .expect("invariant: fake-poster mutex poisoned")
             .len()
+    }
+
+    /// Every `(open_id, text)` a `post_dm` was sent for.
+    #[must_use]
+    pub fn dms(&self) -> Vec<(LarkOpenId, String)> {
+        self.dms
+            .lock()
+            .expect("invariant: fake-poster mutex poisoned")
+            .clone()
     }
 }
 
@@ -341,6 +392,19 @@ impl LarkPoster for FakeLarkPoster {
             .lock()
             .expect("invariant: fake-poster mutex poisoned")
             .push(req);
+        Ok(LarkMessageId::try_from("om_fake_stub_message_id")?)
+    }
+
+    async fn post_dm(
+        &self,
+        _token: TenantAccessToken,
+        open_id: &LarkOpenId,
+        text: &str,
+    ) -> Result<LarkMessageId, LarkError> {
+        self.dms
+            .lock()
+            .expect("invariant: fake-poster mutex poisoned")
+            .push((open_id.clone(), text.to_owned()));
         Ok(LarkMessageId::try_from("om_fake_stub_message_id")?)
     }
 }

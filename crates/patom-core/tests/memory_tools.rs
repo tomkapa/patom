@@ -87,6 +87,10 @@ async fn fixture(pool: &PgPool, seed: &common::pg::Seed) -> Fixture {
         prompts,
         language_resolver,
         rule_resolver,
+        Arc::new(patom::threads::PgThreadStore::new(
+            pool.clone(),
+            clock.clone(),
+        )),
         clock,
     );
     let state_id = seed_agent_thread_state(pool, seed.org_id, seed.agent_id).await;
@@ -511,6 +515,10 @@ async fn handle_round_trips_through_session_cache(pool: PgPool) {
         Arc::new(Prompts::load()),
         Arc::new(StaticOrgLanguageResolver::new(Language::En)),
         Arc::new(StaticOrgRuleResolver::new(None)),
+        Arc::new(patom::threads::PgThreadStore::new(
+            pool.clone(),
+            SystemClock::shared(),
+        )),
         SystemClock::shared(),
     );
     let resolved = memory

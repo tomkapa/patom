@@ -32,7 +32,24 @@ use super::limits::{LARK_MAX_POST_CHARS, LARK_PUMP_IDLE_TTL, MAX_LARK_STREAM_PUM
 use super::mention;
 use super::poster::{PostRequest, SharedLarkPoster};
 use super::token::SharedTokenProvider;
-use super::types::{LarkAppId, LarkChatId, LarkMessageId};
+use super::types::{LarkAppId, LarkChatId, LarkMessageId, LarkOpenId};
+
+/// Where a thread's chunks land on Lark.
+///
+/// A known chat (channel or bound conversation), or a never-seen DM addressed by
+/// the recipient's `open_id` (#178). A sum, not chat_id + `Option<open_id>`, so
+/// an impossible "both / and neither" state can't be built (CLAUDE.md §1).
+#[derive(Debug, Clone)]
+pub enum LarkRecipient {
+    /// A known chat. Threads under `reply_to` when continuing an existing
+    /// message; `None` posts top-level.
+    Chat {
+        chat_id: LarkChatId,
+        reply_to: Option<LarkMessageId>,
+    },
+    /// A DM: send by the recipient's `open_id` (Lark routes to the p2p chat).
+    Dm { open_id: LarkOpenId },
+}
 
 /// Request to attach a pump for a Lark-bound Patom thread.
 #[derive(Debug, Clone)]
@@ -43,10 +60,8 @@ pub struct AttachRequest {
     pub org_id: OrgId,
     /// The bot whose `tenant_access_token` posts the reply.
     pub app_id: LarkAppId,
-    /// The Lark chat the reply lands in.
-    pub chat_id: LarkChatId,
-    /// The message to reply under (threads the reply); `None` posts top-level.
-    pub reply_to: Option<LarkMessageId>,
+    /// Where the reply lands.
+    pub recipient: LarkRecipient,
 }
 
 /// Dependencies for the pump supervisor.
@@ -352,16 +367,20 @@ async fn post_reply(deps: &PumpDeps, app_id: &LarkAppId, req: &AttachRequest, te
             return;
         }
     };
-    if let Err(e) = deps
-        .poster
-        .post(PostRequest {
-            token,
-            chat_id: req.chat_id.clone(),
-            reply_to: req.reply_to.clone(),
-            text,
-        })
-        .await
-    {
+    let result = match &req.recipient {
+        LarkRecipient::Chat { chat_id, reply_to } => {
+            deps.poster
+                .post(PostRequest {
+                    token,
+                    chat_id: chat_id.clone(),
+                    reply_to: reply_to.clone(),
+                    text,
+                })
+                .await
+        }
+        LarkRecipient::Dm { open_id } => deps.poster.post_dm(token, open_id, &text).await,
+    };
+    if let Err(e) = result {
         warn!(error = ?e, event = "lark.stream_pump.post_failed");
     }
 }

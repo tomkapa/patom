@@ -272,6 +272,7 @@ async fn scheduler_fires_both_orgs_in_one_privileged_tick(pool: PgPool) {
         h.queue.clone(),
         h.threads.clone(),
         h.colleagues.clone(),
+        Arc::new(patom::outbound::NoopOutboundRouter),
         h.clock.clone(),
         Duration::from_millis(50),
         None,
