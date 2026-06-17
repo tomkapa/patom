@@ -58,9 +58,9 @@ use crate::scheduling::{
 use crate::tools::system::{
     AskApprovalTool, CancelScheduledTaskTool, CreateAgentTool, ListScheduledTasksTool,
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
-    PgSessionTodoStore, ProfileWriteTool, RecallTool, RequestUserWireMcpTool, ScheduleTaskTool,
-    SearchColleagueTool, SearchToolsTool, SendMessageTool, SharedSessionTodoStore, TodoToolDeps,
-    TodoWriteTool, WebFetchTool, WebSearchTool,
+    PgSessionTodoStore, ProfileWriteTool, ReadChannelTool, RecallTool, RequestUserWireMcpTool,
+    ScheduleTaskTool, SearchColleagueTool, SearchToolsTool, SendMessageTool,
+    SharedSessionTodoStore, TodoToolDeps, TodoWriteTool, WebFetchTool, WebSearchTool,
 };
 use crate::tools::{ToolBox, ToolRegistry};
 
@@ -597,6 +597,7 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.sink.clone(),
             deps.outbound.clone(),
         )))
+        .with(Arc::new(ReadChannelTool::new(deps.threads.clone())))
         .with(Arc::new(AskApprovalTool::new(
             deps.approvals.clone(),
             deps.threads.clone(),

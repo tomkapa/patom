@@ -61,6 +61,31 @@ pub const MAX_TAGS_PER_MESSAGE: usize = 8;
 /// carries everything older.
 pub const MAX_CONTEXT_MESSAGES: i64 = 200;
 
+/// Hard cap on the rows one `channel_feed` read returns — the `read_channel`
+/// digest source (#199).
+///
+/// A whole-channel read for a proactive digest must be bounded with no LLM in
+/// the loop (CLAUDE.md §5), independent of the agent's context window. 200 is a
+/// deep one-day window for a busy channel while still bounding the worst-case
+/// `thread_messages` scan; the body cap below keeps each row small so 200 rows
+/// stay well under the tool-result ceiling.
+pub const MAX_READ_CHANNEL_MESSAGES: i64 = 200;
+
+/// Default `read_channel` window when the agent omits an explicit `limit`.
+///
+/// One standup's worth of recent traffic; the agent asks for more (up to
+/// [`MAX_READ_CHANNEL_MESSAGES`]) by passing a larger `limit`.
+pub const DEFAULT_READ_CHANNEL_MESSAGES: u32 = 50;
+
+/// Per-message body preview cap, in characters, for a `channel_feed` row.
+///
+/// A digest summarises; it does not replay. One tweet-length line of preview
+/// per message is enough for the model to triage "unanswered questions /
+/// blockers" without an unbounded `TEXT` body crossing the boundary. Applied in
+/// SQL via `LEFT` (CLAUDE.md §5/§10) so the cap holds at the database, and sized
+/// so [`MAX_READ_CHANNEL_MESSAGES`] × this stays under the tool-result ceiling.
+pub const READ_CHANNEL_BODY_MAX_CHARS: i32 = 280;
+
 /// Prompt-render cap, in characters, on a single `tool_result` body.
 ///
 /// A fat tool result (web fetch, large file read, big MCP payload) is the single

@@ -11,12 +11,13 @@ mod traits;
 
 pub use error::ThreadError;
 pub use limits::{
-    DEFAULT_THREAD_FEED, MAX_CHANNELS_FOR_COLLEAGUE, MAX_CONTEXT_MESSAGES, MAX_TAGS_PER_MESSAGE,
-    MAX_THREAD_FEED, MAX_THREAD_LIST, MAX_TOOL_RESULT_CHARS, ROOT_SNIPPET_MAX_CHARS,
+    DEFAULT_READ_CHANNEL_MESSAGES, DEFAULT_THREAD_FEED, MAX_CHANNELS_FOR_COLLEAGUE,
+    MAX_CONTEXT_MESSAGES, MAX_READ_CHANNEL_MESSAGES, MAX_TAGS_PER_MESSAGE, MAX_THREAD_FEED,
+    MAX_THREAD_LIST, MAX_TOOL_RESULT_CHARS, READ_CHANNEL_BODY_MAX_CHARS, ROOT_SNIPPET_MAX_CHARS,
 };
 pub use pg_store::PgThreadStore;
 pub use traits::{
-    AgentThreadId, ChannelRef, ContextTail, FeedMessage, MessageKind, NewMessage, RootSummary, Seq,
-    SharedThreadStore, TailRow, ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId,
-    ThreadParticipants, ThreadScope, ThreadStore,
+    AgentThreadId, ChannelFeedRow, ChannelRef, ContextTail, FeedMessage, MessageKind, NewMessage,
+    RootSummary, Seq, SharedThreadStore, TailRow, ThreadCompaction, ThreadId, ThreadListItem,
+    ThreadMessageId, ThreadParticipants, ThreadScope, ThreadStore,
 };

@@ -10,9 +10,18 @@
 //! bridge; this module is just the single REST page.
 //!
 //! `READ_MESSAGE_HISTORY` is required: without it the endpoint 403s (mapped to an
-//! empty page + a warning, so backfill no-ops instead of failing). The
-//! `MESSAGE_CONTENT` *intent* is **not** required here — it gates Gateway event
-//! content, not a REST read.
+//! empty page + a warning, so backfill no-ops instead of failing).
+//!
+//! The `MESSAGE_CONTENT` privileged intent governs *content*, not access: the
+//! request still succeeds without it, but Discord blanks `content` (and
+//! `embeds` / `attachments` / `components`) on every message **except** the
+//! bot's own, DMs it received, and messages that @mention it — the same
+//! exceptions as the Gateway. (Per the official "Get Channel Messages" docs;
+//! this restriction applies to the REST read too, not only Gateway events.) So
+//! on an install without the intent, this reader still mints the shadow rows but
+//! their bodies are empty for ambient messages — the digest read (#199) then
+//! degrades to mention/DM content. Granting the intent is the prerequisite for
+//! full ambient backfill.
 
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};

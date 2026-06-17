@@ -276,14 +276,113 @@ impl SchedulerInner {
                     sender: None,
                     owner_agent_id: Some(task.owner_agent_id),
                     receiver: None,
-                    body: ChatMessage::User(vec![UserContent::Text(
-                        task.prompt.as_str().to_string(),
-                    )]),
+                    body: ChatMessage::User(vec![UserContent::Text(seed_prompt_text(task))]),
                     request_id: None,
                     idempotency_key: None,
                 },
             )
         )?;
         Ok((thread, state, seed))
+    }
+}
+
+/// Build the seeded instruction text for a fired task.
+///
+/// A channel task (the digest shape, #199) gets a deterministic digest-window
+/// footer carrying the `since` cursor: the previous fire (`last_fired_at`), or
+/// the task's creation when it has never fired. The agent passes this to
+/// `read_channel` so a digest summarises only what is new since the last run.
+/// The schedule cursor advances *after* this seed (`record_fired`), so
+/// `last_fired_at` here is the prior fire, not this one; a retried fire reuses
+/// the same value (the `sched-{id}-{ts}` idempotency key dedups the trigger). A
+/// DM task carries no channel to read, so its prompt is seeded unchanged.
+fn seed_prompt_text(task: &ScheduledTaskRecord) -> String {
+    let base = task.prompt.as_str();
+    if task.channel_id.is_none() {
+        return base.to_string();
+    }
+    let since = task.last_fired_at.unwrap_or(task.created_at);
+    format!(
+        "{base}\n\n<digest-window since=\"{}\"/>\n\
+         Messages since the last run are those at or after this timestamp; \
+         pass it as `since` when you read a channel.",
+        since.to_rfc3339()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone, Utc};
+
+    use super::seed_prompt_text;
+    use crate::agents::AgentId;
+    use crate::auth::{OrgId, UserId};
+    use crate::channels::ChannelId;
+    use crate::scheduling::{
+        ScheduleSpec, ScheduledPrompt, ScheduledTaskId, ScheduledTaskName, ScheduledTaskRecord,
+        ScheduledTaskState,
+    };
+
+    fn task(channel: Option<ChannelId>) -> ScheduledTaskRecord {
+        let created = Utc
+            .with_ymd_and_hms(2026, 6, 1, 8, 0, 0)
+            .single()
+            .expect("ts");
+        ScheduledTaskRecord {
+            id: ScheduledTaskId::new(),
+            owner_agent_id: AgentId::new(),
+            org_id: OrgId::new(),
+            created_by_user_id: UserId::new(),
+            channel_id: channel,
+            name: ScheduledTaskName::try_from("digest").expect("name"),
+            prompt: ScheduledPrompt::try_from("Summarise the channel.").expect("prompt"),
+            schedule: ScheduleSpec::Once { run_at: created },
+            next_run_at: None,
+            last_fired_at: None,
+            last_request_id: None,
+            state: ScheduledTaskState::Active,
+            created_at: created,
+            updated_at: created,
+        }
+    }
+
+    #[test]
+    fn dm_task_seeds_prompt_unchanged() {
+        let t = task(None);
+        assert_eq!(seed_prompt_text(&t), "Summarise the channel.");
+        assert!(!seed_prompt_text(&t).contains("digest-window"));
+    }
+
+    #[test]
+    fn first_fire_anchors_window_on_creation() {
+        let t = task(Some(ChannelId::new()));
+        let out = seed_prompt_text(&t);
+        assert!(
+            out.contains("Summarise the channel."),
+            "keeps the base prompt"
+        );
+        assert!(
+            out.contains("since=\"2026-06-01T08:00:00+00:00\""),
+            "an unfired task anchors the window on its creation, got: {out}"
+        );
+    }
+
+    #[test]
+    fn later_fire_anchors_window_on_previous_fire() {
+        let mut t = task(Some(ChannelId::new()));
+        let prev = Utc
+            .with_ymd_and_hms(2026, 6, 16, 9, 0, 0)
+            .single()
+            .expect("ts");
+        t.last_fired_at = Some(prev);
+        let out = seed_prompt_text(&t);
+        assert!(
+            out.contains("since=\"2026-06-16T09:00:00+00:00\""),
+            "a fired task anchors the window on the previous fire, got: {out}"
+        );
+        assert!(
+            !out.contains("2026-06-01"),
+            "the creation time is not used once the task has fired"
+        );
     }
 }

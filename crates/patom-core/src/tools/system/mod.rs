@@ -5,8 +5,14 @@
 //!
 //! * **Communication** — [`SendMessageTool`] (the only delivery mechanism
 //!   for messages between participants). Consumes [`super::ToolCallContext`].
-//!   (There is no cross-session read tool — the agent reads its full thread
-//!   at run time, so a separate lookup is unnecessary.)
+//! * **Cross-thread read** — [`ReadChannelTool`] (#199), the one tool that lets
+//!   an agent see outside its own thread: the recent history of a channel it is
+//!   a **member** of, for summarising on a cadence or on demand. The agent still
+//!   reads its full *current* thread at run time; this adds a bounded,
+//!   membership-gated read of *other* channels it belongs to. The membership
+//!   gate (`ThreadStore::colleague_in_channel`, the same one `send_message`
+//!   uses) is the entire safety boundary — there is no way to read a channel the
+//!   agent is not a member of.
 //! * **Memory** — [`MemoryWriteTool`], [`MemoryUpdateTool`],
 //!   [`MemoryForgetTool`], [`MemoryValidateTool`], [`RecallTool`]. The
 //!   four journal-writing tools share a per-turn cap via
@@ -30,6 +36,7 @@ mod ask_approval;
 mod create_agent;
 mod memory;
 mod profile_write;
+mod read_channel;
 mod request_user_wire_mcp;
 mod scheduling;
 mod search_colleague;
@@ -46,6 +53,7 @@ pub use memory::{
     RecallTool,
 };
 pub use profile_write::ProfileWriteTool;
+pub use read_channel::ReadChannelTool;
 pub use request_user_wire_mcp::RequestUserWireMcpTool;
 pub use scheduling::{CancelScheduledTaskTool, ListScheduledTasksTool, ScheduleTaskTool};
 pub use search_colleague::SearchColleagueTool;
