@@ -56,11 +56,12 @@ use crate::scheduling::{
     Timezone,
 };
 use crate::tools::system::{
-    CancelScheduledTaskTool, CreateAgentTool, ListScheduledTasksTool, MemoryForgetTool,
-    MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool, PgSessionTodoStore,
-    ProfileWriteTool, ReadArtifactTool, RecallTool, RequestUserWireMcpTool, ScheduleTaskTool,
-    SearchColleagueTool, SearchToolsTool, SendMessageTool, SharedSessionTodoStore, TodoToolDeps,
-    TodoWriteTool, WebFetchTool, WebSearchTool,
+    AskApprovalTool, CancelScheduledTaskTool, CreateAgentTool, ListScheduledTasksTool,
+    MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
+    PgSessionTodoStore, ProfileWriteTool, ReadArtifactTool, ReadChannelTool, RecallTool,
+    RequestUserWireMcpTool, ScheduleTaskTool, SearchColleagueTool, SearchToolsTool,
+    SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool, WebFetchTool,
+    WebSearchTool,
 };
 use crate::tools::{ToolBox, ToolRegistry};
 
@@ -172,6 +173,11 @@ struct Collaborators {
     /// composite is installed by `build_server` once the chat-surface pumps
     /// exist (tools are built before the pumps).
     outbound_deferred: Arc<crate::outbound::DeferredOutboundRouter>,
+    /// Approval seam (#200): `approvals` backs the webhook intake + the resumer;
+    /// `approvals` + `gated_tools` compose the hard [`crate::approvals::HardApprovalGate`]
+    /// the agent factory installs on every spawned `Agent`.
+    approvals: crate::approvals::SharedApprovalStore,
+    gated_tools: crate::approvals::SharedGatedToolStore,
 }
 
 impl Collaborators {
@@ -276,20 +282,34 @@ impl Collaborators {
         } else {
             Arc::new(crate::colleagues::NoThreadDisplayNames)
         };
-        let memory: SharedMemory = Arc::new(AgentMemory::new(
-            agents.clone(),
-            cache,
-            colleagues.clone(),
-            profiles.clone(),
-            roster_cache,
-            display_names,
-            memory_loader.clone(),
-            prompts.clone(),
-            language_resolver.clone(),
-            rule_resolver.clone(),
-            threads.clone(),
+        // Approval store (#200): one concrete impl serves both the approval seam
+        // (`ask_approval`, the webhook intake, the resumer) and the gated-tool
+        // config seam (the hard gate + the `<approval-gated-tools>` prompt block).
+        // Built here (before `AgentMemory`) so the prompt block can read it.
+        let approvals_impl = Arc::new(crate::approvals::PgApprovalStore::new(
+            pool.clone(),
             clock.clone(),
         ));
+        let approvals: crate::approvals::SharedApprovalStore = approvals_impl.clone();
+        let gated_tools: crate::approvals::SharedGatedToolStore = approvals_impl;
+
+        let memory: SharedMemory = Arc::new(
+            AgentMemory::new(
+                agents.clone(),
+                cache,
+                colleagues.clone(),
+                profiles.clone(),
+                roster_cache,
+                display_names,
+                memory_loader.clone(),
+                prompts.clone(),
+                language_resolver.clone(),
+                rule_resolver.clone(),
+                threads.clone(),
+                clock.clone(),
+            )
+            .with_gated_tools(gated_tools.clone()),
+        );
 
         let mcp_store: SharedMcpServerStore =
             Arc::new(PgMcpServerStore::new(pool.clone(), clock.clone()));
@@ -385,6 +405,7 @@ impl Collaborators {
             profiles: profiles.clone(),
             sink: sink.clone(),
             outbound: outbound_deferred.clone(),
+            approvals: approvals.clone(),
             memory_tools,
             todo_tools,
             embedding_provider,
@@ -431,6 +452,8 @@ impl Collaborators {
             language_resolver,
             rule_resolver,
             outbound_deferred,
+            approvals,
+            gated_tools,
         })
     }
 }
@@ -456,6 +479,9 @@ struct AgentFactoryPieces {
     todos_store: SharedSessionTodoStore,
     turn_metrics_store: crate::agent_core::turn_metrics::SharedTurnMetricsStore,
     billing: crate::billing::SharedBillingService,
+    /// Hard approval gate (#200) installed on every spawned `Agent` so a gated
+    /// tool cannot run without an `approved` decision for the DAG.
+    approval_gate: crate::approvals::SharedApprovalGate,
 }
 
 impl AgentFactoryPieces {
@@ -516,6 +542,7 @@ impl AgentFactoryPieces {
                 record.current_prompt_version_id,
             )
             .with_billing(self.billing.clone())
+            .with_approval_gate(self.approval_gate.clone())
             .build()
     }
 }
@@ -535,6 +562,8 @@ struct BuiltinToolDeps<'a> {
     sink: SharedResponseSink,
     /// Outbound-delivery seam handed to `send_message` (#178).
     outbound: crate::outbound::SharedOutboundRouter,
+    /// Approval store backing `ask_approval` (#200).
+    approvals: crate::approvals::SharedApprovalStore,
     memory_tools: MemoryToolDeps,
     todo_tools: TodoToolDeps,
     embedding_provider: SharedEmbeddingProvider,
@@ -569,6 +598,14 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.colleagues.clone(),
             deps.sink.clone(),
             deps.outbound.clone(),
+        )))
+        .with(Arc::new(ReadChannelTool::new(deps.threads.clone())))
+        .with(Arc::new(AskApprovalTool::new(
+            deps.approvals.clone(),
+            deps.threads.clone(),
+            deps.colleagues.clone(),
+            deps.outbound.clone(),
+            deps.clock.clone(),
         )))
         .with(Arc::new(MemoryWriteTool::new(deps.memory_tools.clone())))
         .with(Arc::new(ProfileWriteTool::new(deps.profiles.clone())))
@@ -749,6 +786,10 @@ pub async fn build_server(
         todos_store: pieces.todos_store.clone(),
         turn_metrics_store,
         billing: billing.clone(),
+        approval_gate: Arc::new(crate::approvals::HardApprovalGate::new(
+            pieces.gated_tools.clone(),
+            pieces.approvals.clone(),
+        )),
     };
     let factory: AgentFactory = Arc::new(move |record| factory_pieces.build(record));
     let agents_registry: SharedAgents = Arc::new(CachedAgents::new(

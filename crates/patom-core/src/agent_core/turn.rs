@@ -30,7 +30,7 @@ use crate::types::{Participant, TurnIndex};
 use crate::auth::OrgId;
 use crate::billing::{BillingError, price_for, turn_cost};
 
-use super::core::{Agent, send_message_tool_name};
+use super::core::{Agent, tool_is_egress};
 use super::error::AgentError;
 use super::limits::MAX_TOOL_CALLS_PER_TURN;
 use super::log;
@@ -239,7 +239,7 @@ impl Agent {
             org_id: caller.org_id,
         };
         for call in tool_calls {
-            if call.name.as_str() == send_message_tool_name() {
+            if tool_is_egress(call.name.as_str()) {
                 *send_message_calls += 1;
             }
         }
@@ -338,7 +338,7 @@ impl Agent {
         let participants_block = match participants {
             Ok(participants) => {
                 self.memory()
-                    .participants_block(&participants, viewer_colleague, &overrides)
+                    .participants_block(&participants, viewer, &overrides)
                     .await
             }
             Err(e) => {
@@ -497,7 +497,7 @@ impl Agent {
             org_id: caller.org_id,
         };
         for call in &tool_calls {
-            if call.name.as_str() == send_message_tool_name() {
+            if tool_is_egress(call.name.as_str()) {
                 *send_message_calls += 1;
             }
         }
@@ -905,6 +905,26 @@ impl Agent {
         })
     }
 
+    /// Consult the hard approval gate (#200) for one tool call. Returns
+    /// `Some(reason)` when the call must be refused (gated tool with no
+    /// `approved` decision for the DAG), else `None`. A no-op when no gate is
+    /// wired or the viewer is not an agent.
+    async fn approval_blocked(
+        &self,
+        tool_ctx: &ToolCallContext,
+        tool: &crate::types::ToolName,
+    ) -> Option<String> {
+        let gate = self.approval_gate()?;
+        let agent_id = tool_ctx.viewer.agent_id()?;
+        match gate
+            .check(tool_ctx.org_id, agent_id, tool_ctx.root_request_id, tool)
+            .await
+        {
+            crate::approvals::GateOutcome::Allowed => None,
+            crate::approvals::GateOutcome::Blocked(reason) => Some(reason),
+        }
+    }
+
     /// Resolve and run a single tool. All failure modes (unknown tool, timeout,
     /// tool error) fold into a `ToolResult { is_error: true }` so the model
     /// can reason about them. Cancellation is the only condition that bubbles.
@@ -939,6 +959,14 @@ impl Agent {
                 ),
             );
         };
+
+        // Hard approval gate (#200): a gated tool cannot run without an
+        // `approved` decision for this DAG. Skipped when no gate is wired
+        // (agent_core unit tests) or the viewer is not an agent.
+        if let Some(reason) = self.approval_blocked(tool_ctx, &call.name).await {
+            warn!(patom.tool = %call.name, "tool.approval_gate.blocked");
+            return error_result(id, reason);
+        }
 
         let exec = tool.execute(call.input.clone(), tool_ctx);
         let outcome = tokio::select! {
