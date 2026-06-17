@@ -47,7 +47,7 @@ impl Memory for StaticMemory {
     async fn participants_block(
         &self,
         _participants: &crate::threads::ThreadParticipants,
-        _viewer: crate::colleagues::ColleagueId,
+        _viewer: crate::types::Participant,
         _overrides: &std::collections::HashMap<
             crate::colleagues::ColleagueId,
             crate::colleagues::ColleagueName,

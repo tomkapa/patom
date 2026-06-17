@@ -17,7 +17,7 @@ use sqlx::{PgPool, Row};
 use crate::agents::AgentId;
 use crate::auth::{UserId, run_as_user, run_privileged};
 use crate::clock::SharedClock;
-use crate::colleagues::ColleagueId;
+use crate::colleagues::{ColleagueId, MAX_PARTICIPANTS_INLINE};
 use crate::pg_vector;
 use crate::provider::SharedEmbeddingProvider;
 use crate::runtime::PromptRequestId;
@@ -161,6 +161,63 @@ impl MemoryStore for PgMemoryStore {
         let mut tx = crate::auth::begin_privileged(&self.pool).await?;
         let rows = sqlx::query(&sql)
             .bind(agent)
+            .bind(probe_limit)
+            .fetch_all(&mut *tx)
+            .await?;
+        tx.commit().await?;
+
+        assert!(
+            rows.len() <= MAX_MEMORIES_PER_AGENT,
+            "invariant: per-agent memory cap {MAX_MEMORIES_PER_AGENT} overshot ({})",
+            rows.len()
+        );
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(decode_memory_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn collaborator_memories_for_subjects(
+        &self,
+        agent: AgentId,
+        subjects: &[ColleagueId],
+    ) -> Result<Vec<MemoryRow>, MemoryStoreError> {
+        // Empty input → no rows, and skip a degenerate `= ANY('{}')` round-trip.
+        if subjects.is_empty() {
+            return Ok(Vec::new());
+        }
+        // §5: the caller (the `<participants>` overlay) passes an already-capped
+        // set; assert the bound it promised so a future miswiring crashes here
+        // rather than emitting an unbounded `ANY` array.
+        assert!(
+            subjects.len() <= MAX_PARTICIPANTS_INLINE,
+            "invariant: subject set {} exceeds the participant cap {MAX_PARTICIPANTS_INLINE}",
+            subjects.len()
+        );
+        // Probe one row past the cap so the assertion catches a writer that
+        // violated the per-agent quota (same posture as `list`).
+        let probe_limit = i64::try_from(MAX_MEMORIES_PER_AGENT)
+            .expect("invariant: MAX_MEMORIES_PER_AGENT fits in i64")
+            + 1;
+        let sql = format!(
+            "SELECT {MEMORY_ROW_COLUMNS} FROM agent_memories
+             WHERE agent_id = $1
+               AND kind = $2
+               AND subject_colleague_id = ANY($3)
+             ORDER BY created_at DESC, id DESC
+             LIMIT $4",
+        );
+        // Privileged tx for the same reason as `list`: the store holds no
+        // `Principal`, and `agent_memories` is RLS-forced. Tenant scope comes
+        // from the explicit `agent_id` bind plus the row's denormalised
+        // `org_id`; the subjects only narrow within the agent's own rows.
+        let mut tx = crate::auth::begin_privileged(&self.pool).await?;
+        let rows = sqlx::query(&sql)
+            .bind(agent)
+            .bind(MemoryKind::Collaborator)
+            .bind(subjects)
             .bind(probe_limit)
             .fetch_all(&mut *tx)
             .await?;
