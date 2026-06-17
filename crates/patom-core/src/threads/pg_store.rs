@@ -589,13 +589,8 @@ impl ThreadStore for PgThreadStore {
         // One channel-feed row: (created_at, resolved sender name, body preview).
         type Row = (DateTime<Utc>, Option<String>, Option<String>);
         // §5: clamp the caller's limit into the bounded window so a stray value
-        // can't widen the scan; assert both ends of the invariant.
+        // can't widen the scan; the post-query assert proves the LIMIT held.
         let cap = limit.clamp(1, MAX_READ_CHANNEL_MESSAGES);
-        assert!(cap >= 1, "invariant: channel_feed reads at least one row");
-        assert!(
-            cap <= MAX_READ_CHANNEL_MESSAGES,
-            "invariant: channel_feed respects its window cap"
-        );
         // Privileged: the channel id is fully qualified (globally unique) and the
         // `read_channel` tool gates membership before calling, so no caller
         // principal is threaded here.

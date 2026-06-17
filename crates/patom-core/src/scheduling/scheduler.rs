@@ -298,9 +298,9 @@ impl SchedulerInner {
 /// DM task carries no channel to read, so its prompt is seeded unchanged.
 fn seed_prompt_text(task: &ScheduledTaskRecord) -> String {
     let base = task.prompt.as_str();
-    let Some(_) = task.channel_id else {
+    if task.channel_id.is_none() {
         return base.to_string();
-    };
+    }
     let since = task.last_fired_at.unwrap_or(task.created_at);
     format!(
         "{base}\n\n<digest-window since=\"{}\"/>\n\

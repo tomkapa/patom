@@ -118,17 +118,16 @@ impl ReadChannelTool {
     async fn handle(&self, input: Input, ctx: &ToolCallContext) -> Result<String, ToolError> {
         tracing::Span::current().record("patom.channel.id", tracing::field::display(input.channel));
         // Caller must be an agent (humans don't run tool calls); its colleague id
-        // is the membership-gate subject.
-        let viewer = ctx.viewer.colleague_id().ok_or_else(|| {
-            set_outcome("not_agent");
-            ToolError::InvalidInput("read_channel: caller must be a colleague".into())
-        })?;
-        if ctx.viewer.agent_id().is_none() {
-            set_outcome("not_agent");
-            return Err(ToolError::InvalidInput(
-                "read_channel: caller must be an agent".into(),
-            ));
-        }
+        // is the membership-gate subject. `colleague_id` is `Some` for any
+        // colleague, so the `agent_id` filter is what rejects a human / System.
+        let viewer = ctx
+            .viewer
+            .colleague_id()
+            .filter(|_| ctx.viewer.agent_id().is_some())
+            .ok_or_else(|| {
+                set_outcome("not_agent");
+                ToolError::InvalidInput("read_channel: caller must be an agent".into())
+            })?;
 
         // The membership gate is the safety boundary — no auto-add, mirrors the
         // `send_message` channel gate.
@@ -173,7 +172,9 @@ impl ReadChannelTool {
 /// [`TOOL_RESULT_MAX_BYTES`] so a busy channel can't blow the context budget
 /// (the row count is already bounded; this guards pathological line lengths).
 fn render(rows: &[ChannelFeedRow]) -> String {
-    let mut out = String::new();
+    // Rough per-line estimate (timestamp + author + preview) so the bounded
+    // transcript doesn't reallocate as it grows.
+    let mut out = String::with_capacity(rows.len().saturating_mul(96));
     for row in rows {
         let author = row.author.as_deref().unwrap_or("system");
         let text = if row.body_preview.is_empty() {
