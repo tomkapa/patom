@@ -18,7 +18,7 @@ use crate::types::{AgentReply, MaxOutputTokens, MaxTurns, Participant};
 
 use super::builder::TurnMetricsBinding;
 use super::error::AgentError;
-use super::limits::SUMMARIZER_INPUT_BUDGET;
+use super::limits::{MAX_SUMMARIZER_CANDIDATES, SUMMARIZER_INPUT_BUDGET};
 use super::observer::SharedTurnObserver;
 use super::outcome::{record_reply, record_turn};
 use super::turn::turn_index;
@@ -271,6 +271,11 @@ impl Agent {
             (p.input.get(), p.output.get())
         });
 
+        // §5: the scan is bounded by the finite model catalog; assert it on entry.
+        assert!(
+            usable.len() <= MAX_SUMMARIZER_CANDIDATES,
+            "summarizer candidate scan is bounded by the model catalog",
+        );
         let mut chain: Vec<(Model, SharedProvider)> = Vec::new();
         for model in usable {
             let Some(provider) = self.provider_for(model) else {

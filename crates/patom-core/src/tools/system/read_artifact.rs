@@ -8,11 +8,8 @@ use tracing::instrument;
 use crate::threads::{ArtifactHandle, ArtifactSelector, SharedThreadStore};
 use crate::types::ToolName;
 
-use super::super::limits::MAX_ARTIFACT_SLICE;
+use super::super::limits::{DEFAULT_GREP_MATCHES, MAX_ARTIFACT_SLICE};
 use super::super::traits::{Tool, ToolCallContext, ToolError};
-
-/// Default cap on grep matches counted/windowed in one `read_artifact` call.
-const DEFAULT_GREP_MATCHES: usize = 16;
 
 /// Recover exact slices of a reduced + offloaded tool result (#185).
 ///
@@ -116,7 +113,7 @@ impl Tool for ReadArtifactTool {
             .map_err(|e| ToolError::InvalidInput(format!("read_artifact: bad handle: {e}")))?;
 
         let selector = match grep {
-            Some(pattern) if !pattern.is_empty() => ArtifactSelector::Grep {
+            Some(pattern) if !pattern.trim().is_empty() => ArtifactSelector::Grep {
                 pattern,
                 max_matches: DEFAULT_GREP_MATCHES,
             },

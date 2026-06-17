@@ -13,7 +13,8 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use patom::agent_core::AgentBuilder;
-use patom::auth::Caller;
+use patom::agents::AgentId;
+use patom::auth::{Caller, OrgId};
 use patom::clock::SystemClock;
 use patom::colleagues::{resolve_agent_colleague, resolve_user_colleague};
 use patom::memory::{SharedMemory, StaticMemory};
@@ -22,12 +23,15 @@ use patom::provider::{
     ProviderRegistry, SharedProvider, SharedProviderRegistry, StopReason, ToolCall, ToolCallId,
     UserContent,
 };
-use patom::runtime::{IdempotencyKey, NewTrigger, PgPromptQueue, PromptQueue, RequestKindPayload};
+use patom::runtime::{
+    IdempotencyKey, NewTrigger, PgPromptQueue, PromptQueue, PromptRequestId, RequestKindPayload,
+};
 use patom::threads::{
-    ArtifactHandle, ArtifactSelector, MessageKind, NewMessage, PgThreadStore, SharedThreadStore,
+    AgentThreadId, ArtifactHandle, ArtifactSelector, MessageKind, NewMessage, PgThreadStore,
+    SharedThreadStore, ThreadId,
 };
 use patom::tools::{
-    ReductionIntent, Tool, ToolCallContext, ToolError, ToolRegistry, ToolResultPolicy,
+    ReductionIntent, SharedTool, Tool, ToolCallContext, ToolError, ToolRegistry, ToolResultPolicy,
 };
 use patom::types::ToolName;
 use sqlx::PgPool;
@@ -190,12 +194,26 @@ fn first_tool_result_output(req: &ChatRequest) -> Option<String> {
     None
 }
 
-#[sqlx::test]
-async fn heavy_tool_result_is_reduced_and_recoverable(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
+/// A `(thread, agent)` ready to drive one reduction turn, plus the seeded
+/// human post and enqueued trigger. Extracted so each test stays well under the
+/// 70-line ceiling (CLAUDE.md §4) and the setup lives in one place.
+struct Fixture {
+    pool: PgPool,
+    threads: SharedThreadStore,
+    caller: Caller,
+    org_id: OrgId,
+    agent_id: AgentId,
+    thread: ThreadId,
+    state: AgentThreadId,
+    request_id: PromptRequestId,
+}
+
+/// Seed a tenant + thread, post `prompt` as the human, and enqueue the trigger.
+async fn setup(pool: PgPool, prompt: &str) -> Fixture {
     let clock = SystemClock::shared();
     let threads: SharedThreadStore = Arc::new(PgThreadStore::new(pool.clone(), clock.clone()));
     let queue = PgPromptQueue::new(pool.clone(), clock.clone());
+    let seed = seed_tenant(&pool).await;
     let caller = Caller::new(seed.user_id, seed.org_id);
     let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
         .await
@@ -203,7 +221,6 @@ async fn heavy_tool_result_is_reduced_and_recoverable(pool: PgPool) {
     let agent_col = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
         .await
         .expect("agent col");
-
     let thread = threads
         .create_thread(&caller, None, None, human, Some(agent_col))
         .await
@@ -212,7 +229,6 @@ async fn heavy_tool_result_is_reduced_and_recoverable(pool: PgPool) {
         .resolve_participation(&caller, thread, seed.agent_id)
         .await
         .expect("participation");
-
     // The turn reads the feed at run time; seed a human post so it has context.
     threads
         .append(
@@ -223,14 +239,13 @@ async fn heavy_tool_result_is_reduced_and_recoverable(pool: PgPool) {
                 sender: Some(human),
                 owner_agent_id: None,
                 receiver: Some(agent_col),
-                body: ChatMessage::User(vec![UserContent::Text("fetch the big thing".into())]),
+                body: ChatMessage::User(vec![UserContent::Text(prompt.into())]),
                 request_id: None,
                 idempotency_key: None,
             },
         )
         .await
         .expect("seed human post");
-
     let request_id = queue
         .enqueue_trigger(NewTrigger {
             org_id: seed.org_id,
@@ -248,16 +263,22 @@ async fn heavy_tool_result_is_reduced_and_recoverable(pool: PgPool) {
         })
         .await
         .expect("trigger");
+    Fixture {
+        pool,
+        threads,
+        caller,
+        org_id: seed.org_id,
+        agent_id: seed.agent_id,
+        thread,
+        state,
+        request_id,
+    }
+}
 
-    // A body well over the 32k-char reduction threshold, with distinct head/tail
-    // markers so we can prove the preview keeps both ends.
-    let big = format!("HEADSTART{}TAILFINISH", "x".repeat(50_000));
-    let handle = ArtifactHandle::content_address(&big);
-
-    let provider = Arc::new(ScriptedProvider::new(vec![
-        tool_call_response("call-1"),
-        text_response("done"),
-    ]));
+/// Build an agent with `tool` registered and the test model routed to a scripted
+/// provider, run one turn, and return the tool_result body the model saw next.
+async fn run_turn(fx: &Fixture, tool: SharedTool, script: Vec<ChatResponse>) -> String {
+    let provider = Arc::new(ScriptedProvider::new(script));
     let model = Model::try_from("test-model").expect("catalog model");
     let shared: SharedProvider = provider.clone();
     let providers: SharedProviderRegistry = Arc::new(
@@ -266,47 +287,70 @@ async fn heavy_tool_result_is_reduced_and_recoverable(pool: PgPool) {
             .build(),
     );
     let memory: SharedMemory = Arc::new(StaticMemory::new("test prompt"));
-    let registry = ToolRegistry::builder()
-        .with(Arc::new(BigResultTool::new(big.clone())))
-        .build();
+    let registry = ToolRegistry::builder().with(tool).build();
     let agent = AgentBuilder::new(providers, memory, model)
         .expect("builder")
-        .with_thread_store(threads.clone())
+        .with_thread_store(fx.threads.clone())
         .with_builtin_tools(registry)
         .build();
-
-    let viewer = agent_participant(&pool, seed.org_id, seed.agent_id).await;
+    let viewer = agent_participant(&fx.pool, fx.org_id, fx.agent_id).await;
     agent
         .reply_in_thread(
-            state,
-            thread,
+            fx.state,
+            fx.thread,
             viewer,
-            request_id,
-            request_id,
-            caller,
+            fx.request_id,
+            fx.request_id,
+            fx.caller,
             RequestKindPayload::Normal {},
             CancellationToken::new(),
             None,
         )
         .await
         .expect("reply_in_thread");
+    first_tool_result_output(&provider.last_request()).expect("tool_result in context")
+}
 
-    // 1. The tool_result the model saw on the follow-up turn is bounded and
-    //    marked-partial — never a silent clip.
-    let seen = first_tool_result_output(&provider.last_request()).expect("tool_result in context");
+/// Read a page of the offloaded artifact back, for "nothing is lost" assertions.
+async fn recover(fx: &Fixture, handle: &ArtifactHandle, offset: usize, limit: usize) -> String {
+    fx.threads
+        .load_tool_artifact_slice(fx.org_id, handle, ArtifactSelector::Page { offset, limit })
+        .await
+        .expect("load")
+        .expect("artifact present")
+        .into_string()
+}
+
+/// A `Summarize`-policy tool wrapped as a `SharedTool`.
+fn summarize_tool(body: String) -> SharedTool {
+    Arc::new(SummarizeBigTool {
+        name: ToolName::try_from("summarize_big").expect("name"),
+        schema: Arc::new(
+            json!({"type": "object", "properties": {}, "additionalProperties": false}),
+        ),
+        body,
+    })
+}
+
+/// #185: a heavy result enters context bounded + marked-partial (paginate,
+/// zero-LLM), and its full body is recoverable byte-for-byte.
+#[sqlx::test]
+async fn heavy_tool_result_is_reduced_and_recoverable(pool: PgPool) {
+    let fx = setup(pool, "fetch the big thing").await;
+    // Distinct head/tail markers prove the preview keeps both ends.
+    let big = format!("HEADSTART{}TAILFINISH", "x".repeat(50_000));
+    let handle = ArtifactHandle::content_address(&big);
+
+    let script = vec![tool_call_response("call-1"), text_response("done")];
+    let seen = run_turn(&fx, Arc::new(BigResultTool::new(big.clone())), script).await;
+
     assert!(
         seen.chars().count() < big.chars().count(),
         "reduced below the raw body"
     );
     assert!(seen.starts_with("HEADSTART"), "head preserved");
-    assert!(
-        seen.contains("TAILFINISH"),
-        "tail preserved (lossless win over truncation)"
-    );
-    assert!(
-        seen.contains("chars omitted"),
-        "explicitly marked partial (anti-lie)"
-    );
+    assert!(seen.contains("TAILFINISH"), "tail preserved (lossless win)");
+    assert!(seen.contains("chars omitted"), "marked partial (anti-lie)");
     assert!(
         seen.contains(handle.as_str()),
         "carries the recovery handle"
@@ -316,151 +360,32 @@ async fn heavy_tool_result_is_reduced_and_recoverable(pool: PgPool) {
         "tells the model how to recover"
     );
 
-    // 2. The full body is offloaded and recoverable byte-for-byte — nothing lost.
-    let head = threads
-        .load_tool_artifact_slice(
-            seed.org_id,
-            &handle,
-            ArtifactSelector::Page {
-                offset: 0,
-                limit: 9,
-            },
-        )
-        .await
-        .expect("load")
-        .expect("artifact present");
-    assert_eq!(head.as_str(), "HEADSTART");
-
+    assert_eq!(recover(&fx, &handle, 0, 9).await, "HEADSTART");
     let total = big.chars().count();
-    let tail = threads
-        .load_tool_artifact_slice(
-            seed.org_id,
-            &handle,
-            ArtifactSelector::Page {
-                offset: total - 10,
-                limit: 10,
-            },
-        )
-        .await
-        .expect("load")
-        .expect("artifact present");
     assert_eq!(
-        tail.as_str(),
+        recover(&fx, &handle, total - 10, 10).await,
         "TAILFINISH",
         "the offloaded tail is recoverable"
     );
 }
 
 /// #185 stage 10: a `Summarize`-policy tool runs the cheap-model extractive fold
-/// (via the cheapest usable model — here Anthropic Haiku, routed to the test
-/// provider), and the visible body is the summary marked NOT-full + handle.
+/// (cheapest usable model — Anthropic Haiku, routed to the test provider); the
+/// visible body is the summary marked NOT-full + handle.
 #[sqlx::test]
 async fn heavy_tool_result_is_summarized(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let clock = SystemClock::shared();
-    let threads: SharedThreadStore = Arc::new(PgThreadStore::new(pool.clone(), clock.clone()));
-    let queue = PgPromptQueue::new(pool.clone(), clock.clone());
-    let caller = Caller::new(seed.user_id, seed.org_id);
-    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
-        .await
-        .expect("human");
-    let agent_col = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
-        .await
-        .expect("agent col");
-
-    let thread = threads
-        .create_thread(&caller, None, None, human, Some(agent_col))
-        .await
-        .expect("thread");
-    let state = threads
-        .resolve_participation(&caller, thread, seed.agent_id)
-        .await
-        .expect("participation");
-    threads
-        .append(
-            &caller,
-            thread,
-            NewMessage {
-                kind: MessageKind::Posted,
-                sender: Some(human),
-                owner_agent_id: None,
-                receiver: Some(agent_col),
-                body: ChatMessage::User(vec![UserContent::Text("summarize the big thing".into())]),
-                request_id: None,
-                idempotency_key: None,
-            },
-        )
-        .await
-        .expect("seed post");
-
-    let request_id = queue
-        .enqueue_trigger(NewTrigger {
-            org_id: seed.org_id,
-            acting_user_id: seed.user_id,
-            thread_id: Some(thread),
-            state_id: Some(state),
-            background_turn_id: None,
-            sender_colleague_id: human,
-            receiver_agent_id: seed.agent_id,
-            root_request_id: None,
-            trigger_message_id: None,
-            idempotency_key: IdempotencyKey::try_from(format!("tag-{}", Uuid::new_v4()))
-                .expect("key"),
-            kind_payload: RequestKindPayload::Normal {},
-        })
-        .await
-        .expect("trigger");
-
+    let fx = setup(pool, "summarize the big thing").await;
     let big = format!("PAYLOAD{}END", "y".repeat(50_000));
     let handle = ArtifactHandle::content_address(&big);
 
-    // Script: main turn emits the tool call; the reducer's single fold returns
-    // the extract; the main turn then ends.
-    let provider = Arc::new(ScriptedProvider::new(vec![
+    // Tool call → reducer's single fold returns the extract → main turn ends.
+    let script = vec![
         tool_call_to("call-1", "summarize_big"),
         text_response("GIST-OF-THE-RESULT"),
         text_response("done"),
-    ]));
-    let model = Model::try_from("test-model").expect("catalog model");
-    let shared: SharedProvider = provider.clone();
-    let providers: SharedProviderRegistry = Arc::new(
-        ProviderRegistry::builder()
-            .insert(model.provider(), shared)
-            .build(),
-    );
-    let memory: SharedMemory = Arc::new(StaticMemory::new("test prompt"));
-    let registry = ToolRegistry::builder()
-        .with(Arc::new(SummarizeBigTool {
-            name: ToolName::try_from("summarize_big").expect("name"),
-            schema: Arc::new(
-                json!({"type": "object", "properties": {}, "additionalProperties": false}),
-            ),
-            body: big.clone(),
-        }))
-        .build();
-    let agent = AgentBuilder::new(providers, memory, model)
-        .expect("builder")
-        .with_thread_store(threads.clone())
-        .with_builtin_tools(registry)
-        .build();
+    ];
+    let seen = run_turn(&fx, summarize_tool(big.clone()), script).await;
 
-    let viewer = agent_participant(&pool, seed.org_id, seed.agent_id).await;
-    agent
-        .reply_in_thread(
-            state,
-            thread,
-            viewer,
-            request_id,
-            request_id,
-            caller,
-            RequestKindPayload::Normal {},
-            CancellationToken::new(),
-            None,
-        )
-        .await
-        .expect("reply_in_thread");
-
-    let seen = first_tool_result_output(&provider.last_request()).expect("tool_result");
     assert!(
         seen.contains("GIST-OF-THE-RESULT"),
         "summary body present: {seen}"
@@ -473,132 +398,25 @@ async fn heavy_tool_result_is_summarized(pool: PgPool) {
         "the raw payload is not inlined"
     );
 
-    // Full body still recoverable.
-    let slice = threads
-        .load_tool_artifact_slice(
-            seed.org_id,
-            &handle,
-            ArtifactSelector::Page {
-                offset: 0,
-                limit: 7,
-            },
-        )
-        .await
-        .expect("load")
-        .expect("present");
-    assert_eq!(slice.as_str(), "PAYLOAD");
+    assert_eq!(recover(&fx, &handle, 0, 7).await, "PAYLOAD");
 }
 
 /// #185 stage 12: when the summarizer fold fails, the reducer degrades to the
-/// lossless paginate preview — never a blind clip. The full body is already
-/// offloaded, so degrade loses nothing.
+/// lossless paginate preview — never a blind clip; the full body is recoverable.
 #[sqlx::test]
 async fn summarizer_failure_degrades_to_lossless_preview(pool: PgPool) {
-    let seed = seed_tenant(&pool).await;
-    let clock = SystemClock::shared();
-    let threads: SharedThreadStore = Arc::new(PgThreadStore::new(pool.clone(), clock.clone()));
-    let queue = PgPromptQueue::new(pool.clone(), clock.clone());
-    let caller = Caller::new(seed.user_id, seed.org_id);
-    let human = resolve_user_colleague(&pool, seed.org_id, seed.user_id)
-        .await
-        .expect("human");
-    let agent_col = resolve_agent_colleague(&pool, seed.org_id, seed.agent_id)
-        .await
-        .expect("col");
-
-    let thread = threads
-        .create_thread(&caller, None, None, human, Some(agent_col))
-        .await
-        .expect("thread");
-    let state = threads
-        .resolve_participation(&caller, thread, seed.agent_id)
-        .await
-        .expect("participation");
-    threads
-        .append(
-            &caller,
-            thread,
-            NewMessage {
-                kind: MessageKind::Posted,
-                sender: Some(human),
-                owner_agent_id: None,
-                receiver: Some(agent_col),
-                body: ChatMessage::User(vec![UserContent::Text("go".into())]),
-                request_id: None,
-                idempotency_key: None,
-            },
-        )
-        .await
-        .expect("seed");
-
-    let request_id = queue
-        .enqueue_trigger(NewTrigger {
-            org_id: seed.org_id,
-            acting_user_id: seed.user_id,
-            thread_id: Some(thread),
-            state_id: Some(state),
-            background_turn_id: None,
-            sender_colleague_id: human,
-            receiver_agent_id: seed.agent_id,
-            root_request_id: None,
-            trigger_message_id: None,
-            idempotency_key: IdempotencyKey::try_from(format!("tag-{}", Uuid::new_v4()))
-                .expect("key"),
-            kind_payload: RequestKindPayload::Normal {},
-        })
-        .await
-        .expect("trigger");
-
+    let fx = setup(pool, "go").await;
     let big = format!("PAYLOAD{}END", "y".repeat(50_000));
     let handle = ArtifactHandle::content_address(&big);
 
     // The single fold attempt returns nothing usable → summarize fails → degrade.
-    let provider = Arc::new(ScriptedProvider::new(vec![
+    let script = vec![
         tool_call_to("call-1", "summarize_big"),
         empty_response(),
         text_response("done"),
-    ]));
-    let model = Model::try_from("test-model").expect("model");
-    let shared: SharedProvider = provider.clone();
-    let providers: SharedProviderRegistry = Arc::new(
-        ProviderRegistry::builder()
-            .insert(model.provider(), shared)
-            .build(),
-    );
-    let memory: SharedMemory = Arc::new(StaticMemory::new("test prompt"));
-    let registry = ToolRegistry::builder()
-        .with(Arc::new(SummarizeBigTool {
-            name: ToolName::try_from("summarize_big").expect("name"),
-            schema: Arc::new(
-                json!({"type": "object", "properties": {}, "additionalProperties": false}),
-            ),
-            body: big.clone(),
-        }))
-        .build();
-    let agent = AgentBuilder::new(providers, memory, model)
-        .expect("builder")
-        .with_thread_store(threads.clone())
-        .with_builtin_tools(registry)
-        .build();
+    ];
+    let seen = run_turn(&fx, summarize_tool(big.clone()), script).await;
 
-    let viewer = agent_participant(&pool, seed.org_id, seed.agent_id).await;
-    agent
-        .reply_in_thread(
-            state,
-            thread,
-            viewer,
-            request_id,
-            request_id,
-            caller,
-            RequestKindPayload::Normal {},
-            CancellationToken::new(),
-            None,
-        )
-        .await
-        .expect("reply_in_thread");
-
-    let seen = first_tool_result_output(&provider.last_request()).expect("tool_result");
-    // Degraded to the lossless preview: head + tail + handle, not a summary.
     assert!(seen.starts_with("PAYLOAD"), "head preserved on degrade");
     assert!(
         seen.contains("chars omitted"),
@@ -610,18 +428,5 @@ async fn summarizer_failure_degrades_to_lossless_preview(pool: PgPool) {
         "no summary marker — the fold failed"
     );
 
-    // And the body is still fully recoverable.
-    let slice = threads
-        .load_tool_artifact_slice(
-            seed.org_id,
-            &handle,
-            ArtifactSelector::Page {
-                offset: 0,
-                limit: 7,
-            },
-        )
-        .await
-        .expect("load")
-        .expect("present");
-    assert_eq!(slice.as_str(), "PAYLOAD");
+    assert_eq!(recover(&fx, &handle, 0, 7).await, "PAYLOAD");
 }

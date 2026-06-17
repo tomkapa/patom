@@ -14,8 +14,11 @@
 -- Retention is cascade-only in v1: artifacts are removed when their org or
 -- owning agent is deleted (no TTL sweeper yet).
 CREATE TABLE tool_artifacts (
-    -- Content address: lowercase SHA-256 hex of `full_body` (64 chars).
-    handle      TEXT        NOT NULL,
+    -- Content address: lowercase SHA-256 hex of `full_body` (64 chars). The
+    -- CHECK mirrors the `ArtifactHandle` newtype as defence-in-depth (§5/§10):
+    -- the app always supplies a 64-char digest, but a future bypass can't write
+    -- a malformed handle.
+    handle      TEXT        NOT NULL CHECK (length(handle) = 64),
     org_id      UUID        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     -- The full, unreduced tool-result body (the offloaded bytes).
     full_body   TEXT        NOT NULL,

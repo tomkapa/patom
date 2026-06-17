@@ -108,6 +108,13 @@ pub const PREVIEW_TAIL_CHARS: usize = 2_000;
 /// tokens of raw text) covers any realistic payload.
 pub const MAX_ARTIFACT_GREP_SCAN: usize = 1_000_000;
 
+/// Cap on grep matches counted/windowed in one `read_artifact` call (#185).
+///
+/// Bounds the match-counting scan and the number of windows considered; 16 is
+/// well past what a single recovery step needs while keeping the grep output
+/// (clamped to `MAX_ARTIFACT_SLICE`) cheap to assemble.
+pub const DEFAULT_GREP_MATCHES: usize = 16;
+
 /// Cap, in characters, on the intent string fed to the summarize fold (#185).
 ///
 /// The intent is a prompt fragment (WebFetch `prompt`) or a bounded
