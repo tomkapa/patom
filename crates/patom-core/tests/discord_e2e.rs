@@ -36,6 +36,7 @@ use patom::discord::types::{
 use patom::provider::{AssistantContent, ChatResponse, StopReason, ToolCall, ToolCallId};
 use patom::runtime::{PgThreadStream, SharedThreadStream};
 use patom::threads::PgThreadStore;
+use patom::types::SecretString;
 use patom::types::ToolName;
 use serde_json::json;
 
@@ -110,6 +111,10 @@ async fn build_rig(
             poster,
             directory: directory.clone(),
             apps: apps.clone(),
+            connect_secret: SecretString::try_from("test-discord-connect-secret".to_owned())
+                .expect("non-empty"),
+            connect_url_base: Arc::from("https://patom.example"),
+            clock: clock.clone(),
         },
         CancellationToken::new(),
     );

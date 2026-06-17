@@ -22,14 +22,23 @@ use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info_span, warn};
 
+use crate::agents::AgentId;
+use crate::clock::SharedClock;
 use crate::colleagues::ColleagueId;
+use crate::mcp::wire_connect::render_connect_message;
+use crate::mcp::{McpAuthKind, McpCatalogId};
 use crate::runtime::{ResponseChunk, SharedThreadStream, ThreadStreamError, ThreadStreamEvent};
 use crate::threads::ThreadId;
+use crate::types::SecretString;
 
 use super::app_store::SharedDiscordAppStore;
 use super::bridge::{AttachRequest, OutboundAttach};
+use super::connect_link::{DiscordConnectClaims, sign_connect};
 use super::directory::SharedDiscordDirectory;
-use super::limits::{DISCORD_PUMP_IDLE_TTL, MAX_DISCORD_STREAM_PUMPS};
+use super::limits::{
+    DISCORD_CONNECT_LINK_TTL_SECS, DISCORD_CONNECTION_REASON_MAX_CHARS, DISCORD_PUMP_IDLE_TTL,
+    MAX_DISCORD_DEFERRED_WIRE_LINKS, MAX_DISCORD_STREAM_PUMPS,
+};
 use super::mention;
 use super::poster::{AllowedMentions, PostRequest, SharedDiscordPoster};
 use super::types::{ApplicationId, DiscordUserId};
@@ -45,6 +54,13 @@ pub struct PumpDeps {
     /// Resolves the replying agent → its own bot, so a multi-bot thread
     /// attributes each reply to the correct bot (not the first-attached one).
     pub apps: SharedDiscordAppStore,
+    /// HMAC key for the MCP connect-link token (derived from `master_kek`).
+    pub connect_secret: SecretString,
+    /// Base URL the connect link is built against (the deployment's
+    /// `oauth_redirect_base`).
+    pub connect_url_base: Arc<str>,
+    /// Clock for stamping the connect-link expiry.
+    pub clock: SharedClock,
 }
 
 impl std::fmt::Debug for PumpDeps {
@@ -167,23 +183,42 @@ fn spawn_pump(
 async fn run_pump(deps: &PumpDeps, req: &AttachRequest, cancel: CancellationToken) {
     let mut stream = deps.thread_stream.subscribe(req.thread_id);
     let mut idle_deadline = Instant::now() + DISCORD_PUMP_IDLE_TTL;
+    // Connect links buffered until the agent's narrative text posts, so the
+    // "connect this server" prompt lands after the explanation. Mirrors the
+    // Slack pump's deferred-card buffer.
+    let mut deferred: Vec<DeferredLink> = Vec::new();
     loop {
         tokio::select! {
+            // Shutdown: drop pending links (best-effort surface only).
             () = cancel.cancelled() => return,
-            () = sleep_until(idle_deadline) => return,
+            // Idle or stream close: flush any unflushed link before exiting.
+            () = sleep_until(idle_deadline) => break,
             next = stream.next() => {
-                let Some(result) = next else { return; };
+                let Some(result) = next else { break; };
                 idle_deadline = Instant::now() + DISCORD_PUMP_IDLE_TTL;
-                handle_stream_event(deps, req, result).await;
+                handle_stream_event(deps, req, &mut deferred, result).await;
             }
         }
     }
+    flush_deferred(deps, req, &mut deferred).await;
+}
+
+/// One pending MCP connect message: the rendered text plus the agent it is
+/// attributed to (so the flush posts via that agent's own bot).
+struct DeferredLink {
+    message: String,
+    from_agent: AgentId,
 }
 
 /// Forward one stream event to Discord, if it carries user-visible text.
+///
+/// A `WireMcpRequest` is rendered into a connect message and **buffered** in
+/// `deferred`; it is flushed after the next narrative text post (or at a turn
+/// boundary), so the connect prompt reads after the agent's explanation.
 async fn handle_stream_event(
     deps: &PumpDeps,
     req: &AttachRequest,
+    deferred: &mut Vec<DeferredLink>,
     event: Result<ThreadStreamEvent, ThreadStreamError>,
 ) {
     let item = match event {
@@ -197,24 +232,128 @@ async fn handle_stream_event(
         }
         Ok(ThreadStreamEvent::Item(item)) => item,
     };
-    let Some((text, to)) = render_payload(&item.chunk) else {
+
+    // MCP connect request: render + buffer, don't post yet.
+    if let ResponseChunk::WireMcpRequest { .. } = &item.chunk {
+        if let Some(message) = build_connect_message(deps, req, &item.chunk) {
+            if deferred.len() >= MAX_DISCORD_DEFERRED_WIRE_LINKS {
+                deferred.remove(0);
+            }
+            deferred.push(DeferredLink {
+                message,
+                from_agent: item.from_agent,
+            });
+        }
         return;
+    }
+
+    let posted = if let Some((text, to)) = render_payload(&item.chunk) {
+        // Post via the REPLYING agent's own bot; fall back to the attaching bot.
+        let application_id = resolve_agent_bot(deps, req, item.from_agent).await;
+        let (content, pinged) = render_outbound(deps, req, &text, to).await;
+        post_reply(deps, application_id, req, content, pinged).await;
+        true
+    } else {
+        false
     };
-    // Post via the REPLYING agent's own bot; fall back to the attaching bot.
-    let application_id = match deps
-        .apps
-        .app_id_for_agent(req.org_id, item.from_agent)
-        .await
-    {
+
+    // Flush buffered connect links after the narrative text, or at a turn
+    // boundary even when the final chunk carried no text.
+    let terminal = matches!(
+        &item.chunk,
+        ResponseChunk::Done { .. } | ResponseChunk::Error { .. }
+    );
+    if posted || terminal {
+        flush_deferred(deps, req, deferred).await;
+    }
+}
+
+/// Resolve the bot that should post for `agent` — the agent's own Discord bot,
+/// falling back to the attaching bot.
+async fn resolve_agent_bot(deps: &PumpDeps, req: &AttachRequest, agent: AgentId) -> ApplicationId {
+    match deps.apps.app_id_for_agent(req.org_id, agent).await {
         Ok(Some(a)) => a,
         Ok(None) => req.application_id.clone(),
         Err(e) => {
             warn!(error = ?e, event = "discord.stream_pump.agent_bot_resolve_failed");
             req.application_id.clone()
         }
+    }
+}
+
+/// Post every buffered connect link in order, each via its agent's own bot. A
+/// connect message is a system notice — no `@`-mentions, so `allowed_mentions`
+/// is empty.
+async fn flush_deferred(deps: &PumpDeps, req: &AttachRequest, deferred: &mut Vec<DeferredLink>) {
+    for pending in deferred.drain(..) {
+        let application_id = resolve_agent_bot(deps, req, pending.from_agent).await;
+        // Posted as-is (not clipped): the reason is already capped low enough
+        // that the whole message — link included — fits one Discord message,
+        // so the poster never chunks and splits the signed URL.
+        post_reply(deps, application_id, req, pending.message, Vec::new()).await;
+    }
+}
+
+/// Render a `WireMcpRequest` chunk into the plain-text connect message Discord
+/// posts. OAuth2 catalogs carry a signed `GET /discord/mcp/connect?token=…`
+/// URL; static-headers / no-auth catalogs point at the web UI. Returns `None`
+/// for any non-`WireMcpRequest` chunk.
+fn build_connect_message(
+    deps: &PumpDeps,
+    req: &AttachRequest,
+    chunk: &ResponseChunk,
+) -> Option<String> {
+    let ResponseChunk::WireMcpRequest {
+        from,
+        catalog_id,
+        display_name,
+        reason,
+        auth_kind,
+        ..
+    } = chunk
+    else {
+        return None;
     };
-    let (content, pinged) = render_outbound(deps, req, &text, to).await;
-    post_reply(deps, application_id, req, content, pinged).await;
+    let url = match auth_kind {
+        McpAuthKind::OAuth2 => Some(build_connect_url(deps, req, catalog_id, *from)),
+        McpAuthKind::StaticHeaders | McpAuthKind::None => None,
+    };
+    Some(render_connect_message(
+        display_name,
+        reason,
+        *auth_kind,
+        url.as_deref(),
+        DISCORD_CONNECTION_REASON_MAX_CHARS,
+    ))
+}
+
+/// Mint a signed `GET /discord/mcp/connect?token=…` URL. The token binds the
+/// catalog, the resolved Patom `(org, user)`, the Discord channel (so the
+/// OAuth callback pings back), and the Patom thread + agent (so the universal
+/// auto-continue resumes the right loop).
+fn build_connect_url(
+    deps: &PumpDeps,
+    req: &AttachRequest,
+    catalog_id: &McpCatalogId,
+    agent_id: AgentId,
+) -> String {
+    let exp = deps
+        .clock
+        .now_unix_secs()
+        .saturating_add(DISCORD_CONNECT_LINK_TTL_SECS);
+    let claims = DiscordConnectClaims {
+        catalog_id: catalog_id.clone(),
+        org_id: req.org_id,
+        user_id: req.user_id,
+        application_id: req.application_id.clone(),
+        container_id: req.container_id.clone(),
+        reply_to: req.reply_to.clone(),
+        thread_id: req.thread_id,
+        agent_id,
+    };
+    let token = sign_connect(deps.connect_secret.expose().as_bytes(), &claims, exp);
+    let base = deps.connect_url_base.trim_end_matches('/');
+    format!("{base}/discord/mcp/connect?token={token}")
 }
 
 /// Render an outbound reply: rewrite inline `@Name` to `<@id>` (collecting the
@@ -370,5 +509,32 @@ mod tests {
             .is_none()
         );
         assert!(render_payload(&ResponseChunk::Stalled).is_none());
+    }
+
+    /// The renderer itself is unit-tested in `mcp::wire_connect`; here we guard
+    /// the Discord-specific invariant: a worst-case reason (at the cap) plus a
+    /// realistic max-length connect URL still fits ONE Discord message, so the
+    /// poster never chunks and splits the signed link. This is the property
+    /// that justifies Discord's lower `DISCORD_CONNECTION_REASON_MAX_CHARS`.
+    #[test]
+    fn connect_message_with_max_reason_and_url_fits_one_message() {
+        let long = "a".repeat(DISCORD_CONNECTION_REASON_MAX_CHARS + 100);
+        // A connect token is a ~330-char payload + 64-char sig; pad generously.
+        let url = format!(
+            "https://patom.example/discord/mcp/connect?token={}",
+            "t".repeat(420)
+        );
+        let msg = render_connect_message(
+            "Some Connector",
+            &long,
+            McpAuthKind::OAuth2,
+            Some(&url),
+            DISCORD_CONNECTION_REASON_MAX_CHARS,
+        );
+        assert!(msg.contains('…'), "long reason is truncated");
+        assert!(
+            msg.chars().count() <= super::super::limits::DISCORD_MESSAGE_MAX,
+            "connect message fits one Discord message (no chunk → no URL split)"
+        );
     }
 }

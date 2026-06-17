@@ -145,6 +145,26 @@ pub const MAX_DISCORD_STREAM_PUMPS: usize = 256;
 /// exits; a future event in the same Discord thread re-attaches fresh.
 pub const DISCORD_PUMP_IDLE_TTL: Duration = Duration::from_mins(30);
 
+/// TTL of an MCP connect-link token (seconds).
+///
+/// The signed `GET /discord/mcp/connect?token=…` link an agent posts on a
+/// `WireMcpRequest` expires this many seconds after minting. Mirrors the
+/// Slack / Lark connect links' 10-minute window.
+pub const DISCORD_CONNECT_LINK_TTL_SECS: i64 = 60 * 10;
+
+/// Cap on the `reason` paragraph rendered into the Discord connect message.
+///
+/// Lower than the Slack / Lark caps on purpose: a Discord message is hard-
+/// capped at [`DISCORD_MESSAGE_MAX`] (2000) and the poster chunks past it,
+/// which would split the signed connect URL mid-token. Capping the reason here
+/// leaves headroom for the lead line + the ~400-char connect link so the whole
+/// message fits one Discord message and is never chunked.
+pub const DISCORD_CONNECTION_REASON_MAX_CHARS: usize = 1_400;
+
+/// Cap on MCP connect messages buffered per pump while waiting to flush them
+/// after the agent's narrative text. Mirrors Slack's `MAX_DEFERRED_WIRE_CARDS`.
+pub const MAX_DISCORD_DEFERRED_WIRE_LINKS: usize = 8;
+
 // ─────────────────────────────────────────────────────────────────────────
 // Roster (GUILD_MEMBERS) sync
 // ─────────────────────────────────────────────────────────────────────────

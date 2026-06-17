@@ -25,8 +25,8 @@ use uuid::Uuid;
 use crate::agents::AgentId;
 use crate::auth::{AuthError, Principal, VisibilityTable, visible_to};
 use crate::mcp::oauth::{
-    OAuthError, PatomPendingCtx, ResumeCtx, SlackPingCtx, StartCtx, handle_callback,
-    start_authorization,
+    DiscordPingCtx, LarkPingCtx, OAuthError, PatomPendingCtx, ResumeCtx, SlackPingCtx, StartCtx,
+    handle_callback, start_authorization,
 };
 use crate::mcp::{
     CatalogUpsert, ClientSource, ConnectionStatus, CredentialPayload, DiscoveredTool,
@@ -85,6 +85,20 @@ pub(super) fn oauth_callback_router() -> Router<AppState> {
 /// Auth is the signed token, not a cookie.
 pub(super) fn slack_connect_router() -> Router<AppState> {
     Router::new().route("/slack/mcp/connect", get(handle_slack_connect))
+}
+
+/// Public Lark-connect router: `GET /lark/mcp/connect?token=...`. The Lark
+/// long-connection can't host an interactive card, so the agent posts a
+/// plain-text link here; the signed token is the auth.
+pub(super) fn lark_connect_router() -> Router<AppState> {
+    Router::new().route("/lark/mcp/connect", get(handle_lark_connect))
+}
+
+/// Public Discord-connect router: `GET /discord/mcp/connect?token=...`. The
+/// Discord poster sends plain messages, so the agent posts a plain-text link
+/// here; the signed token is the auth.
+pub(super) fn discord_connect_router() -> Router<AppState> {
+    Router::new().route("/discord/mcp/connect", get(handle_discord_connect))
 }
 
 /// Wire shape for the catalog listing. Mirrors [`crate::mcp::McpCatalogEntry`]
@@ -1290,6 +1304,8 @@ async fn start_oauth(
         redirect_to: body.redirect_to.clone(),
         resume_ctx,
         slack_ctx: None,
+        lark_ctx: None,
+        discord_ctx: None,
         expires_at,
     });
 
@@ -1553,6 +1569,8 @@ async fn callback_flow(
     tokio::join!(
         do_auto_continue(state, &pending, state_val, &display_name),
         do_slack_ping(state, &pending, &display_name),
+        do_lark_ping(state, &pending, &display_name),
+        do_discord_ping(state, &pending, &display_name),
     );
     Ok(pending.redirect_to)
 }
@@ -1705,6 +1723,110 @@ async fn do_slack_ping(state: &AppState, pending: &PatomPendingCtx, display_name
         .await
     {
         tracing::warn!(error = ?e, event = "mcp.oauth.callback.slack_ping_post_failed");
+    }
+}
+
+/// Post the `✓ Connected — <Provider>` follow-up into the originating Lark
+/// chat. Best effort — a Lark error never blocks the credential write or the
+/// universal auto-continue. Mirrors [`do_slack_ping`].
+async fn do_lark_ping(state: &AppState, pending: &PatomPendingCtx, display_name: &str) {
+    let Some(ctx) = pending.lark_ctx.as_ref() else {
+        return;
+    };
+    let Some(lark) = state.lark.as_ref() else {
+        tracing::warn!(event = "mcp.oauth.callback.lark_ping_without_state");
+        return;
+    };
+    let app_id = match crate::lark::types::LarkAppId::try_from(ctx.app_id.as_str()) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(error = %e, event = "mcp.oauth.callback.bad_lark_app_id");
+            return;
+        }
+    };
+    let chat_id = match crate::lark::types::LarkChatId::try_from(ctx.chat_id.as_str()) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, event = "mcp.oauth.callback.bad_lark_chat_id");
+            return;
+        }
+    };
+    // A bad stored reply anchor just drops the threading, not the ping.
+    let reply_to = ctx.reply_to.as_deref().and_then(|r| {
+        crate::lark::types::LarkMessageId::try_from(r)
+            .inspect_err(|e| {
+                tracing::warn!(error = %e, event = "mcp.oauth.callback.bad_lark_reply_to");
+            })
+            .ok()
+    });
+    let token = match lark.token_provider.token(&app_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = ?e, event = "mcp.oauth.callback.lark_ping_token_failed");
+            return;
+        }
+    };
+    if let Err(e) = lark
+        .poster
+        .post(crate::lark::poster::PostRequest {
+            token,
+            chat_id,
+            reply_to,
+            text: format!("✓ Connected — {display_name}"),
+        })
+        .await
+    {
+        tracing::warn!(error = ?e, event = "mcp.oauth.callback.lark_ping_post_failed");
+    }
+}
+
+/// Post the `✓ Connected — <Provider>` follow-up into the originating Discord
+/// channel. Best effort. The poster resolves the bot token from the
+/// `application_id` internally. Mirrors [`do_slack_ping`] / [`do_lark_ping`].
+async fn do_discord_ping(state: &AppState, pending: &PatomPendingCtx, display_name: &str) {
+    let Some(ctx) = pending.discord_ctx.as_ref() else {
+        return;
+    };
+    let Some(discord) = state.discord.as_ref() else {
+        tracing::warn!(event = "mcp.oauth.callback.discord_ping_without_state");
+        return;
+    };
+    let application_id =
+        match crate::discord::types::ApplicationId::try_from(ctx.application_id.as_str()) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(error = %e, event = "mcp.oauth.callback.bad_discord_application_id");
+                return;
+            }
+        };
+    let container_id = match crate::discord::types::ContainerId::try_from(ctx.container_id.as_str())
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, event = "mcp.oauth.callback.bad_discord_container_id");
+            return;
+        }
+    };
+    // A bad stored reply anchor just drops the threading, not the ping.
+    let reply_to = ctx.reply_to.as_deref().and_then(|r| {
+        crate::discord::types::DiscordMessageId::try_from(r)
+            .inspect_err(|e| {
+                tracing::warn!(error = %e, event = "mcp.oauth.callback.bad_discord_reply_to");
+            })
+            .ok()
+    });
+    if let Err(e) = discord
+        .poster
+        .post(crate::discord::poster::PostRequest {
+            application_id,
+            container_id,
+            reply_to,
+            content: format!("✓ Connected — {display_name}"),
+            allowed_mentions: crate::discord::poster::AllowedMentions::none(),
+        })
+        .await
+    {
+        tracing::warn!(error = ?e, event = "mcp.oauth.callback.discord_ping_post_failed");
     }
 }
 
@@ -1976,10 +2098,10 @@ struct SlackConnectQuery {
     token: Option<String>,
 }
 
-/// Render a minimal HTML error page. The Connect button lives in a
-/// Slack thread; the browser tab is the only feedback channel back to
-/// the user — never JSON.
-fn slack_connect_error_html(reason: &str) -> axum::response::Response {
+/// Render a minimal HTML error page. The connect link lives in a chat
+/// thread (Slack / Lark / Discord); the browser tab is the only feedback
+/// channel back to the user — never JSON.
+fn connect_error_html(reason: &str) -> axum::response::Response {
     use axum::response::IntoResponse as _;
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Couldn't start connection</title></head>\
@@ -1987,7 +2109,7 @@ fn slack_connect_error_html(reason: &str) -> axum::response::Response {
                        max-width: 32rem; margin: 4rem auto; line-height: 1.5; padding: 0 1rem;\">\
          <h1>Couldn't start connection</h1>\
          <p>{reason}</p>\
-         <p>Return to Slack and try the Connect button again from a fresh agent reply.</p>\
+         <p>Return to your chat and try the connect link again from a fresh agent reply.</p>\
          </body></html>",
         reason = ammonia_escape(reason),
     );
@@ -2023,7 +2145,7 @@ async fn handle_slack_connect(
             use axum::response::IntoResponse as _;
             Redirect::to(&authorize_url).into_response()
         }
-        Err(reason) => slack_connect_error_html(reason),
+        Err(reason) => connect_error_html(reason),
     }
 }
 
@@ -2097,9 +2219,8 @@ async fn resolve_slack_connect_identity(
     }
 }
 
-/// Slack-flow start: same shape as the web-flow's `start_oauth`, but
-/// the patom-side context carries Slack thread metadata so the
-/// post-success ping fires after the callback.
+/// Slack-flow start: assemble the patom-side pending context (Slack ping +
+/// resume) and delegate to the shared chat-connect OAuth start.
 async fn slack_connect_build_oauth_start(
     state: &AppState,
     claims: &crate::slack::connect_link::SlackConnectClaims,
@@ -2107,18 +2228,60 @@ async fn slack_connect_build_oauth_start(
     user_id: crate::auth::UserId,
     org_id: crate::auth::OrgId,
 ) -> Result<String, &'static str> {
+    connect_start_oauth(
+        state,
+        PatomPendingCtx {
+            server_id,
+            user_id,
+            org_id,
+            redirect_to: None,
+            resume_ctx: Some(ResumeCtx {
+                thread_id: claims.thread_id,
+                agent_id: claims.agent_id,
+            }),
+            slack_ctx: Some(SlackPingCtx {
+                team_id: claims.team_id.as_str().to_owned(),
+                channel_id: claims.channel_id.as_str().to_owned(),
+                thread_ts: claims.thread_ts.as_str().to_owned(),
+            }),
+            lark_ctx: None,
+            discord_ctx: None,
+            expires_at: connect_pending_expiry(state),
+        },
+    )
+    .await
+}
+
+/// The pending-row expiry stamp from the OAuth pending TTL.
+fn connect_pending_expiry(state: &AppState) -> chrono::DateTime<chrono::Utc> {
+    state.clock.now_utc()
+        + chrono::Duration::from_std(OAUTH_PENDING_TTL)
+            .expect("invariant: OAUTH_PENDING_TTL fits in chrono::Duration")
+}
+
+/// Shared tail of every chat-platform connect flow: resolve the catalog +
+/// server for `pending.server_id`, persist the pending row carrying the
+/// supplied resume + ping context, and return the vendor authorize URL the
+/// caller 302s the browser to. Slack, Lark, and Discord differ only in the
+/// `PatomPendingCtx` they build.
+async fn connect_start_oauth(
+    state: &AppState,
+    pending: PatomPendingCtx,
+) -> Result<String, &'static str> {
+    let server_id = pending.server_id;
+    let org_id = pending.org_id;
     let catalog_entry = catalog_entry_for_server(state, org_id, server_id)
         .await
         .map_err(|e| {
-            tracing::warn!(error = ?e, event = "slack.connect.catalog_lookup_failed");
+            tracing::warn!(error = ?e, event = "chat.connect.catalog_lookup_failed");
             "Internal error resolving the connector's catalog entry."
         })?
         .ok_or_else(|| {
-            tracing::warn!(event = "slack.connect.catalog_entry_missing");
+            tracing::warn!(event = "chat.connect.catalog_entry_missing");
             "Connector's catalog entry no longer exists."
         })?;
     let server = state.mcp_store.read(server_id, org_id).await.map_err(|e| {
-        tracing::warn!(error = ?e, event = "slack.connect.server_lookup_failed");
+        tracing::warn!(error = ?e, event = "chat.connect.server_lookup_failed");
         "Couldn't load the connector's server row."
     })?;
     let server_url = match &server.config {
@@ -2131,33 +2294,15 @@ async fn slack_connect_build_oauth_start(
         .map(|s| s.split_whitespace().map(str::to_owned).collect())
         .unwrap_or_default();
     let extras_owned = authorize_extras_owned(catalog_entry.authorize_extra_params.as_ref());
-    let expires_at = state.clock.now_utc()
-        + chrono::Duration::from_std(OAUTH_PENDING_TTL)
-            .expect("invariant: OAUTH_PENDING_TTL fits in chrono::Duration");
-
-    let writer = state.mcp_oauth_pending.clone().writer(PatomPendingCtx {
-        server_id,
-        user_id,
-        org_id,
-        redirect_to: None,
-        resume_ctx: Some(ResumeCtx {
-            thread_id: claims.thread_id,
-            agent_id: claims.agent_id,
-        }),
-        slack_ctx: Some(SlackPingCtx {
-            team_id: claims.team_id.as_str().to_owned(),
-            channel_id: claims.channel_id.as_str().to_owned(),
-            thread_ts: claims.thread_ts.as_str().to_owned(),
-        }),
-        expires_at,
-    });
-
+    let writer = state.mcp_oauth_pending.clone().writer(pending);
     let http = reqwest::Client::builder().build().map_err(|e| {
-        tracing::error!(event = "slack.connect.http_build_failed", error = %e);
+        tracing::error!(event = "chat.connect.http_build_failed", error = %e);
         "Internal error creating the HTTP client."
     })?;
-
-    start_authorization(StartCtx {
+    // Boxed: `start_authorization` is a large future (rmcp's OAuth machinery);
+    // boxing it here keeps this fn — and the three connect handlers awaiting it
+    // — under clippy's `large_futures` threshold.
+    Box::pin(start_authorization(StartCtx {
         catalog: &catalog_entry,
         server_url,
         http,
@@ -2165,19 +2310,199 @@ async fn slack_connect_build_oauth_start(
         authorize_extras: extras_owned,
         redirect_uri,
         platform_clients: &state.platform_oauth_clients,
-        // Slack-connect wires pre-seeded catalog connectors (Gmail, …),
-        // never user-supplied custom URLs.
+        // Chat-connect wires pre-seeded catalog connectors, never custom URLs.
         user_oauth_client: None,
         credentials: state.mcp_credentials.clone(),
         state_store: writer,
         server_id,
         org_id,
-    })
+    }))
     .await
     .map_err(|e| {
-        tracing::warn!(event = "slack.connect.start_authorization_failed", error = ?e);
+        tracing::warn!(event = "chat.connect.start_authorization_failed", error = ?e);
         "Couldn't start the OAuth flow."
     })
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Lark-connect: GET /lark/mcp/connect?token=...
+// ────────────────────────────────────────────────────────────────────────
+//
+// Public no-cookie route. The agent's plain-text connect message points
+// here with a `lark::connect_link`-signed token. We verify the token, use
+// the resolved `(org, user)` it carries directly (Lark shadow-mints the
+// sender at inbound, so there is no link table to re-resolve), idempotently
+// install the catalog entry, persist the pending row (with `resume_ctx` +
+// `lark_ctx`), and 302 to the vendor's consent screen.
+
+#[derive(Debug, Deserialize)]
+struct LarkConnectQuery {
+    #[serde(default)]
+    token: Option<String>,
+}
+
+#[tracing::instrument(name = "lark.connect.start", skip_all)]
+async fn handle_lark_connect(
+    State(state): State<AppState>,
+    Query(q): Query<LarkConnectQuery>,
+) -> axum::response::Response {
+    match handle_lark_connect_inner(&state, q.token.as_deref()).await {
+        Ok(authorize_url) => {
+            use axum::response::IntoResponse as _;
+            Redirect::to(&authorize_url).into_response()
+        }
+        Err(reason) => connect_error_html(reason),
+    }
+}
+
+async fn handle_lark_connect_inner(
+    state: &AppState,
+    token: Option<&str>,
+) -> Result<String, &'static str> {
+    let lark = state
+        .lark
+        .as_ref()
+        .ok_or("Lark integration is not enabled on this Patom deployment.")?;
+    let token = token.ok_or("Missing token.")?;
+
+    let now = lark.clock.now_unix_secs();
+    let claims = crate::lark::connect_link::verify_connect(
+        lark.connect_secret.expose().as_bytes(),
+        token,
+        now,
+    )
+    .ok_or_else(|| {
+        tracing::warn!(event = "lark.connect.bad_token");
+        "This Connect link is expired or invalid. Ask the agent to send the request again."
+    })?;
+
+    let server = install_from_catalog(state, claims.org_id, claims.user_id, &claims.catalog_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = ?e, event = "lark.connect.install_failed");
+            "Couldn't install this connector. The catalog entry may be missing."
+        })?;
+
+    let authorize_url = connect_start_oauth(
+        state,
+        PatomPendingCtx {
+            server_id: server.id,
+            user_id: claims.user_id,
+            org_id: claims.org_id,
+            redirect_to: None,
+            resume_ctx: Some(ResumeCtx {
+                thread_id: claims.thread_id,
+                agent_id: claims.agent_id,
+            }),
+            slack_ctx: None,
+            lark_ctx: Some(LarkPingCtx {
+                app_id: claims.app_id.as_str().to_owned(),
+                chat_id: claims.chat_id.as_str().to_owned(),
+                reply_to: claims.reply_to.as_ref().map(|m| m.as_str().to_owned()),
+            }),
+            discord_ctx: None,
+            expires_at: connect_pending_expiry(state),
+        },
+    )
+    .await?;
+
+    tracing::info!(
+        patom.mcp.catalog_id = %claims.catalog_id,
+        patom.org.id = %claims.org_id.as_uuid(),
+        patom.user.id = %claims.user_id.as_uuid(),
+        event = "lark.connect.redirect",
+    );
+    Ok(authorize_url)
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Discord-connect: GET /discord/mcp/connect?token=...
+// ────────────────────────────────────────────────────────────────────────
+//
+// Mirror of the Lark connect handler. The agent's plain-text connect message
+// points here with a `discord::connect_link`-signed token carrying the
+// resolved `(org, user)`; we install the catalog entry, persist the pending
+// row (with `resume_ctx` + `discord_ctx`), and 302 to the vendor consent
+// screen.
+
+#[derive(Debug, Deserialize)]
+struct DiscordConnectQuery {
+    #[serde(default)]
+    token: Option<String>,
+}
+
+#[tracing::instrument(name = "discord.connect.start", skip_all)]
+async fn handle_discord_connect(
+    State(state): State<AppState>,
+    Query(q): Query<DiscordConnectQuery>,
+) -> axum::response::Response {
+    match handle_discord_connect_inner(&state, q.token.as_deref()).await {
+        Ok(authorize_url) => {
+            use axum::response::IntoResponse as _;
+            Redirect::to(&authorize_url).into_response()
+        }
+        Err(reason) => connect_error_html(reason),
+    }
+}
+
+async fn handle_discord_connect_inner(
+    state: &AppState,
+    token: Option<&str>,
+) -> Result<String, &'static str> {
+    let discord = state
+        .discord
+        .as_ref()
+        .ok_or("Discord integration is not enabled on this Patom deployment.")?;
+    let token = token.ok_or("Missing token.")?;
+
+    let now = discord.clock.now_unix_secs();
+    let claims = crate::discord::connect_link::verify_connect(
+        discord.connect_secret.expose().as_bytes(),
+        token,
+        now,
+    )
+    .ok_or_else(|| {
+        tracing::warn!(event = "discord.connect.bad_token");
+        "This Connect link is expired or invalid. Ask the agent to send the request again."
+    })?;
+
+    let server = install_from_catalog(state, claims.org_id, claims.user_id, &claims.catalog_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = ?e, event = "discord.connect.install_failed");
+            "Couldn't install this connector. The catalog entry may be missing."
+        })?;
+
+    let authorize_url = connect_start_oauth(
+        state,
+        PatomPendingCtx {
+            server_id: server.id,
+            user_id: claims.user_id,
+            org_id: claims.org_id,
+            redirect_to: None,
+            resume_ctx: Some(ResumeCtx {
+                thread_id: claims.thread_id,
+                agent_id: claims.agent_id,
+            }),
+            slack_ctx: None,
+            lark_ctx: None,
+            discord_ctx: Some(DiscordPingCtx {
+                application_id: claims.application_id.as_str().to_owned(),
+                container_id: claims.container_id.as_str().to_owned(),
+                reply_to: claims.reply_to.as_ref().map(|m| m.as_str().to_owned()),
+            }),
+            expires_at: connect_pending_expiry(state),
+        },
+    )
+    .await?;
+
+    tracing::info!(
+        patom.mcp.catalog_id = %claims.catalog_id,
+        patom.org.id = %claims.org_id.as_uuid(),
+        patom.user.id = %claims.user_id.as_uuid(),
+        event = "discord.connect.redirect",
+    );
+    Ok(authorize_url)
 }
 
 fn map_oauth_err(err: OAuthError) -> HttpError {

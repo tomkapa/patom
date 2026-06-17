@@ -20,6 +20,7 @@ mod scoped;
 mod store;
 mod tool;
 mod types;
+pub(crate) mod wire_connect;
 
 pub use catalog::{
     CatalogUpsert, ClientSource, McpAuthKind, McpCatalogDescription, McpCatalogDisplayName,
