@@ -199,6 +199,35 @@ const orgState = {
 // `/me`.
 let orgLess = false;
 
+// Role override for the active org, toggled by the `?role=` hook on `/me`
+// (owner|admin|member, or `reset`). Lets the Integrations role-gate
+// (read-only-for-members) be exercised in the preview without rebuilding
+// the seed. `null` = use the default seed role (owner).
+let roleOverride: "owner" | "admin" | "member" | null = null;
+
+// ─── Integrations app stores (per-agent, org-scoped) ─────────────────
+// Mirrors crates/patom-core/src/{lark,discord}/admin_routes.rs AppView.
+// Seeded so the Integrations tab shows BOTH design states on first load:
+// Lark connected for Atlas, Discord not yet connected.
+type LarkAppRow = {
+  app_id: string;
+  agent_id: string;
+  tenant_key: string | null;
+};
+type DiscordAppRow = {
+  application_id: string;
+  agent_id: string;
+  bot_user_id: string | null;
+};
+const larkApps: LarkAppRow[] = [
+  {
+    app_id: "cli_a8f3e21c9b0d4400",
+    agent_id: "aaaaaaaa-0000-0000-0000-000000000001",
+    tenant_key: "2ca1d211f64f5750",
+  },
+];
+const discordApps: DiscordAppRow[] = [];
+
 // Mutable spend-budget state so GET/PUT /me/org/billing round-trips. Seeded
 // over the 80% warn threshold so the progress bar + warn chip are visible.
 const MONTH_START = (() => {
@@ -1360,7 +1389,9 @@ const server = Bun.serve({
       path.startsWith("/threads") ||
       path.startsWith("/prompts") ||
       path.startsWith("/mcp-servers") ||
-      path.startsWith("/uploads");
+      path.startsWith("/uploads") ||
+      path.startsWith("/lark/") ||
+      path.startsWith("/discord/");
     if (
       orgLess &&
       isOrgScopedPath &&
@@ -1389,13 +1420,83 @@ const server = Bun.serve({
       const orgless = url.searchParams.get("orgless");
       if (orgless === "1") orgLess = true;
       else if (orgless === "0") orgLess = false;
+      // `?role=owner|admin|member` overrides the active-org role so the
+      // Integrations read-only-for-members gate can be exercised; `reset`
+      // restores the seed default.
+      const roleParam = url.searchParams.get("role");
+      if (
+        roleParam === "owner" ||
+        roleParam === "admin" ||
+        roleParam === "member"
+      ) {
+        roleOverride = roleParam;
+      } else if (roleParam === "reset") {
+        roleOverride = null;
+      }
       if (orgLess) {
         return json({ ...me, orgs: [], active_org_id: null, role: null });
       }
-      return json(me);
+      return json({ ...me, role: roleOverride ?? me.role });
     }
 
     if (path === "/models" && method === "GET") return json(MODEL_CATALOG);
+
+    // ─── Integrations — Lark / Discord apps (admin-only, org-scoped) ───
+    // Mirrors crates/patom-core/src/{lark,discord}/admin_routes.rs: every
+    // verb requires owner/admin, so a member role 403s here too.
+    {
+      const effectiveRole = roleOverride ?? me.role;
+      const adminOnly = effectiveRole === "owner" || effectiveRole === "admin";
+      if (path === "/lark/apps" || path.startsWith("/lark/apps/")) {
+        if (!adminOnly) return empty(403);
+        if (path === "/lark/apps" && method === "GET") return json(larkApps);
+        if (path === "/lark/apps" && method === "POST") {
+          const b = (await req.json().catch(() => ({}))) as Partial<LarkAppRow> & {
+            app_secret?: string;
+          };
+          if (!b.app_id || !b.app_secret || !b.agent_id) return empty(400);
+          larkApps.push({
+            app_id: b.app_id,
+            agent_id: b.agent_id,
+            tenant_key: null,
+          });
+          return empty(201);
+        }
+        const m = path.match(/^\/lark\/apps\/([^/]+)$/);
+        if (m && method === "DELETE") {
+          const appId = decodeURIComponent(m[1]);
+          const i = larkApps.findIndex((a) => a.app_id === appId);
+          if (i === -1) return empty(404);
+          larkApps.splice(i, 1);
+          return empty(204);
+        }
+      }
+      if (path === "/discord/apps" || path.startsWith("/discord/apps/")) {
+        if (!adminOnly) return empty(403);
+        if (path === "/discord/apps" && method === "GET")
+          return json(discordApps);
+        if (path === "/discord/apps" && method === "POST") {
+          const b = (await req.json().catch(() => ({}))) as Partial<DiscordAppRow> & {
+            bot_token?: string;
+          };
+          if (!b.application_id || !b.bot_token || !b.agent_id) return empty(400);
+          discordApps.push({
+            application_id: b.application_id,
+            agent_id: b.agent_id,
+            bot_user_id: null,
+          });
+          return empty(201);
+        }
+        const m = path.match(/^\/discord\/apps\/([^/]+)$/);
+        if (m && method === "DELETE") {
+          const appId = decodeURIComponent(m[1]);
+          const i = discordApps.findIndex((a) => a.application_id === appId);
+          if (i === -1) return empty(404);
+          discordApps.splice(i, 1);
+          return empty(204);
+        }
+      }
+    }
 
     // ─── Channels ────────────────────────────────────────────────────
     if (path === "/channels" && method === "GET") {

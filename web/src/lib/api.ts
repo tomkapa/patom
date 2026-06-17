@@ -9,7 +9,9 @@ import type {
   CreateMcpServerRequest,
   CreateMemoryNoteRequest,
   CredentialInput,
+  DiscordApp,
   IssuedInvite,
+  LarkApp,
   Language,
   SlackInstallResponse,
   SlackWorkspaceSummary,
@@ -108,8 +110,12 @@ export async function request<T>(
     throw new ApiError(res.status, body);
   }
 
+  // Empty success bodies (204, or a 201 "created" with no payload — e.g.
+  // the Lark/Discord connect routes) would crash `res.json()` with
+  // "Unexpected end of JSON input", so parse from text and tolerate empty.
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  const text = await res.text();
+  return (text.length > 0 ? JSON.parse(text) : undefined) as T;
 }
 
 export type SwitchOrgResponse = { active_org_id: string; role: Role };
@@ -277,6 +283,48 @@ export const api = {
    *  up identities + thread bindings server-side. */
   slackDisconnect: (teamId: string) =>
     request<void>(`/slack/workspaces/${encodeURIComponent(teamId)}`, {
+      method: "DELETE",
+    }),
+
+  // ─── Integrations — Lark (crates/patom-core/src/lark/admin_routes.rs) ──
+  /** List Lark apps registered against the active org. RLS scopes the
+   *  result to the caller's tenant; the agent Integrations tab filters
+   *  these down to the agent it is showing. Owner/admin only. */
+  larkApps: () => request<LarkApp[]>("/lark/apps"),
+  /** Register a Lark bot for an agent. The secret is encrypted at rest and
+   *  the bot is hot-connected server-side — no restart needed. */
+  larkConnect: (body: {
+    app_id: string;
+    app_secret: string;
+    agent_id: string;
+  }) =>
+    request<void>("/lark/apps", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  /** Remove a Lark app by `app_id`; the live WS connection is dropped. */
+  larkDisconnect: (appId: string) =>
+    request<void>(`/lark/apps/${encodeURIComponent(appId)}`, {
+      method: "DELETE",
+    }),
+
+  // ─── Integrations — Discord (crates/patom-core/src/discord/admin_routes.rs)
+  /** List Discord apps registered against the active org. Owner/admin only. */
+  discordApps: () => request<DiscordApp[]>("/discord/apps"),
+  /** Register a Discord bot for an agent. The token is encrypted at rest
+   *  and the bot is hot-connected server-side. */
+  discordConnect: (body: {
+    application_id: string;
+    bot_token: string;
+    agent_id: string;
+  }) =>
+    request<void>("/discord/apps", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  /** Remove a Discord app by `application_id`; the live connection drops. */
+  discordDisconnect: (applicationId: string) =>
+    request<void>(`/discord/apps/${encodeURIComponent(applicationId)}`, {
       method: "DELETE",
     }),
 

@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AgentGeneral } from "./pages/AgentGeneral";
+import { AgentIntegrations } from "./pages/AgentIntegrations";
 import { AgentLogs } from "./pages/AgentLogs";
 import { AgentMemory } from "./pages/AgentMemory";
 import { AgentTools } from "./pages/AgentTools";
@@ -116,6 +117,14 @@ export function App() {
         element={
           <Protected>
             <AgentTools />
+          </Protected>
+        }
+      />
+      <Route
+        path="/agents/:id/integrations"
+        element={
+          <Protected>
+            <AgentIntegrations />
           </Protected>
         }
       />
