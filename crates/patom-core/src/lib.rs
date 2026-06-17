@@ -20,6 +20,7 @@ pub mod crypto;
 pub mod discord;
 pub mod entitlements;
 pub mod error;
+pub(crate) mod hex;
 pub mod hook;
 pub mod http;
 pub mod lark;

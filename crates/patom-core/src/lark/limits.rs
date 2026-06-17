@@ -117,3 +117,28 @@ pub const MAX_LARK_STREAM_PUMPS: usize = 256;
 /// Idle TTL for a per-thread pump. If no chunks arrive in this window the pump
 /// exits; a future event in the same Lark thread re-attaches fresh.
 pub const LARK_PUMP_IDLE_TTL: Duration = Duration::from_mins(30);
+
+/// TTL of an MCP connect-link token (seconds).
+///
+/// The signed `GET /lark/mcp/connect?token=…` link an agent posts on a
+/// `WireMcpRequest` expires this many seconds after minting — long enough to
+/// click within the conversation, short enough that a leaked URL goes stale
+/// fast. Mirrors the Slack connect link's 10-minute window.
+pub const LARK_CONNECT_LINK_TTL_SECS: i64 = 60 * 10;
+
+/// Cap on the `reason` paragraph rendered into the Lark connect message.
+/// Truncated with an ellipsis past this many characters so a verbose agent
+/// can't post a wall of text.
+pub const LARK_CONNECTION_REASON_MAX_CHARS: usize = 2_000;
+
+/// Cap on MCP connect messages buffered per pump while waiting to flush them
+/// after the agent's narrative text. Mirrors Slack's `MAX_DEFERRED_WIRE_CARDS`.
+pub const MAX_LARK_DEFERRED_WIRE_LINKS: usize = 8;
+
+/// Wall-clock bound on each best-effort "✓ Connected" ping I/O (§5).
+///
+/// Fired from the MCP OAuth callback (token mint + post). The poster /
+/// token-provider already bound a single HTTP attempt, but retries could
+/// otherwise stack up and hold the callback's `tokio::join!` open after the
+/// credentials have already landed.
+pub const LARK_PING_TIMEOUT: Duration = Duration::from_secs(15);

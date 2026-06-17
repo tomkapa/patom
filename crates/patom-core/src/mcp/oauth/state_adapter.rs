@@ -61,6 +61,32 @@ pub struct SlackPingCtx {
     pub thread_ts: String,
 }
 
+/// Lark-channel context for the "✓ Connected" follow-up ping.
+///
+/// The Lark peer of [`SlackPingCtx`]. Posted into the originating chat
+/// after the callback succeeds — `app_id` selects the bot whose
+/// `tenant_access_token` posts, `chat_id` is the target chat, and
+/// `reply_to` (optional) threads the ping under the triggering message.
+/// Lark-only; never populated for the web or Slack flows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LarkPingCtx {
+    pub app_id: String,
+    pub chat_id: String,
+    pub reply_to: Option<String>,
+}
+
+/// Discord-channel context for the "✓ Connected" follow-up ping.
+///
+/// The Discord peer of [`SlackPingCtx`]. `application_id` selects the
+/// posting bot, `container_id` is the channel/thread, and `reply_to`
+/// (optional) threads the ping under the triggering message. Discord-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscordPingCtx {
+    pub application_id: String,
+    pub container_id: String,
+    pub reply_to: Option<String>,
+}
+
 /// Patom-side context attached to a pending OAuth flow.
 ///
 /// Owned by `PatomStateStore` (start path) or read out of the pending
@@ -75,6 +101,8 @@ pub struct PatomPendingCtx {
     pub redirect_to: Option<String>,
     pub resume_ctx: Option<ResumeCtx>,
     pub slack_ctx: Option<SlackPingCtx>,
+    pub lark_ctx: Option<LarkPingCtx>,
+    pub discord_ctx: Option<DiscordPingCtx>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -131,7 +159,9 @@ impl PgMcpOAuthPendingStore {
                 Ok(sqlx::query_as::<_, PendingCtxRow>(
                     "SELECT server_id, user_id, org_id, redirect_to, expires_at, \
                             thread_id, agent_id, \
-                            slack_team_id, slack_channel_id, slack_thread_ts \
+                            slack_team_id, slack_channel_id, slack_thread_ts, \
+                            lark_app_id, lark_chat_id, lark_reply_to, \
+                            discord_application_id, discord_container_id, discord_reply_to \
                        FROM mcp_oauth_pending \
                       WHERE state = $1 AND expires_at > $2",
                 )
@@ -196,8 +226,11 @@ impl StateStore for PatomStateStore {
                 "INSERT INTO mcp_oauth_pending \
                  (state, server_id, user_id, org_id, pkce_verifier, redirect_to, \
                   created_at, expires_at, thread_id, agent_id, \
-                  slack_team_id, slack_channel_id, slack_thread_ts) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                  slack_team_id, slack_channel_id, slack_thread_ts, \
+                  lark_app_id, lark_chat_id, lark_reply_to, \
+                  discord_application_id, discord_container_id, discord_reply_to) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, \
+                         $14, $15, $16, $17, $18, $19)",
             )
             .bind(&csrf)
             .bind(ctx.server_id)
@@ -212,6 +245,12 @@ impl StateStore for PatomStateStore {
             .bind(ctx.slack_ctx.as_ref().map(|s| s.team_id.as_str()))
             .bind(ctx.slack_ctx.as_ref().map(|s| s.channel_id.as_str()))
             .bind(ctx.slack_ctx.as_ref().map(|s| s.thread_ts.as_str()))
+            .bind(ctx.lark_ctx.as_ref().map(|l| l.app_id.as_str()))
+            .bind(ctx.lark_ctx.as_ref().map(|l| l.chat_id.as_str()))
+            .bind(ctx.lark_ctx.as_ref().and_then(|l| l.reply_to.as_deref()))
+            .bind(ctx.discord_ctx.as_ref().map(|d| d.application_id.as_str()))
+            .bind(ctx.discord_ctx.as_ref().map(|d| d.container_id.as_str()))
+            .bind(ctx.discord_ctx.as_ref().and_then(|d| d.reply_to.as_deref()))
             .execute(&mut **tx)
             .await?;
             Ok(())
@@ -279,6 +318,12 @@ struct PendingCtxRow {
     slack_team_id: Option<String>,
     slack_channel_id: Option<String>,
     slack_thread_ts: Option<String>,
+    lark_app_id: Option<String>,
+    lark_chat_id: Option<String>,
+    lark_reply_to: Option<String>,
+    discord_application_id: Option<String>,
+    discord_container_id: Option<String>,
+    discord_reply_to: Option<String>,
 }
 
 impl PendingCtxRow {
@@ -325,6 +370,12 @@ impl PendingCtxRow {
                 ));
             }
         };
+        let lark_ctx = decode_lark_ctx(self.lark_app_id, self.lark_chat_id, self.lark_reply_to)?;
+        let discord_ctx = decode_discord_ctx(
+            self.discord_application_id,
+            self.discord_container_id,
+            self.discord_reply_to,
+        )?;
         Ok(PatomPendingCtx {
             server_id: self.server_id,
             user_id: self.user_id,
@@ -332,12 +383,177 @@ impl PendingCtxRow {
             redirect_to: self.redirect_to,
             resume_ctx,
             slack_ctx,
+            lark_ctx,
+            discord_ctx,
             expires_at: self.expires_at,
         })
+    }
+}
+
+/// Decode the Lark ping-context column group into [`LarkPingCtx`], enforcing
+/// the all-or-none invariant the DB CHECK guarantees. A reply anchor without
+/// its chat target is meaningless — defend the decode so a stray row (out-of-
+/// band INSERT / future CHECK regression) can't silently drop the `reply_to`.
+fn decode_lark_ctx(
+    app_id: Option<String>,
+    chat_id: Option<String>,
+    reply_to: Option<String>,
+) -> Result<Option<LarkPingCtx>, OAuthError> {
+    match (app_id, chat_id) {
+        (Some(app_id), Some(chat_id)) => Ok(Some(LarkPingCtx {
+            app_id,
+            chat_id,
+            reply_to,
+        })),
+        (None, None) if reply_to.is_none() => Ok(None),
+        _ => Err(OAuthError::Misconfigured(
+            "mcp_oauth_pending.lark_ctx partially populated; \
+             CHECK constraint violated"
+                .to_owned(),
+        )),
+    }
+}
+
+/// Decode the Discord ping-context column group into [`DiscordPingCtx`].
+/// Peer of [`decode_lark_ctx`].
+fn decode_discord_ctx(
+    application_id: Option<String>,
+    container_id: Option<String>,
+    reply_to: Option<String>,
+) -> Result<Option<DiscordPingCtx>, OAuthError> {
+    match (application_id, container_id) {
+        (Some(application_id), Some(container_id)) => Ok(Some(DiscordPingCtx {
+            application_id,
+            container_id,
+            reply_to,
+        })),
+        (None, None) if reply_to.is_none() => Ok(None),
+        _ => Err(OAuthError::Misconfigured(
+            "mcp_oauth_pending.discord_ctx partially populated; \
+             CHECK constraint violated"
+                .to_owned(),
+        )),
     }
 }
 
 #[derive(sqlx::FromRow)]
 struct PendingPkceRow {
     pkce_verifier: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `PendingCtxRow` with required columns set and every optional
+    /// context group left empty. Tests flip individual fields to exercise
+    /// the all-or-none decode.
+    fn base_row() -> PendingCtxRow {
+        PendingCtxRow {
+            server_id: McpServerId::new(),
+            user_id: UserId::new(),
+            org_id: OrgId::new(),
+            redirect_to: None,
+            expires_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            thread_id: None,
+            agent_id: None,
+            slack_team_id: None,
+            slack_channel_id: None,
+            slack_thread_ts: None,
+            lark_app_id: None,
+            lark_chat_id: None,
+            lark_reply_to: None,
+            discord_application_id: None,
+            discord_container_id: None,
+            discord_reply_to: None,
+        }
+    }
+
+    #[test]
+    fn lark_ctx_round_trips_with_reply_to() {
+        let row = PendingCtxRow {
+            lark_app_id: Some("cli_app".to_owned()),
+            lark_chat_id: Some("oc_chat".to_owned()),
+            lark_reply_to: Some("om_msg".to_owned()),
+            ..base_row()
+        };
+        let ctx = row.into_ctx().expect("decodes");
+        assert_eq!(
+            ctx.lark_ctx,
+            Some(LarkPingCtx {
+                app_id: "cli_app".to_owned(),
+                chat_id: "oc_chat".to_owned(),
+                reply_to: Some("om_msg".to_owned()),
+            })
+        );
+        assert!(ctx.discord_ctx.is_none());
+    }
+
+    #[test]
+    fn lark_ctx_round_trips_without_reply_to() {
+        let row = PendingCtxRow {
+            lark_app_id: Some("cli_app".to_owned()),
+            lark_chat_id: Some("oc_chat".to_owned()),
+            ..base_row()
+        };
+        let ctx = row.into_ctx().expect("decodes");
+        assert_eq!(
+            ctx.lark_ctx,
+            Some(LarkPingCtx {
+                app_id: "cli_app".to_owned(),
+                chat_id: "oc_chat".to_owned(),
+                reply_to: None,
+            })
+        );
+    }
+
+    #[test]
+    fn discord_ctx_round_trips() {
+        let row = PendingCtxRow {
+            discord_application_id: Some("123".to_owned()),
+            discord_container_id: Some("456".to_owned()),
+            discord_reply_to: Some("789".to_owned()),
+            ..base_row()
+        };
+        let ctx = row.into_ctx().expect("decodes");
+        assert_eq!(
+            ctx.discord_ctx,
+            Some(DiscordPingCtx {
+                application_id: "123".to_owned(),
+                container_id: "456".to_owned(),
+                reply_to: Some("789".to_owned()),
+            })
+        );
+        assert!(ctx.lark_ctx.is_none());
+    }
+
+    #[test]
+    fn half_populated_lark_ctx_is_misconfigured() {
+        let row = PendingCtxRow {
+            lark_app_id: Some("cli_app".to_owned()),
+            // chat_id missing — CHECK regression / out-of-band insert.
+            ..base_row()
+        };
+        assert!(matches!(row.into_ctx(), Err(OAuthError::Misconfigured(_))));
+    }
+
+    #[test]
+    fn half_populated_discord_ctx_is_misconfigured() {
+        let row = PendingCtxRow {
+            discord_container_id: Some("456".to_owned()),
+            // application_id missing.
+            ..base_row()
+        };
+        assert!(matches!(row.into_ctx(), Err(OAuthError::Misconfigured(_))));
+    }
+
+    #[test]
+    fn lark_reply_to_without_pair_is_misconfigured() {
+        // The DB CHECK forbids this, but defend the decode too.
+        let row = PendingCtxRow {
+            lark_reply_to: Some("om_msg".to_owned()),
+            ..base_row()
+        };
+        assert!(matches!(row.into_ctx(), Err(OAuthError::Misconfigured(_))));
+    }
 }

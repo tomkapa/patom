@@ -40,6 +40,7 @@ use patom::lark::types::{
 use patom::provider::{AssistantContent, ChatResponse, StopReason, ToolCall, ToolCallId};
 use patom::runtime::{PgThreadStream, SharedPromptQueue, SharedThreadStream};
 use patom::threads::PgThreadStore;
+use patom::types::SecretString;
 use patom::types::ToolName;
 use serde_json::json;
 
@@ -121,6 +122,10 @@ async fn build_rig(
             token_provider: token_provider.clone(),
             directory: directory.clone(),
             apps: apps.clone(),
+            connect_secret: SecretString::try_from("test-lark-connect-secret".to_owned())
+                .expect("non-empty"),
+            connect_url_base: Arc::from("https://patom.example"),
+            clock: clock.clone(),
         },
         CancellationToken::new(),
     );

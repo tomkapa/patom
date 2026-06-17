@@ -1008,13 +1008,17 @@ pub async fn build_server(
                 cfg.api_base.clone(),
             ));
 
+            let connect_secret = derive_chat_connect_secret(&settings.auth.master_kek);
             let pump_handle = stream_pump::spawn(
                 stream_pump::PumpDeps {
                     thread_stream: thread_stream.clone(),
-                    poster,
+                    poster: poster.clone(),
                     token_provider: token_provider.clone(),
                     directory: directory.clone(),
                     apps: apps.clone(),
+                    connect_secret: connect_secret.clone(),
+                    connect_url_base: Arc::from(settings.auth.oauth_redirect_base.as_str()),
+                    clock: pieces.clock.clone(),
                 },
                 cancel.clone(),
             );
@@ -1057,7 +1061,7 @@ pub async fn build_server(
                 ws_manager::WsManagerDeps {
                     apps: apps.clone(),
                     secret_source,
-                    token_provider,
+                    token_provider: token_provider.clone(),
                     http: lark_http,
                     api_base: cfg.api_base.clone(),
                     bridge_tx,
@@ -1069,6 +1073,10 @@ pub async fn build_server(
                 apps,
                 stream_pump: pump_handle,
                 ws_manager,
+                connect_secret,
+                clock: pieces.clock.clone(),
+                poster,
+                token_provider,
             };
             (Some(state), Some(bridge_handle))
         }
@@ -1142,12 +1150,16 @@ pub async fn build_server(
             let attachment_fetcher: SharedAttachmentFetcher =
                 Arc::new(HttpAttachmentFetcher::new(discord_http.clone()));
 
+            let connect_secret = derive_chat_connect_secret(&settings.auth.master_kek);
             let pump_handle: SharedDiscordPumpHandle = stream_pump::spawn(
                 stream_pump::PumpDeps {
                     thread_stream: thread_stream.clone(),
                     poster: poster.clone(),
                     directory: directory.clone(),
                     apps: apps.clone(),
+                    connect_secret: connect_secret.clone(),
+                    connect_url_base: Arc::from(settings.auth.oauth_redirect_base.as_str()),
+                    clock: pieces.clock.clone(),
                 },
                 cancel.clone(),
             );
@@ -1162,7 +1174,7 @@ pub async fn build_server(
                     apps.clone(),
                     directory.clone(),
                     discord_dms,
-                    poster,
+                    poster.clone(),
                     pieces.threads.clone(),
                     pump_handle.clone(),
                 ),
@@ -1202,6 +1214,9 @@ pub async fn build_server(
                 apps,
                 stream_pump: pump_handle,
                 ws_manager,
+                connect_secret,
+                clock: pieces.clock.clone(),
+                poster,
             };
             (Some(state), Some(bridge_handle))
         }
@@ -1483,6 +1498,25 @@ async fn connect_pool(settings: &Settings) -> Result<PgPool, AppError> {
         .connect(settings.database_url.expose())
         .await
         .map_err(|source| AppError::DbConnect { source })
+}
+
+/// Derive the chat-platform MCP connect-link signing key from the deployment
+/// `master_kek` via HKDF-SHA256, domain-separated by a stable `info` label so
+/// it never collides with other KEK-derived material. Lark and Discord sign
+/// and verify their `GET /{platform}/mcp/connect` tokens against this key, so
+/// no extra deployment secret is required (the Slack adapter keeps its own
+/// app `signing_secret`). Returned hex-encoded — a stable 64-char HMAC key.
+fn derive_chat_connect_secret(
+    master_kek: &crate::types::SecretString,
+) -> crate::types::SecretString {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    let hk = Hkdf::<Sha256>::new(None, master_kek.expose().as_bytes());
+    let mut okm = [0u8; 32];
+    hk.expand(b"patom/chat-mcp-connect/v1", &mut okm)
+        .expect("invariant: 32 bytes is a valid HKDF-SHA256 output length");
+    crate::types::SecretString::try_from(crate::hex::encode_32(&okm))
+        .expect("invariant: hex of 32 bytes is non-empty")
 }
 
 #[cfg(test)]
