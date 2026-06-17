@@ -363,6 +363,18 @@ impl Memory for AgentMemory {
             }
         }
     }
+
+    async fn agent_persona(&self, agent: AgentId) -> Option<Arc<str>> {
+        // Same cache the per-turn prompt assembly warms, so this is free on the
+        // common path. A lookup failure degrades to no lens (best-effort #202).
+        match self.prompt_cache.get_or_load(agent, &self.agents).await {
+            Ok(prompt) => Some(prompt.into_arc()),
+            Err(e) => {
+                tracing::warn!(error = %e, patom.agent.id = %agent, "agent_persona.load.error");
+                None
+            }
+        }
+    }
 }
 
 impl AgentMemory {
