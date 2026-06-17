@@ -49,6 +49,13 @@ pub enum LarkError {
     #[error("unknown app: {0}")]
     UnknownApp(LarkAppId),
 
+    /// Downloading an inbound message resource (image/file) from
+    /// `im/v1/messages/{id}/resources/{key}` failed (transport, non-OK status,
+    /// or the body exceeded the size cap). Non-fatal: the bridge skips the
+    /// resource and mirrors the message without it.
+    #[error("resource fetch: {0}")]
+    ResourceFetch(String),
+
     /// HTTP transport error talking to Lark.
     #[error("http: {0}")]
     Http(#[from] reqwest::Error),

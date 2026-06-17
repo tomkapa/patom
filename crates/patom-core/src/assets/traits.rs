@@ -164,6 +164,32 @@ impl AssetContentType {
         }
     }
 
+    /// Infer the attachment content type from a filename's extension.
+    ///
+    /// Used by the chat-platform bridges (Discord, Lark), where an inbound file
+    /// may arrive without a reliable `Content-Type` — the filename is then the
+    /// best type signal. Same allow-list as [`Self::from_attachment_mime`] (no
+    /// SVG). Returns `None` for an unknown extension or a name with no `.`.
+    #[must_use]
+    pub fn from_attachment_extension(filename: &str) -> Option<Self> {
+        let ext = filename
+            .rsplit_once('.')
+            .map(|(_, e)| e)?
+            .to_ascii_lowercase();
+        match ext.as_str() {
+            "png" => Some(Self::Png),
+            "jpg" | "jpeg" => Some(Self::Jpeg),
+            "webp" => Some(Self::Webp),
+            "gif" => Some(Self::Gif),
+            "pdf" => Some(Self::Pdf),
+            "xlsx" => Some(Self::Xlsx),
+            "docx" => Some(Self::Docx),
+            "txt" | "text" | "md" | "markdown" | "json" | "toml" | "csv" | "yaml" | "yml"
+            | "xml" | "log" | "tsv" | "ndjson" => Some(Self::Text),
+            _ => None,
+        }
+    }
+
     /// Maximum body bytes for this type on the message-attachment path.
     /// Images and files differ (files inline as base64 against provider
     /// per-file limits). Mirrors the provider-side caps in
@@ -538,6 +564,44 @@ mod tests {
             AssetUrl::try_from("http://?x=1"),
             Err(ParseError::Malformed { .. })
         ));
+    }
+
+    #[test]
+    fn content_type_from_extension_covers_allowlist() {
+        for (name, want) in [
+            ("a.png", AssetContentType::Png),
+            ("a.JPG", AssetContentType::Jpeg),
+            ("a.jpeg", AssetContentType::Jpeg),
+            ("photo.webp", AssetContentType::Webp),
+            ("loop.gif", AssetContentType::Gif),
+            ("report.pdf", AssetContentType::Pdf),
+            ("sheet.xlsx", AssetContentType::Xlsx),
+            ("memo.docx", AssetContentType::Docx),
+            ("notes.md", AssetContentType::Text),
+            ("data.JSON", AssetContentType::Text),
+            ("table.csv", AssetContentType::Text),
+        ] {
+            assert_eq!(
+                AssetContentType::from_attachment_extension(name),
+                Some(want),
+                "extension mapping for {name}",
+            );
+        }
+        // Unknown / no-extension / bare-dotfile → None (skipped by the bridge).
+        assert_eq!(
+            AssetContentType::from_attachment_extension("clip.mp4"),
+            None
+        );
+        assert_eq!(
+            AssetContentType::from_attachment_extension("archive.zip"),
+            None
+        );
+        assert_eq!(AssetContentType::from_attachment_extension("noext"), None);
+        // SVG is intentionally absent (not valid model input).
+        assert_eq!(
+            AssetContentType::from_attachment_extension("logo.svg"),
+            None
+        );
     }
 
     #[test]

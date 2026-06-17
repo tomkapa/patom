@@ -15,11 +15,13 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use sqlx::PgPool;
 
+use patom::assets::InMemoryAssetStore;
 use patom::auth::{Caller, run_privileged};
 use patom::clock::{SharedClock, SystemClock};
 use patom::colleagues::PgColleagueStore;
 use patom::crypto::OrgEncryptor;
 use patom::discord::app_store::{DiscordAppStore, NewDiscordApp, PgDiscordAppStore};
+use patom::discord::attachment::{FakeAttachmentFetcher, SharedAttachmentFetcher};
 use patom::discord::bridge::{
     self, AttachRequest, BridgeDeps, OutboundAttach, SharedOutboundAttach,
 };
@@ -61,6 +63,10 @@ struct Rig {
     deps: BridgeDeps,
     outbound: Arc<FakeOutboundAttach>,
     opener: Arc<FakeThreadOpener>,
+    /// In-memory asset store backing the bridge's attachment re-hosting.
+    assets: Arc<InMemoryAssetStore>,
+    /// Canned-bytes fetcher; populate per-URL before driving an attachment test.
+    fetcher: Arc<FakeAttachmentFetcher>,
 }
 
 async fn build_rig(pool: &PgPool, caller: &Caller, agent_id: patom::agents::AgentId) -> Rig {
@@ -85,6 +91,9 @@ async fn build_rig(pool: &PgPool, caller: &Caller, agent_id: patom::agents::Agen
         ContainerId::try_from(THREAD_ID).expect("thread id"),
     ));
     let thread_opener: SharedThreadOpener = opener.clone();
+    let assets = Arc::new(InMemoryAssetStore::new("https://asset.example"));
+    let fetcher = Arc::new(FakeAttachmentFetcher::new());
+    let attachment_fetcher: SharedAttachmentFetcher = fetcher.clone();
     let deps = BridgeDeps {
         apps: app_store,
         directory: Arc::new(PgDiscordDirectory::new(pool.clone(), clock.clone())),
@@ -98,11 +107,15 @@ async fn build_rig(pool: &PgPool, caller: &Caller, agent_id: patom::agents::Agen
         // what's under test here.
         history: Arc::new(FakeHistoryReader::empty()),
         thread_opener,
+        assets: Some(assets.clone()),
+        attachment_fetcher,
     };
     Rig {
         deps,
         outbound,
         opener,
+        assets,
+        fetcher,
     }
 }
 
@@ -252,6 +265,99 @@ async fn mention_enqueues_a_trigger_and_attaches_pump(pool: PgPool) {
         attached[0].reply_to.is_none(),
         "no inline message_reference inside a fresh thread",
     );
+}
+
+/// Minimal valid PNG prefix padded out — enough to pass the magic-byte sniff.
+fn png_bytes() -> Vec<u8> {
+    let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    v.resize(128, 0);
+    v
+}
+
+async fn one_posted_body(pool: &PgPool) -> String {
+    run_privileged::<String, sqlx::Error>(pool, async |tx| {
+        sqlx::query_scalar("SELECT body::text FROM thread_messages WHERE kind = 'posted' LIMIT 1")
+            .fetch_one(&mut **tx)
+            .await
+    })
+    .await
+    .expect("body")
+}
+
+#[sqlx::test]
+async fn mention_with_image_attachment_rehosts_as_model_input(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let caller = Caller::new(seed.user_id, seed.org_id);
+    let rig = build_rig(&pool, &caller, seed.agent_id).await;
+
+    let cdn = "https://cdn.discordapp.com/attachments/333/77/pic.png?ex=a&is=b&hm=c";
+    rig.fetcher.insert(cdn, png_bytes(), Some("image/png"));
+
+    let mut dispatch = message_dispatch(
+        "2001",
+        "<@999999999999999999> what is this?",
+        &[BOT_USER_ID],
+        Some(GUILD_ID),
+    );
+    dispatch.data["attachments"] = serde_json::json!([
+        {"id": "77", "filename": "pic.png", "size": 128, "content_type": "image/png", "url": cdn}
+    ]);
+
+    bridge::process_event(&rig.deps, dispatch)
+        .await
+        .expect("process attachment mention");
+
+    // The image was downloaded and re-hosted exactly once…
+    assert_eq!(rig.assets.len().await, 1, "one object stored");
+    // …and the mirrored message body carries an image block pointing at the
+    // re-hosted asset URL (not the ephemeral Discord CDN link).
+    let body = one_posted_body(&pool).await;
+    assert!(
+        body.contains("\"image\""),
+        "body has an image block: {body}"
+    );
+    assert!(
+        body.contains("https://asset.example/attachments/"),
+        "image points at the re-hosted asset: {body}",
+    );
+    assert!(
+        !body.contains("cdn.discordapp.com"),
+        "the ephemeral CDN url is not persisted: {body}",
+    );
+}
+
+#[sqlx::test]
+async fn unsupported_attachment_is_skipped_but_message_mirrors(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let caller = Caller::new(seed.user_id, seed.org_id);
+    let rig = build_rig(&pool, &caller, seed.agent_id).await;
+
+    // A video attachment: unsupported model input → skipped, never downloaded.
+    let cdn = "https://cdn.discordapp.com/attachments/333/88/clip.mp4?ex=a&is=b&hm=c";
+    let mut dispatch = message_dispatch("2002", "see clip", &[], Some(GUILD_ID));
+    dispatch.data["attachments"] = serde_json::json!([
+        {"id": "88", "filename": "clip.mp4", "size": 4096, "content_type": "video/mp4", "url": cdn}
+    ]);
+
+    bridge::process_event(&rig.deps, dispatch)
+        .await
+        .expect("process unsupported attachment");
+
+    // Nothing stored, but the text still mirrored as one posted row.
+    assert!(
+        rig.assets.is_empty().await,
+        "unsupported type stores nothing"
+    );
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT COUNT(*) FROM thread_messages WHERE kind = 'posted'"
+        )
+        .await,
+        1,
+    );
+    let body = one_posted_body(&pool).await;
+    assert!(body.contains("see clip"), "text still mirrored: {body}");
 }
 
 #[sqlx::test]

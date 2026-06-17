@@ -35,19 +35,23 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
+use crate::assets::{AssetContentType, SharedAssetStore};
 use crate::auth::{Caller, OrgId, UserId};
 use crate::channels::ChannelId;
 use crate::colleagues::{ColleagueId, SharedColleagueStore};
-use crate::provider::{ChatMessage, UserContent};
+use crate::provider::ingest::ingest_attachment;
+use crate::provider::limits::MAX_ATTACHMENTS_PER_MESSAGE;
+use crate::provider::{Attachment, ChatMessage, UserContent};
 use crate::runtime::{IdempotencyKey, NewTrigger, RequestKindPayload, SharedPromptQueue};
 use crate::threads::{MessageKind, NewMessage, SharedThreadStore, ThreadId, ThreadMessageId};
 
 use super::app_store::{DiscordApp, SharedDiscordAppStore};
+use super::attachment::SharedAttachmentFetcher;
 use super::channel_map::SharedDiscordChannelStore;
 use super::connection::InboundDispatch;
 use super::directory::SharedDiscordDirectory;
 use super::error::DiscordError;
-use super::event::{self, DiscordEvent, InboundMessage};
+use super::event::{self, DiscordAttachment, DiscordEvent, InboundMessage};
 use super::history::SharedHistoryReader;
 use super::limits::{
     DISCORD_BACKFILL_MAX_MESSAGES, DISCORD_BACKFILL_MAX_PAGES, DISCORD_BACKFILL_PAGE_SIZE,
@@ -101,6 +105,12 @@ pub struct BridgeDeps {
     /// Opens a Discord thread on a top-level channel @mention, so the agent
     /// converses in a thread instead of cluttering the channel.
     pub thread_opener: SharedThreadOpener,
+    /// Object store for re-hosting inbound attachments as model input. `None`
+    /// when no asset store is configured — attachments are then dropped (the
+    /// text still mirrors).
+    pub assets: Option<SharedAssetStore>,
+    /// Downloads an inbound attachment's bytes from the Discord CDN.
+    pub attachment_fetcher: SharedAttachmentFetcher,
 }
 
 impl fmt::Debug for BridgeDeps {
@@ -458,6 +468,7 @@ async fn append_mirrored(
 ) -> Result<ThreadMessageId, DiscordError> {
     let rendered = super::mention::render_inbound(&m.content, &m.mention_names());
     let body_text: String = rendered.chars().take(DISCORD_INBOUND_CONTENT_MAX).collect();
+    let body = build_user_message(deps, m, body_text).await;
     let idem = message_idempotency_key(app, guild, &m.message_id)?;
     deps.thread_store
         .append(
@@ -468,13 +479,107 @@ async fn append_mirrored(
                 sender: Some(sender_colleague),
                 owner_agent_id: None,
                 receiver,
-                body: ChatMessage::User(vec![UserContent::Text(body_text)]),
+                body: ChatMessage::User(body),
                 request_id: None,
                 idempotency_key: Some(idem),
             },
         )
         .await
         .map_err(|e| DiscordError::Internal(format!("append: {e}")))
+}
+
+/// Assemble the user-message content: the rendered text (when non-empty)
+/// followed by every supported attachment re-hosted as model input. The feed
+/// must never be empty (the agent turn asserts a non-empty body), so a message
+/// with neither text nor a usable attachment falls back to one empty text block.
+async fn build_user_message(
+    deps: &BridgeDeps,
+    m: &InboundMessage,
+    body_text: String,
+) -> Vec<UserContent> {
+    let mut content = Vec::new();
+    if !body_text.is_empty() {
+        content.push(UserContent::Text(body_text));
+    }
+    if !m.attachments.is_empty() {
+        append_attachments(deps, m, &mut content).await;
+    }
+    if content.is_empty() {
+        content.push(UserContent::Text(String::new()));
+    }
+    content
+}
+
+/// Fetch + re-host each supported attachment, pushing it as a `UserContent`
+/// block. Best-effort and bounded ([`MAX_ATTACHMENTS_PER_MESSAGE`], §5): an
+/// unsupported type is skipped, a fetch/ingest failure is logged and skipped —
+/// neither drops the message itself.
+async fn append_attachments(deps: &BridgeDeps, m: &InboundMessage, content: &mut Vec<UserContent>) {
+    let Some(store) = deps.assets.as_ref() else {
+        warn!(
+            count = m.attachments.len(),
+            event = "discord.bridge.attachments_no_store",
+        );
+        return;
+    };
+    for att in m.attachments.iter().take(MAX_ATTACHMENTS_PER_MESSAGE) {
+        match ingest_discord_attachment(deps, store, att).await {
+            Ok(Some(block)) => content.push(block),
+            Ok(None) => debug!(
+                filename = %att.filename,
+                event = "discord.bridge.attachment_unsupported",
+            ),
+            Err(e) => warn!(
+                error = ?e,
+                filename = %att.filename,
+                event = "discord.bridge.attachment_skipped",
+            ),
+        }
+    }
+}
+
+/// Resolve one Discord attachment to a model-input block, or `Ok(None)` when the
+/// type is unsupported (video/archive/…) or it exceeds the per-type byte cap.
+async fn ingest_discord_attachment(
+    deps: &BridgeDeps,
+    store: &SharedAssetStore,
+    att: &DiscordAttachment,
+) -> Result<Option<UserContent>, DiscordError> {
+    // Type from the declared `content_type`, else the filename extension.
+    let Some(content_type) = att
+        .content_type
+        .as_deref()
+        .and_then(AssetContentType::from_attachment_mime)
+        .or_else(|| AssetContentType::from_attachment_extension(&att.filename))
+    else {
+        return Ok(None);
+    };
+    // Discord reports the size, so reject an oversize file before downloading it.
+    let cap = u64::try_from(content_type.attachment_max_bytes()).unwrap_or(u64::MAX);
+    if att.size > cap {
+        warn!(
+            filename = %att.filename,
+            size = att.size,
+            cap,
+            event = "discord.bridge.attachment_oversize",
+        );
+        return Ok(None);
+    }
+    let fetched = deps.attachment_fetcher.fetch(&att.url).await?;
+    let attachment = ingest_attachment(store, &att.filename, content_type, fetched.bytes)
+        .await
+        .map_err(|e| DiscordError::Internal(format!("attachment ingest: {e}")))?;
+    Ok(Some(classify_attachment(attachment)))
+}
+
+/// An image rides as an `Image` block; everything else (PDF/Office/text) as a
+/// `File` block — the provider converters materialise each at dispatch.
+fn classify_attachment(att: Attachment) -> UserContent {
+    if att.mime().is_image() {
+        UserContent::Image(att)
+    } else {
+        UserContent::File(att)
+    }
 }
 
 /// Run the one-shot backfill and mark it complete on a definitive outcome (incl.

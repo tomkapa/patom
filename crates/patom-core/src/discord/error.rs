@@ -44,6 +44,12 @@ pub enum DiscordError {
     #[error("unknown app: {0}")]
     UnknownApp(ApplicationId),
 
+    /// Downloading an inbound message attachment from the Discord CDN failed
+    /// (transport, non-OK status, or the body exceeded the size cap). Non-fatal:
+    /// the bridge skips the attachment and mirrors the message without it.
+    #[error("attachment fetch: {0}")]
+    AttachmentFetch(String),
+
     /// HTTP transport error talking to Discord.
     #[error("http: {0}")]
     Http(#[from] reqwest::Error),

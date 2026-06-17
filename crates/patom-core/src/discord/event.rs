@@ -67,8 +67,30 @@ pub struct InboundMessage {
     /// The full user objects explicitly `@`-mentioned (id + name, for rendering
     /// `<@id>` → `@Name`).
     pub mentions: Vec<Author>,
+    /// Uploaded files/images on the message (issue #187). Each carries a signed
+    /// CDN `url` valid at receipt; the bridge downloads + re-hosts the supported
+    /// ones as model input.
+    pub attachments: Vec<DiscordAttachment>,
     /// Present (the webhook's id) when the message was webhook-authored.
     pub webhook_id: Option<String>,
+}
+
+/// One Discord message attachment, narrowed to the fields the bridge needs.
+///
+/// `content_type` is optional — Discord omits it for some uploads — so the
+/// bridge falls back to the filename extension. `url` is a signed
+/// `cdn.discordapp.com` link that needs no auth and is valid when the Gateway
+/// delivers the message.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscordAttachment {
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub url: String,
 }
 
 /// The wire shape of a message, before flattening into [`InboundMessage`].
@@ -86,6 +108,8 @@ struct RawMessage {
     #[serde(default)]
     mentions: Vec<Author>,
     #[serde(default)]
+    attachments: Vec<DiscordAttachment>,
+    #[serde(default)]
     webhook_id: Option<String>,
 }
 
@@ -99,6 +123,7 @@ impl From<RawMessage> for InboundMessage {
             member_nick: raw.member.and_then(|m| m.nick),
             content: raw.content,
             mentions: raw.mentions,
+            attachments: raw.attachments,
             webhook_id: raw.webhook_id,
         }
     }
@@ -213,6 +238,58 @@ mod tests {
         let bot = DiscordUserId::try_from("555555555555555555").expect("bot");
         assert!(m.mentions_bot(&bot));
         assert!(m.webhook_id.is_none());
+    }
+
+    #[test]
+    fn parse_message_create_captures_attachments() {
+        let data = serde_json::json!({
+            "id": "1", "channel_id": "2", "guild_id": "3",
+            "author": {"id": "9", "username": "alice"},
+            "content": "see attached",
+            "attachments": [
+                {
+                    "id": "77", "filename": "report.pdf", "size": 1024,
+                    "content_type": "application/pdf",
+                    "url": "https://cdn.discordapp.com/attachments/2/77/report.pdf?ex=a&is=b&hm=c",
+                    "proxy_url": "https://media.discordapp.net/attachments/2/77/report.pdf",
+                },
+                {
+                    // content_type omitted — the bridge falls back to the extension.
+                    "id": "78", "filename": "pic.png", "size": 2048,
+                    "url": "https://cdn.discordapp.com/attachments/2/78/pic.png?ex=a&is=b&hm=c",
+                },
+            ],
+        });
+        let DiscordEvent::Message(m) = parse("MESSAGE_CREATE", &data).expect("parse") else {
+            panic!("message");
+        };
+        assert_eq!(m.attachments.len(), 2);
+        assert_eq!(m.attachments[0].filename, "report.pdf");
+        assert_eq!(
+            m.attachments[0].content_type.as_deref(),
+            Some("application/pdf")
+        );
+        assert_eq!(m.attachments[0].size, 1024);
+        assert!(
+            m.attachments[0]
+                .url
+                .starts_with("https://cdn.discordapp.com/")
+        );
+        assert_eq!(m.attachments[1].filename, "pic.png");
+        assert!(m.attachments[1].content_type.is_none());
+    }
+
+    #[test]
+    fn parse_message_without_attachments_is_empty_vec() {
+        let data = serde_json::json!({
+            "id": "1", "channel_id": "2",
+            "author": {"id": "3", "username": "carol"},
+            "content": "hi",
+        });
+        let DiscordEvent::Message(m) = parse("MESSAGE_CREATE", &data).expect("parse") else {
+            panic!("message");
+        };
+        assert!(m.attachments.is_empty());
     }
 
     #[test]

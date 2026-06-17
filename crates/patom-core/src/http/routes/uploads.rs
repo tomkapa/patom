@@ -26,7 +26,7 @@ use crate::assets::{
 };
 use crate::auth::{AuthError, Principal, Role, VisibilityTable, visible_to};
 use crate::mcp::{McpCatalogId, McpError};
-use crate::provider::FileName;
+use crate::provider::ingest::{IngestError, ingest_attachment};
 use crate::types::AvatarUrl;
 
 use super::super::error::HttpError;
@@ -254,23 +254,20 @@ async fn upload_attachment(
     multipart: Multipart,
 ) -> Result<Json<AttachmentUploadResponse>, HttpError> {
     let assets = assets_or_503(&state)?;
-    let att = extract_attachment_field(multipart).await?;
-    let size = u64::try_from(att.bytes.len()).unwrap_or(u64::MAX);
-    // Validate the filename through the same typed invariant `/prompts` uses,
-    // so a name it would reject fails fast here instead of at submit.
-    let filename = FileName::try_from(att.filename.as_str()).map_err(HttpError::Parse)?;
-    let key_raw = format!(
-        "attachments/{}.{}",
-        Uuid::new_v4(),
-        att.content_type.extension()
-    );
-    let key = ObjectKey::try_from(key_raw.as_str()).map_err(crate::assets::AssetError::from)?;
-    let mime = att.content_type.as_mime().to_owned();
-    let url = assets.put(key, att.bytes, att.content_type).await?;
+    let field = extract_attachment_field(multipart).await?;
+    // The store-bytes → validated `Attachment` step is shared with the
+    // Discord/Lark bridges (issue #187) so the upload reference can never drift
+    // from what those paths mint.
+    let attachment = ingest_attachment(assets, &field.filename, field.content_type, field.bytes)
+        .await
+        .map_err(|e| match e {
+            IngestError::Parse(p) => HttpError::Parse(p),
+            IngestError::Store(s) => HttpError::from(s),
+        })?;
     Ok(Json(AttachmentUploadResponse {
-        url: url.as_str().to_owned(),
-        mime,
-        filename: filename.as_str().to_owned(),
-        size,
+        url: attachment.url().as_str().to_owned(),
+        mime: attachment.mime().as_mime().to_owned(),
+        filename: attachment.filename().as_str().to_owned(),
+        size: attachment.size(),
     }))
 }
