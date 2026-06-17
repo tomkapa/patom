@@ -56,6 +56,10 @@ pub struct AgentBuilder {
     /// Background-cognition store backing [`Agent::reply_background`]
     /// (reflection / resolution). `None` outside the worker's background path.
     background: Option<SharedBackgroundStore>,
+    /// Hard approval gate (#200). `None` in unit tests (no gating); the
+    /// production factory installs [`crate::approvals::HardApprovalGate`] so a
+    /// gated tool is denied unless an `approved` decision exists for the DAG.
+    approval_gate: Option<crate::approvals::SharedApprovalGate>,
 }
 
 /// Per-record identity needed to write a `turn_metrics` row. Bound at build
@@ -94,6 +98,7 @@ impl AgentBuilder {
             billing: None,
             threads: None,
             background: None,
+            approval_gate: None,
         })
     }
 
@@ -234,6 +239,17 @@ impl AgentBuilder {
         self
     }
 
+    /// Install the hard approval gate (#200).
+    ///
+    /// Optional: agent_core unit tests skip it (no tool is gated). With this
+    /// wired, [`Agent::run_one_tool`] denies a gated tool call unless a matching
+    /// `approved` decision exists for the DAG.
+    #[must_use]
+    pub fn with_approval_gate(mut self, gate: crate::approvals::SharedApprovalGate) -> Self {
+        self.approval_gate = Some(gate);
+        self
+    }
+
     #[must_use]
     pub fn build(self) -> Agent {
         Agent::new(
@@ -255,6 +271,7 @@ impl AgentBuilder {
             self.billing,
             self.threads,
             self.background,
+            self.approval_gate,
         )
     }
 }
