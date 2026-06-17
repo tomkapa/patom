@@ -579,11 +579,36 @@ async fn attachment_upload_pdf_returns_reference(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn attachment_upload_text_returns_reference(pool: PgPool) {
+    let (h, store) = UploadsHarness::with_assets(pool).await;
+    let app = router(h.state.clone());
+    // text/plain is in the attachment allow-list (issue #187 — TEXT input);
+    // the storage key normalises to `.txt`.
+    let text = b"# notes\njust some plain text";
+    let body = build_multipart("text/plain", text);
+    let req = upload_request("/api/uploads/attachment", &h.primary, body);
+    let res = app.oneshot(req).await.expect("response");
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("json");
+    assert_eq!(json["mime"], "text/plain");
+    assert_eq!(json["size"], text.len());
+    let url = json["url"].as_str().expect("url field");
+    assert!(url.contains("/attachments/"), "url = {url}");
+    assert!(url.ends_with(".txt"), "url = {url}");
+    assert_eq!(store.len().await, 1);
+}
+
+#[sqlx::test]
 async fn attachment_upload_rejects_disallowed_type(pool: PgPool) {
     let (h, store) = UploadsHarness::with_assets(pool).await;
     let app = router(h.state.clone());
-    // text/plain is not in the attachment allow-list.
-    let body = build_multipart("text/plain", b"just some text");
+    // audio/mpeg is not in the attachment allow-list (text/plain now maps to
+    // the Text variant — issue #187 — so it is no longer a rejection case).
+    let body = build_multipart("audio/mpeg", b"ID3\x03\x00\x00\x00 not really mp3");
     let req = upload_request("/api/uploads/attachment", &h.primary, body);
     let res = app.oneshot(req).await.expect("response");
     assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
