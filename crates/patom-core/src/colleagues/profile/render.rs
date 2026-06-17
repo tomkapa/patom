@@ -9,7 +9,7 @@
 use crate::colleagues::{ColleagueKind, ColleagueName};
 use crate::tools::truncate_to_char_boundary;
 
-use super::limits::MAX_PARTICIPANTS_INLINE;
+use super::limits::{MAX_NOTES_PER_PARTICIPANT, MAX_PARTICIPANTS_INLINE};
 use super::types::ColleagueProfile;
 
 /// Stable tags wrapping the block. `pub` so tests/docs can assert the wire shape.
@@ -97,7 +97,14 @@ pub fn render_participants_block(lines: &[ParticipantLine]) -> String {
         }
         // Private collaborator notes (#193) sit as indented sub-bullets under
         // the person, so each entry reads as "who they are" + "what I learned".
-        for note in &line.notes {
+        // The producer caps at MAX_NOTES_PER_PARTICIPANT; assert + `take` give
+        // the render loop its own explicit upper bound (§5) so a future caller
+        // cannot expand the prompt tail past the cap.
+        assert!(
+            line.notes.len() <= MAX_NOTES_PER_PARTICIPANT,
+            "invariant: notes per participant exceed cap {MAX_NOTES_PER_PARTICIPANT}"
+        );
+        for note in line.notes.iter().take(MAX_NOTES_PER_PARTICIPANT) {
             out.push_str("\n  • (you noted) ");
             out.push_str(note);
         }

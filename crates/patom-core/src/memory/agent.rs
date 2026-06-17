@@ -361,9 +361,14 @@ impl AgentMemory {
         let mut by_subject: std::collections::HashMap<ColleagueId, Vec<&MemoryRow>> =
             std::collections::HashMap::new();
         for row in &rows {
-            if let Some(subject) = row.subject {
-                by_subject.entry(subject).or_default().push(row);
-            }
+            // `collaborator_memories_for_subjects` filters `kind = collaborator
+            // AND subject = ANY(..)`, and the DB CHECK makes collaborator ⟺
+            // subject — so a `None` here is a contract break, not a row to skip
+            // (§6: assert the known shape of a boundary read).
+            let subject = row.subject.expect(
+                "invariant: collaborator_memories_for_subjects returns subject-scoped rows",
+            );
+            by_subject.entry(subject).or_default().push(row);
         }
         by_subject
             .into_iter()
