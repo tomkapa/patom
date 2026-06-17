@@ -37,7 +37,7 @@ use crate::colleagues::{
 use crate::prompts::Prompts;
 use crate::runtime::{RequestKind, RequestKindPayload};
 use crate::threads::{ChannelRef, SharedThreadStore, ThreadId, ThreadParticipants};
-use crate::types::Participant;
+use crate::types::{Participant, ToolName};
 
 use super::loader::MemorySectionLoader;
 use super::store::MemoryRow;
@@ -114,6 +114,38 @@ fn render_channels_block(channels: &[ChannelRef]) -> String {
     out
 }
 
+/// `<approval-gated-tools>` lists the tools this agent must get human approval
+/// for before calling (#200, locked decision 2: prompt clause + hard gate). The
+/// hard gate enforces it regardless; this proactively tells the agent so it
+/// reaches for `ask_approval` first instead of hitting the gate.
+const GATED_TAG_OPEN: &str = "<approval-gated-tools>\n";
+const GATED_TAG_CLOSE: &str = "\n</approval-gated-tools>";
+
+/// Render the `<approval-gated-tools>` block. Empty string when the agent gates
+/// no tools (no envelope, no blank line) — so the common case is a zero-cost
+/// no-op that leaves the prompt-cache prefix unchanged.
+fn render_gated_tools_block(tools: &[ToolName]) -> String {
+    use std::fmt::Write;
+    if tools.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str(GATED_TAG_OPEN);
+    out.push_str(
+        "These actions require human approval. Before calling one, call \
+         `ask_approval` (with `gated_tool` set to its name) and wait for the \
+         decision — it will be refused until approved:\n",
+    );
+    for (i, t) in tools.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let _ = write!(out, "- {name}", name = t.as_str());
+    }
+    out.push_str(GATED_TAG_CLOSE);
+    out
+}
+
 /// `strftime` pattern for the `<date>` body.
 ///
 /// ISO 8601 date + weekday name + timezone tag — gives the model both
@@ -156,6 +188,10 @@ pub struct AgentMemory {
     /// Source of the agent's channel memberships for the `<channels>` block (#178).
     threads: SharedThreadStore,
     clock: SharedClock,
+    /// Per-agent gated-tool config for the `<approval-gated-tools>` block (#200).
+    /// `None` in unit tests (block renders empty); the composition root wires the
+    /// approval store. Optional so existing `new` callers are unaffected.
+    gated_tools: Option<crate::approvals::SharedGatedToolStore>,
 }
 
 impl AgentMemory {
@@ -192,7 +228,16 @@ impl AgentMemory {
             rule_resolver,
             threads,
             clock,
+            gated_tools: None,
         }
+    }
+
+    /// Wire the per-agent gated-tool config so the `<approval-gated-tools>` block
+    /// renders (#200). Without it, the block is always empty.
+    #[must_use]
+    pub fn with_gated_tools(mut self, gated_tools: crate::approvals::SharedGatedToolStore) -> Self {
+        self.gated_tools = Some(gated_tools);
+        self
     }
 
     /// Resolve a `M-NN` handle the model produced back to the underlying
@@ -257,6 +302,23 @@ impl AgentMemory {
             "channels.block.size"
         );
         Ok(render_channels_block(&channels))
+    }
+
+    /// Render the `<approval-gated-tools>` block for the agent (#200). Empty when
+    /// no config store is wired or the agent gates nothing; a store error
+    /// degrades to empty (the hard gate still enforces — this block is only the
+    /// proactive hint).
+    async fn gated_tools_block(&self, org: OrgId, agent: AgentId) -> String {
+        let Some(store) = self.gated_tools.as_ref() else {
+            return String::new();
+        };
+        match store.gated_tools_for_agent(org, agent).await {
+            Ok(tools) => render_gated_tools_block(&tools),
+            Err(e) => {
+                tracing::warn!(error = %e, patom.agent.id = %agent, "gated_tools.block.error");
+                String::new()
+            }
+        }
     }
 
     /// Build the `<participants>` lines for the thread: the raiser + distinct
@@ -455,12 +517,13 @@ impl Memory for AgentMemory {
         // Resolve the viewer's org once and render the `<colleagues>` and
         // `<channels>` blocks concurrently — both are per-(org, viewer) reads on
         // every turn, independent of each other, and both degrade to empty.
-        let (roster, channels) = match self.colleagues.read(viewer_colleague).await {
+        let (roster, channels, gated) = match self.colleagues.read(viewer_colleague).await {
             Ok(colleague) => {
                 let org = colleague.org_id();
-                let (roster, channels) = tokio::join!(
+                let (roster, channels, gated) = tokio::join!(
                     self.roster_block(org, viewer_colleague, overrides),
                     self.channels_block(org, viewer_colleague),
+                    self.gated_tools_block(org, agent_id),
                 );
                 let roster = roster.unwrap_or_else(|e| {
                     tracing::warn!(error = %e, "colleagues.roster.error");
@@ -470,11 +533,11 @@ impl Memory for AgentMemory {
                     tracing::warn!(error = %e, "channels.block.error");
                     String::new()
                 });
-                (roster, channels)
+                (roster, channels, gated)
             }
             Err(e) => {
                 tracing::warn!(error = %e, "colleagues.viewer_org.error");
-                (String::new(), String::new())
+                (String::new(), String::new(), String::new())
             }
         };
         let language = self.language_resolver.language_for_agent(agent_id).await?;
@@ -489,6 +552,7 @@ impl Memory for AgentMemory {
             org_rule.as_ref().map(OrganizationRule::as_str),
             &roster,
             &channels,
+            &gated,
             "",
             directive.as_ref(),
             memory_section.text(),
@@ -557,6 +621,7 @@ impl AgentMemory {
         org_rule: Option<&str>,
         roster: &str,
         channels: &str,
+        gated: &str,
         speaking_with: &str,
         directive_str: &str,
         memory_str: &str,
@@ -570,6 +635,9 @@ impl AgentMemory {
         let roster_sep = newline_sep(roster);
         // `<channels>` sits with `<colleagues>` in the per-agent stable prefix.
         let channels_sep = newline_sep(channels);
+        // `<approval-gated-tools>` is also per-agent stable config, so it joins
+        // the cache prefix alongside `<channels>` (#200).
+        let gated_sep = newline_sep(gated);
         // Per-turn tail (after `<language>`) — keeping it out of the org-stable
         // prefix preserves prompt-cache hits across the agent's other turns.
         let speaking_with_sep = newline_sep(speaking_with);
@@ -595,6 +663,8 @@ impl AgentMemory {
                 + roster_sep.len()
                 + channels.len()
                 + channels_sep.len()
+                + gated.len()
+                + gated_sep.len()
                 + ROLE_TAG_OPEN.len()
                 + role_str.len()
                 + ROLE_TAG_CLOSE.len()
@@ -625,6 +695,8 @@ impl AgentMemory {
         out.push_str(roster_sep);
         out.push_str(channels);
         out.push_str(channels_sep);
+        out.push_str(gated);
+        out.push_str(gated_sep);
         out.push_str(ROLE_TAG_OPEN);
         out.push_str(role_str);
         out.push_str(ROLE_TAG_CLOSE);
@@ -652,6 +724,7 @@ mod tests {
     use super::*;
     use crate::colleagues::{MAX_NOTES_PER_PARTICIPANT, PROFILE_SNIPPET_LEN, ParticipantNote};
     use crate::memory::{MemoryContent, MemoryId, MemoryKind, MemoryState};
+    use crate::types::ToolName;
 
     fn collaborator_row(
         subject: ColleagueId,
@@ -718,5 +791,24 @@ mod tests {
         let ordered = ordered_participants(&participants, viewer);
         assert_eq!(ordered, vec![creator, other], "creator first, then posters");
         assert!(!ordered.contains(&viewer), "viewer excluded");
+    }
+
+    #[test]
+    fn gated_block_is_empty_when_no_tools() {
+        assert_eq!(render_gated_tools_block(&[]), "");
+    }
+
+    #[test]
+    fn gated_block_lists_each_tool_and_points_at_ask_approval() {
+        let tools = [
+            ToolName::try_from("refund_customer").expect("name"),
+            ToolName::try_from("merge_pr").expect("name"),
+        ];
+        let block = render_gated_tools_block(&tools);
+        assert!(block.starts_with(GATED_TAG_OPEN));
+        assert!(block.contains("ask_approval"));
+        assert!(block.contains("- refund_customer"));
+        assert!(block.contains("- merge_pr"));
+        assert!(block.ends_with("</approval-gated-tools>"));
     }
 }

@@ -5,8 +5,13 @@
 //! ordered shutdown). The inbound bridge handle is returned separately from
 //! `build_server` (like the Slack bridge), since it is consumed by `shutdown`.
 
+use crate::clock::SharedClock;
+use crate::types::SecretString;
+
 use super::app_store::SharedLarkAppStore;
+use super::poster::SharedLarkPoster;
 use super::stream_pump::SharedLarkPumpHandle;
+use super::token::SharedTokenProvider;
 use super::ws_manager::SharedWsManagerHandle;
 
 /// Lark adapter handles exposed on `AppState`.
@@ -15,6 +20,16 @@ pub struct LarkAppState {
     pub apps: SharedLarkAppStore,
     pub stream_pump: SharedLarkPumpHandle,
     pub ws_manager: SharedWsManagerHandle,
+    /// HMAC key verifying `GET /lark/mcp/connect` tokens (derived from
+    /// `master_kek`; the same key the stream pump signs with).
+    pub connect_secret: SecretString,
+    /// Clock for the connect-token expiry check.
+    pub clock: SharedClock,
+    /// Posts the "✓ Connected" ping back into the originating Lark chat after
+    /// the OAuth callback succeeds.
+    pub poster: SharedLarkPoster,
+    /// Mints the `tenant_access_token` the ping posts with.
+    pub token_provider: SharedTokenProvider,
 }
 
 impl std::fmt::Debug for LarkAppState {
