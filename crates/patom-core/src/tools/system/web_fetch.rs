@@ -11,7 +11,7 @@ use tracing::instrument;
 use crate::types::ToolName;
 
 use super::super::limits::{FETCH_MAX_BODY_BYTES, FETCH_MAX_REDIRECTS, FETCH_TIMEOUT};
-use super::super::traits::{Tool, ToolCallContext, ToolError};
+use super::super::traits::{ReductionIntent, Tool, ToolCallContext, ToolError, ToolResultPolicy};
 use super::super::url::{FetchUrl, UrlError, check_host};
 
 /// Content-type prefixes treated as HTML for the markdown-conversion path.
@@ -44,6 +44,13 @@ impl WebFetchTool {
                     "url": {
                         "type": "string",
                         "description": "Fully-qualified https:// URL to fetch."
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional: what to extract or answer from the page. \
+                            When set and the page is large, the result is summarized toward \
+                            this intent (the full page is still retrievable). Omit to get the \
+                            page content directly."
                     }
                 },
                 "required": ["url"],
@@ -78,6 +85,9 @@ fn build_client() -> Result<Client, reqwest::Error> {
         .build()
 }
 
+// `prompt` (the #185 summarize intent) is consumed in `result_policy` straight
+// from the raw input `Value`; `execute` only needs the URL. serde ignores the
+// extra field here, so it never has to appear on this struct.
 #[derive(Debug, Deserialize)]
 struct Input {
     url: String,
@@ -103,6 +113,19 @@ impl Tool for WebFetchTool {
 
     fn concurrency_safe(&self) -> bool {
         true
+    }
+
+    /// #185: when the model supplies a `prompt`, an oversized page is summarized
+    /// toward that intent (mirroring Claude Code's WebFetch); otherwise it falls
+    /// back to the default lossless paginate. Either way the full page is
+    /// offloaded and recoverable via `read_artifact`.
+    fn result_policy(&self, input: &Value) -> ToolResultPolicy {
+        match input.get("prompt").and_then(Value::as_str) {
+            Some(p) if !p.trim().is_empty() => ToolResultPolicy::Summarize {
+                intent: ReductionIntent::clamp(p.to_owned()),
+            },
+            _ => ToolResultPolicy::Paginate,
+        }
     }
 
     #[instrument(name = "tool.web_fetch", skip_all, fields(patom.tool = "web_fetch"))]
@@ -240,5 +263,31 @@ mod tests {
         // Mid-tag cut — html5ever should still produce *something*.
         let html = "<html><body><h1>Title</h1><p>partial cont".to_owned();
         let _ = maybe_html_to_markdown(Some("text/html"), html);
+    }
+
+    // #185 stage 3: WebFetch summarizes only when the model supplies an intent.
+    #[test]
+    fn result_policy_summarizes_only_with_prompt() {
+        use crate::tools::{Tool, ToolResultPolicy};
+        let tool = super::WebFetchTool::new().expect("tool");
+
+        let with = serde_json::json!({"url": "https://x.test", "prompt": "find the price"});
+        assert!(matches!(
+            tool.result_policy(&with),
+            ToolResultPolicy::Summarize { .. }
+        ));
+
+        let without = serde_json::json!({"url": "https://x.test"});
+        assert!(matches!(
+            tool.result_policy(&without),
+            ToolResultPolicy::Paginate
+        ));
+
+        // A blank prompt is not an intent — fall back to lossless paginate.
+        let blank = serde_json::json!({"url": "https://x.test", "prompt": "   "});
+        assert!(matches!(
+            tool.result_policy(&blank),
+            ToolResultPolicy::Paginate
+        ));
     }
 }

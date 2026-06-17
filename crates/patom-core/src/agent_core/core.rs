@@ -5,7 +5,7 @@ use tracing::{Instrument, debug};
 
 use crate::auth::{Caller, OrgId};
 use crate::background::{BackgroundTurnId, SharedBackgroundStore};
-use crate::billing::SharedBillingService;
+use crate::billing::{SharedBillingService, price_for};
 use crate::clock::SharedClock;
 use crate::hook::{HookChain, TurnContext};
 use crate::memory::SharedMemory;
@@ -18,6 +18,7 @@ use crate::types::{AgentReply, MaxOutputTokens, MaxTurns, Participant};
 
 use super::builder::TurnMetricsBinding;
 use super::error::AgentError;
+use super::limits::SUMMARIZER_INPUT_BUDGET;
 use super::observer::SharedTurnObserver;
 use super::outcome::{record_reply, record_turn};
 use super::turn::turn_index;
@@ -216,6 +217,65 @@ impl Agent {
             "invariant: reply_background requires a background store; the production agent \
              factory wires PgBackgroundStore for the cognition worker path",
         )
+    }
+
+    /// Thread store as an `Option` — used by tool-result reduction (#185), which
+    /// degrades gracefully (keeps the full body in the feed) when no store is
+    /// wired (agent_core unit tests), rather than asserting like [`Self::threads`].
+    pub(super) fn threads_opt(&self) -> Option<&SharedThreadStore> {
+        self.threads.as_ref()
+    }
+
+    /// Resolve a routable provider client for an arbitrary `model`, mirroring
+    /// [`Self::route`]'s BYO-then-platform precedence. `None` if the org can call
+    /// neither. Used to build the summarizer fallback chain (#185).
+    pub(super) fn provider_for(&self, model: Model) -> Option<SharedProvider> {
+        self.overlay
+            .get(self.org_id, model.provider())
+            .or_else(|| self.providers.get(model.provider()).cloned())
+    }
+
+    /// The summarizer model chain for produce-time tool-result reduction (#185):
+    /// the **cheapest** model the org can actually call, followed by the cheapest
+    /// model from a **different** provider as a resilience fallback (so a burned
+    /// or rate-limited key fails over to another vendor). At most two entries;
+    /// length one when the org has only a single usable provider.
+    ///
+    /// "Usable" = the model's provider is platform-configured or BYO-keyed for
+    /// the org, and its context window is wide enough to hold a summarizer chunk.
+    /// Cost is ranked by input price (summarization is input-heavy), tie-broken by
+    /// output price.
+    pub(super) fn summarizer_chain(&self) -> Vec<(Model, SharedProvider)> {
+        let min_window = SUMMARIZER_INPUT_BUDGET.saturating_mul(2);
+        let mut usable: Vec<Model> = Model::all()
+            .filter(|m| {
+                self.providers.contains(m.provider())
+                    || self.overlay.has_key(self.org_id, m.provider())
+            })
+            .filter(|m| m.context_window().get() >= min_window)
+            .collect();
+        usable.sort_by_key(|m| {
+            let p = price_for(*m);
+            (p.input.get(), p.output.get())
+        });
+
+        let mut chain: Vec<(Model, SharedProvider)> = Vec::new();
+        for model in usable {
+            let Some(provider) = self.provider_for(model) else {
+                continue;
+            };
+            match chain.first() {
+                None => chain.push((model, provider)),
+                // Take the cheapest model from a *different* provider as the
+                // single diverse fallback, then stop.
+                Some((primary, _)) if primary.provider() != model.provider() => {
+                    chain.push((model, provider));
+                    break;
+                }
+                Some(_) => {}
+            }
+        }
+        chain
     }
 
     /// Drive a thread-feed turn loop for `viewer` (an agent), reading the

@@ -64,8 +64,9 @@ impl TokenEstimate {
 }
 
 /// The `chars`-per-token divisor for the estimate. Four is the conventional
-/// English approximation; calibrated against recorded `input_tokens`.
-const CHARS_PER_TOKEN: usize = 4;
+/// English approximation; calibrated against recorded `input_tokens`. Shared
+/// with tool-result reduction (#185) so the heuristic has one home.
+pub(super) const CHARS_PER_TOKEN: usize = 4;
 
 /// Estimate the prompt-token cost of an optional rolling summary plus the tail.
 ///
@@ -572,6 +573,110 @@ fn extract_text(response: &ChatResponse) -> Option<String> {
     }
 }
 
+/// What the bounded fold kernel ([`run_fold_pass`]) needs from a caller: the
+/// seed accumulator and how to build each fold's request. Lets the same
+/// split→fold→timeout→meter loop back both the rolling conversational summary
+/// (#182) and the intent-keyed tool-result reduce (#185), each supplying its
+/// own prompt.
+pub(super) trait FoldStrategy: Send + Sync {
+    /// The accumulator before the first fold (e.g. the previous rolling summary,
+    /// or an empty seed for a one-shot reduce).
+    fn seed(&self, prev: Option<&str>) -> String;
+    /// Build one fold request from the running accumulator + the next chunk.
+    /// The strategy bakes in its own system prompt, model, and output cap.
+    fn fold_request(&self, acc: &str, chunk: &[ChatMessage]) -> ChatRequest;
+    /// Per-chunk input-token budget the splitter targets. Constant per strategy.
+    fn input_budget(&self) -> u32 {
+        SUMMARIZER_INPUT_BUDGET
+    }
+}
+
+/// The shared bounded fold kernel (CLAUDE.md §4/§5): split `overflow` into
+/// chunks under `input_budget`, fold each into the accumulator under
+/// `COMPACTION_LLM_TIMEOUT`, the whole pass bounded by `deadline` (wall-clock)
+/// and `MAX_COMPACTION_CHUNKS` (loop bound). Pushes one `FoldSample` per
+/// successful fold so the caller can meter spend even if a later fold fails.
+/// Returns the final accumulator text (callers clamp/wrap as needed).
+pub(super) async fn run_fold_pass(
+    clock: &SharedClock,
+    provider: &SharedProvider,
+    strategy: &dyn FoldStrategy,
+    prev: Option<&str>,
+    overflow: Vec<ChatMessage>,
+    deadline: Instant,
+    samples: &mut Vec<FoldSample>,
+) -> Result<String, CompactionError> {
+    let mut chunks = split_chunks(overflow, strategy.input_budget());
+    if chunks.len() > MAX_COMPACTION_CHUNKS {
+        let dropped = chunks.len() - MAX_COMPACTION_CHUNKS;
+        // Saturation counter (CLAUDE.md §5): the `MAX_COMPACTION_CHUNKS` loop
+        // bound was hit and the oldest overflow beyond it is dropped. Emitted as
+        // a structured count the OTel bridge exports — there is no metrics
+        // `Meter` wired yet (only the trace feature is enabled), so this event
+        // *is* the counter.
+        tracing::warn!(
+            event = "patom.compaction.chunks_dropped",
+            patom.compaction.chunks_dropped = dropped,
+            "fold overflow exceeded MAX_COMPACTION_CHUNKS; dropping oldest chunks",
+        );
+        chunks.drain(0..dropped);
+    }
+    assert!(
+        chunks.len() <= MAX_COMPACTION_CHUNKS,
+        "fold loop is bounded"
+    );
+
+    let mut acc = strategy.seed(prev);
+    for chunk in chunks {
+        if clock.now() >= deadline {
+            return Err(CompactionError::WallClockExceeded);
+        }
+        let started_at = clock.now_utc();
+        let started = clock.now();
+        let request = strategy.fold_request(&acc, &chunk);
+        let response = tokio::time::timeout(COMPACTION_LLM_TIMEOUT, provider.send(request))
+            .await
+            .map_err(|_| CompactionError::SummarizerTimeout)?
+            .map_err(CompactionError::Provider)?;
+        let duration = clock.now().saturating_duration_since(started);
+        samples.push(FoldSample {
+            started_at,
+            duration,
+            response: response.clone(),
+        });
+        acc = extract_text(&response).ok_or(CompactionError::Empty)?;
+    }
+    Ok(acc)
+}
+
+/// The conversational [`FoldStrategy`]: rolling "previous summary + new messages"
+/// prompt under the agent's own model (#182).
+struct CompactionFold {
+    system: Arc<str>,
+    model: Model,
+    max_output_tokens: MaxOutputTokens,
+}
+
+impl FoldStrategy for CompactionFold {
+    fn seed(&self, prev: Option<&str>) -> String {
+        prev.map_or_else(empty_summary_template, str::to_owned)
+    }
+
+    fn fold_request(&self, acc: &str, chunk: &[ChatMessage]) -> ChatRequest {
+        let user = format!(
+            "PREVIOUS SUMMARY:\n{acc}\n\nNEW MESSAGES TO FOLD IN (oldest first):\n{}",
+            render_messages_for_summary(chunk)
+        );
+        ChatRequest {
+            model: self.model,
+            system: self.system.clone(),
+            messages: vec![ChatMessage::User(vec![UserContent::Text(user)])],
+            tools: Arc::from([]),
+            max_output_tokens: self.max_output_tokens,
+        }
+    }
+}
+
 /// The summarizer: chunked, bounded, rolling-fold compactor (CLAUDE.md §4/§5).
 /// Holds no provider of its own — it is handed the turn's resolved provider per
 /// call (the "reuse the agent's own model" decision).
@@ -613,68 +718,24 @@ impl Compactor {
         deadline: Instant,
         samples: &mut Vec<FoldSample>,
     ) -> Result<CompactionSummary, CompactionError> {
-        let mut chunks = split_chunks(overflow, SUMMARIZER_INPUT_BUDGET);
-        if chunks.len() > MAX_COMPACTION_CHUNKS {
-            let dropped = chunks.len() - MAX_COMPACTION_CHUNKS;
-            // Saturation counter (CLAUDE.md §5): the `MAX_COMPACTION_CHUNKS` loop
-            // bound was hit and the oldest overflow beyond it is dropped. Emitted
-            // as a structured count the OTel bridge exports — there is no metrics
-            // `Meter` wired yet (only the trace feature is enabled), so this event
-            // *is* the counter. Only reachable on the first compaction of a huge
-            // thread; Phase 2 removes the drop entirely (#202).
-            tracing::warn!(
-                event = "patom.compaction.chunks_dropped",
-                patom.compaction.chunks_dropped = dropped,
-                "compaction overflow exceeded MAX_COMPACTION_CHUNKS; dropping oldest chunks",
-            );
-            chunks.drain(0..dropped);
-        }
-        assert!(
-            chunks.len() <= MAX_COMPACTION_CHUNKS,
-            "fold loop is bounded"
-        );
-
         // The system prompt (neutral instructions + optional persona lens) is
-        // identical across folds — build it once, not once per chunk.
-        let system = self.fold_system();
-        let mut acc = prev.map_or_else(empty_summary_template, str::to_owned);
-        for chunk in chunks {
-            if self.clock.now() >= deadline {
-                return Err(CompactionError::WallClockExceeded);
-            }
-            let started_at = self.clock.now_utc();
-            let started = self.clock.now();
-            let request = self.fold_request(&system, &acc, &chunk);
-            let response = tokio::time::timeout(COMPACTION_LLM_TIMEOUT, provider.send(request))
-                .await
-                .map_err(|_| CompactionError::SummarizerTimeout)?
-                .map_err(CompactionError::Provider)?;
-            let duration = self.clock.now().saturating_duration_since(started);
-            samples.push(FoldSample {
-                started_at,
-                duration,
-                response: response.clone(),
-            });
-            acc = extract_text(&response).ok_or(CompactionError::Empty)?;
-        }
-        Ok(CompactionSummary::clamp(acc))
-    }
-
-    /// Build one fold request: the previous summary + the new messages, under the
-    /// agent's own model. No tools (summarization is a pure text turn). `system`
-    /// is built once per pass by the caller (it is constant across folds).
-    fn fold_request(&self, system: &Arc<str>, acc: &str, chunk: &[ChatMessage]) -> ChatRequest {
-        let user = format!(
-            "PREVIOUS SUMMARY:\n{acc}\n\nNEW MESSAGES TO FOLD IN (oldest first):\n{}",
-            render_messages_for_summary(chunk)
-        );
-        ChatRequest {
+        // identical across folds — build it once via the strategy, not per chunk.
+        let strategy = CompactionFold {
+            system: self.fold_system(),
             model: self.model,
-            system: system.clone(),
-            messages: vec![ChatMessage::User(vec![UserContent::Text(user)])],
-            tools: Arc::from([]),
             max_output_tokens: self.max_output_tokens,
-        }
+        };
+        let acc = run_fold_pass(
+            &self.clock,
+            provider,
+            &strategy,
+            prev,
+            overflow,
+            deadline,
+            samples,
+        )
+        .await?;
+        Ok(CompactionSummary::clamp(acc))
     }
 
     /// The summarizer's system prompt: the neutral fold instructions, plus — when
@@ -694,6 +755,31 @@ impl Compactor {
 }
 
 impl Agent {
+    /// Bill every fold that actually ran to the org under the turn's request id
+    /// (CLAUDE.md §2). Shared by conversational compaction (#182) and
+    /// produce-time tool-result reduction (#185); both fold under
+    /// `MetricKind::Compaction` so summarizer spend rolls up in one bucket.
+    pub(super) async fn meter_fold_samples(
+        &self,
+        request_id: PromptRequestId,
+        state_id: Option<AgentThreadId>,
+        org_id: OrgId,
+        samples: &[FoldSample],
+    ) {
+        for sample in samples {
+            self.record_turn_metrics(
+                request_id,
+                state_id,
+                org_id,
+                MetricKind::Compaction,
+                sample.started_at,
+                sample.duration,
+                &sample.response,
+            )
+            .await;
+        }
+    }
+
     /// Assemble `agent`'s bounded context for a turn: the rolling summary (system
     /// prefix) + the verbatim tail (messages). The windowing floor in
     /// `context_tail` bounds the prompt unconditionally; this adds the best-effort
@@ -815,18 +901,8 @@ impl Agent {
 
         // Meter every fold we actually ran — even on eventual failure — so org
         // billing is accurate (the user's "meter to org" decision).
-        for sample in &samples {
-            self.record_turn_metrics(
-                routing.request_id,
-                Some(state_id),
-                routing.org,
-                MetricKind::Compaction,
-                sample.started_at,
-                sample.duration,
-                &sample.response,
-            )
+        self.meter_fold_samples(routing.request_id, Some(state_id), routing.org, &samples)
             .await;
-        }
 
         // Restore the seed anchor at the front of the verbatim tail; both the
         // success and failure paths serve the same kept rows.

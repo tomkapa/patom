@@ -71,6 +71,58 @@ pub const MAX_TOOL_CALLS_PAGE: u16 = 100;
 // boundary doesn't have to truncate something we already truncated upstream.
 const _: () = assert!(FETCH_MAX_BODY_BYTES <= TOOL_RESULT_MAX_BYTES);
 
+/// Produce-time reduction trigger (#185), in characters.
+///
+/// A tool result at or below this size flows into the feed verbatim — no
+/// offload, no LLM. Above it, the body is offloaded to `tool_artifacts` and the
+/// visible result is reduced (paginate or summarize). Reuses #182's
+/// prompt-render cap so "too big for the feed" is one number across compaction
+/// and reduction.
+pub const TOOL_RESULT_REDUCE_THRESHOLD: usize = crate::threads::MAX_TOOL_RESULT_CHARS;
+
+/// Hard ceiling, in characters, on a single `read_artifact` slice (#185).
+///
+/// A retrieval slice must stay strictly below [`TOOL_RESULT_REDUCE_THRESHOLD`]
+/// so the slice — itself a tool result — can never re-trigger offload. This is
+/// the recursion fixpoint that bounds chunk-by-chunk reads; half the threshold
+/// leaves headroom for the partial-marker wrapper.
+pub const MAX_ARTIFACT_SLICE: usize = 16_000;
+
+/// Characters kept from the head of an oversized body in a paginate preview.
+///
+/// (#185) Enough to show the shape — headers, the first records — so the agent
+/// can decide whether to page the rest via `read_artifact`.
+pub const PREVIEW_HEAD_CHARS: usize = 2_000;
+
+/// Characters kept from the tail of an oversized body in a paginate preview.
+///
+/// (#185) The tail is what blind head-truncation drops (the rows after a match,
+/// a CSV's last lines); keeping it is the lossless win over truncation.
+pub const PREVIEW_TAIL_CHARS: usize = 2_000;
+
+/// How far into an offloaded body a `read_artifact` `grep` scans, in characters.
+///
+/// (#185) Grep loads a bounded prefix (CLAUDE.md §5 — no unbounded TEXT read)
+/// and matches app-side; a body larger than this is grep-scanned only up to
+/// here, and the agent pages the remainder by offset. 1M chars (~4 MB / ~250k
+/// tokens of raw text) covers any realistic payload.
+pub const MAX_ARTIFACT_GREP_SCAN: usize = 1_000_000;
+
+/// Cap, in characters, on the intent string fed to the summarize fold (#185).
+///
+/// The intent is a prompt fragment (WebFetch `prompt`) or a bounded
+/// serialization of the tool call input. Crosses a trust boundary (the model
+/// supplies it), so it is capped (CLAUDE.md §5) before reaching the summarizer.
+pub const MAX_REDUCTION_INTENT_CHARS: usize = 2_000;
+
+// §5 recursion fixpoint: a retrieval slice is itself a tool result, so it must
+// stay under the reduction trigger — otherwise `read_artifact` output would be
+// offloaded again, ad infinitum.
+const _: () = assert!(MAX_ARTIFACT_SLICE < TOOL_RESULT_REDUCE_THRESHOLD);
+// §5: a paginate preview (head + tail + marker) must also stay under the trigger
+// so a reduced result never itself needs reducing.
+const _: () = assert!(PREVIEW_HEAD_CHARS + PREVIEW_TAIL_CHARS < TOOL_RESULT_REDUCE_THRESHOLD);
+
 /// Truncate `s` to at most `target` bytes, on a UTF-8 boundary.
 ///
 /// `String::truncate` panics if the cut lands mid-codepoint; this walks back to the

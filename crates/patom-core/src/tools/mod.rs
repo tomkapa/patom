@@ -30,5 +30,5 @@ pub use recorder::{
 };
 pub use registry::{ToolRegistry, ToolRegistryBuilder};
 pub use toolbox::{DynamicToolSource, ToolBox};
-pub use traits::{SharedTool, Tool, ToolCallContext, ToolError};
+pub use traits::{ReductionIntent, SharedTool, Tool, ToolCallContext, ToolError, ToolResultPolicy};
 pub use url::{FetchUrl, UrlError};

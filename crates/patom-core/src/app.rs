@@ -58,9 +58,9 @@ use crate::scheduling::{
 use crate::tools::system::{
     CancelScheduledTaskTool, CreateAgentTool, ListScheduledTasksTool, MemoryForgetTool,
     MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool, PgSessionTodoStore,
-    ProfileWriteTool, RecallTool, RequestUserWireMcpTool, ScheduleTaskTool, SearchColleagueTool,
-    SearchToolsTool, SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool,
-    WebFetchTool, WebSearchTool,
+    ProfileWriteTool, ReadArtifactTool, RecallTool, RequestUserWireMcpTool, ScheduleTaskTool,
+    SearchColleagueTool, SearchToolsTool, SendMessageTool, SharedSessionTodoStore, TodoToolDeps,
+    TodoWriteTool, WebFetchTool, WebSearchTool,
 };
 use crate::tools::{ToolBox, ToolRegistry};
 
@@ -557,6 +557,7 @@ struct BuiltinToolDeps<'a> {
 fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppError> {
     Ok(ToolRegistry::builder()
         .with(Arc::new(WebFetchTool::new()?))
+        .with(Arc::new(ReadArtifactTool::new(deps.threads.clone())))
         .with(Arc::new(WebSearchTool::new(
             deps.http,
             deps.settings.brave_search_api_key.clone(),

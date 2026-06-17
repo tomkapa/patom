@@ -29,6 +29,7 @@
 mod create_agent;
 mod memory;
 mod profile_write;
+mod read_artifact;
 mod request_user_wire_mcp;
 mod scheduling;
 mod search_colleague;
@@ -44,6 +45,7 @@ pub use memory::{
     RecallTool,
 };
 pub use profile_write::ProfileWriteTool;
+pub use read_artifact::ReadArtifactTool;
 pub use request_user_wire_mcp::RequestUserWireMcpTool;
 pub use scheduling::{CancelScheduledTaskTool, ListScheduledTasksTool, ScheduleTaskTool};
 pub use search_colleague::SearchColleagueTool;

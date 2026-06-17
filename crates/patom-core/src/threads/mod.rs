@@ -16,7 +16,8 @@ pub use limits::{
 };
 pub use pg_store::PgThreadStore;
 pub use traits::{
-    AgentThreadId, ChannelRef, ContextTail, FeedMessage, MessageKind, NewMessage, RootSummary, Seq,
-    SharedThreadStore, TailRow, ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId,
-    ThreadParticipants, ThreadScope, ThreadStore,
+    AgentThreadId, ArtifactHandle, ArtifactSelector, ArtifactSlice, ChannelRef, ContextTail,
+    FeedMessage, MessageKind, NewMessage, NewToolArtifact, RootSummary, Seq, SharedThreadStore,
+    TailRow, ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId, ThreadParticipants,
+    ThreadScope, ThreadStore,
 };
