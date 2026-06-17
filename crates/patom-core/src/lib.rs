@@ -7,6 +7,7 @@
 pub mod agent_core;
 pub mod agents;
 pub mod app;
+pub mod approvals;
 pub mod assets;
 pub mod auth;
 pub mod background;

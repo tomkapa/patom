@@ -23,12 +23,14 @@ use super::outcome::{record_reply, record_turn};
 use super::turn::turn_index;
 
 const SEND_MESSAGE_TOOL_NAME: &str = "send_message";
+const ASK_APPROVAL_TOOL_NAME: &str = "ask_approval";
 
-/// Stable name of the system tool that delivers messages — exposed to the
-/// turn loop's `send_message` counter via this accessor so the constant has
-/// one home.
-pub(super) const fn send_message_tool_name() -> &'static str {
-    SEND_MESSAGE_TOOL_NAME
+/// Whether a tool produces user-visible egress. The turn loop's ping-pong guard
+/// counts these so a turn whose only output was a delivery is not falsely
+/// flagged `NoEgress` and retried/failed. `ask_approval` posts a user-visible
+/// approval card → genuine egress, exactly like `send_message` (issue #200).
+pub(super) fn tool_is_egress(name: &str) -> bool {
+    name == SEND_MESSAGE_TOOL_NAME || name == ASK_APPROVAL_TOOL_NAME
 }
 
 /// The agent runtime. All collaborators live behind shared trait handles so the agent
@@ -85,6 +87,11 @@ pub struct Agent {
     /// Background-cognition store backing [`Agent::reply_background`]. `None`
     /// outside the worker's background path.
     background: Option<SharedBackgroundStore>,
+    /// Hard approval gate (#200). `None` in agent_core unit tests (no gating);
+    /// the production factory installs [`crate::approvals::HardApprovalGate`]. When
+    /// present, [`Agent::run_one_tool`] denies a gated tool call unless an
+    /// `approved` decision exists for the DAG.
+    approval_gate: Option<crate::approvals::SharedApprovalGate>,
 }
 
 impl Agent {
@@ -108,6 +115,7 @@ impl Agent {
         billing: Option<SharedBillingService>,
         threads: Option<SharedThreadStore>,
         background: Option<SharedBackgroundStore>,
+        approval_gate: Option<crate::approvals::SharedApprovalGate>,
     ) -> Self {
         Self {
             providers,
@@ -128,6 +136,7 @@ impl Agent {
             billing,
             threads,
             background,
+            approval_gate,
         }
     }
 
@@ -187,6 +196,9 @@ impl Agent {
     }
     pub(super) fn tool_call_store(&self) -> Option<&SharedToolCallStore> {
         self.tool_call_store.as_ref()
+    }
+    pub(super) fn approval_gate(&self) -> Option<&crate::approvals::SharedApprovalGate> {
+        self.approval_gate.as_ref()
     }
     pub(super) fn todos_store(&self) -> Option<&SharedSessionTodoStore> {
         self.todos_store.as_ref()
