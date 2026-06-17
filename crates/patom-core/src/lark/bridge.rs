@@ -27,7 +27,7 @@ use crate::channels::ChannelId;
 use crate::colleagues::{ColleagueId, SharedColleagueStore};
 use crate::provider::ingest::ingest_attachment;
 use crate::provider::limits::MAX_ATTACHMENTS_PER_MESSAGE;
-use crate::provider::{Attachment, ChatMessage, UserContent};
+use crate::provider::{ChatMessage, UserContent};
 use crate::runtime::{IdempotencyKey, NewTrigger, RequestKindPayload, SharedPromptQueue};
 use crate::threads::{MessageKind, NewMessage, SharedThreadStore, ThreadId, ThreadMessageId};
 
@@ -300,37 +300,30 @@ async fn ingest_lark_resource(
     m: &InboundMessage,
     res: &LarkResource,
 ) -> Result<Option<UserContent>, LarkError> {
-    let pre = match res.kind {
-        LarkResourceKind::File => {
-            match res
-                .filename
-                .as_deref()
-                .and_then(AssetContentType::from_attachment_extension)
-            {
-                Some(ct) => Some(ct),
-                // Unsupported file (zip/video/…): skip without spending a download.
-                None => return Ok(None),
-            }
-        }
+    // A `file` resolves its type from the filename *before* the fetch, so an
+    // unsupported file (zip/video/…) costs no download. An `image` carries no
+    // filename, so its type is learned from the response Content-Type.
+    let file_type = match res.kind {
+        LarkResourceKind::File => match res
+            .filename
+            .as_deref()
+            .and_then(AssetContentType::from_attachment_extension)
+        {
+            Some(ct) => Some(ct),
+            None => return Ok(None),
+        },
         LarkResourceKind::Image => None,
     };
     let fetched = deps
         .resource_fetcher
         .fetch(token, m.message_id.as_str(), &res.file_key, res.kind)
         .await?;
-    let content_type = pre
-        .or_else(|| {
-            fetched
-                .content_type
-                .as_deref()
-                .and_then(AssetContentType::from_attachment_mime)
-        })
-        .or_else(|| {
-            res.filename
-                .as_deref()
-                .and_then(AssetContentType::from_attachment_extension)
-        });
-    let Some(content_type) = content_type else {
+    let Some(content_type) = file_type.or_else(|| {
+        fetched
+            .content_type
+            .as_deref()
+            .and_then(AssetContentType::from_attachment_mime)
+    }) else {
         return Ok(None);
     };
     let filename = res
@@ -340,17 +333,7 @@ async fn ingest_lark_resource(
     let attachment = ingest_attachment(store, &filename, content_type, fetched.bytes)
         .await
         .map_err(|e| LarkError::Internal(format!("attachment ingest: {e}")))?;
-    Ok(Some(classify_attachment(attachment)))
-}
-
-/// An image rides as an `Image` block; everything else (PDF/Office/text) as a
-/// `File` block — the provider converters materialise each at dispatch.
-fn classify_attachment(att: Attachment) -> UserContent {
-    if att.mime().is_image() {
-        UserContent::Image(att)
-    } else {
-        UserContent::File(att)
-    }
+    Ok(Some(UserContent::from(attachment)))
 }
 
 /// The Lark thread anchor: the message's `thread_id` if it is in a topic, else

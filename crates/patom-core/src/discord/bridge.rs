@@ -41,7 +41,7 @@ use crate::channels::ChannelId;
 use crate::colleagues::{ColleagueId, SharedColleagueStore};
 use crate::provider::ingest::ingest_attachment;
 use crate::provider::limits::MAX_ATTACHMENTS_PER_MESSAGE;
-use crate::provider::{Attachment, ChatMessage, UserContent};
+use crate::provider::{ChatMessage, UserContent};
 use crate::runtime::{IdempotencyKey, NewTrigger, RequestKindPayload, SharedPromptQueue};
 use crate::threads::{MessageKind, NewMessage, SharedThreadStore, ThreadId, ThreadMessageId};
 
@@ -569,17 +569,7 @@ async fn ingest_discord_attachment(
     let attachment = ingest_attachment(store, &att.filename, content_type, fetched.bytes)
         .await
         .map_err(|e| DiscordError::Internal(format!("attachment ingest: {e}")))?;
-    Ok(Some(classify_attachment(attachment)))
-}
-
-/// An image rides as an `Image` block; everything else (PDF/Office/text) as a
-/// `File` block — the provider converters materialise each at dispatch.
-fn classify_attachment(att: Attachment) -> UserContent {
-    if att.mime().is_image() {
-        UserContent::Image(att)
-    } else {
-        UserContent::File(att)
-    }
+    Ok(Some(UserContent::from(attachment)))
 }
 
 /// Run the one-shot backfill and mark it complete on a definitive outcome (incl.
