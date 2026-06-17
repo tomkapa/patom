@@ -21,7 +21,8 @@ use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use crate::approvals::{
-    ActionSummary, ApprovalId, ApproverPolicy, NewApproval, PlatformTarget, SharedApprovalStore,
+    ActionSummary, ApprovalId, ApproverPolicy, CreateOutcome, NewApproval, PlatformTarget,
+    SharedApprovalStore,
 };
 use crate::auth::Caller;
 use crate::clock::SharedClock;
@@ -229,21 +230,37 @@ impl AskApprovalTool {
         let record = outcome.record();
         tracing::Span::current().record("patom.approval.id", tracing::field::display(record.id));
 
-        // Post the visible request to the thread, then ensure it reaches the
-        // external surface (Lark/Discord) — best-effort, like send_message.
-        self.post_request(&caller, thread, requesting_colleague, &action, ctx)
-            .await?;
-        let _ = self.outbound.ensure_delivery(ctx.org_id, thread).await;
-
-        info!(
-            patom.approval.id = %record.id,
-            patom.agent.id = %agent_id,
-            "ask_approval.requested",
-        );
+        // Only the FIRST create posts the visible request + reaches the external
+        // surface. A repeated `ask_approval` for the same (thread, root, tool,
+        // action) is the idempotent `Existing` path: the row — possibly already
+        // decided/expired — is returned as-is, with NO re-post and NO re-ping of
+        // the approver (re-posting would spam the human on every gate-blocked
+        // retry of an already-decided action). The reported status + deadline
+        // come from the stored row, never a hardcoded "pending".
+        match &outcome {
+            CreateOutcome::Created(_) => {
+                self.post_request(&caller, thread, requesting_colleague, &action, ctx)
+                    .await?;
+                let _ = self.outbound.ensure_delivery(ctx.org_id, thread).await;
+                info!(
+                    patom.approval.id = %record.id,
+                    patom.agent.id = %agent_id,
+                    "ask_approval.requested",
+                );
+            }
+            CreateOutcome::Existing(_) => {
+                info!(
+                    patom.approval.id = %record.id,
+                    patom.agent.id = %agent_id,
+                    approval.status = record.status.as_str(),
+                    "ask_approval.duplicate",
+                );
+            }
+        }
         Ok(AskApprovalOutput {
             approval_id: record.id,
-            status: "pending",
-            expires_at,
+            status: record.status.as_str(),
+            expires_at: record.expires_at,
         })
     }
 
@@ -285,9 +302,12 @@ impl AskApprovalTool {
 }
 
 /// Deterministic dedupe key for repeated `ask_approval` calls in one DAG:
-/// `apv:{thread}:{root}:{gated_tool}:{sha256(action)[..16]}`. A stable hash (not
+/// `apv:{thread}:{root}:{gated_tool}:{sha256(action)}`. A stable hash (not
 /// `DefaultHasher`, which is process-seeded) so a retried call across worker
-/// restarts still collides on `(org_id, idempotency_key)`.
+/// restarts still collides on `(org_id, idempotency_key)`. The FULL digest is
+/// used — a truncated prefix could collide two distinct actions for the same
+/// (thread, root, tool) into one approval, leaking the decision's scope across
+/// actions (e.g. a "$40 refund" approval authorizing a "$900 refund").
 fn idempotency_key(
     thread: ThreadId,
     root: crate::runtime::PromptRequestId,
@@ -297,7 +317,7 @@ fn idempotency_key(
     let mut hasher = Sha256::new();
     hasher.update(action.as_bytes());
     let digest = hasher.finalize();
-    let hex = crate::hex::encode_32(&digest[..8]);
+    let hex = crate::hex::encode_32(&digest);
     format!(
         "apv:{}:{}:{}:{hex}",
         thread.as_uuid(),

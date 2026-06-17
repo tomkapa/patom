@@ -90,6 +90,16 @@ platforms; the spine seam `ApprovalDecider` is ready for both)
    (mirror `scheduling/scheduler.rs`), wired into the server lifecycle.
 6. **Admin config UI/route** for `agent_gated_tools` (`set_gated`/`unset_gated`
    exist on the store).
+7. **Gated-set per-turn load (efficiency / altitude).** Today the hard gate
+   calls `is_gated` (a DB read) on *every* tool call, and the prompt builder
+   calls `gated_tools_for_agent` (another DB read) on *every* turn — even for
+   agents that gate nothing. The deep fix is to load the agent's gated-tool set
+   **once per turn** and reuse it for both the `<approval-gated-tools>` block and
+   the gate (a `HashSet::contains` instead of N DB round-trips). A TTL cache is
+   *not* the right fix — staleness in the "newly gated" direction would let a
+   just-gated tool run un-approved for the cache window, weakening the security
+   guarantee. The read is a small indexed `SELECT EXISTS`, so this is a
+   throughput optimization, not a correctness issue.
 
 ## Notes / deviations from the issue text
 
