@@ -32,6 +32,7 @@
 //! this directory + one `.with(...)` line in `app.rs`. Externally-supplied
 //! tools enter through the MCP registry instead of this module.
 
+mod ask_approval;
 mod create_agent;
 mod memory;
 mod profile_write;
@@ -45,6 +46,7 @@ pub mod todos;
 mod web_fetch;
 mod web_search;
 
+pub use ask_approval::AskApprovalTool;
 pub use create_agent::CreateAgentTool;
 pub use memory::{
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,

@@ -129,6 +129,10 @@ pub fn router(state: AppState) -> Router {
         // Slack-initiated MCP wiring lands here — also no cookie session,
         // auth is the `connect_link`-signed token in the query string.
         .merge(mcp::slack_connect_router())
+        // Lark-initiated MCP wiring (same no-cookie, signed-token model).
+        .merge(mcp::lark_connect_router())
+        // Discord-initiated MCP wiring (same no-cookie, signed-token model).
+        .merge(mcp::discord_connect_router())
         // Slack webhook + OAuth callback also sit outside the cookie
         // gate. Slack signs each webhook (HMAC-SHA256) and the OAuth
         // callback validates an HMAC-signed state token.

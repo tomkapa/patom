@@ -43,6 +43,16 @@ pub const PROFILE_SNIPPET_LEN: usize = 160;
 /// `search_colleague` cover the rest. Saturation is emitted as a field.
 pub const MAX_PARTICIPANTS_INLINE: usize = 32;
 
+/// Max private collaborator notes surfaced per person in the `<participants>`
+/// overlay (#193).
+///
+/// Three is enough to carry the durable shape of a working relationship (a
+/// preference, a strength, a caution) without the per-turn tail ballooning when
+/// an agent has many notes about one colleague; the rest stay reachable via
+/// `recall`. Selected most-recent-first after a state-priority sort, so the
+/// three kept are the freshest high-confidence notes.
+pub const MAX_NOTES_PER_PARTICIPANT: usize = 3;
+
 /// Result cap for `search_colleague`, reused as the tool's `limit` upper bound.
 ///
 /// Matches the agent-search bound (1..=8) so the unified search returns a

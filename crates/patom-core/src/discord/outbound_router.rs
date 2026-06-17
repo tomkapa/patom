@@ -93,6 +93,9 @@ impl DiscordOutboundRouter {
             .attach(AttachRequest {
                 thread_id: thread,
                 org_id: org,
+                // Proactive delivery has no triggering user; a connect link
+                // here degrades to the web-UI pointer.
+                user_id: None,
                 application_id,
                 container_id,
                 // A proactive / continuation post is plain — no inline reply.

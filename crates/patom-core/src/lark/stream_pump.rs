@@ -20,15 +20,24 @@ use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info_span, warn};
 
-use crate::auth::OrgId;
+use crate::agents::AgentId;
+use crate::auth::{OrgId, UserId};
+use crate::clock::SharedClock;
 use crate::colleagues::ColleagueId;
+use crate::mcp::wire_connect::{render_connect_message, truncate_with_ellipsis};
+use crate::mcp::{McpAuthKind, McpCatalogId};
 use crate::runtime::{ResponseChunk, SharedThreadStream, ThreadStreamError, ThreadStreamEvent};
 use crate::threads::ThreadId;
+use crate::types::SecretString;
 
 use super::app_store::SharedLarkAppStore;
+use super::connect_link::{LarkConnectClaims, sign_connect};
 use super::directory::SharedLarkDirectory;
 use super::error::LarkError;
-use super::limits::{LARK_MAX_POST_CHARS, LARK_PUMP_IDLE_TTL, MAX_LARK_STREAM_PUMPS};
+use super::limits::{
+    LARK_CONNECT_LINK_TTL_SECS, LARK_CONNECTION_REASON_MAX_CHARS, LARK_MAX_POST_CHARS,
+    LARK_PUMP_IDLE_TTL, MAX_LARK_DEFERRED_WIRE_LINKS, MAX_LARK_STREAM_PUMPS,
+};
 use super::mention;
 use super::poster::{PostRequest, SharedLarkPoster};
 use super::token::SharedTokenProvider;
@@ -58,6 +67,12 @@ pub struct AttachRequest {
     pub thread_id: ThreadId,
     /// The org the thread belongs to (for resolving `@`-tag handles).
     pub org_id: OrgId,
+    /// The Patom user who triggered this thread — the shadow-minted owner of
+    /// any MCP wiring an agent requests here (embedded in the connect link so
+    /// the OAuth flow installs against the right org/user). `None` for a
+    /// proactive / scheduled outbound attach with no triggering user; a
+    /// `WireMcpRequest` on such a thread degrades to the web-UI pointer.
+    pub user_id: Option<UserId>,
     /// The bot whose `tenant_access_token` posts the reply.
     pub app_id: LarkAppId,
     /// Where the reply lands.
@@ -76,6 +91,13 @@ pub struct PumpDeps {
     /// Resolves the replying agent → its own bot, so a multi-bot thread
     /// attributes each reply to the correct bot (not the first-attached one).
     pub apps: SharedLarkAppStore,
+    /// HMAC key for the MCP connect-link token (derived from `master_kek`).
+    pub connect_secret: SecretString,
+    /// Base URL the connect link is built against, e.g. `https://patom.example`
+    /// (the deployment's `oauth_redirect_base`).
+    pub connect_url_base: Arc<str>,
+    /// Clock for stamping the connect-link expiry.
+    pub clock: SharedClock,
 }
 
 impl std::fmt::Debug for PumpDeps {
@@ -205,51 +227,201 @@ async fn run_pump(
 ) -> Result<(), LarkError> {
     let mut stream = deps.thread_stream.subscribe(req.thread_id);
     let mut idle_deadline = Instant::now() + LARK_PUMP_IDLE_TTL;
+    // Connect links buffered until the agent's narrative text posts, so the
+    // "connect this server" prompt lands after the explanation (web-UI
+    // stacked-bubble order). Mirrors the Slack pump's deferred-card buffer.
+    let mut deferred: Vec<DeferredLink> = Vec::new();
     loop {
         tokio::select! {
+            // Shutdown: drop pending links (best-effort surface only).
             () = cancel.cancelled() => return Ok(()),
-            () = sleep_until(idle_deadline) => return Ok(()),
+            // Idle or stream close: flush any unflushed link before exiting so
+            // a request that never saw trailing text isn't silently lost.
+            () = sleep_until(idle_deadline) => break,
             next = stream.next() => {
-                let Some(result) = next else { return Ok(()); };
+                let Some(result) = next else { break; };
                 idle_deadline = Instant::now() + LARK_PUMP_IDLE_TTL;
-                handle_stream_event(deps, req, result).await;
+                handle_stream_event(deps, req, &mut deferred, result).await;
             }
+        }
+    }
+    flush_deferred(deps, req, &mut deferred).await;
+    Ok(())
+}
+
+/// One pending MCP connect message: the rendered text plus the agent it is
+/// attributed to (so the flush posts via that agent's own bot).
+struct DeferredLink {
+    message: String,
+    from_agent: AgentId,
+}
+
+/// Forward one stream event to Lark, if it carries user-visible text.
+///
+/// A `WireMcpRequest` is rendered into a connect message and **buffered** in
+/// `deferred`; it is flushed after the next narrative text post (or at a turn
+/// boundary), so the "connect this server" prompt reads after the agent's
+/// explanation rather than before it.
+async fn handle_stream_event(
+    deps: &PumpDeps,
+    req: &AttachRequest,
+    deferred: &mut Vec<DeferredLink>,
+    event: Result<ThreadStreamEvent, ThreadStreamError>,
+) {
+    let item = match event {
+        Err(e) => {
+            warn!(error = ?e, event = "lark.stream_pump.backend_error");
+            return;
+        }
+        Ok(ThreadStreamEvent::Stalled) => {
+            warn!(event = "lark.stream_pump.stalled");
+            return;
+        }
+        Ok(ThreadStreamEvent::Item(item)) => item,
+    };
+
+    // MCP connect request: render + buffer, don't post yet.
+    if let ResponseChunk::WireMcpRequest { .. } = &item.chunk {
+        if let Some(message) = build_connect_message(deps, req, &item.chunk) {
+            if deferred.len() >= MAX_LARK_DEFERRED_WIRE_LINKS {
+                deferred.remove(0);
+            }
+            deferred.push(DeferredLink {
+                message,
+                from_agent: item.from_agent,
+            });
+        }
+        return;
+    }
+
+    let posted = if let Some((text, to)) = render_payload(&item.chunk) {
+        // Post via the REPLYING agent's own bot, so a multi-bot thread
+        // attributes each reply correctly. Fall back to the attaching bot
+        // only if the agent has no Lark bot of its own.
+        let app_id = resolve_agent_bot(deps, req, item.from_agent).await;
+        let rendered = render_outbound(deps, req, &text, to).await;
+        post_reply(
+            deps,
+            &app_id,
+            req,
+            truncate_with_ellipsis(rendered, LARK_MAX_POST_CHARS),
+        )
+        .await;
+        true
+    } else {
+        false
+    };
+
+    // Flush buffered connect links after the narrative text, or at a turn
+    // boundary even when the final chunk carried no text (so an empty `Done`
+    // never strands the link in the buffer).
+    let terminal = matches!(
+        &item.chunk,
+        ResponseChunk::Done { .. } | ResponseChunk::Error { .. }
+    );
+    if posted || terminal {
+        flush_deferred(deps, req, deferred).await;
+    }
+}
+
+/// Resolve the bot whose `tenant_access_token` should post for `agent` — the
+/// agent's own Lark bot, falling back to the attaching bot.
+async fn resolve_agent_bot(deps: &PumpDeps, req: &AttachRequest, agent: AgentId) -> LarkAppId {
+    match deps.apps.app_id_for_agent(req.org_id, agent).await {
+        Ok(Some(a)) => a,
+        Ok(None) => req.app_id.clone(),
+        Err(e) => {
+            warn!(error = ?e, event = "lark.stream_pump.agent_bot_resolve_failed");
+            req.app_id.clone()
         }
     }
 }
 
-/// Forward one stream event to Lark, if it carries user-visible text.
-async fn handle_stream_event(
+/// Post every buffered connect link in order, each via its agent's own bot.
+async fn flush_deferred(deps: &PumpDeps, req: &AttachRequest, deferred: &mut Vec<DeferredLink>) {
+    for pending in deferred.drain(..) {
+        let app_id = resolve_agent_bot(deps, req, pending.from_agent).await;
+        post_reply(
+            deps,
+            &app_id,
+            req,
+            truncate_with_ellipsis(pending.message, LARK_MAX_POST_CHARS),
+        )
+        .await;
+    }
+}
+
+/// Render a `WireMcpRequest` chunk into the plain-text connect message Lark
+/// posts. For an OAuth2 catalog this carries a signed
+/// `GET /lark/mcp/connect?token=…` URL; for static-headers / no-auth catalogs
+/// it points the user at the Patom web UI (Lark can't host a secret-entry
+/// form). Returns `None` for any non-`WireMcpRequest` chunk.
+fn build_connect_message(
     deps: &PumpDeps,
     req: &AttachRequest,
-    event: Result<ThreadStreamEvent, ThreadStreamError>,
-) {
-    match event {
-        Err(e) => warn!(error = ?e, event = "lark.stream_pump.backend_error"),
-        Ok(ThreadStreamEvent::Stalled) => warn!(event = "lark.stream_pump.stalled"),
-        Ok(ThreadStreamEvent::Item(item)) => {
-            let Some((text, to)) = render_payload(&item.chunk) else {
-                return;
-            };
-            // Post via the REPLYING agent's own bot, so a multi-bot thread
-            // attributes each reply correctly. Fall back to the attaching bot
-            // only if the agent has no Lark bot of its own.
-            let app_id = match deps
-                .apps
-                .app_id_for_agent(req.org_id, item.from_agent)
-                .await
-            {
-                Ok(Some(a)) => a,
-                Ok(None) => req.app_id.clone(),
-                Err(e) => {
-                    warn!(error = ?e, event = "lark.stream_pump.agent_bot_resolve_failed");
-                    req.app_id.clone()
-                }
-            };
-            let rendered = render_outbound(deps, req, &text, to).await;
-            post_reply(deps, &app_id, req, clip(rendered, LARK_MAX_POST_CHARS)).await;
-        }
-    }
+    chunk: &ResponseChunk,
+) -> Option<String> {
+    let ResponseChunk::WireMcpRequest {
+        from,
+        catalog_id,
+        display_name,
+        reason,
+        auth_kind,
+        ..
+    } = chunk
+    else {
+        return None;
+    };
+    // Only OAuth2 catalogs get a signed connect link; the rest (and any thread
+    // we can't mint a link for — see `build_connect_url`) point at the web UI.
+    let url = match auth_kind {
+        McpAuthKind::OAuth2 => build_connect_url(deps, req, catalog_id, *from),
+        McpAuthKind::StaticHeaders | McpAuthKind::None => None,
+    };
+    Some(render_connect_message(
+        display_name,
+        reason,
+        *auth_kind,
+        url.as_deref(),
+        LARK_CONNECTION_REASON_MAX_CHARS,
+    ))
+}
+
+/// Mint a signed `GET /lark/mcp/connect?token=…` URL. The token binds the
+/// catalog, the resolved Patom `(org, user)` that owns the wiring, the Lark
+/// chat (so the OAuth callback pings back), and the Patom thread + agent (so
+/// the universal auto-continue resumes the right loop).
+///
+/// Returns `None` — degrading to the web-UI pointer — when the link can't be
+/// targeted: a proactive attach with no triggering `user_id`, or a DM
+/// recipient (the ping-back is `chat_id`-keyed, which a DM doesn't carry).
+fn build_connect_url(
+    deps: &PumpDeps,
+    req: &AttachRequest,
+    catalog_id: &McpCatalogId,
+    agent_id: AgentId,
+) -> Option<String> {
+    let user_id = req.user_id?;
+    let LarkRecipient::Chat { chat_id, reply_to } = &req.recipient else {
+        return None;
+    };
+    let exp = deps
+        .clock
+        .now_unix_secs()
+        .saturating_add(LARK_CONNECT_LINK_TTL_SECS);
+    let claims = LarkConnectClaims {
+        catalog_id: catalog_id.clone(),
+        org_id: req.org_id,
+        user_id,
+        app_id: req.app_id.clone(),
+        chat_id: chat_id.clone(),
+        reply_to: reply_to.clone(),
+        thread_id: req.thread_id,
+        agent_id,
+    };
+    let token = sign_connect(deps.connect_secret.expose().as_bytes(), &claims, exp);
+    let base = deps.connect_url_base.trim_end_matches('/');
+    Some(format!("{base}/lark/mcp/connect?token={token}"))
 }
 
 /// Render a reply for Lark: rewrite inline `@Name` to `<at>`, then prepend an
@@ -401,20 +573,6 @@ fn render_payload(chunk: &ResponseChunk) -> Option<(String, Option<ColleagueId>)
     }
 }
 
-/// Trim `text` to fit Lark's per-message length cap with a graceful ellipsis,
-/// slicing on a char boundary.
-fn clip(text: String, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    if text.chars().count() <= max_chars {
-        return text;
-    }
-    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
-    out.push('…');
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,13 +623,6 @@ mod tests {
             })
             .is_none()
         );
-    }
-
-    #[test]
-    fn clip_trims_with_ellipsis() {
-        let out = clip("a".repeat(100), 10);
-        assert_eq!(out.chars().count(), 10);
-        assert!(out.ends_with('…'));
     }
 
     #[test]

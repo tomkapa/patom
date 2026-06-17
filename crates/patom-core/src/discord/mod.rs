@@ -28,6 +28,7 @@ pub mod attachment;
 pub mod bridge;
 pub mod channel_map;
 pub mod codec;
+pub mod connect_link;
 pub mod connection;
 pub mod directory;
 pub mod dm_map;
