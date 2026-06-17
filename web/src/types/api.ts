@@ -198,6 +198,24 @@ export type SlackWorkspaceSummary = {
 
 export type SlackInstallResponse = { authorize_url: string };
 
+/** One Lark app registered against the active org, surfaced on an agent's
+ *  Integrations tab. The app secret is write-only and never returned;
+ *  `tenant_key` is populated only after the bot's first inbound event. */
+export type LarkApp = {
+  app_id: string;
+  agent_id: string;
+  tenant_key: string | null;
+};
+
+/** One Discord app registered against the active org. The bot token is
+ *  write-only and never returned; `bot_user_id` is populated only after
+ *  the bot's first gateway READY. */
+export type DiscordApp = {
+  application_id: string;
+  agent_id: string;
+  bot_user_id: string | null;
+};
+
 /** One issued invite. `token` is the **cleartext** single-use URL
  *  secret returned only at issuance; surface it in the copy-link
  *  affordance and never log it. */

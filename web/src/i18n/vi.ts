@@ -245,6 +245,7 @@ const vi: TranslationTable = {
   "agent.detail.nav.section": "CÀI ĐẶT AGENT",
   "agent.detail.nav.general": "Tổng quan",
   "agent.detail.nav.tools": "Công cụ & kết nối",
+  "agent.detail.nav.integrations": "Tích hợp",
   "agent.detail.nav.scheduled": "Tác vụ đã lên lịch",
   "agent.detail.nav.logs": "Nhật ký & chỉ số",
   "agent.detail.switcher.aria": "Chuyển Agent",
@@ -255,7 +256,63 @@ const vi: TranslationTable = {
   "agent.detail.breadcrumb.agents": "Agent",
   "agent.detail.breadcrumb.general": "Tổng quan",
   "agent.detail.breadcrumb.tools": "Công cụ & kết nối",
+  "agent.detail.breadcrumb.integrations": "Tích hợp",
   "agent.detail.breadcrumb.scheduled": "Tác vụ đã lên lịch",
+
+  // ─── Agent detail · Tích hợp ─────────────────────────────────────────
+  "agent.detail.integrations.title": "Tích hợp",
+  "agent.detail.integrations.subtitle":
+    "Kết nối bot nền tảng chat với agent này. Chỉ chủ sở hữu và quản trị viên — thông tin xác thực được mã hóa và không rời khỏi workspace.",
+  "agent.detail.integrations.role.owner": "Chủ sở hữu",
+  "agent.detail.integrations.role.admin": "Quản trị viên",
+  "agent.detail.integrations.intro.label": "NỀN TẢNG CHAT",
+  "agent.detail.integrations.intro.desc":
+    "Kết nối một bot riêng cho mỗi nền tảng của agent này. Mỗi nền tảng một ứng dụng.",
+  "agent.detail.integrations.loadError":
+    "Không tải được tích hợp. Vui lòng thử lại.",
+  "agent.detail.integrations.memberOnly": "Chỉ chủ sở hữu & quản trị viên",
+  "agent.detail.integrations.card.appId": "APP ID",
+  "agent.detail.integrations.card.bound": "GẮN VỚI",
+  "agent.detail.integrations.card.boundValue": "{name} · nhóm chat",
+  "agent.detail.integrations.card.tenant": "TENANT",
+  "agent.detail.integrations.card.bot": "BOT",
+  "agent.detail.integrations.card.pending": "Chờ sự kiện đầu tiên",
+  "agent.detail.integrations.card.connectedTag": "Đã kết nối",
+  "agent.detail.integrations.card.live": "Hoạt động · sự kiện đầu tiên",
+  "agent.detail.integrations.card.awaiting": "Đang chờ sự kiện đầu tiên",
+  "agent.detail.integrations.card.remove": "Gỡ bỏ",
+  "agent.detail.integrations.card.menu": "Thao tác ứng dụng",
+  "agent.detail.integrations.card.guide": "Xem hướng dẫn cài đặt",
+  "agent.detail.integrations.card.connect": "Kết nối {name}",
+  "agent.detail.integrations.lark.name": "Lark",
+  "agent.detail.integrations.lark.desc":
+    "Kết nối bot theo tenant để agent này có thể chat trong nhóm Lark/Feishu của bạn.",
+  "agent.detail.integrations.lark.idLabel": "App ID",
+  "agent.detail.integrations.lark.secretLabel": "App Secret",
+  "agent.detail.integrations.lark.idPlaceholder": "cli_a8f3e21c9b0d4400",
+  "agent.detail.integrations.lark.hint":
+    "Tạo ứng dụng trong Lark Open Platform, bật bot và cấp quyền tin nhắn.",
+  "agent.detail.integrations.discord.name": "Discord",
+  "agent.detail.integrations.discord.desc":
+    "Kết nối bot theo guild để agent này có thể chat trong máy chủ Discord của bạn.",
+  "agent.detail.integrations.discord.idLabel": "Application ID",
+  "agent.detail.integrations.discord.secretLabel": "Bot Token",
+  "agent.detail.integrations.discord.idPlaceholder": "1234567890123456789",
+  "agent.detail.integrations.discord.hint":
+    "Tạo ứng dụng trong Discord Developer Portal, thêm bot và bật intent Message Content.",
+  "agent.detail.integrations.modal.title": "Kết nối {name}",
+  "agent.detail.integrations.modal.sub": "Kết nối bot với {agent}",
+  "agent.detail.integrations.modal.agentLabel": "Agent",
+  "agent.detail.integrations.modal.secretHelper":
+    "Được mã hóa khi lưu. Không hiển thị lại sau khi lưu.",
+  "agent.detail.integrations.modal.cancel": "Hủy",
+  "agent.detail.integrations.modal.connect": "Kết nối",
+  "agent.detail.integrations.modal.secretToggle": "Bật/tắt hiển thị bí mật",
+  "agent.detail.integrations.remove.title": "Gỡ bot {name}?",
+  "agent.detail.integrations.remove.body":
+    "Bot sẽ ngắt kết nối ngay và ngừng phản hồi trong {name}. Bạn có thể kết nối lại sau với cùng thông tin xác thực.",
+  "agent.detail.integrations.remove.cancel": "Hủy",
+  "agent.detail.integrations.remove.confirm": "Gỡ bot",
 
   // ─── Agent detail · Tác vụ đã lên lịch ───────────────────────────────
   "agent.detail.scheduled.title": "Tác vụ đã lên lịch",

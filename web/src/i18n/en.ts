@@ -250,6 +250,7 @@ const en = {
   "agent.detail.nav.section": "AGENT SETTINGS",
   "agent.detail.nav.general": "General",
   "agent.detail.nav.tools": "Tools & connections",
+  "agent.detail.nav.integrations": "Integrations",
   "agent.detail.nav.scheduled": "Scheduled Tasks",
   "agent.detail.nav.logs": "Logs & metrics",
   "agent.detail.switcher.aria": "Switch agent",
@@ -260,7 +261,68 @@ const en = {
   "agent.detail.breadcrumb.agents": "Agents",
   "agent.detail.breadcrumb.general": "General",
   "agent.detail.breadcrumb.tools": "Tools & connections",
+  "agent.detail.breadcrumb.integrations": "Integrations",
   "agent.detail.breadcrumb.scheduled": "Scheduled Tasks",
+
+  // ─── Agent detail · Integrations ─────────────────────────────────────
+  "agent.detail.integrations.title": "Integrations",
+  "agent.detail.integrations.subtitle":
+    "Wire a chat-platform bot to this agent. Owner and admins only — credentials are stored encrypted and never leave the workspace.",
+  "agent.detail.integrations.role.owner": "Owner",
+  "agent.detail.integrations.role.admin": "Admin",
+  "agent.detail.integrations.intro.label": "CHAT PLATFORMS",
+  "agent.detail.integrations.intro.desc":
+    "Wire a dedicated bot per platform for this agent. One app per platform.",
+  "agent.detail.integrations.loadError":
+    "Couldn't load integrations. Try again.",
+  "agent.detail.integrations.memberOnly": "Owner & admins only",
+  // Card — connected state
+  "agent.detail.integrations.card.appId": "APP ID",
+  "agent.detail.integrations.card.bound": "BOUND",
+  "agent.detail.integrations.card.boundValue": "{name} · group chats",
+  "agent.detail.integrations.card.tenant": "TENANT",
+  "agent.detail.integrations.card.bot": "BOT",
+  "agent.detail.integrations.card.pending": "Pending first event",
+  "agent.detail.integrations.card.connectedTag": "Connected",
+  "agent.detail.integrations.card.live": "Live · first event",
+  "agent.detail.integrations.card.awaiting": "Awaiting first event",
+  "agent.detail.integrations.card.remove": "Remove",
+  "agent.detail.integrations.card.menu": "App actions",
+  // Card — disconnected state
+  "agent.detail.integrations.card.guide": "View setup guide",
+  "agent.detail.integrations.card.connect": "Connect {name}",
+  // Platform copy
+  "agent.detail.integrations.lark.name": "Lark",
+  "agent.detail.integrations.lark.desc":
+    "Wire a tenant-scoped bot so this agent can chat in your Lark/Feishu groups.",
+  "agent.detail.integrations.lark.idLabel": "App ID",
+  "agent.detail.integrations.lark.secretLabel": "App Secret",
+  "agent.detail.integrations.lark.idPlaceholder": "cli_a8f3e21c9b0d4400",
+  "agent.detail.integrations.lark.hint":
+    "Create an app in the Lark Open Platform, enable the bot, and grant the message permissions.",
+  "agent.detail.integrations.discord.name": "Discord",
+  "agent.detail.integrations.discord.desc":
+    "Wire a guild-scoped bot so this agent can chat in your Discord server.",
+  "agent.detail.integrations.discord.idLabel": "Application ID",
+  "agent.detail.integrations.discord.secretLabel": "Bot Token",
+  "agent.detail.integrations.discord.idPlaceholder": "1234567890123456789",
+  "agent.detail.integrations.discord.hint":
+    "Create an application in the Discord Developer Portal, add a bot, and enable the Message Content intent.",
+  // Connect modal
+  "agent.detail.integrations.modal.title": "Connect {name}",
+  "agent.detail.integrations.modal.sub": "Wire a bot to {agent}",
+  "agent.detail.integrations.modal.agentLabel": "Agent",
+  "agent.detail.integrations.modal.secretHelper":
+    "Stored encrypted. Never displayed after save.",
+  "agent.detail.integrations.modal.cancel": "Cancel",
+  "agent.detail.integrations.modal.connect": "Connect",
+  "agent.detail.integrations.modal.secretToggle": "Toggle secret visibility",
+  // Remove confirm modal
+  "agent.detail.integrations.remove.title": "Remove {name} bot?",
+  "agent.detail.integrations.remove.body":
+    "The bot disconnects immediately and stops responding in {name}. You can reconnect it later with the same credentials.",
+  "agent.detail.integrations.remove.cancel": "Cancel",
+  "agent.detail.integrations.remove.confirm": "Remove bot",
 
   // ─── Agent detail · Scheduled tasks ──────────────────────────────────
   "agent.detail.scheduled.title": "Scheduled Tasks",
