@@ -73,6 +73,10 @@ pub fn sign_connect(key: &[u8], claims: &LarkConnectClaims, exp_secs: i64) -> St
 /// distinguishing causes.
 #[must_use]
 pub fn verify_connect(key: &[u8], token: &str, now_secs: i64) -> Option<LarkConnectClaims> {
+    // Trust-boundary length cap (§5) before any parse / HMAC work.
+    if token.len() > crate::mcp::wire_connect::CONNECT_TOKEN_MAX_BYTES {
+        return None;
+    }
     let (payload, sig_hex) = token.rsplit_once(':')?;
     if sig_hex.len() != 64 {
         return None;

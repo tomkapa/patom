@@ -15,6 +15,14 @@
 
 use crate::mcp::McpAuthKind;
 
+/// Maximum byte length of a signed chat connect token at the unauthenticated
+/// `GET /{platform}/mcp/connect` boundary (CLAUDE.md §5 — every string crossing
+/// a trust boundary has a length cap). A real token is ~450 bytes (colon-joined
+/// ids + UUIDs + a 64-char HMAC tail); this is generous head-room that still
+/// rejects an oversized hostile query before any HMAC work. Shared by the Lark
+/// and Discord `verify_connect`.
+pub(crate) const CONNECT_TOKEN_MAX_BYTES: usize = 1024;
+
 /// Render the plain-text connect message a chat pump posts for a
 /// `WireMcpRequest`.
 ///

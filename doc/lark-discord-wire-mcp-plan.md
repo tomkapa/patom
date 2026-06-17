@@ -1,7 +1,15 @@
 # Lark + Discord: render agent MCP connection requests in chat (#181)
 
-Status: PLANNED (2026-06-17). Scope: **Lark + Discord** (issue is Lark-only; Discord
-folded in for parity — same gap, same fix shape).
+Status: COMPLETED (2026-06-17, PR #208). Scope: **Lark + Discord** (issue is Lark-only;
+Discord folded in for parity — same gap, same fix shape).
+
+**Coordination note:** merged with PR #178 (OutboundRouter / DM-routing). During the
+merge, migration 86 collided with #178's `discord_dms` — renumbered to **89** (main now
+holds 86 `discord_dms`, 87 `lark_dms`, 88 `channel_agent_members`). #178 also reshaped the
+Lark `AttachRequest` (`chat_id`/`reply_to` → a `recipient: LarkRecipient{Chat|Dm}` enum)
+and added proactive outbound-router attach sites with no triggering user, so
+`AttachRequest.user_id` is now `Option<UserId>` — a `WireMcpRequest` on a DM or an
+ownerless proactive thread degrades to the web-UI pointer.
 
 ## Problem
 
@@ -86,7 +94,7 @@ is red→green→refactor.
 1. `LarkPingCtx { tenant_key, chat_id, reply_to: Option<..> }` and
    `DiscordPingCtx { application_id, channel_id, reply_to: Option<..> }` in
    `state_adapter.rs`. Add `lark_ctx`/`discord_ctx: Option<..>` to `PatomPendingCtx`.
-2. Migration 86: add nullable columns + all-or-none CHECK per group; paired down.
+2. Migration 89: add nullable columns + all-or-none CHECK per group; paired down.
    Extend `save` INSERT, `read_pending_ctx` SELECT, and `PendingCtxRow::into_ctx`
    validation (match-on-all-Some, else `Misconfigured`). Test the round-trip.
 3. `do_lark_ping` / `do_discord_ping` (mirror `do_slack_ping:1658`): post

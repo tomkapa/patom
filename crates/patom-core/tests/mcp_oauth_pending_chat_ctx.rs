@@ -1,5 +1,5 @@
 //! Round-trip coverage for the Lark / Discord ping-context columns added to
-//! `mcp_oauth_pending` (migration 86). Drives the real
+//! `mcp_oauth_pending` (migration 89). Drives the real
 //! [`PgMcpOAuthPendingStore`] `save` → `read_pending_ctx` path over Postgres
 //! so the new SQL columns + all-or-none decode are exercised end-to-end —
 //! the seam the OAuth callback reads to fire `do_lark_ping` / `do_discord_ping`

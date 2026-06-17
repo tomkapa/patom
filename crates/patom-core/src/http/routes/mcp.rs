@@ -1759,24 +1759,30 @@ async fn do_lark_ping(state: &AppState, pending: &PatomPendingCtx, display_name:
             })
             .ok()
     });
-    let token = match lark.token_provider.token(&app_id).await {
-        Ok(t) => t,
-        Err(e) => {
+    let ping_timeout = crate::lark::limits::LARK_PING_TIMEOUT;
+    let token = match tokio::time::timeout(ping_timeout, lark.token_provider.token(&app_id)).await {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => {
             tracing::warn!(error = ?e, event = "mcp.oauth.callback.lark_ping_token_failed");
             return;
         }
+        Err(_) => {
+            tracing::warn!(event = "mcp.oauth.callback.lark_ping_token_timeout");
+            return;
+        }
     };
-    if let Err(e) = lark
-        .poster
-        .post(crate::lark::poster::PostRequest {
-            token,
-            chat_id,
-            reply_to,
-            text: format!("✓ Connected — {display_name}"),
-        })
-        .await
-    {
-        tracing::warn!(error = ?e, event = "mcp.oauth.callback.lark_ping_post_failed");
+    let post = lark.poster.post(crate::lark::poster::PostRequest {
+        token,
+        chat_id,
+        reply_to,
+        text: format!("✓ Connected — {display_name}"),
+    });
+    match tokio::time::timeout(ping_timeout, post).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(error = ?e, event = "mcp.oauth.callback.lark_ping_post_failed");
+        }
+        Err(_) => tracing::warn!(event = "mcp.oauth.callback.lark_ping_post_timeout"),
     }
 }
 
@@ -1815,18 +1821,19 @@ async fn do_discord_ping(state: &AppState, pending: &PatomPendingCtx, display_na
             })
             .ok()
     });
-    if let Err(e) = discord
-        .poster
-        .post(crate::discord::poster::PostRequest {
-            application_id,
-            container_id,
-            reply_to,
-            content: format!("✓ Connected — {display_name}"),
-            allowed_mentions: crate::discord::poster::AllowedMentions::none(),
-        })
-        .await
-    {
-        tracing::warn!(error = ?e, event = "mcp.oauth.callback.discord_ping_post_failed");
+    let post = discord.poster.post(crate::discord::poster::PostRequest {
+        application_id,
+        container_id,
+        reply_to,
+        content: format!("✓ Connected — {display_name}"),
+        allowed_mentions: crate::discord::poster::AllowedMentions::none(),
+    });
+    match tokio::time::timeout(crate::discord::limits::DISCORD_PING_TIMEOUT, post).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(error = ?e, event = "mcp.oauth.callback.discord_ping_post_failed");
+        }
+        Err(_) => tracing::warn!(event = "mcp.oauth.callback.discord_ping_post_timeout"),
     }
 }
 

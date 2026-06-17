@@ -370,39 +370,12 @@ impl PendingCtxRow {
                 ));
             }
         };
-        let lark_ctx = match (self.lark_app_id, self.lark_chat_id) {
-            (Some(app_id), Some(chat_id)) => Some(LarkPingCtx {
-                app_id,
-                chat_id,
-                reply_to: self.lark_reply_to,
-            }),
-            // A reply anchor without its chat target is meaningless — the DB
-            // CHECK forbids it, but defend the decode so a stray row can't
-            // silently drop the reply_to.
-            (None, None) if self.lark_reply_to.is_none() => None,
-            _ => {
-                return Err(OAuthError::Misconfigured(
-                    "mcp_oauth_pending.lark_ctx partially populated; \
-                     CHECK constraint violated"
-                        .to_owned(),
-                ));
-            }
-        };
-        let discord_ctx = match (self.discord_application_id, self.discord_container_id) {
-            (Some(application_id), Some(container_id)) => Some(DiscordPingCtx {
-                application_id,
-                container_id,
-                reply_to: self.discord_reply_to,
-            }),
-            (None, None) if self.discord_reply_to.is_none() => None,
-            _ => {
-                return Err(OAuthError::Misconfigured(
-                    "mcp_oauth_pending.discord_ctx partially populated; \
-                     CHECK constraint violated"
-                        .to_owned(),
-                ));
-            }
-        };
+        let lark_ctx = decode_lark_ctx(self.lark_app_id, self.lark_chat_id, self.lark_reply_to)?;
+        let discord_ctx = decode_discord_ctx(
+            self.discord_application_id,
+            self.discord_container_id,
+            self.discord_reply_to,
+        )?;
         Ok(PatomPendingCtx {
             server_id: self.server_id,
             user_id: self.user_id,
@@ -414,6 +387,52 @@ impl PendingCtxRow {
             discord_ctx,
             expires_at: self.expires_at,
         })
+    }
+}
+
+/// Decode the Lark ping-context column group into [`LarkPingCtx`], enforcing
+/// the all-or-none invariant the DB CHECK guarantees. A reply anchor without
+/// its chat target is meaningless — defend the decode so a stray row (out-of-
+/// band INSERT / future CHECK regression) can't silently drop the `reply_to`.
+fn decode_lark_ctx(
+    app_id: Option<String>,
+    chat_id: Option<String>,
+    reply_to: Option<String>,
+) -> Result<Option<LarkPingCtx>, OAuthError> {
+    match (app_id, chat_id) {
+        (Some(app_id), Some(chat_id)) => Ok(Some(LarkPingCtx {
+            app_id,
+            chat_id,
+            reply_to,
+        })),
+        (None, None) if reply_to.is_none() => Ok(None),
+        _ => Err(OAuthError::Misconfigured(
+            "mcp_oauth_pending.lark_ctx partially populated; \
+             CHECK constraint violated"
+                .to_owned(),
+        )),
+    }
+}
+
+/// Decode the Discord ping-context column group into [`DiscordPingCtx`].
+/// Peer of [`decode_lark_ctx`].
+fn decode_discord_ctx(
+    application_id: Option<String>,
+    container_id: Option<String>,
+    reply_to: Option<String>,
+) -> Result<Option<DiscordPingCtx>, OAuthError> {
+    match (application_id, container_id) {
+        (Some(application_id), Some(container_id)) => Ok(Some(DiscordPingCtx {
+            application_id,
+            container_id,
+            reply_to,
+        })),
+        (None, None) if reply_to.is_none() => Ok(None),
+        _ => Err(OAuthError::Misconfigured(
+            "mcp_oauth_pending.discord_ctx partially populated; \
+             CHECK constraint violated"
+                .to_owned(),
+        )),
     }
 }
 

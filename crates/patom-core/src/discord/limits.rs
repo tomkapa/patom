@@ -165,6 +165,11 @@ pub const DISCORD_CONNECTION_REASON_MAX_CHARS: usize = 1_400;
 /// after the agent's narrative text. Mirrors Slack's `MAX_DEFERRED_WIRE_CARDS`.
 pub const MAX_DISCORD_DEFERRED_WIRE_LINKS: usize = 8;
 
+/// Wall-clock bound on the best-effort "✓ Connected" ping post fired from the
+/// MCP OAuth callback (§5), so a hung Discord edge can't hold the callback's
+/// `tokio::join!` open after credentials have landed.
+pub const DISCORD_PING_TIMEOUT: Duration = Duration::from_secs(15);
+
 // ─────────────────────────────────────────────────────────────────────────
 // Roster (GUILD_MEMBERS) sync
 // ─────────────────────────────────────────────────────────────────────────
