@@ -57,7 +57,9 @@ the original DAG root so turn budget + lineage are preserved.
 
 ### Shipped (#214) — interactive decision intake for Discord + Lark
 
-Items 1, 2, 4 below landed together (one PR). All gates green; migration **92**
+The create-side seam, Discord intake, and Lark intake (the original plan's items
+1, 2, 4) landed together in one PR — they are the three bullets below, not the
+3–7 checklist that follows under "Remaining". All gates green; migration **92**
 up/down/up rollback verified against the full chain.
 
 - **Create-side seam** — `OutboundRouter` gained `resolve_target` +

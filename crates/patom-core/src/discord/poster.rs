@@ -27,7 +27,10 @@ use tokio::time::sleep;
 
 use super::app_store::SharedBotTokenSource;
 use super::error::DiscordError;
-use super::limits::{DISCORD_ACTION_ROW_MAX, DISCORD_CUSTOM_ID_MAX};
+use super::limits::{
+    DISCORD_ACTION_ROW_MAX, DISCORD_BUTTON_LABEL_MAX, DISCORD_CUSTOM_ID_MAX,
+    DISCORD_MESSAGE_ACTION_ROWS_MAX,
+};
 use super::limits::{
     DISCORD_MESSAGE_MAX, DISCORD_POST_ERROR_BODY_MAX, DISCORD_POST_MAX_RETRIES,
     DISCORD_POST_TIMEOUT, DISCORD_RETRY_AFTER_CAP_SECS,
@@ -104,9 +107,17 @@ pub struct Button {
 }
 
 impl Button {
-    /// Build a button, asserting the `custom_id` is within Discord's cap (§5).
+    /// Build a button, asserting the `label` and `custom_id` are within Discord's
+    /// caps (§5 — every string crossing the boundary is bounded).
     #[must_use]
     pub fn new(style: ButtonStyle, label: impl Into<String>, custom_id: String) -> Self {
+        let label = label.into();
+        let label_len = label.chars().count();
+        assert!(label_len >= 1, "button label must be non-empty");
+        assert!(
+            label_len <= DISCORD_BUTTON_LABEL_MAX,
+            "button label exceeds Discord's 80-char cap"
+        );
         let len = custom_id.chars().count();
         assert!(len >= 1, "button custom_id must be non-empty");
         assert!(
@@ -115,7 +126,7 @@ impl Button {
         );
         Self {
             style,
-            label: label.into(),
+            label,
             custom_id,
         }
     }
@@ -333,6 +344,12 @@ struct WireRateLimit {
 #[async_trait]
 impl DiscordPoster for HttpDiscordPoster {
     async fn post(&self, req: PostRequest) -> Result<Vec<DiscordMessageId>, DiscordError> {
+        // The components batch is bounded so a future caller can't over-fill it
+        // and burn the shared invalid-request budget on a 400 (§5).
+        assert!(
+            req.components.len() <= DISCORD_MESSAGE_ACTION_ROWS_MAX,
+            "message action rows exceed Discord's cap"
+        );
         // An empty body is a Discord 400 that would burn the shared
         // invalid-request budget for nothing — there is no message to send.
         if req.content.is_empty() {
@@ -484,6 +501,13 @@ impl HttpDiscordPoster {
         url: String,
         body: Vec<u8>,
     ) -> Result<(), DiscordError> {
+        if self.limiter.invalid_budget_exhausted() {
+            // A Cloudflare ban is imminent/active on the shared egress; do not
+            // add to the invalid-request count (same guard as `post_one`).
+            return Err(DiscordError::RateLimited {
+                retry_after_secs: DISCORD_RETRY_AFTER_CAP_SECS,
+            });
+        }
         let send = self
             .http
             .request(method, &url)
@@ -496,6 +520,11 @@ impl HttpDiscordPoster {
             Err(_) => return Err(DiscordError::PostTimeout(DISCORD_POST_TIMEOUT)),
         };
         let status = resp.status();
+        // An expired interaction token / 429 counts toward the shared invalid-
+        // request budget, exactly as the message + DM paths record it.
+        if matches!(status.as_u16(), 401 | 403 | 429) {
+            self.limiter.record_invalid();
+        }
         if !status.is_success() {
             return Err(DiscordError::PostFailed {
                 status: status.as_u16(),

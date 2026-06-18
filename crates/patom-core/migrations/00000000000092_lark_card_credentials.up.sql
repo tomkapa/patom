@@ -23,4 +23,22 @@ ALTER TABLE lark_apps
     ADD COLUMN card_verification_token_nonce       BYTEA NULL
         CHECK (card_verification_token_nonce IS NULL
                OR octet_length(card_verification_token_nonce) = 12),
-    ADD COLUMN card_key_version                     SMALLINT NULL;
+    ADD COLUMN card_key_version                     SMALLINT NULL,
+    -- All-or-nothing: a partial state (e.g. ciphertext without nonce, or one
+    -- secret but not the other) would persist undecryptable credentials and
+    -- break the card-action verify path. The store enforces this in code; the
+    -- DB CHECK is the structural backstop (§5/§6). Dropping any of these columns
+    -- (the down migration) drops this constraint with it.
+    ADD CONSTRAINT lark_apps_card_creds_all_or_nothing CHECK (
+        (card_encrypt_key_ciphertext IS NULL
+         AND card_encrypt_key_nonce IS NULL
+         AND card_verification_token_ciphertext IS NULL
+         AND card_verification_token_nonce IS NULL
+         AND card_key_version IS NULL)
+        OR
+        (card_encrypt_key_ciphertext IS NOT NULL
+         AND card_encrypt_key_nonce IS NOT NULL
+         AND card_verification_token_ciphertext IS NOT NULL
+         AND card_verification_token_nonce IS NOT NULL
+         AND card_key_version IS NOT NULL)
+    );

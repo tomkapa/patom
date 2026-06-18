@@ -35,7 +35,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
-use crate::approvals::{ApprovalError, ApprovalId, Decision, SharedApprovalDecider};
+use crate::approvals::{ApprovalError, ApprovalId, DecideOutcome, Decision, SharedApprovalDecider};
 use crate::assets::{AssetContentType, SharedAssetStore};
 use crate::auth::{Caller, OrgId, UserId};
 use crate::channels::ChannelId;
@@ -284,13 +284,27 @@ async fn handle_interaction(
         .await?;
     let clicker_name = display.unwrap_or_else(|| user.id.as_str().to_owned());
 
-    match decider
+    let outcome = decider
         .decide(app.org_id, approval_id, decision, shadow.colleague_id)
-        .await
-    {
+        .await;
+    render_decision(poster, &intr, approval_id, decision, &clicker_name, outcome).await
+}
+
+/// Render the outcome of a decided approval click. `Decided`/`AlreadyDecided`
+/// edit the card to its resolved view; `Unauthorized` / closed reply ephemerally
+/// and leave the card untouched; a backend fault propagates (logged by the loop).
+async fn render_decision(
+    poster: &SharedDiscordPoster,
+    intr: &InboundInteraction,
+    approval_id: ApprovalId,
+    decision: Decision,
+    clicker_name: &str,
+    outcome: Result<DecideOutcome, ApprovalError>,
+) -> Result<(), DiscordError> {
+    match outcome {
         Ok(_) => {
             // Decided (or already decided — idempotent): render the resolved card.
-            let resolved = resolved_card_text(decision, &clicker_name);
+            let resolved = resolved_card_text(decision, clicker_name);
             if let Err(e) = poster
                 .edit_interaction_message(
                     &intr.application_id,
@@ -333,9 +347,9 @@ async fn handle_interaction(
             Ok(())
         }
         Err(e) => {
-            // A backend failure: surface as a bridge error (logged by the loop).
+            // A backend failure: surface as a typed bridge error (§12).
             error!(error = ?e, event = "discord.bridge.interaction_decide_failed");
-            Err(DiscordError::Approval(e.to_string()))
+            Err(DiscordError::Approval(e))
         }
     }
 }

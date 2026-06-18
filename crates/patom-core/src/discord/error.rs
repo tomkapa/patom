@@ -6,6 +6,7 @@
 use thiserror::Error;
 
 use crate::agents::AgentStoreError;
+use crate::approvals::ApprovalError;
 use crate::crypto::CryptoError;
 use crate::runtime::PromptError;
 use crate::types::ParseError;
@@ -76,9 +77,10 @@ pub enum DiscordError {
 
     /// An approval decision (button click) failed at the store/resume seam after
     /// the row was found and the clicker authorized — a backend fault, not a
-    /// user error (those resolve to an ephemeral reply, not an error).
+    /// user error (those resolve to an ephemeral reply, not an error). The
+    /// underlying [`ApprovalError`] is preserved (§12 — bridge sub-errors typed).
     #[error("approval: {0}")]
-    Approval(String),
+    Approval(#[from] ApprovalError),
 
     /// Catch-all for invariant violations that don't fit a more specific
     /// variant. The message identifies the call site. Used sparingly.

@@ -221,6 +221,16 @@ pub const DISCORD_CUSTOM_ID_MAX: usize = 100;
 /// Hard cap on buttons in one action row (Discord's documented row ceiling).
 pub const DISCORD_ACTION_ROW_MAX: usize = 5;
 
+/// Hard cap on a button's `label` (Discord's documented 80-char limit). Asserted
+/// at construction so an oversized label can't reach the JSON body (§5).
+pub const DISCORD_BUTTON_LABEL_MAX: usize = 80;
+
+/// Hard cap on action rows attached to one message (Discord's documented limit).
+///
+/// Asserted before posting so a future caller can't over-fill the components
+/// batch and burn the shared invalid-request budget (§5).
+pub const DISCORD_MESSAGE_ACTION_ROWS_MAX: usize = 5;
+
 /// TTL for a shadow→real account link token embedded in the consent button URL
 /// (the Slack #41 pattern). Short, so a leaked link expires quickly.
 pub const DISCORD_LINK_TOKEN_TTL: Duration = Duration::from_mins(10);

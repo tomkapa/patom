@@ -210,12 +210,19 @@ impl AskApprovalTool {
         // row records the real platform and the button `custom_id` can carry the
         // freshly-minted approval id. Best-effort: a resolve failure (or a
         // web-origin thread) degrades to an in-thread / web-UI prompt.
+        // A genuine resolution failure must NOT degrade to `Web`: `create` is
+        // idempotent, so a `Web` row would permanently suppress the interactive
+        // card (the retry takes the `Existing` no-re-post path). Fail fast so the
+        // agent re-runs and re-resolves; only a true `None` (web-origin / unbound
+        // thread) is `Web`.
         let target = match self.outbound.resolve_target(ctx.org_id, thread).await {
             Ok(Some(t)) => t,
             Ok(None) => PlatformTarget::Web,
             Err(e) => {
                 warn!(error = %e, "ask_approval.resolve_target_failed");
-                PlatformTarget::Web
+                return Err(ToolError::Backend(format!(
+                    "ask_approval: resolve_target: {e}"
+                )));
             }
         };
 
