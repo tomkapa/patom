@@ -977,22 +977,16 @@ impl Agent {
 
         match outcome {
             Ok(Ok(output)) => {
-                if output.len() > TOOL_RESULT_MAX_BYTES {
-                    warn!(
-                        patom.tool = %call.name,
-                        bytes = output.len(),
-                        cap = TOOL_RESULT_MAX_BYTES,
-                        "tool.result.too_large",
-                    );
-                    return error_result(
-                        id,
-                        format!(
-                            "tool `{}` returned {} bytes; cap is {} bytes",
-                            call.name,
-                            output.len(),
-                            TOOL_RESULT_MAX_BYTES,
-                        ),
-                    );
+                // #185: an oversized result is reduced at produce time — its full
+                // body is offloaded to `tool_artifacts` and the visible body is a
+                // bounded, marked-partial preview/summary carrying the handle.
+                // Small results flow into the feed verbatim (the common path).
+                // Byte length is a cheap upper bound on the char count (bytes ≥
+                // chars), so the O(n) UTF-8 scan only runs when a result is at
+                // least threshold-sized — never on the common small-result path.
+                let threshold = crate::tools::limits::TOOL_RESULT_REDUCE_THRESHOLD;
+                if output.len() > threshold && output.chars().count() > threshold {
+                    return self.reduce_and_offload(call, &tool, output, tool_ctx).await;
                 }
                 debug!(patom.tool = %call.name, bytes = output.len(), "tool.result.ok");
                 ToolResult {

@@ -105,6 +105,49 @@ pub struct ToolCallContext {
     pub org_id: OrgId,
 }
 
+/// The intent a [`ToolResultPolicy::Summarize`] pass is keyed to (#185).
+///
+/// A bounded hint — the WebFetch `prompt`, or a serialization of the tool call
+/// input — that tells the cheap-model extractive fold *what to keep*. Clamped
+/// rather than rejected: a too-long hint is truncated (it only steers salience;
+/// losing the tail of a hint is harmless), mirroring `CompactionSummary::clamp`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReductionIntent(String);
+
+impl ReductionIntent {
+    /// Build an intent from raw text, truncated to `MAX_REDUCTION_INTENT_CHARS`
+    /// on a char boundary.
+    #[must_use]
+    pub fn clamp(mut text: String) -> Self {
+        super::limits::truncate_to_char_boundary(
+            &mut text,
+            super::limits::MAX_REDUCTION_INTENT_CHARS,
+        );
+        Self(text)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// How the dispatch seam reduces an *oversized* tool result (#185).
+///
+/// Consulted only once a result exceeds `TOOL_RESULT_REDUCE_THRESHOLD`; smaller
+/// results never reach this. Both variants offload the full body to
+/// `tool_artifacts` first (lossless) — they differ only in the visible body the
+/// feed keeps.
+#[derive(Debug, Clone)]
+pub enum ToolResultPolicy {
+    /// Lossless, zero-LLM: visible body = head + tail + handle; the agent pages
+    /// the rest via `read_artifact`. Default for opaque results (e.g. MCP).
+    Paginate,
+    /// Cheap-model extractive fold keyed to `intent`, stored as the visible
+    /// body, with the handle for exact recovery. For web fetch / tagged tools.
+    Summarize { intent: ReductionIntent },
+}
+
 /// A side-effecting capability the model can request.
 ///
 /// Implementations must be cheap to clone (they go behind `Arc`) and must validate every
@@ -144,6 +187,19 @@ pub trait Tool: Send + Sync + std::fmt::Debug {
     /// has reasoned about safety.
     fn concurrency_safe(&self) -> bool {
         false
+    }
+
+    /// How an *oversized* result from this tool is reduced at the dispatch seam
+    /// (#185). Consulted only when the result exceeds
+    /// `TOOL_RESULT_REDUCE_THRESHOLD`; `input` is the same value passed to
+    /// [`execute`](Tool::execute), so a tool can vary the policy by call (e.g.
+    /// WebFetch summarizes only when the model supplied a `prompt`).
+    ///
+    /// Default [`Paginate`](ToolResultPolicy::Paginate): a lossless, zero-LLM
+    /// head+tail+handle preview — right for opaque payloads whose structure we
+    /// can't assume (the dominant MCP case).
+    fn result_policy(&self, _input: &Value) -> ToolResultPolicy {
+        ToolResultPolicy::Paginate
     }
 }
 

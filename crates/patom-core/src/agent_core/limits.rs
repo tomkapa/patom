@@ -68,6 +68,15 @@ pub const CONTEXT_TOKEN_BUDGET_DIVISOR: u32 = 2;
 /// keeping each fold cheap.
 pub const SUMMARIZER_INPUT_BUDGET: u32 = 24_000;
 
+/// Upper bound on the candidate models scanned when building the tool-result
+/// summarizer chain (CLAUDE.md §5 — every loop is bounded, asserted on entry).
+///
+/// The candidates are derived from the static model catalog (`Model::all()`),
+/// which is a handful of entries; 64 is a generous ceiling that would only trip
+/// if the catalog grew an order of magnitude — a signal to revisit, not a
+/// silent unbounded scan.
+pub(super) const MAX_SUMMARIZER_CANDIDATES: usize = 64;
+
 /// Hard cap on summarizer folds in one compaction (CLAUDE.md §5 — every loop is bounded).
 ///
 /// Steady state is 1–2 folds (an overflow is ~one window); this only bites on the

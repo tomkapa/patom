@@ -36,6 +36,7 @@ mod ask_approval;
 mod create_agent;
 mod memory;
 mod profile_write;
+mod read_artifact;
 mod read_channel;
 mod request_user_wire_mcp;
 mod scheduling;
@@ -53,6 +54,7 @@ pub use memory::{
     RecallTool,
 };
 pub use profile_write::ProfileWriteTool;
+pub use read_artifact::ReadArtifactTool;
 pub use read_channel::ReadChannelTool;
 pub use request_user_wire_mcp::RequestUserWireMcpTool;
 pub use scheduling::{CancelScheduledTaskTool, ListScheduledTasksTool, ScheduleTaskTool};

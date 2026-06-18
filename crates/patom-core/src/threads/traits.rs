@@ -241,6 +241,111 @@ pub struct ThreadCompaction {
     pub cooldown_until: Option<DateTime<Utc>>,
 }
 
+/// A content address for an offloaded tool-result body — the lowercase
+/// SHA-256 hex of the full body (64 chars).
+///
+/// Newtype (CLAUDE.md §1) so a handle can't be confused with any other string,
+/// and so the only ways to obtain one are hashing a body ([`content_address`])
+/// or parsing a validated 64-char hex string ([`TryFrom`]).
+///
+/// Content-addressing makes the offload write idempotent (#185): re-running the
+/// same tool call after a lease expiry recomputes the same handle, and the
+/// store's `ON CONFLICT DO NOTHING` makes the second write a no-op — no
+/// duplicate artifact, no double storage.
+///
+/// [`content_address`]: ArtifactHandle::content_address
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ArtifactHandle(String);
+
+impl ArtifactHandle {
+    /// Hash a full tool-result body into its content address. SHA-256 → 32
+    /// bytes → 64 lowercase hex chars; deterministic, so identical bodies map
+    /// to one handle (dedup + idempotent retry).
+    #[must_use]
+    pub fn content_address(body: &str) -> Self {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(body.as_bytes());
+        Self(crate::hex::encode_32(&hasher.finalize()))
+    }
+
+    /// The raw 64-char lowercase hex address, for binding into SQL and
+    /// embedding in a reduced result's recovery marker.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for ArtifactHandle {
+    type Error = crate::types::ParseError;
+    /// Parse a handle echoed back by the model. Accepts any 64-char hex string
+    /// and canonicalises to lowercase, so an upper-cased echo still resolves.
+    fn try_from(raw: &str) -> Result<Self, Self::Error> {
+        let mut buf = [0u8; 32];
+        crate::hex::decode_32(raw, &mut buf).map_err(|()| crate::types::ParseError::Malformed {
+            field: "artifact_handle",
+            detail: "expected 64 hex chars",
+        })?;
+        Ok(Self(crate::hex::encode_32(&buf)))
+    }
+}
+
+/// A row to write into `tool_artifacts` — the full body of a heavy tool result,
+/// offloaded out of the hot feed so the visible result can be reduced (#185).
+#[derive(Debug, Clone)]
+pub struct NewToolArtifact {
+    pub handle: ArtifactHandle,
+    pub org_id: crate::auth::OrgId,
+    pub full_body: String,
+    /// `chars/4` token estimate of `full_body`, for the saturation metric.
+    pub tokens: i32,
+    pub tool_name: crate::types::ToolName,
+    /// Owner agent — the artifact is cleaned up with the agent (`ON DELETE
+    /// CASCADE`). `None` on the background path with no agent participation row.
+    pub agent_id: Option<AgentId>,
+    pub state_id: Option<AgentThreadId>,
+    pub request_id: PromptRequestId,
+}
+
+/// How a `read_artifact` call selects bytes from an offloaded body (#185).
+#[derive(Debug, Clone)]
+pub enum ArtifactSelector {
+    /// A character window. `offset` is 0-based; `limit` is app-clamped to
+    /// `MAX_ARTIFACT_SLICE` so the tool's own output can never itself exceed the
+    /// reduction threshold (the recursion fixpoint).
+    Page { offset: usize, limit: usize },
+    /// Up to `max_matches` windows around literal occurrences of `pattern`,
+    /// total output clamped to `MAX_ARTIFACT_SLICE`. Lets the agent recover "the
+    /// rows after a grep match" without paging the whole body.
+    Grep { pattern: String, max_matches: usize },
+}
+
+/// The bounded slice returned by [`ThreadStore::load_tool_artifact_slice`] —
+/// always ≤ `MAX_ARTIFACT_SLICE` chars so re-feeding it through the dispatch
+/// seam stays `Verbatim` (#185 recursion fixpoint).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactSlice(String);
+
+impl ArtifactSlice {
+    /// Wrap an already-bounded slice. The store is responsible for the clamp;
+    /// this is the typed evidence that the clamp happened.
+    #[must_use]
+    pub fn new(text: String) -> Self {
+        Self(text)
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 crate::str_enum! {
     /// Feed row kind. `posted` rows are everyone's chat; the rest are one
     /// agent's private artifacts (owner-scoped). Single source of truth for the
@@ -553,6 +658,23 @@ pub trait ThreadStore: fmt::Debug + Send + Sync {
         agent: AgentId,
         cooldown_until: DateTime<Utc>,
     ) -> Result<(), ThreadError>;
+
+    /// Offload a heavy tool-result body to the `tool_artifacts` cold store so
+    /// the visible feed result can be reduced (#185). Content-addressed and
+    /// write-once: an `ON CONFLICT (org_id, handle) DO NOTHING` makes a re-run
+    /// after a lease expiry a no-op. Privileged write; `org_id` stamps the row
+    /// for RLS.
+    async fn save_tool_artifact(&self, artifact: NewToolArtifact) -> Result<(), ThreadError>;
+
+    /// Recover an exact slice of an offloaded body on demand (#185). Returns
+    /// `None` if the handle is unknown in the caller's org (RLS-scoped). The
+    /// returned slice is always ≤ `MAX_ARTIFACT_SLICE` chars. Privileged read.
+    async fn load_tool_artifact_slice(
+        &self,
+        org: crate::auth::OrgId,
+        handle: &ArtifactHandle,
+        selector: ArtifactSelector,
+    ) -> Result<Option<ArtifactSlice>, ThreadError>;
 }
 
 /// Cheap-clone handle so consumers hold the store without a generic parameter.
@@ -581,5 +703,46 @@ mod seq_tests {
     #[test]
     fn orders_by_ordinal() {
         assert!(Seq::try_from(2).expect("v") > Seq::try_from(1).expect("v"));
+    }
+}
+
+#[cfg(test)]
+mod artifact_handle_tests {
+    use super::ArtifactHandle;
+
+    #[test]
+    fn content_address_is_stable_and_64_hex() {
+        let a = ArtifactHandle::content_address("the heavy body");
+        let b = ArtifactHandle::content_address("the heavy body");
+        assert_eq!(
+            a, b,
+            "identical bodies map to one handle (idempotent retry)"
+        );
+        assert_eq!(a.as_str().len(), 64);
+        assert!(a.as_str().bytes().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn different_bodies_differ() {
+        let a = ArtifactHandle::content_address("body one");
+        let b = ArtifactHandle::content_address("body two");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn parses_valid_hex_and_canonicalises_to_lowercase() {
+        let minted = ArtifactHandle::content_address("x");
+        let upper = minted.as_str().to_uppercase();
+        let parsed = ArtifactHandle::try_from(upper.as_str()).expect("valid hex");
+        assert_eq!(
+            parsed, minted,
+            "an upper-cased echo resolves to the same handle"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed() {
+        assert!(ArtifactHandle::try_from("too-short").is_err());
+        assert!(ArtifactHandle::try_from("z".repeat(64).as_str()).is_err());
     }
 }

@@ -28,10 +28,12 @@ use super::limits::{
     MAX_THREAD_LIST, MAX_TOOL_RESULT_CHARS, READ_CHANNEL_BODY_MAX_CHARS, ROOT_SNIPPET_MAX_CHARS,
 };
 use super::traits::{
-    AgentThreadId, ChannelFeedRow, ChannelRef, ContextTail, FeedMessage, MessageKind, NewMessage,
-    RootSummary, Seq, TailRow, ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId,
-    ThreadParticipants, ThreadScope, ThreadStore,
+    AgentThreadId, ArtifactHandle, ArtifactSelector, ArtifactSlice, ChannelFeedRow, ChannelRef,
+    ContextTail, FeedMessage, MessageKind, NewMessage, NewToolArtifact, RootSummary, Seq, TailRow,
+    ThreadCompaction, ThreadId, ThreadListItem, ThreadMessageId, ThreadParticipants, ThreadScope,
+    ThreadStore,
 };
+use crate::tools::limits::{MAX_ARTIFACT_GREP_SCAN, MAX_ARTIFACT_SLICE};
 
 /// Postgres-backed [`ThreadStore`].
 pub struct PgThreadStore {
@@ -947,6 +949,110 @@ impl ThreadStore for PgThreadStore {
         })
         .await
     }
+
+    #[tracing::instrument(skip_all, name = "thread.save_tool_artifact", fields(patom.org.id = %artifact.org_id, patom.tool = %artifact.tool_name.as_str(), patom.tool_result.handle = %artifact.handle.as_str()))]
+    async fn save_tool_artifact(&self, artifact: NewToolArtifact) -> Result<(), ThreadError> {
+        run_privileged::<(), ThreadError>(&self.pool, async |tx| {
+            sqlx::query(
+                "INSERT INTO tool_artifacts \
+                     (handle, org_id, full_body, tokens, tool_name, agent_id, state_id, \
+                      request_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                 ON CONFLICT (org_id, handle) DO NOTHING",
+            )
+            .bind(artifact.handle.as_str())
+            .bind(artifact.org_id)
+            .bind(&artifact.full_body)
+            .bind(artifact.tokens)
+            .bind(artifact.tool_name.as_str())
+            .bind(artifact.agent_id)
+            .bind(artifact.state_id)
+            .bind(artifact.request_id)
+            .execute(&mut **tx)
+            .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    #[tracing::instrument(skip_all, name = "thread.load_tool_artifact_slice", fields(patom.org.id = %org, patom.tool_result.handle = %handle.as_str()))]
+    async fn load_tool_artifact_slice(
+        &self,
+        org: crate::auth::OrgId,
+        handle: &ArtifactHandle,
+        selector: ArtifactSelector,
+    ) -> Result<Option<ArtifactSlice>, ThreadError> {
+        match selector {
+            ArtifactSelector::Page { offset, limit } => {
+                // Postgres `substr` is 1-based and character- (not byte-) oriented,
+                // so the slice stays UTF-8 safe. Clamp the length to the recursion
+                // fixpoint cap before it reaches SQL (#185).
+                // Postgres `substr(text, integer, integer)` takes 32-bit args;
+                // both bounds are well within i32 (the length is clamped to
+                // MAX_ARTIFACT_SLICE, the offset saturates).
+                let clamped = limit.min(MAX_ARTIFACT_SLICE);
+                let start = i32::try_from(offset.saturating_add(1)).unwrap_or(i32::MAX);
+                let len = i32::try_from(clamped).unwrap_or(i32::MAX);
+                let row: Option<(String,)> =
+                    run_privileged::<Option<(String,)>, ThreadError>(&self.pool, async |tx| {
+                        Ok(sqlx::query_as(
+                            "SELECT substr(full_body, $3, $4) FROM tool_artifacts \
+                             WHERE org_id = $1 AND handle = $2",
+                        )
+                        .bind(org)
+                        .bind(handle.as_str())
+                        .bind(start)
+                        .bind(len)
+                        .fetch_optional(&mut **tx)
+                        .await?)
+                    })
+                    .await?;
+                Ok(row.map(|(s,)| ArtifactSlice::new(s)))
+            }
+            ArtifactSelector::Grep {
+                pattern,
+                max_matches,
+            } => {
+                // Read only a bounded prefix (CLAUDE.md §5 — no unbounded TEXT read)
+                // and match app-side; a literal pattern means no injection surface.
+                let scan = i32::try_from(MAX_ARTIFACT_GREP_SCAN).unwrap_or(i32::MAX);
+                let row: Option<(String,)> =
+                    run_privileged::<Option<(String,)>, ThreadError>(&self.pool, async |tx| {
+                        Ok(sqlx::query_as(
+                            "SELECT substr(full_body, 1, $3) FROM tool_artifacts \
+                             WHERE org_id = $1 AND handle = $2",
+                        )
+                        .bind(org)
+                        .bind(handle.as_str())
+                        .bind(scan)
+                        .fetch_optional(&mut **tx)
+                        .await?)
+                    })
+                    .await?;
+                Ok(row.map(|(body,)| grep_slice(&body, &pattern, max_matches)))
+            }
+        }
+    }
+}
+
+/// App-side grep over a bounded prefix of an offloaded body (#185).
+///
+/// Returns the window from the first literal occurrence of `pattern` — the
+/// acceptance example "the rows after a grep match" — clamped to
+/// `MAX_ARTIFACT_SLICE` chars (the recursion fixpoint) with a one-line header
+/// noting how many matches were seen (counted up to `max_matches`).
+fn grep_slice(body: &str, pattern: &str, max_matches: usize) -> ArtifactSlice {
+    if pattern.is_empty() {
+        return ArtifactSlice::new("[grep: empty pattern]".to_owned());
+    }
+    let Some(first) = body.find(pattern) else {
+        return ArtifactSlice::new(format!("[grep: no match for {pattern:?} in artifact]"));
+    };
+    let count = body.matches(pattern).take(max_matches.max(1)).count();
+    let header = format!("[grep {pattern:?}: {count}+ match(es); window from first match]\n");
+    let budget = MAX_ARTIFACT_SLICE.saturating_sub(header.chars().count());
+    let window: String = body[first..].chars().take(budget).collect();
+    ArtifactSlice::new(format!("{header}{window}"))
 }
 
 /// Render-cap an oversized `tool_result` body **in place** for the prompt only.

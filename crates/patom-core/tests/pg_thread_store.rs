@@ -10,10 +10,12 @@ use patom::colleagues::{resolve_agent_colleague, resolve_user_colleague};
 use patom::provider::{
     AssistantContent, ChatMessage, ToolCall, ToolCallId, ToolResult, UserContent,
 };
+use patom::runtime::PromptRequestId;
 use patom::threads::{
-    MAX_CONTEXT_MESSAGES, MAX_TOOL_RESULT_CHARS, MessageKind, NewMessage, PgThreadStore, Seq,
-    ThreadStore,
+    ArtifactHandle, ArtifactSelector, MAX_CONTEXT_MESSAGES, MAX_TOOL_RESULT_CHARS, MessageKind,
+    NewMessage, NewToolArtifact, PgThreadStore, Seq, ThreadStore,
 };
+use patom::tools::limits::MAX_ARTIFACT_SLICE;
 use patom::types::ToolName;
 use sqlx::PgPool;
 
@@ -654,4 +656,156 @@ async fn bump_cooldown_inserts_when_cold(pool: PgPool) {
     assert_eq!(c.covers_through_seq, Seq::ZERO);
     assert_eq!(c.failed_attempts, 1);
     assert_eq!(c.cooldown_until, Some(until));
+}
+
+/// #185 stage 6/7: `save_tool_artifact` is content-addressed write-once
+/// (`ON CONFLICT DO NOTHING`) and `load_tool_artifact_slice` pages exact bytes,
+/// clamped to `MAX_ARTIFACT_SLICE`.
+#[sqlx::test]
+async fn tool_artifact_write_once_and_page_reads_back(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
+
+    let original = format!("HEAD{}TAIL", "x".repeat(50_000));
+    let handle = ArtifactHandle::content_address(&original);
+    let mk = |body: String| NewToolArtifact {
+        handle: handle.clone(),
+        org_id: seed.org_id,
+        full_body: body,
+        tokens: 12_000,
+        tool_name: ToolName::try_from("web_fetch").expect("tool name"),
+        agent_id: Some(seed.agent_id),
+        state_id: None,
+        request_id: PromptRequestId::new(),
+    };
+
+    store
+        .save_tool_artifact(mk(original.clone()))
+        .await
+        .expect("first write");
+    // Same handle, different body: DO NOTHING must keep the first body.
+    store
+        .save_tool_artifact(mk("OVERWRITE".to_owned()))
+        .await
+        .expect("idempotent re-write is a no-op");
+
+    let head = store
+        .load_tool_artifact_slice(
+            seed.org_id,
+            &handle,
+            ArtifactSelector::Page {
+                offset: 0,
+                limit: 4,
+            },
+        )
+        .await
+        .expect("load")
+        .expect("present");
+    assert_eq!(head.as_str(), "HEAD", "write-once kept the original body");
+
+    // An unbounded limit is clamped to the recursion-fixpoint cap.
+    let big = store
+        .load_tool_artifact_slice(
+            seed.org_id,
+            &handle,
+            ArtifactSelector::Page {
+                offset: 0,
+                limit: usize::MAX,
+            },
+        )
+        .await
+        .expect("load")
+        .expect("present");
+    assert!(
+        big.as_str().chars().count() <= MAX_ARTIFACT_SLICE,
+        "slice clamped"
+    );
+}
+
+/// #185 stage 7: a handle is invisible to another org (isolation by org binding;
+/// the PK is (org_id, handle)).
+#[sqlx::test]
+async fn tool_artifact_is_org_isolated(pool: PgPool) {
+    let owner = seed_tenant(&pool).await;
+    let other = seed_tenant(&pool).await;
+    let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
+
+    let body = format!("secret{}", "y".repeat(40_000));
+    let handle = ArtifactHandle::content_address(&body);
+    store
+        .save_tool_artifact(NewToolArtifact {
+            handle: handle.clone(),
+            org_id: owner.org_id,
+            full_body: body,
+            tokens: 10_000,
+            tool_name: ToolName::try_from("web_fetch").expect("tool name"),
+            agent_id: Some(owner.agent_id),
+            state_id: None,
+            request_id: PromptRequestId::new(),
+        })
+        .await
+        .expect("write");
+
+    let leaked = store
+        .load_tool_artifact_slice(
+            other.org_id,
+            &handle,
+            ArtifactSelector::Page {
+                offset: 0,
+                limit: 100,
+            },
+        )
+        .await
+        .expect("load");
+    assert!(leaked.is_none(), "another org cannot read the handle");
+}
+
+/// #185 stage 8: grep returns the window from the first match, bounded to
+/// `MAX_ARTIFACT_SLICE`.
+#[sqlx::test]
+async fn tool_artifact_grep_windows_from_first_match(pool: PgPool) {
+    let seed = seed_tenant(&pool).await;
+    let store = PgThreadStore::new(pool.clone(), SystemClock::shared());
+
+    let body = format!(
+        "{}NEEDLE-then-the-rest{}",
+        "a".repeat(10_000),
+        "b".repeat(40_000)
+    );
+    let handle = ArtifactHandle::content_address(&body);
+    store
+        .save_tool_artifact(NewToolArtifact {
+            handle: handle.clone(),
+            org_id: seed.org_id,
+            full_body: body,
+            tokens: 12_000,
+            tool_name: ToolName::try_from("web_fetch").expect("tool name"),
+            agent_id: Some(seed.agent_id),
+            state_id: None,
+            request_id: PromptRequestId::new(),
+        })
+        .await
+        .expect("write");
+
+    let slice = store
+        .load_tool_artifact_slice(
+            seed.org_id,
+            &handle,
+            ArtifactSelector::Grep {
+                pattern: "NEEDLE".to_owned(),
+                max_matches: 8,
+            },
+        )
+        .await
+        .expect("load")
+        .expect("present");
+    assert!(
+        slice.as_str().contains("NEEDLE-then-the-rest"),
+        "window starts at the match"
+    );
+    assert!(
+        !slice.as_str().contains(&"a".repeat(100)),
+        "the pre-match head is excluded"
+    );
+    assert!(slice.as_str().chars().count() <= MAX_ARTIFACT_SLICE);
 }
