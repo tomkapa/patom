@@ -25,7 +25,7 @@ use crate::crypto::{EncryptedBlob, SharedOrgEncryptor};
 
 use super::error::LarkError;
 use super::token::AppSecretSource;
-use super::types::{LarkAppId, LarkAppSecret, TenantKey};
+use super::types::{LarkAppId, LarkAppSecret, LarkEncryptKey, LarkVerificationToken, TenantKey};
 
 /// What the admin registration route hands us: a fresh app install.
 ///
@@ -36,6 +36,30 @@ pub struct NewLarkApp {
     pub app_id: LarkAppId,
     pub agent_id: AgentId,
     pub app_secret: LarkAppSecret,
+    /// Card-callback Encrypt Key (#214). `None` for a long-connection-only app;
+    /// sealed alongside `app_secret` when present.
+    pub card_encrypt_key: Option<LarkEncryptKey>,
+    /// Card-callback Verification Token (#214). `None` unless card actions are
+    /// configured; sealed when present.
+    pub card_verification_token: Option<LarkVerificationToken>,
+}
+
+/// The decrypted card-callback credentials for one app (#214). Both secrets are
+/// present — the card-action route requires both, so a row missing either reads
+/// back as `None` (the route 404s, fail-closed).
+#[derive(Clone)]
+pub struct LarkCardCredentials {
+    pub org_id: OrgId,
+    pub encrypt_key: LarkEncryptKey,
+    pub verification_token: LarkVerificationToken,
+}
+
+impl fmt::Debug for LarkCardCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LarkCardCredentials")
+            .field("org_id", &self.org_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Registration projection — the secret is intentionally absent.
@@ -115,6 +139,14 @@ pub trait LarkAppStore: fmt::Debug + Send + Sync {
         app_id: &LarkAppId,
         tenant_key: &TenantKey,
     ) -> Result<(), LarkError>;
+
+    /// The card-callback credentials for an app (#214), or `None` when either is
+    /// unset (the card-action route 404s — fail-closed). Privileged: the inbound
+    /// callback carries no `Caller`. Both secrets are re-opened from the org KEK.
+    async fn card_credentials(
+        &self,
+        app_id: &LarkAppId,
+    ) -> Result<Option<LarkCardCredentials>, LarkError>;
 }
 
 pub type SharedLarkAppStore = Arc<dyn LarkAppStore>;
@@ -190,23 +222,45 @@ fn blob_from_columns(
 #[async_trait]
 impl LarkAppStore for PgLarkAppStore {
     async fn register(&self, caller: &Caller, app: NewLarkApp) -> Result<(), LarkError> {
-        let blob = self
-            .enc
-            .seal(caller.org_id, app.app_secret.expose().as_bytes())?;
-        let now = self.clock.now_utc();
         let org_id = caller.org_id;
+        let blob = self.enc.seal(org_id, app.app_secret.expose().as_bytes())?;
+        // Seal the optional card-callback credentials under the same org KEK.
+        let ek_blob = app
+            .card_encrypt_key
+            .as_ref()
+            .map(|k| self.enc.seal(org_id, k.expose().as_bytes()))
+            .transpose()?;
+        let vt_blob = app
+            .card_verification_token
+            .as_ref()
+            .map(|t| self.enc.seal(org_id, t.expose().as_bytes()))
+            .transpose()?;
+        // Both blobs share the org KEK version; carry one when either is set.
+        let card_key_version: Option<i16> = ek_blob
+            .as_ref()
+            .map(|b| b.key_version)
+            .or_else(|| vt_blob.as_ref().map(|b| b.key_version));
+        let now = self.clock.now_utc();
         let user_id = caller.user_id;
         run_as_user::<(), LarkError>(&self.pool, user_id, async |tx| {
             sqlx::query(
                 "INSERT INTO lark_apps \
                      (org_id, app_id, agent_id, app_secret_ciphertext, \
-                      app_secret_nonce, key_version, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                      app_secret_nonce, key_version, created_at, \
+                      card_encrypt_key_ciphertext, card_encrypt_key_nonce, \
+                      card_verification_token_ciphertext, card_verification_token_nonce, \
+                      card_key_version) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
                  ON CONFLICT (org_id, app_id) DO UPDATE SET \
                      agent_id = EXCLUDED.agent_id, \
                      app_secret_ciphertext = EXCLUDED.app_secret_ciphertext, \
                      app_secret_nonce = EXCLUDED.app_secret_nonce, \
-                     key_version = EXCLUDED.key_version",
+                     key_version = EXCLUDED.key_version, \
+                     card_encrypt_key_ciphertext = EXCLUDED.card_encrypt_key_ciphertext, \
+                     card_encrypt_key_nonce = EXCLUDED.card_encrypt_key_nonce, \
+                     card_verification_token_ciphertext = EXCLUDED.card_verification_token_ciphertext, \
+                     card_verification_token_nonce = EXCLUDED.card_verification_token_nonce, \
+                     card_key_version = EXCLUDED.card_key_version",
             )
             .bind(org_id)
             .bind(app.app_id.as_str())
@@ -215,6 +269,11 @@ impl LarkAppStore for PgLarkAppStore {
             .bind(blob.nonce.as_slice())
             .bind(blob.key_version)
             .bind(now)
+            .bind(ek_blob.as_ref().map(|b| b.ciphertext.as_slice()))
+            .bind(ek_blob.as_ref().map(|b| b.nonce.as_slice()))
+            .bind(vt_blob.as_ref().map(|b| b.ciphertext.as_slice()))
+            .bind(vt_blob.as_ref().map(|b| b.nonce.as_slice()))
+            .bind(card_key_version)
             .execute(&mut **tx)
             .await?;
             Ok(())
@@ -358,6 +417,65 @@ impl LarkAppStore for PgLarkAppStore {
         }
         Ok(())
     }
+
+    async fn card_credentials(
+        &self,
+        app_id: &LarkAppId,
+    ) -> Result<Option<LarkCardCredentials>, LarkError> {
+        type Row = (
+            OrgId,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            Option<i16>,
+        );
+        let row: Option<Row> = run_privileged::<Option<Row>, LarkError>(&self.pool, async |tx| {
+            Ok(sqlx::query_as(
+                "SELECT org_id, card_encrypt_key_ciphertext, card_encrypt_key_nonce, \
+                        card_verification_token_ciphertext, card_verification_token_nonce, \
+                        card_key_version \
+                 FROM lark_apps WHERE app_id = $1",
+            )
+            .bind(app_id.as_str())
+            .fetch_optional(&mut **tx)
+            .await?)
+        })
+        .await?;
+        // An unknown app and a known-but-unconfigured app are the same to the
+        // only caller (the route 404s both) — collapse to `None`, fail-closed.
+        let Some((org_id, ek_ct, ek_nonce, vt_ct, vt_nonce, key_version)) = row else {
+            return Ok(None);
+        };
+        // Both pairs + the key version must be present; otherwise the app has no
+        // card credentials configured (the route 404s — fail-closed).
+        let (Some(ek_ct), Some(ek_nonce), Some(vt_ct), Some(vt_nonce), Some(key_version)) =
+            (ek_ct, ek_nonce, vt_ct, vt_nonce, key_version)
+        else {
+            return Ok(None);
+        };
+        let ek_blob = blob_from_columns(ek_ct, &ek_nonce, key_version)?;
+        let vt_blob = blob_from_columns(vt_ct, &vt_nonce, key_version)?;
+        let ek_plain = self.enc.open(org_id, &ek_blob)?;
+        let vt_plain = self.enc.open(org_id, &vt_blob)?;
+        let encrypt_key = LarkEncryptKey::try_from(open_to_string(ek_plain.as_slice())?)?;
+        let verification_token =
+            LarkVerificationToken::try_from(open_to_string(vt_plain.as_slice())?)?;
+        Ok(Some(LarkCardCredentials {
+            org_id,
+            encrypt_key,
+            verification_token,
+        }))
+    }
+}
+
+/// Decode an opened secret blob to a UTF-8 string, mapping a non-UTF-8 result to
+/// an invariant violation (every sealed secret was valid UTF-8 on write). Shared
+/// by the `app_secret` and card-credential read paths.
+fn open_to_string(plain: &[u8]) -> Result<String, LarkError> {
+    std::str::from_utf8(plain)
+        .map(str::to_owned)
+        .map_err(|_| LarkError::Internal("lark secret decrypts to invalid utf-8".to_owned()))
 }
 
 #[async_trait]
@@ -378,11 +496,8 @@ impl AppSecretSource for PgLarkAppStore {
             row.ok_or_else(|| LarkError::UnknownApp(app_id.clone()))?;
         let blob = blob_from_columns(ciphertext, &nonce_vec, key_version)?;
         let plain = self.enc.open(org_id, &blob)?;
-        let secret_str = std::str::from_utf8(plain.as_slice())
-            .map_err(|_| LarkError::Internal("app secret decrypts to invalid utf-8".to_owned()))?
-            .to_owned();
         // Re-validate via the newtype so the loaded value satisfies the same
         // invariants as a freshly-registered secret.
-        Ok(LarkAppSecret::try_from(secret_str)?)
+        Ok(LarkAppSecret::try_from(open_to_string(plain.as_slice())?)?)
     }
 }

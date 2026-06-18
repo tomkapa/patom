@@ -66,6 +66,17 @@ pub trait LarkPoster: fmt::Debug + Send + Sync {
         open_id: &LarkOpenId,
         text: &str,
     ) -> Result<LarkMessageId, LarkError>;
+
+    /// Post an interactive card (`msg_type:"interactive"`) into a chat (#214).
+    /// `card` is the pre-serialized card JSON (the approval prompt with the
+    /// Approve/Deny buttons). Returns the issued message id so the approval row
+    /// can record it via `attach_message`.
+    async fn post_card(
+        &self,
+        token: TenantAccessToken,
+        chat_id: &LarkChatId,
+        card: &str,
+    ) -> Result<LarkMessageId, LarkError>;
 }
 
 /// Shared handle to a [`LarkPoster`].
@@ -179,6 +190,21 @@ impl LarkPoster for HttpLarkPoster {
             receive_id: open_id.as_str(),
             msg_type: "text",
             content: &content,
+        })?;
+        self.send_with_retry(&url, &body, &token).await
+    }
+
+    async fn post_card(
+        &self,
+        token: TenantAccessToken,
+        chat_id: &LarkChatId,
+        card: &str,
+    ) -> Result<LarkMessageId, LarkError> {
+        let url = format!("{}{CREATE_PATH}", self.api_base);
+        let body = serde_json::to_vec(&WireCreateBody {
+            receive_id: chat_id.as_str(),
+            msg_type: "interactive",
+            content: card,
         })?;
         self.send_with_retry(&url, &body, &token).await
     }
@@ -332,6 +358,7 @@ fn backoff(attempt: u8) -> Duration {
 pub struct FakeLarkPoster {
     inner: Mutex<Vec<PostRequest>>,
     dms: Mutex<Vec<(LarkOpenId, String)>>,
+    cards: Mutex<Vec<(LarkChatId, String)>>,
 }
 
 impl FakeLarkPoster {
@@ -340,7 +367,17 @@ impl FakeLarkPoster {
         Self {
             inner: Mutex::new(Vec::new()),
             dms: Mutex::new(Vec::new()),
+            cards: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Every `(chat_id, card_json)` a `post_card` was sent for.
+    #[must_use]
+    pub fn cards(&self) -> Vec<(LarkChatId, String)> {
+        self.cards
+            .lock()
+            .expect("invariant: fake-poster mutex poisoned")
+            .clone()
     }
 
     /// Snapshot every captured post in arrival order.
@@ -406,6 +443,19 @@ impl LarkPoster for FakeLarkPoster {
             .expect("invariant: fake-poster mutex poisoned")
             .push((open_id.clone(), text.to_owned()));
         Ok(LarkMessageId::try_from("om_fake_stub_message_id")?)
+    }
+
+    async fn post_card(
+        &self,
+        _token: TenantAccessToken,
+        chat_id: &LarkChatId,
+        card: &str,
+    ) -> Result<LarkMessageId, LarkError> {
+        self.cards
+            .lock()
+            .expect("invariant: fake-poster mutex poisoned")
+            .push((chat_id.clone(), card.to_owned()));
+        Ok(LarkMessageId::try_from("om_fake_card_message_id")?)
     }
 }
 

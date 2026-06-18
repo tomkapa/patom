@@ -205,6 +205,20 @@ impl AskApprovalTool {
 
         let key = idempotency_key(thread, ctx.root_request_id, &gated_tool, action.as_str());
         let caller = Caller::new(ctx.acting_user_id, ctx.org_id);
+
+        // Resolve which chat surface this thread is bound to BEFORE create, so the
+        // row records the real platform and the button `custom_id` can carry the
+        // freshly-minted approval id. Best-effort: a resolve failure (or a
+        // web-origin thread) degrades to an in-thread / web-UI prompt.
+        let target = match self.outbound.resolve_target(ctx.org_id, thread).await {
+            Ok(Some(t)) => t,
+            Ok(None) => PlatformTarget::Web,
+            Err(e) => {
+                warn!(error = %e, "ask_approval.resolve_target_failed");
+                PlatformTarget::Web
+            }
+        };
+
         let outcome = self
             .approvals
             .create(
@@ -218,9 +232,7 @@ impl AskApprovalTool {
                     action_summary: action.clone(),
                     gated_tool,
                     approvers,
-                    // v1 posts to the current thread (web/in-thread). The Discord
-                    // / Lark posters supply their interactive binding when wired.
-                    target: PlatformTarget::Web,
+                    target: target.clone(),
                     idempotency_key: key,
                     expires_at,
                 },
@@ -238,13 +250,23 @@ impl AskApprovalTool {
         // retry of an already-decided action). The reported status + deadline
         // come from the stored row, never a hardcoded "pending".
         match &outcome {
-            CreateOutcome::Created(_) => {
+            CreateOutcome::Created(record) => {
+                // Always record a feed message (web UI + thread history). The
+                // platform pumps mirror the agent's response stream, not feed
+                // posts, so this never double-posts with the interactive card.
                 self.post_request(&caller, thread, requesting_colleague, &action, ctx)
                     .await?;
+                // Post the interactive prompt (Discord buttons / Lark card) on the
+                // bound surface and record its message id for the resolve path.
+                self.post_interactive(&caller, thread, &target, record.id, &action, ctx)
+                    .await;
+                // Pre-attach the surface pump so the eventual resume output (after
+                // a human decides) is delivered to the chat surface.
                 let _ = self.outbound.ensure_delivery(ctx.org_id, thread).await;
                 info!(
                     patom.approval.id = %record.id,
                     patom.agent.id = %agent_id,
+                    approval.platform = record.platform.as_str(),
                     "ask_approval.requested",
                 );
             }
@@ -298,6 +320,54 @@ impl AskApprovalTool {
                 ToolError::Backend(format!("ask_approval: post failed: {e}"))
             })?;
         Ok(())
+    }
+
+    /// Post the interactive approval prompt on the thread's bound chat surface
+    /// (Discord buttons / Lark card) and record the posted message id on the row.
+    /// (The two click paths re-render via the interaction token / inline HTTP
+    /// response, not this id; it is stored for the record + a future out-of-band
+    /// edit such as the expiry sweeper.) Best-effort: a failure is logged, not
+    /// propagated — the row exists and `ensure_delivery` still pre-attaches the
+    /// pump, so the approval is recoverable via the web UI. A `Web` target has no
+    /// interactive surface (the feed message is the prompt) and is a no-op.
+    async fn post_interactive(
+        &self,
+        caller: &Caller,
+        thread: ThreadId,
+        target: &PlatformTarget,
+        approval_id: ApprovalId,
+        action: &ActionSummary,
+        ctx: &ToolCallContext,
+    ) {
+        if matches!(target, PlatformTarget::Web) {
+            return;
+        }
+        match self
+            .outbound
+            .post_approval(ctx.org_id, thread, target, approval_id, action)
+            .await
+        {
+            Ok(Some(message_id)) => {
+                if let Err(e) = self
+                    .approvals
+                    .attach_message(caller, approval_id, message_id)
+                    .await
+                {
+                    warn!(error = %e, "ask_approval.attach_message_failed");
+                }
+            }
+            Ok(None) => {
+                // The surface didn't post a card (router not composed, or the
+                // binding vanished). `ensure_delivery` mirrors the feed prompt.
+                warn!(
+                    approval.platform = target.platform().as_str(),
+                    "ask_approval.interactive_unposted"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "ask_approval.post_interactive_failed");
+            }
+        }
     }
 }
 

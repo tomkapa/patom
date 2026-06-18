@@ -14,6 +14,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use tracing::warn;
 
+use crate::approvals::{ActionSummary, ApprovalId, PlatformMessageId, PlatformTarget};
 use crate::auth::OrgId;
 use crate::threads::ThreadId;
 
@@ -32,6 +33,42 @@ pub trait OutboundRouter: fmt::Debug + Send + Sync {
         org_id: OrgId,
         thread_id: ThreadId,
     ) -> Result<(), OutboundError>;
+
+    /// Resolve the chat surface `thread_id` is bound to, as a [`PlatformTarget`],
+    /// or `None` when this router does not own the thread. The composite returns
+    /// the first router that owns it; a caller treats `None` as
+    /// [`PlatformTarget::Web`] (the in-thread feed / web-UI prompt). `ask_approval`
+    /// calls this *before* `ApprovalStore::create` so the row records the real
+    /// surface, and the button `custom_id` can carry the resulting approval id.
+    ///
+    /// Default: not-my-surface. Leaf platform routers override it.
+    async fn resolve_target(
+        &self,
+        org_id: OrgId,
+        thread_id: ThreadId,
+    ) -> Result<Option<PlatformTarget>, OutboundError> {
+        let _ = (org_id, thread_id);
+        Ok(None)
+    }
+
+    /// Post an interactive approval prompt (Approve/Deny) on `target`'s surface,
+    /// returning the posted message id so the resolve path can edit it. `None`
+    /// when `target` is not this router's surface (or is [`PlatformTarget::Web`],
+    /// which has no interactive surface — the in-thread feed message is the
+    /// prompt). The composite dispatches to the single router that owns `target`.
+    ///
+    /// Default: not-my-surface. Leaf platform routers override it.
+    async fn post_approval(
+        &self,
+        org_id: OrgId,
+        thread_id: ThreadId,
+        target: &PlatformTarget,
+        approval_id: ApprovalId,
+        action: &ActionSummary,
+    ) -> Result<Option<PlatformMessageId>, OutboundError> {
+        let _ = (org_id, thread_id, target, approval_id, action);
+        Ok(None)
+    }
 }
 
 pub type SharedOutboundRouter = Arc<dyn OutboundRouter>;
@@ -75,6 +112,35 @@ impl OutboundRouter for DeferredOutboundRouter {
         match self.inner.get() {
             Some(router) => router.ensure_delivery(org_id, thread_id).await,
             None => Ok(()), // Surfaces not composed yet — web-only.
+        }
+    }
+
+    async fn resolve_target(
+        &self,
+        org_id: OrgId,
+        thread_id: ThreadId,
+    ) -> Result<Option<PlatformTarget>, OutboundError> {
+        match self.inner.get() {
+            Some(router) => router.resolve_target(org_id, thread_id).await,
+            None => Ok(None), // Surfaces not composed yet — web-only.
+        }
+    }
+
+    async fn post_approval(
+        &self,
+        org_id: OrgId,
+        thread_id: ThreadId,
+        target: &PlatformTarget,
+        approval_id: ApprovalId,
+        action: &ActionSummary,
+    ) -> Result<Option<PlatformMessageId>, OutboundError> {
+        match self.inner.get() {
+            Some(router) => {
+                router
+                    .post_approval(org_id, thread_id, target, approval_id, action)
+                    .await
+            }
+            None => Ok(None), // Surfaces not composed yet — web-only.
         }
     }
 }
@@ -135,5 +201,42 @@ impl OutboundRouter for CompositeOutboundRouter {
             }
         }
         Ok(())
+    }
+
+    async fn resolve_target(
+        &self,
+        org_id: OrgId,
+        thread_id: ThreadId,
+    ) -> Result<Option<PlatformTarget>, OutboundError> {
+        // Exactly one router owns a given thread; return the first that claims
+        // it. A binding-lookup failure on the owning router propagates so the
+        // caller can fall back to web (rather than mis-classify as web-origin).
+        for router in &self.routers {
+            if let Some(target) = router.resolve_target(org_id, thread_id).await? {
+                return Ok(Some(target));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn post_approval(
+        &self,
+        org_id: OrgId,
+        thread_id: ThreadId,
+        target: &PlatformTarget,
+        approval_id: ApprovalId,
+        action: &ActionSummary,
+    ) -> Result<Option<PlatformMessageId>, OutboundError> {
+        // Only the router owning `target`'s surface posts; the rest self-skip
+        // (return `None`). A post failure on the owning router propagates.
+        for router in &self.routers {
+            if let Some(msg) = router
+                .post_approval(org_id, thread_id, target, approval_id, action)
+                .await?
+            {
+                return Ok(Some(msg));
+            }
+        }
+        Ok(None)
     }
 }

@@ -121,6 +121,84 @@ discord_snowflake_newtype! {
     DiscordUserId, "discord_user_id"
 }
 
+discord_snowflake_newtype! {
+    /// A Discord interaction snowflake (the `id` on an `INTERACTION_CREATE`).
+    ///
+    /// Pairs with the [`InteractionToken`] in the callback URL
+    /// `POST /interactions/{id}/{token}/callback`.
+    InteractionId, "discord_interaction_id"
+}
+
+/// Maximum length for an interaction continuation token.
+///
+/// Discord tokens are opaque base64 (~80–200 bytes); cap at 512 with head-room
+/// so a hostile frame cannot smuggle a multi-kilobyte blob into the callback URL.
+pub const DISCORD_INTERACTION_TOKEN_MAX_LEN: usize = 512;
+
+/// A Discord interaction continuation token (a 15-minute response capability).
+///
+/// Authorizes a response to / edit of the interaction's message for
+/// ~[`super::limits::DISCORD_INTERACTION_TOKEN_TTL`]. Redacted in `Debug`; the
+/// bytes are only available through [`InteractionToken::expose`]. Validated at
+/// the parse boundary so it is safe to interpolate into the callback URL path.
+#[derive(Clone)]
+pub struct InteractionToken(SecretString);
+
+impl InteractionToken {
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        self.0.expose()
+    }
+}
+
+impl TryFrom<String> for InteractionToken {
+    type Error = ParseError;
+
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        if raw.is_empty() {
+            return Err(ParseError::Empty {
+                field: "discord_interaction_token",
+            });
+        }
+        if raw.len() > DISCORD_INTERACTION_TOKEN_MAX_LEN {
+            return Err(ParseError::TooLong {
+                field: "discord_interaction_token",
+                max: DISCORD_INTERACTION_TOKEN_MAX_LEN,
+                got: raw.len(),
+            });
+        }
+        // Whitespace / control chars would corrupt the URL path the token is
+        // interpolated into — reject at the boundary.
+        if raw
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+        {
+            return Err(ParseError::Malformed {
+                field: "discord_interaction_token",
+                detail: "contains whitespace or control characters",
+            });
+        }
+        Ok(Self(SecretString::try_from(raw).map_err(|_| {
+            ParseError::Empty {
+                field: "discord_interaction_token",
+            }
+        })?))
+    }
+}
+
+impl fmt::Debug for InteractionToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("InteractionToken(***)")
+    }
+}
+
+impl<'de> Deserialize<'de> for InteractionToken {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(de)?;
+        Self::try_from(raw).map_err(serde::de::Error::custom)
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Secrets
 // ─────────────────────────────────────────────────────────────────────────

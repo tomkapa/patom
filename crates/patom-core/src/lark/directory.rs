@@ -104,6 +104,17 @@ pub trait LarkDirectory: fmt::Debug + Send + Sync {
         org_id: OrgId,
         colleague: ColleagueId,
     ) -> Result<Option<String>, LarkError>;
+
+    /// Reverse lookup for the card-action callback (#214): the colleague behind a
+    /// clicking Lark user's `open_id` in an org, or `None` when that `open_id` has
+    /// no handle here. Privileged + org-scoped (the callback carries no `Caller`).
+    /// The `open_id` already minted a colleague when the user first appeared, so
+    /// this is a plain read — no mint on the click path.
+    async fn colleague_for_open_id(
+        &self,
+        org_id: OrgId,
+        open_id: &LarkOpenId,
+    ) -> Result<Option<ColleagueId>, LarkError>;
 }
 
 /// Shared handle to a [`LarkDirectory`].
@@ -283,6 +294,28 @@ impl LarkDirectory for PgLarkDirectory {
             Some((open_id,)) => Ok(Some(LarkOpenId::try_from(open_id)?)),
             None => Ok(None),
         }
+    }
+
+    async fn colleague_for_open_id(
+        &self,
+        org_id: OrgId,
+        open_id: &LarkOpenId,
+    ) -> Result<Option<ColleagueId>, LarkError> {
+        // Privileged (no Principal on the card-callback path) + org-scoped.
+        let open_id = open_id.as_str().to_owned();
+        let row: Option<(ColleagueId,)> =
+            run_privileged::<Option<(ColleagueId,)>, LarkError>(&self.pool, async move |tx| {
+                Ok(sqlx::query_as(
+                    "SELECT colleague_id FROM lark_user_handles \
+                      WHERE org_id = $1 AND open_id = $2",
+                )
+                .bind(org_id)
+                .bind(open_id)
+                .fetch_optional(&mut **tx)
+                .await?)
+            })
+            .await?;
+        Ok(row.map(|(c,)| c))
     }
 
     async fn taggable_handles(

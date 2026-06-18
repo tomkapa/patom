@@ -5,10 +5,12 @@
 //! ordered shutdown). The inbound bridge handle is returned separately from
 //! `build_server` (like the Slack bridge), since it is consumed by `shutdown`.
 
+use crate::approvals::SharedApprovalDecider;
 use crate::clock::SharedClock;
 use crate::types::SecretString;
 
 use super::app_store::SharedLarkAppStore;
+use super::directory::SharedLarkDirectory;
 use super::poster::SharedLarkPoster;
 use super::stream_pump::SharedLarkPumpHandle;
 use super::token::SharedTokenProvider;
@@ -30,6 +32,12 @@ pub struct LarkAppState {
     pub poster: SharedLarkPoster,
     /// Mints the `tenant_access_token` the ping posts with.
     pub token_provider: SharedTokenProvider,
+    /// People directory — the card-action route reverse-looks-up the clicking
+    /// `open_id` to a colleague (#214).
+    pub directory: SharedLarkDirectory,
+    /// Resolves an approval card click: authorize → decide → resume (#214). The
+    /// one seam every chat surface shares.
+    pub decider: SharedApprovalDecider,
 }
 
 impl std::fmt::Debug for LarkAppState {

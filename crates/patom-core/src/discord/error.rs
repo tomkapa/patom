@@ -74,6 +74,12 @@ pub enum DiscordError {
     #[error("agents: {0}")]
     Agents(#[from] AgentStoreError),
 
+    /// An approval decision (button click) failed at the store/resume seam after
+    /// the row was found and the clicker authorized — a backend fault, not a
+    /// user error (those resolve to an ephemeral reply, not an error).
+    #[error("approval: {0}")]
+    Approval(String),
+
     /// Catch-all for invariant violations that don't fit a more specific
     /// variant. The message identifies the call site. Used sparingly.
     #[error("internal: {0}")]

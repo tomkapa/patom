@@ -136,6 +136,10 @@ async fn build_rig(
         thread_opener,
         assets: None,
         attachment_fetcher: Arc::new(patom::discord::attachment::FakeAttachmentFetcher::new()),
+        // This rig exercises the message path only; interactions are covered in
+        // discord_bridge.rs.
+        decider: None,
+        poster: None,
     };
     DiscordRig { deps, fake }
 }

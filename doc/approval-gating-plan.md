@@ -55,30 +55,38 @@ the original DAG root so turn budget + lineage are preserved.
   `agent.rs` render unit (2). `cargo fmt`, `cargo clippy -D warnings` (whole
   workspace), `cargo check --all-targets` all green.
 
+### Shipped (#214) — interactive decision intake for Discord + Lark
+
+Items 1, 2, 4 below landed together (one PR). All gates green; migration **92**
+up/down/up rollback verified against the full chain.
+
+- **Create-side seam** — `OutboundRouter` gained `resolve_target` +
+  `post_approval`. `ask_approval` now resolves the thread's surface *before*
+  `create` (records the real `PlatformTarget`), posts the interactive prompt via
+  the owning platform router, and `attach_message`s the returned id. Web threads
+  are behavior-identical (plain feed prompt). No double-post: the per-platform
+  stream pumps mirror the response *stream*, not feed `Posted` rows.
+- **Discord (Gateway, no migration)** — `event.rs` `DiscordEvent::Interaction` +
+  `"INTERACTION_CREATE"` arm (+ `InteractionId`/`InteractionToken` newtypes);
+  `poster.rs` `components: Vec<ActionRow>` + ack (type 6) / `@original` edit /
+  ephemeral follow-up; `bridge.rs::handle_interaction` (ack → mint clicker →
+  `ApprovalDecider::decide` → resolved-card edit; unauthorized → ephemeral). The
+  `ApprovalDecider` is built once at the composition root and shared.
+- **Lark (new HTTP route)** — `lark/card_actions.rs` `POST /lark/card-actions`
+  (public router; verify-before-parse, challenge echo), `lark/card_verify.rs`
+  (Encrypt-Key signature + Verification-Token, constant-time via `subtle`),
+  `lark/card.rs` (pending/resolved card builders), `directory.colleague_for_open_id`,
+  `poster.post_card` (`msg_type:"interactive"`). Per-app Encrypt Key +
+  Verification Token are **sealed in `lark_apps`** (migration 92) and accepted by
+  the admin register route. v1 supports the **signed-plaintext** scheme and
+  **group-chat** approvals (DM cards degrade to the web prompt); body encryption
+  is intentionally unsupported — validate the exact scheme against the live Lark
+  console. **Admin must set the app's Message Card Request URL + subscribe
+  `card.action.trigger`, and register the Encrypt Key + Verification Token.**
+
 ### Remaining — platform intake (best built + validated against the live
 platforms; the spine seam `ApprovalDecider` is ready for both)
 
-1. **Discord (Gateway)** — `discord/event.rs`: add
-   `DiscordEvent::Interaction(Box<InteractionCreate>)` + `"INTERACTION_CREATE"`
-   parse arm (+ unit tests). `discord/bridge.rs`: `handle_interaction` — parse
-   `custom_id` `apv:{id}:{a|d}`; **ack within 3 s** (callback type 6
-   DEFERRED_UPDATE_MESSAGE) *before* DB work; `member.user.id` →
-   `DiscordDirectory::resolve_or_mint` → `ColleagueId`; `ApprovalDecider::decide`;
-   `PATCH …/@original` to the resolved view; unauthorized → ephemeral `flags:64`.
-   `discord/poster.rs`: optional `components: Vec<ActionRow>` on `PostRequest`
-   (`skip_serializing_if`) + a message-edit method. Wire `ApprovalDecider` into
-   `BridgeDeps`. The Gateway is authenticated → no HMAC needed.
-2. **Lark (new HTTP route)** — `lark/card_actions.rs`: `POST /lark/card-actions`
-   merged into the public router (template = `slack/events.rs`: raw `Bytes`,
-   `DefaultBodyLimit`, verify-before-parse, challenge echo). New
-   `lark/card_verify.rs` (encrypt-key + verification-token, constant-time via
-   `subtle`). Handler (≤3 s, 200 + JSON): verify; parse `value` →
-   approval_id+decision + operator `open_id`; new
-   `lark/directory.rs::colleague_for_open_id` (reverse lookup on
-   `lark_user_handles`); `ApprovalDecider::decide`; respond `{"card": <resolved>}`
-   (+ toast). `lark/poster.rs`: `msg_type:"interactive"` + `card` JSON + a
-   card-update method. Admin configures the app's **Message Card Request URL** +
-   `card.action.trigger`.
 3. **`ask_approval` `to` targeting** — extract #178's
    `resolve_or_create_target` into a shared helper so `ask_approval` can route a
    refund approval to an internal channel / DM the approver (fixes the
@@ -103,7 +111,12 @@ platforms; the spine seam `ApprovalDecider` is ready for both)
 
 ## Notes / deviations from the issue text
 
-- Migration is **90**, not 86 — #178/#181/eval-harness took 86–89.
-- `token.rs` (HMAC) is **not** included: Discord (Gateway) and Lark (verification
-  token) are both platform-authenticated, so v1 has no consumer for it; add it
-  only when a signed-URL surface lands (CLAUDE.md zero-dead-code).
+- Spine migration is **90**, not 86 — #178/#181/eval-harness took 86–89.
+- #214 adds migration **92** (`lark_card_credentials`: sealed Encrypt Key +
+  Verification Token on `lark_apps`). 91 was taken by `tool_artifacts` (#185).
+- `token.rs` (signed-URL HMAC) is **still not** included: Discord uses the
+  authenticated Gateway, and Lark's callback is verified with the app's Encrypt
+  Key + Verification Token, so v1 has no consumer for it.
+- The create-side seam lives on `OutboundRouter` (`resolve_target` +
+  `post_approval`), not a parallel trait — the composite already knows which
+  surface owns a thread.

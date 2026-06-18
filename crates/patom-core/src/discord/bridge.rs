@@ -35,6 +35,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
+use crate::approvals::{ApprovalError, ApprovalId, Decision, SharedApprovalDecider};
 use crate::assets::{AssetContentType, SharedAssetStore};
 use crate::auth::{Caller, OrgId, UserId};
 use crate::channels::ChannelId;
@@ -51,13 +52,17 @@ use super::channel_map::SharedDiscordChannelStore;
 use super::connection::InboundDispatch;
 use super::directory::SharedDiscordDirectory;
 use super::error::DiscordError;
-use super::event::{self, DiscordAttachment, DiscordEvent, InboundMessage};
+use super::event::{
+    self, DISCORD_INTERACTION_TYPE_COMPONENT, DiscordAttachment, DiscordEvent, InboundInteraction,
+    InboundMessage,
+};
 use super::history::SharedHistoryReader;
 use super::limits::{
     DISCORD_BACKFILL_MAX_MESSAGES, DISCORD_BACKFILL_MAX_PAGES, DISCORD_BACKFILL_PAGE_SIZE,
     DISCORD_DISPLAY_NAME_MAX, DISCORD_INBOUND_CONTENT_MAX, DISCORD_INBOUND_QUEUE,
     DISCORD_THREAD_NAME_MAX,
 };
+use super::poster::SharedDiscordPoster;
 use super::roster;
 use super::thread_opener::SharedThreadOpener;
 use super::types::{ContainerId, DiscordMessageId, DiscordUserId, GuildId};
@@ -117,6 +122,13 @@ pub struct BridgeDeps {
     pub assets: Option<SharedAssetStore>,
     /// Downloads an inbound attachment's bytes from the Discord CDN.
     pub attachment_fetcher: SharedAttachmentFetcher,
+    /// Resolves an approval button click: authorize the clicker, decide the row,
+    /// resume the agent. The single seam every surface shares (#200/#213). `None`
+    /// only in tests that exercise the message path; production always wires it.
+    pub decider: Option<SharedApprovalDecider>,
+    /// Posts the interaction ack + the resolved-card edit / ephemeral rejection.
+    /// `None` only in message-path tests (paired with `decider`).
+    pub poster: Option<SharedDiscordPoster>,
 }
 
 impl fmt::Debug for BridgeDeps {
@@ -197,7 +209,142 @@ pub async fn process_event(
         DiscordEvent::Message(m) => handle_message(deps, &app, &dispatch.bot_user_id, *m).await,
         DiscordEvent::GuildCreate(gc) => roster::sync_guild(deps, app.org_id, &gc).await,
         DiscordEvent::MemberUpsert(ev) => roster::sync_member(deps, app.org_id, &ev).await,
+        DiscordEvent::Interaction(i) => handle_interaction(deps, &app, *i).await,
         DiscordEvent::Other => Ok(()),
+    }
+}
+
+/// Parse an approval button `custom_id` (`apv:{approval_id}:{a|d}`) into its
+/// `(ApprovalId, Decision)`. `None` for any non-approval component or a malformed
+/// id/tag.
+fn parse_approval_custom_id(custom_id: &str) -> Option<(ApprovalId, Decision)> {
+    let rest = custom_id.strip_prefix("apv:")?;
+    // The uuid carries no `:`; the decision tag is the final segment.
+    let (id_str, tag) = rest.rsplit_once(':')?;
+    let id = ApprovalId::try_from(id_str).ok()?;
+    let decision = Decision::from_tag(tag)?;
+    Some((id, decision))
+}
+
+/// Handle an `INTERACTION_CREATE` for an approval button.
+///
+/// Discord drops the interaction unless a callback arrives within 3 s, so we
+/// **ack first** (DEFERRED_UPDATE_MESSAGE) before any DB work, then authorize the
+/// clicker via the shadow directory, decide the row through the shared
+/// `ApprovalDecider`, and edit the card to its resolved view. An unauthorized
+/// clicker gets an ephemeral rejection and the card is left untouched.
+#[tracing::instrument(skip_all, name = "discord.bridge.interaction")]
+async fn handle_interaction(
+    deps: &BridgeDeps,
+    app: &DiscordApp,
+    intr: InboundInteraction,
+) -> Result<(), DiscordError> {
+    // Only component interactions carry our approval buttons; ignore the rest
+    // (without acking — they are not ours to claim).
+    if intr.interaction_type != DISCORD_INTERACTION_TYPE_COMPONENT {
+        return Ok(());
+    }
+    let Some(custom_id) = intr.custom_id.as_deref() else {
+        return Ok(());
+    };
+    let Some((approval_id, decision)) = parse_approval_custom_id(custom_id) else {
+        // Not an approval button (or a malformed id) — not ours to handle.
+        return Ok(());
+    };
+
+    // Both are wired together at the composition root; absent only in message-
+    // path tests. Without them there is no way to ack/decide — drop quietly.
+    let (Some(decider), Some(poster)) = (deps.decider.as_ref(), deps.poster.as_ref()) else {
+        warn!(event = "discord.bridge.interaction_unconfigured");
+        return Ok(());
+    };
+
+    // Ack within Discord's 3-second deadline BEFORE any DB work. Best-effort: a
+    // failed ack only costs the "interaction failed" toast; the decision below
+    // still records. The token authorizes both the ack and the later edit.
+    if let Err(e) = poster
+        .ack_interaction(&intr.interaction_id, &intr.interaction_token)
+        .await
+    {
+        warn!(error = ?e, event = "discord.bridge.interaction_ack_failed");
+    }
+
+    // Authorize the clicker via the shadow-identity model: their global Discord
+    // user id → a real-or-shadow colleague.
+    let Some(user) = intr.user.as_ref() else {
+        warn!(event = "discord.bridge.interaction_no_user");
+        return Ok(());
+    };
+    let display = user
+        .display_name(intr.nick.as_deref())
+        .map(|d| d.chars().take(DISCORD_DISPLAY_NAME_MAX).collect::<String>());
+    let shadow = deps
+        .directory
+        .resolve_or_mint(app.org_id, &user.id, display.as_deref())
+        .await?;
+    let clicker_name = display.unwrap_or_else(|| user.id.as_str().to_owned());
+
+    match decider
+        .decide(app.org_id, approval_id, decision, shadow.colleague_id)
+        .await
+    {
+        Ok(_) => {
+            // Decided (or already decided — idempotent): render the resolved card.
+            let resolved = resolved_card_text(decision, &clicker_name);
+            if let Err(e) = poster
+                .edit_interaction_message(
+                    &intr.application_id,
+                    &intr.interaction_token,
+                    &resolved,
+                    &[],
+                )
+                .await
+            {
+                warn!(error = ?e, event = "discord.bridge.interaction_edit_failed");
+            }
+            info!(
+                patom.approval.id = %approval_id,
+                approval.decision = decision.tag().to_string(),
+                event = "discord.bridge.interaction_decided",
+            );
+            Ok(())
+        }
+        Err(ApprovalError::Unauthorized) => {
+            // Leave the card untouched; tell only the clicker, privately.
+            let _ = poster
+                .followup_ephemeral(
+                    &intr.application_id,
+                    &intr.interaction_token,
+                    "You're not authorized to decide this approval.",
+                )
+                .await;
+            info!(event = "discord.bridge.interaction_unauthorized");
+            Ok(())
+        }
+        Err(ApprovalError::NotFound | ApprovalError::NotPending | ApprovalError::Expired) => {
+            let _ = poster
+                .followup_ephemeral(
+                    &intr.application_id,
+                    &intr.interaction_token,
+                    "This approval is no longer open.",
+                )
+                .await;
+            info!(event = "discord.bridge.interaction_closed");
+            Ok(())
+        }
+        Err(e) => {
+            // A backend failure: surface as a bridge error (logged by the loop).
+            error!(error = ?e, event = "discord.bridge.interaction_decide_failed");
+            Err(DiscordError::Approval(e.to_string()))
+        }
+    }
+}
+
+/// The resolved-card text after a decision (buttons are stripped on edit).
+fn resolved_card_text(decision: Decision, clicker_name: &str) -> String {
+    match decision {
+        Decision::Approved => format!("✅ Approved by {clicker_name}."),
+        Decision::Denied => format!("🚫 Denied by {clicker_name}."),
     }
 }
 

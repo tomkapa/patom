@@ -72,6 +72,17 @@ pub enum DecideOutcome {
     AlreadyDecided(ApprovalRecord),
 }
 
+impl DecideOutcome {
+    /// The resolved row, whether this click flipped it (`Decided`) or found it
+    /// already resolved (`AlreadyDecided`) — the resolve view renders the same.
+    #[must_use]
+    pub fn record(&self) -> &ApprovalRecord {
+        match self {
+            Self::Decided(r) | Self::AlreadyDecided(r) => r,
+        }
+    }
+}
+
 #[async_trait]
 pub trait ApprovalStore: std::fmt::Debug + Send + Sync {
     /// Insert a pending approval under the acting member, deduped on

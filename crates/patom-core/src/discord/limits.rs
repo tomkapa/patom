@@ -212,6 +212,15 @@ pub const DISCORD_INTERACTION_DEADLINE: Duration = Duration::from_secs(3);
 /// How long an interaction token stays valid for follow-up callbacks.
 pub const DISCORD_INTERACTION_TOKEN_TTL: Duration = Duration::from_mins(15);
 
+/// Hard cap on a message component's `custom_id` (Discord's documented limit).
+///
+/// The approval button (`apv:{uuid}:a|d`, ~42 chars) is well under 100, but the
+/// cap is asserted at construction (§5).
+pub const DISCORD_CUSTOM_ID_MAX: usize = 100;
+
+/// Hard cap on buttons in one action row (Discord's documented row ceiling).
+pub const DISCORD_ACTION_ROW_MAX: usize = 5;
+
 /// TTL for a shadow→real account link token embedded in the consent button URL
 /// (the Slack #41 pattern). Short, so a leaked link expires quickly.
 pub const DISCORD_LINK_TOKEN_TTL: Duration = Duration::from_mins(10);

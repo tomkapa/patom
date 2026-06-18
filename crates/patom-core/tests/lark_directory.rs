@@ -9,9 +9,11 @@
 
 use sqlx::PgPool;
 
+use patom::auth::OrgId;
 use patom::clock::{SharedClock, SystemClock};
 use patom::colleagues::{resolve_agent_colleague, resolve_user_colleague};
 use patom::lark::directory::{LarkDirectory, PgLarkDirectory};
+use patom::lark::types::{LarkOpenId, LarkUserId, TenantKey};
 
 mod common;
 use common::pg::seed_tenant;
@@ -75,4 +77,50 @@ async fn agent_name_for_is_org_scoped(pool: PgPool) {
         .expect("agent_name_for query");
 
     assert_eq!(name, None, "an agent colleague is invisible to another org");
+}
+
+#[sqlx::test]
+async fn colleague_for_open_id_reverse_resolves_minted_shadow(pool: PgPool) {
+    // The card-action callback (#214) reverse-looks-up a clicking Lark user's
+    // open_id to the colleague minted when they were first seen.
+    let seed = seed_tenant(&pool).await;
+    let clock: SharedClock = SystemClock::shared();
+    let directory = PgLarkDirectory::new(pool.clone(), clock);
+
+    let tenant = TenantKey::try_from("tk_card").expect("tenant");
+    let user = LarkUserId::try_from("lu_alice").expect("user id");
+    let open_id = LarkOpenId::try_from("ou_alice").expect("open id");
+    let shadow = directory
+        .resolve_or_mint(seed.org_id, &tenant, &user, &open_id, Some("Alice"))
+        .await
+        .expect("mint shadow");
+
+    let found = directory
+        .colleague_for_open_id(seed.org_id, &open_id)
+        .await
+        .expect("reverse lookup");
+    assert_eq!(
+        found,
+        Some(shadow.colleague_id),
+        "the open_id resolves to the minted colleague"
+    );
+
+    // An unknown open_id → None (no mint on the click path).
+    let unknown = LarkOpenId::try_from("ou_unknown").expect("open id");
+    assert_eq!(
+        directory
+            .colleague_for_open_id(seed.org_id, &unknown)
+            .await
+            .expect("reverse lookup"),
+        None,
+    );
+
+    // Org-scoped: the handle is invisible to another org.
+    assert_eq!(
+        directory
+            .colleague_for_open_id(OrgId::new(), &open_id)
+            .await
+            .expect("reverse lookup"),
+        None,
+    );
 }

@@ -300,6 +300,8 @@ async fn lark_arm2_channel_thread_attaches(pool: PgPool) {
             agent_id: seed.agent_id,
             app_secret: patom::lark::types::LarkAppSecret::try_from("secret-value".to_owned())
                 .expect("secret"),
+            card_encrypt_key: None,
+            card_verification_token: None,
         },
     )
     .await
@@ -331,6 +333,8 @@ async fn lark_arm2_channel_thread_attaches(pool: PgPool) {
         Arc::new(PgLarkDmStore::new(pool.clone(), clock.clone())),
         Arc::new(PgThreadStore::new(pool.clone(), clock.clone())),
         pump_seam,
+        Arc::new(patom::lark::poster::FakeLarkPoster::new()),
+        Arc::new(patom::lark::token::FakeTokenProvider::new("t-test")),
     );
     router
         .ensure_delivery(seed.org_id, thread)
@@ -481,6 +485,8 @@ async fn lark_arm3_dm_binds_and_attaches(pool: PgPool) {
             agent_id: seed.agent_id,
             app_secret: patom::lark::types::LarkAppSecret::try_from("secret-value".to_owned())
                 .expect("secret"),
+            card_encrypt_key: None,
+            card_verification_token: None,
         },
     )
     .await
@@ -518,6 +524,8 @@ async fn lark_arm3_dm_binds_and_attaches(pool: PgPool) {
         dms.clone(),
         Arc::new(PgThreadStore::new(pool.clone(), clock.clone())),
         pump_seam,
+        Arc::new(patom::lark::poster::FakeLarkPoster::new()),
+        Arc::new(patom::lark::token::FakeTokenProvider::new("t-test")),
     );
     router
         .ensure_delivery(seed.org_id, thread)

@@ -20,6 +20,7 @@ use std::fmt;
 use async_trait::async_trait;
 use tokio::time::timeout;
 
+use crate::approvals::{ActionSummary, ApprovalId, PlatformMessageId, PlatformTarget};
 use crate::auth::OrgId;
 use crate::outbound::limits::OUTBOUND_ENSURE_TIMEOUT;
 use crate::outbound::{OutboundError, OutboundRouter};
@@ -30,7 +31,9 @@ use super::bridge::{AttachRequest, SharedOutboundAttach};
 use super::channel_map::SharedDiscordChannelStore;
 use super::directory::SharedDiscordDirectory;
 use super::dm_map::SharedDiscordDmStore;
-use super::poster::SharedDiscordPoster;
+use super::poster::{
+    ActionRow, AllowedMentions, Button, ButtonStyle, PostRequest, SharedDiscordPoster,
+};
 use super::thread_map::SharedDiscordThreadStore;
 use super::types::{ApplicationId, ContainerId};
 
@@ -105,6 +108,22 @@ impl DiscordOutboundRouter {
     }
 
     async fn resolve_and_attach(&self, org: OrgId, thread: ThreadId) -> Result<(), OutboundError> {
+        if let Some((app, container)) = self.resolve_container(org, thread).await? {
+            self.attach(thread, org, app, container).await;
+        }
+        Ok(())
+    }
+
+    /// Resolve the Discord `(bot, container)` this thread posts to — the binding
+    /// the pump attaches and the approval card posts to — or `None` when the
+    /// thread is not Discord-backed. Shared by `ensure_delivery` (attach) and the
+    /// approval seam (`resolve_target` / `post_approval`). Arm 3 opens + binds a
+    /// DM channel as a side effect, idempotently (a re-call resolves arm 1b).
+    async fn resolve_container(
+        &self,
+        org: OrgId,
+        thread: ThreadId,
+    ) -> Result<Option<(ApplicationId, ContainerId)>, OutboundError> {
         // Arm 1: a binding already exists (inbound-originated, re-fired, or
         // continued thread) — reuse its container.
         if let Some(b) = self
@@ -113,9 +132,7 @@ impl DiscordOutboundRouter {
             .await
             .map_err(backend)?
         {
-            self.attach(thread, org, b.application_id, b.container_id)
-                .await;
-            return Ok(());
+            return Ok(Some((b.application_id, b.container_id)));
         }
         // Arm 1b: an existing DM binding — reuse its DM channel.
         if let Some(b) = self
@@ -124,9 +141,7 @@ impl DiscordOutboundRouter {
             .await
             .map_err(backend)?
         {
-            self.attach(thread, org, b.application_id, b.dm_channel_id)
-                .await;
-            return Ok(());
+            return Ok(Some((b.application_id, b.dm_channel_id)));
         }
 
         // Arm 2: a channel thread whose Patom channel maps to a Discord channel.
@@ -136,42 +151,45 @@ impl DiscordOutboundRouter {
             .await
             .map_err(backend)?
         {
-            return self.attach_channel(org, thread, channel_id).await;
+            return self.channel_container(org, thread, channel_id).await;
         }
 
         // Arm 3: a DM thread whose counterpart is a Discord shadow.
-        self.attach_new_dm(org, thread).await
+        self.new_dm_container(org, thread).await
     }
 
-    async fn attach_channel(
+    async fn channel_container(
         &self,
         org: OrgId,
         thread: ThreadId,
         channel_id: crate::channels::ChannelId,
-    ) -> Result<(), OutboundError> {
+    ) -> Result<Option<(ApplicationId, ContainerId)>, OutboundError> {
         let Some(cb) = self
             .channels
             .lookup_by_channel(channel_id)
             .await
             .map_err(backend)?
         else {
-            return Ok(()); // Channel is not Discord-backed.
+            return Ok(None); // Channel is not Discord-backed.
         };
         let Some(app) = self.bot_for_thread(org, thread).await? else {
-            return Ok(());
+            return Ok(None);
         };
-        self.attach(thread, org, app, cb.discord_channel_id).await;
-        Ok(())
+        Ok(Some((app, cb.discord_channel_id)))
     }
 
-    async fn attach_new_dm(&self, org: OrgId, thread: ThreadId) -> Result<(), OutboundError> {
+    async fn new_dm_container(
+        &self,
+        org: OrgId,
+        thread: ThreadId,
+    ) -> Result<Option<(ApplicationId, ContainerId)>, OutboundError> {
         let Some(counterpart) = self
             .thread_store
             .dm_counterpart(thread)
             .await
             .map_err(backend)?
         else {
-            return Ok(()); // Web-origin / not a DM.
+            return Ok(None); // Web-origin / not a DM.
         };
         let Some(snowflake) = self
             .directory
@@ -179,13 +197,13 @@ impl DiscordOutboundRouter {
             .await
             .map_err(backend)?
         else {
-            return Ok(()); // Counterpart is not a Discord shadow — stays web-only.
+            return Ok(None); // Counterpart is not a Discord shadow — stays web-only.
         };
         let Some(app) = self.bot_for_thread(org, thread).await? else {
-            return Ok(());
+            return Ok(None);
         };
-        // Open (or fetch) the DM channel, then bind before attaching so a re-fire
-        // resolves arm 1b and never opens a second channel (idempotent).
+        // Open (or fetch) the DM channel, then bind so a re-call resolves arm 1b
+        // and never opens a second channel (idempotent).
         let channel = self
             .poster
             .create_dm(&app, &snowflake)
@@ -195,8 +213,7 @@ impl DiscordOutboundRouter {
             .bind(org, &app, thread, &channel)
             .await
             .map_err(backend)?;
-        self.attach(thread, org, app, channel).await;
-        Ok(())
+        Ok(Some((app, channel)))
     }
 
     /// The Discord bot the thread's owning agent speaks as, or `None` when the
@@ -223,6 +240,51 @@ impl DiscordOutboundRouter {
             None => Ok(None),
         }
     }
+
+    /// Post the interactive approval card (Approve / Deny buttons) to `container`
+    /// as `application_id`'s bot, returning the issued message id so the resolve
+    /// path can edit it. The buttons' `custom_id` carries `apv:{id}:a|d`, parsed
+    /// back on `INTERACTION_CREATE`.
+    async fn post_card(
+        &self,
+        application_id: ApplicationId,
+        container_id: ContainerId,
+        approval_id: ApprovalId,
+        action: &ActionSummary,
+    ) -> Result<PlatformMessageId, OutboundError> {
+        let content = format!(
+            "🔔 Approval needed: {}. A decision is required before I proceed.",
+            action.as_str()
+        );
+        let row = ActionRow::new(vec![
+            Button::new(
+                ButtonStyle::Success,
+                "Approve",
+                format!("apv:{}:a", approval_id.as_uuid()),
+            ),
+            Button::new(
+                ButtonStyle::Danger,
+                "Deny",
+                format!("apv:{}:d", approval_id.as_uuid()),
+            ),
+        ]);
+        let ids = self
+            .poster
+            .post(PostRequest {
+                application_id,
+                container_id,
+                reply_to: None,
+                content,
+                allowed_mentions: AllowedMentions::none(),
+                components: vec![row],
+            })
+            .await
+            .map_err(backend)?;
+        let id = ids.into_iter().next().ok_or_else(|| {
+            OutboundError::Backend("discord: approval card returned no message id".to_owned())
+        })?;
+        PlatformMessageId::try_from(id.as_str().to_owned()).map_err(backend)
+    }
 }
 
 #[async_trait]
@@ -238,5 +300,53 @@ impl OutboundRouter for DiscordOutboundRouter {
         )
         .await
         .unwrap_or(Err(OutboundError::Timeout))
+    }
+
+    async fn resolve_target(
+        &self,
+        org_id: OrgId,
+        thread_id: ThreadId,
+    ) -> Result<Option<PlatformTarget>, OutboundError> {
+        let resolved = timeout(
+            OUTBOUND_ENSURE_TIMEOUT,
+            self.resolve_container(org_id, thread_id),
+        )
+        .await
+        .unwrap_or(Err(OutboundError::Timeout))?;
+        Ok(resolved.map(|(app, container)| PlatformTarget::Discord {
+            application_id: app.as_str().to_owned(),
+            container_id: container.as_str().to_owned(),
+            // A fresh approval card, not an inline reply.
+            reply_to: None,
+        }))
+    }
+
+    async fn post_approval(
+        &self,
+        _org_id: OrgId,
+        _thread_id: ThreadId,
+        target: &PlatformTarget,
+        approval_id: ApprovalId,
+        action: &ActionSummary,
+    ) -> Result<Option<PlatformMessageId>, OutboundError> {
+        // Self-skip when the row is bound to another surface (the composite asks
+        // every router; only the owning one posts).
+        let PlatformTarget::Discord {
+            application_id,
+            container_id,
+            ..
+        } = target
+        else {
+            return Ok(None);
+        };
+        let app = ApplicationId::try_from(application_id.as_str()).map_err(backend)?;
+        let container = ContainerId::try_from(container_id.as_str()).map_err(backend)?;
+        timeout(
+            OUTBOUND_ENSURE_TIMEOUT,
+            self.post_card(app, container, approval_id, action),
+        )
+        .await
+        .unwrap_or(Err(OutboundError::Timeout))
+        .map(Some)
     }
 }

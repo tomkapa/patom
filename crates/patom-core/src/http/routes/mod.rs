@@ -131,6 +131,9 @@ pub fn router(state: AppState) -> Router {
         .merge(mcp::slack_connect_router())
         // Lark-initiated MCP wiring (same no-cookie, signed-token model).
         .merge(mcp::lark_connect_router())
+        // Lark interactive-approval card callback — no cookie; verified per
+        // request with the app's Encrypt Key + Verification Token (#214).
+        .merge(crate::lark::card_actions::router())
         // Discord-initiated MCP wiring (same no-cookie, signed-token model).
         .merge(mcp::discord_connect_router())
         // Slack webhook + OAuth callback also sit outside the cookie
