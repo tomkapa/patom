@@ -100,6 +100,8 @@ async fn build_rig(
             app_id: LarkAppId::try_from(APP_ID).expect("app id"),
             agent_id,
             app_secret: LarkAppSecret::try_from("secret-value".to_owned()).expect("secret"),
+            card_encrypt_key: None,
+            card_verification_token: None,
         },
     )
     .await

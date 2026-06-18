@@ -119,6 +119,8 @@ async fn build_deps(
         thread_opener,
         assets: None,
         attachment_fetcher: Arc::new(patom::discord::attachment::FakeAttachmentFetcher::new()),
+        decider: None,
+        poster: None,
     }
 }
 

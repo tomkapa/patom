@@ -19,6 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::time::timeout;
 
+use crate::approvals::{ActionSummary, ApprovalId, PlatformMessageId, PlatformTarget};
 use crate::auth::OrgId;
 use crate::outbound::limits::OUTBOUND_ENSURE_TIMEOUT;
 use crate::outbound::{OutboundError, OutboundRouter};
@@ -28,8 +29,10 @@ use super::app_store::SharedLarkAppStore;
 use super::channel_map::SharedLarkChannelStore;
 use super::directory::SharedLarkDirectory;
 use super::dm_map::SharedLarkDmStore;
+use super::poster::SharedLarkPoster;
 use super::stream_pump::{AttachRequest, LarkPumpHandle, LarkRecipient};
 use super::thread_map::SharedLarkThreadStore;
+use super::token::SharedTokenProvider;
 use super::types::{LarkAppId, LarkChatId, LarkOpenId};
 
 /// The attach seam the Lark router depends on.
@@ -60,6 +63,10 @@ pub struct LarkOutboundRouter {
     dms: SharedLarkDmStore,
     thread_store: SharedThreadStore,
     pump: SharedLarkOutboundAttach,
+    /// Posts the interactive approval card (#214).
+    poster: SharedLarkPoster,
+    /// Mints the `tenant_access_token` the approval card posts with (#214).
+    tokens: SharedTokenProvider,
 }
 
 impl fmt::Debug for LarkOutboundRouter {
@@ -73,6 +80,7 @@ fn backend(e: impl fmt::Display) -> OutboundError {
 }
 
 impl LarkOutboundRouter {
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         threads_map: SharedLarkThreadStore,
@@ -82,6 +90,8 @@ impl LarkOutboundRouter {
         dms: SharedLarkDmStore,
         thread_store: SharedThreadStore,
         pump: SharedLarkOutboundAttach,
+        poster: SharedLarkPoster,
+        tokens: SharedTokenProvider,
     ) -> Self {
         Self {
             threads_map,
@@ -91,7 +101,80 @@ impl LarkOutboundRouter {
             dms,
             thread_store,
             pump,
+            poster,
+            tokens,
         }
+    }
+
+    /// Resolve the Lark `(bot, chat)` an interactive approval card should post to
+    /// — arms 1 (bound thread) + 2 (channel thread) only. DM-bound threads
+    /// (`resolve_and_attach` arms 1b/3) return `None`: a v1 approval card targets
+    /// a group chat, and a DM falls back to the web/in-thread prompt.
+    async fn resolve_chat(
+        &self,
+        org: OrgId,
+        thread: ThreadId,
+    ) -> Result<Option<(LarkAppId, LarkChatId)>, OutboundError> {
+        if let Some(b) = self
+            .threads_map
+            .lookup_by_patom_thread(thread)
+            .await
+            .map_err(backend)?
+        {
+            return Ok(Some((b.app_id, b.chat_id)));
+        }
+        let Some(channel_id) = self
+            .thread_store
+            .channel_of(thread)
+            .await
+            .map_err(backend)?
+        else {
+            return Ok(None);
+        };
+        self.channel_chat(org, thread, channel_id).await
+    }
+
+    /// Resolve a channel thread's `(bot, chat)`: the Lark chat its Patom channel
+    /// maps to, posting as the thread's owning agent's bot. `None` when the
+    /// channel is not Lark-backed or the agent has no Lark bot. Shared by the
+    /// approval resolver and `attach_channel`.
+    async fn channel_chat(
+        &self,
+        org: OrgId,
+        thread: ThreadId,
+        channel_id: crate::channels::ChannelId,
+    ) -> Result<Option<(LarkAppId, LarkChatId)>, OutboundError> {
+        let Some(cb) = self
+            .channels
+            .lookup_by_channel(channel_id)
+            .await
+            .map_err(backend)?
+        else {
+            return Ok(None); // Channel is not Lark-backed.
+        };
+        let Some(app) = self.bot_for_thread(org, thread).await? else {
+            return Ok(None);
+        };
+        Ok(Some((app, cb.chat_id)))
+    }
+
+    /// Post the interactive approval card to `chat` as `app`'s bot, returning the
+    /// issued message id so the resolve path can record it.
+    async fn post_card(
+        &self,
+        app: LarkAppId,
+        chat: LarkChatId,
+        approval_id: ApprovalId,
+        action: &ActionSummary,
+    ) -> Result<PlatformMessageId, OutboundError> {
+        let token = self.tokens.token(&app).await.map_err(backend)?;
+        let card = super::card::pending_card(approval_id, action).to_string();
+        let msg = self
+            .poster
+            .post_card(token, &chat, &card)
+            .await
+            .map_err(backend)?;
+        PlatformMessageId::try_from(msg.as_str().to_owned()).map_err(backend)
     }
 
     async fn attach_chat(
@@ -178,18 +261,9 @@ impl LarkOutboundRouter {
         thread: ThreadId,
         channel_id: crate::channels::ChannelId,
     ) -> Result<(), OutboundError> {
-        let Some(cb) = self
-            .channels
-            .lookup_by_channel(channel_id)
-            .await
-            .map_err(backend)?
-        else {
-            return Ok(()); // Channel is not Lark-backed.
-        };
-        let Some(app) = self.bot_for_thread(org, thread).await? else {
-            return Ok(());
-        };
-        self.attach_chat(thread, org, app, cb.chat_id).await;
+        if let Some((app, chat)) = self.channel_chat(org, thread, channel_id).await? {
+            self.attach_chat(thread, org, app, chat).await;
+        }
         Ok(())
     }
 
@@ -261,5 +335,49 @@ impl OutboundRouter for LarkOutboundRouter {
         )
         .await
         .unwrap_or(Err(OutboundError::Timeout))
+    }
+
+    async fn resolve_target(
+        &self,
+        org_id: OrgId,
+        thread_id: ThreadId,
+    ) -> Result<Option<PlatformTarget>, OutboundError> {
+        let resolved = timeout(
+            OUTBOUND_ENSURE_TIMEOUT,
+            self.resolve_chat(org_id, thread_id),
+        )
+        .await
+        .unwrap_or(Err(OutboundError::Timeout))?;
+        Ok(resolved.map(|(app, chat)| PlatformTarget::Lark {
+            app_id: app.as_str().to_owned(),
+            chat_id: chat.as_str().to_owned(),
+            reply_to: None,
+        }))
+    }
+
+    async fn post_approval(
+        &self,
+        _org_id: OrgId,
+        _thread_id: ThreadId,
+        target: &PlatformTarget,
+        approval_id: ApprovalId,
+        action: &ActionSummary,
+    ) -> Result<Option<PlatformMessageId>, OutboundError> {
+        // Self-skip when the row is bound to another surface.
+        let PlatformTarget::Lark {
+            app_id, chat_id, ..
+        } = target
+        else {
+            return Ok(None);
+        };
+        let app = LarkAppId::try_from(app_id.as_str()).map_err(backend)?;
+        let chat = LarkChatId::try_from(chat_id.as_str()).map_err(backend)?;
+        timeout(
+            OUTBOUND_ENSURE_TIMEOUT,
+            self.post_card(app, chat, approval_id, action),
+        )
+        .await
+        .unwrap_or(Err(OutboundError::Timeout))
+        .map(Some)
     }
 }

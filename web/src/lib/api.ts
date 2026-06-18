@@ -292,11 +292,15 @@ export const api = {
    *  these down to the agent it is showing. Owner/admin only. */
   larkApps: () => request<LarkApp[]>("/lark/apps"),
   /** Register a Lark bot for an agent. The secret is encrypted at rest and
-   *  the bot is hot-connected server-side — no restart needed. */
+   *  the bot is hot-connected server-side — no restart needed. The optional
+   *  card credentials (Encrypt Key + Verification Token) enable the interactive
+   *  approval-card callback; supply both or neither. */
   larkConnect: (body: {
     app_id: string;
     app_secret: string;
     agent_id: string;
+    card_encrypt_key?: string;
+    card_verification_token?: string;
   }) =>
     request<void>("/lark/apps", {
       method: "POST",

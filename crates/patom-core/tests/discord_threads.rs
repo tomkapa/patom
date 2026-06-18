@@ -124,6 +124,8 @@ async fn build_rig(
         thread_opener,
         assets: None,
         attachment_fetcher: Arc::new(patom::discord::attachment::FakeAttachmentFetcher::new()),
+        decider: None,
+        poster: None,
     };
     Rig {
         deps,

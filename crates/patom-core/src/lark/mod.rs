@@ -21,6 +21,9 @@
 pub mod admin_routes;
 pub mod app_store;
 pub mod bridge;
+pub mod card;
+pub mod card_actions;
+pub mod card_verify;
 pub mod channel_map;
 pub mod codec;
 pub mod connect_link;

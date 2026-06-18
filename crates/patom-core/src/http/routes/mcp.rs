@@ -1827,6 +1827,7 @@ async fn do_discord_ping(state: &AppState, pending: &PatomPendingCtx, display_na
         reply_to,
         content: format!("✓ Connected — {display_name}"),
         allowed_mentions: crate::discord::poster::AllowedMentions::none(),
+        components: Vec::new(),
     });
     match tokio::time::timeout(crate::discord::limits::DISCORD_PING_TIMEOUT, post).await {
         Ok(Ok(_)) => {}

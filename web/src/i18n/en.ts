@@ -300,6 +300,11 @@ const en = {
   "agent.detail.integrations.lark.idPlaceholder": "cli_a8f3e21c9b0d4400",
   "agent.detail.integrations.lark.hint":
     "Create an app in the Lark Open Platform, enable the bot, and grant the message permissions.",
+  "agent.detail.integrations.lark.encryptKeyLabel": "Encrypt Key (optional)",
+  "agent.detail.integrations.lark.verificationTokenLabel":
+    "Verification Token (optional)",
+  "agent.detail.integrations.lark.cardHelper":
+    "Both are optional and enable interactive approval cards. Copy them from the app's Event & Callback settings, and point its Card Request URL at /lark/card-actions.",
   "agent.detail.integrations.discord.name": "Discord",
   "agent.detail.integrations.discord.desc":
     "Wire a guild-scoped bot so this agent can chat in your Discord server.",

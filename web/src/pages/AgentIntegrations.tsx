@@ -285,12 +285,33 @@ function Body({
                 ? formatError(discordConnect.error)
                 : null
           }
-          onSubmit={(idValue, secretValue) => {
+          extraFields={
+            connecting === "lark"
+              ? [
+                  {
+                    id: "card_encrypt_key",
+                    label: t("agent.detail.integrations.lark.encryptKeyLabel"),
+                    helper: t("agent.detail.integrations.lark.cardHelper"),
+                  },
+                  {
+                    id: "card_verification_token",
+                    label: t(
+                      "agent.detail.integrations.lark.verificationTokenLabel",
+                    ),
+                  },
+                ]
+              : undefined
+          }
+          onSubmit={(idValue, secretValue, extra) => {
             if (connecting === "lark") {
               larkConnect.mutate({
                 app_id: idValue,
                 app_secret: secretValue,
                 agent_id: agentId,
+                // Both or neither — the backend rejects a lone value. Blank
+                // fields were already dropped by the modal.
+                card_encrypt_key: extra.card_encrypt_key,
+                card_verification_token: extra.card_verification_token,
               });
             } else {
               discordConnect.mutate({

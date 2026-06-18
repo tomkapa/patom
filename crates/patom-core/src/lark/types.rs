@@ -198,6 +198,95 @@ impl fmt::Debug for LarkAppSecret {
     }
 }
 
+/// An app's **Encrypt Key** — signs a `card.action.trigger` callback (issue #214).
+///
+/// The per-app secret Lark mixes into the request signature. `Debug` redacts; the
+/// bytes are only available through [`LarkEncryptKey::expose`].
+#[derive(Clone)]
+pub struct LarkEncryptKey(SecretString);
+
+impl LarkEncryptKey {
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        self.0.expose()
+    }
+}
+
+impl TryFrom<String> for LarkEncryptKey {
+    type Error = ParseError;
+
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        if raw.is_empty() {
+            return Err(ParseError::Empty {
+                field: "lark_encrypt_key",
+            });
+        }
+        if raw.len() > LARK_SECRET_MAX_LEN {
+            return Err(ParseError::TooLong {
+                field: "lark_encrypt_key",
+                max: LARK_SECRET_MAX_LEN,
+                got: raw.len(),
+            });
+        }
+        Ok(Self(SecretString::try_from(raw).map_err(|_| {
+            ParseError::Empty {
+                field: "lark_encrypt_key",
+            }
+        })?))
+    }
+}
+
+impl fmt::Debug for LarkEncryptKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LarkEncryptKey(***)")
+    }
+}
+
+/// An app's **Verification Token** — echoed in the callback body (issue #214).
+///
+/// The per-app secret in `header.token` that the route checks constant-time.
+/// `Debug` redacts; the bytes are only available through
+/// [`LarkVerificationToken::expose`].
+#[derive(Clone)]
+pub struct LarkVerificationToken(SecretString);
+
+impl LarkVerificationToken {
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        self.0.expose()
+    }
+}
+
+impl TryFrom<String> for LarkVerificationToken {
+    type Error = ParseError;
+
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        if raw.is_empty() {
+            return Err(ParseError::Empty {
+                field: "lark_verification_token",
+            });
+        }
+        if raw.len() > LARK_SECRET_MAX_LEN {
+            return Err(ParseError::TooLong {
+                field: "lark_verification_token",
+                max: LARK_SECRET_MAX_LEN,
+                got: raw.len(),
+            });
+        }
+        Ok(Self(SecretString::try_from(raw).map_err(|_| {
+            ParseError::Empty {
+                field: "lark_verification_token",
+            }
+        })?))
+    }
+}
+
+impl fmt::Debug for LarkVerificationToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LarkVerificationToken(***)")
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Shared parsing helper
 // ─────────────────────────────────────────────────────────────────────────

@@ -178,6 +178,9 @@ struct Collaborators {
     /// the agent factory installs on every spawned `Agent`.
     approvals: crate::approvals::SharedApprovalStore,
     gated_tools: crate::approvals::SharedGatedToolStore,
+    /// Approval decider (#214): held so the Discord + Lark bridges (and the Lark
+    /// card-action route) can resolve a button/card click through the one seam.
+    approval_decider: crate::approvals::SharedApprovalDecider,
 }
 
 impl Collaborators {
@@ -366,6 +369,24 @@ impl Collaborators {
         let queue: SharedPromptQueue = Arc::new(PgPromptQueue::new(pool.clone(), clock.clone()));
         let dag: SharedDagBudget = Arc::new(PgDagBudget::new(pool.clone()));
 
+        // Approval decider (#214): the single seam every chat surface shares to
+        // resolve a button click — authorize the clicker, decide the row, resume
+        // the requesting agent. Built here (after the queue + dag) so the Discord
+        // and Lark bridges can hold it.
+        let approval_resumer: crate::approvals::SharedApprovalResumer =
+            Arc::new(crate::approvals::ApprovalResumer::new(
+                threads.clone(),
+                queue.clone(),
+                dag.clone(),
+                colleagues.clone(),
+            ));
+        let approval_decider: crate::approvals::SharedApprovalDecider =
+            Arc::new(crate::approvals::ApprovalDecider::new(
+                approvals.clone(),
+                approval_resumer,
+                clock.clone(),
+            ));
+
         let hub = Arc::new(PgResponseHub::new(pool.clone(), clock.clone()));
         let sink: SharedResponseSink = hub.clone();
         let responses: SharedResponseSource = hub;
@@ -454,6 +475,7 @@ impl Collaborators {
             outbound_deferred,
             approvals,
             gated_tools,
+            approval_decider,
         })
     }
 }
@@ -1077,13 +1099,15 @@ pub async fn build_server(
                     lark_dms,
                     pieces.threads.clone(),
                     pump_handle.clone(),
+                    poster.clone(),
+                    token_provider.clone(),
                 ),
             ));
 
             let (bridge_handle, bridge_tx) = bridge::spawn(
                 bridge::BridgeDeps {
                     apps: apps.clone(),
-                    directory,
+                    directory: directory.clone(),
                     channels,
                     threads: lark_threads,
                     thread_store: pieces.threads.clone(),
@@ -1119,6 +1143,8 @@ pub async fn build_server(
                 clock: pieces.clock.clone(),
                 poster,
                 token_provider,
+                directory,
+                decider: pieces.approval_decider.clone(),
             };
             (Some(state), Some(bridge_handle))
         }
@@ -1236,6 +1262,8 @@ pub async fn build_server(
                     thread_opener,
                     assets: assets.clone(),
                     attachment_fetcher,
+                    decider: Some(pieces.approval_decider.clone()),
+                    poster: Some(poster.clone()),
                 },
                 cancel.clone(),
             );

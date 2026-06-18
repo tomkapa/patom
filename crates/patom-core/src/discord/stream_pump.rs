@@ -449,6 +449,7 @@ async fn post_reply(
             reply_to: req.reply_to.clone(),
             content,
             allowed_mentions: AllowedMentions::users(&pinged),
+            components: Vec::new(),
         })
         .await
     {

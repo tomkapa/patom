@@ -11,7 +11,11 @@ use serde::Deserialize;
 use crate::types::ParseError;
 
 use super::error::DiscordError;
-use super::types::{ContainerId, DiscordMessageId, DiscordUserId, GuildId};
+use super::limits::DISCORD_CUSTOM_ID_MAX;
+use super::types::{
+    ApplicationId, ContainerId, DiscordMessageId, DiscordUserId, GuildId, InteractionId,
+    InteractionToken,
+};
 
 /// A normalized inbound Gateway event (only the kinds Patom acts on).
 #[derive(Debug, Clone)]
@@ -20,6 +24,9 @@ pub enum DiscordEvent {
     GuildCreate(Box<GuildCreate>),
     /// `GUILD_MEMBER_ADD` / `GUILD_MEMBER_UPDATE` — refresh a single member.
     MemberUpsert(Box<GuildMemberEvent>),
+    /// `INTERACTION_CREATE` — a component interaction (e.g. an approval button
+    /// click). Arrives over the authenticated Gateway, so it carries no HMAC.
+    Interaction(Box<InboundInteraction>),
     Other,
 }
 
@@ -202,6 +209,95 @@ impl InboundMessage {
     }
 }
 
+/// An `INTERACTION_CREATE` for a message component (Discord type 3) — e.g. a
+/// click on an approval Approve/Deny button.
+///
+/// The clicker is `member.user` in a guild and the top-level `user` in a DM;
+/// [`From<RawInteraction>`] folds both into `user`. The `custom_id` is the
+/// button's echoed id (`apv:{approval_id}:{a|d}`); it is dropped (set `None`)
+/// when it exceeds Discord's [`DISCORD_CUSTOM_ID_MAX`] cap so a malformed frame
+/// never carries an oversized value downstream.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(from = "RawInteraction")]
+pub struct InboundInteraction {
+    pub interaction_id: InteractionId,
+    /// The app (bot) the interaction targets — the token-fetch + edit key.
+    pub application_id: ApplicationId,
+    /// The continuation token (callback / `@original` edit), valid ~15 min.
+    pub interaction_token: InteractionToken,
+    /// Discord interaction type (`3` = MESSAGE_COMPONENT). Others are ignored.
+    pub interaction_type: u8,
+    /// The channel the component message lives in, when present.
+    pub channel_id: Option<ContainerId>,
+    /// The clicking user (`member.user` in a guild, `user` in a DM).
+    pub user: Option<Author>,
+    /// The clicker's per-guild nickname, when present.
+    pub nick: Option<String>,
+    /// The clicked component's `custom_id` (e.g. `apv:{id}:a`), within cap.
+    pub custom_id: Option<String>,
+}
+
+/// Discord's MESSAGE_COMPONENT interaction type code.
+pub const DISCORD_INTERACTION_TYPE_COMPONENT: u8 = 3;
+
+/// The wire shape of an interaction, before flattening into
+/// [`InboundInteraction`].
+#[derive(Deserialize)]
+struct RawInteraction {
+    id: InteractionId,
+    application_id: ApplicationId,
+    token: InteractionToken,
+    #[serde(rename = "type")]
+    interaction_type: u8,
+    #[serde(default)]
+    channel_id: Option<ContainerId>,
+    #[serde(default)]
+    member: Option<RawInteractionMember>,
+    #[serde(default)]
+    user: Option<Author>,
+    #[serde(default)]
+    data: Option<RawInteractionData>,
+}
+
+#[derive(Deserialize)]
+struct RawInteractionMember {
+    #[serde(default)]
+    user: Option<Author>,
+    #[serde(default)]
+    nick: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawInteractionData {
+    #[serde(default)]
+    custom_id: Option<String>,
+}
+
+impl From<RawInteraction> for InboundInteraction {
+    fn from(raw: RawInteraction) -> Self {
+        let (member_user, nick) = match raw.member {
+            Some(m) => (m.user, m.nick),
+            None => (None, None),
+        };
+        // `member.user` (guild) wins; fall back to the top-level `user` (DM).
+        let user = member_user.or(raw.user);
+        let custom_id = raw
+            .data
+            .and_then(|d| d.custom_id)
+            .filter(|c| c.chars().count() <= DISCORD_CUSTOM_ID_MAX);
+        Self {
+            interaction_id: raw.id,
+            application_id: raw.application_id,
+            interaction_token: raw.token,
+            interaction_type: raw.interaction_type,
+            channel_id: raw.channel_id,
+            user,
+            nick,
+            custom_id,
+        }
+    }
+}
+
 /// A roster member (from `GUILD_CREATE.members` or a member event).
 #[derive(Debug, Clone, Deserialize)]
 pub struct RosterMember {
@@ -243,6 +339,10 @@ pub fn parse(event_type: &str, data: &serde_json::Value) -> Result<DiscordEvent,
         "GUILD_MEMBER_ADD" | "GUILD_MEMBER_UPDATE" => {
             let ev: GuildMemberEvent = serde_json::from_value(data.clone())?;
             Ok(DiscordEvent::MemberUpsert(Box::new(ev)))
+        }
+        "INTERACTION_CREATE" => {
+            let intr: InboundInteraction = serde_json::from_value(data.clone())?;
+            Ok(DiscordEvent::Interaction(Box::new(intr)))
         }
         _ => Ok(DiscordEvent::Other),
     }
@@ -447,6 +547,92 @@ mod tests {
         assert_eq!(gc.guild_id.as_str(), "333333333333333333");
         assert_eq!(gc.members.len(), 2);
         assert!(gc.members[1].user.bot);
+    }
+
+    #[test]
+    fn parse_interaction_create_guild_button_click() {
+        let data = serde_json::json!({
+            "id": "111111111111111111",
+            "application_id": "222222222222222222",
+            "token": "aW50ZXJhY3Rpb24tdG9rZW4",
+            "type": 3,
+            "channel_id": "333333333333333333",
+            "member": {
+                "user": {"id": "444444444444444444", "username": "alice", "global_name": "Alice"},
+                "nick": "Ali",
+            },
+            "data": {"custom_id": "apv:7e57c0de-0000-4000-8000-000000000001:a", "component_type": 2},
+        });
+        let DiscordEvent::Interaction(i) = parse("INTERACTION_CREATE", &data).expect("parse")
+        else {
+            panic!("expected an interaction");
+        };
+        assert_eq!(i.interaction_id.as_str(), "111111111111111111");
+        assert_eq!(i.application_id.as_str(), "222222222222222222");
+        assert_eq!(i.interaction_token.expose(), "aW50ZXJhY3Rpb24tdG9rZW4");
+        assert_eq!(i.interaction_type, DISCORD_INTERACTION_TYPE_COMPONENT);
+        assert_eq!(
+            i.channel_id.as_ref().map(ContainerId::as_str),
+            Some("333333333333333333")
+        );
+        // The clicker is `member.user` in a guild.
+        assert_eq!(
+            i.user.as_ref().map(|u| u.id.as_str()),
+            Some("444444444444444444")
+        );
+        assert_eq!(i.nick.as_deref(), Some("Ali"));
+        assert_eq!(
+            i.custom_id.as_deref(),
+            Some("apv:7e57c0de-0000-4000-8000-000000000001:a")
+        );
+    }
+
+    #[test]
+    fn parse_interaction_create_dm_uses_top_level_user() {
+        // A DM interaction has no `member`; the clicker is the top-level `user`.
+        let data = serde_json::json!({
+            "id": "1", "application_id": "2", "token": "tok", "type": 3,
+            "user": {"id": "999999999999999999", "username": "bob"},
+            "data": {"custom_id": "apv:7e57c0de-0000-4000-8000-000000000002:d"},
+        });
+        let DiscordEvent::Interaction(i) = parse("INTERACTION_CREATE", &data).expect("parse")
+        else {
+            panic!("interaction");
+        };
+        assert_eq!(
+            i.user.as_ref().map(|u| u.id.as_str()),
+            Some("999999999999999999")
+        );
+        assert!(i.nick.is_none());
+        assert_eq!(
+            i.custom_id.as_deref(),
+            Some("apv:7e57c0de-0000-4000-8000-000000000002:d")
+        );
+    }
+
+    #[test]
+    fn parse_interaction_drops_oversized_custom_id() {
+        // A custom_id past Discord's 100-char cap is a malformed frame; it is
+        // dropped (None) rather than carried downstream.
+        let data = serde_json::json!({
+            "id": "1", "application_id": "2", "token": "tok", "type": 3,
+            "user": {"id": "3", "username": "x"},
+            "data": {"custom_id": "a".repeat(101)},
+        });
+        let DiscordEvent::Interaction(i) = parse("INTERACTION_CREATE", &data).expect("parse")
+        else {
+            panic!("interaction");
+        };
+        assert!(i.custom_id.is_none());
+    }
+
+    #[test]
+    fn parse_interaction_rejects_blank_token() {
+        let data = serde_json::json!({
+            "id": "1", "application_id": "2", "token": "", "type": 3,
+            "user": {"id": "3", "username": "x"},
+        });
+        assert!(parse("INTERACTION_CREATE", &data).is_err());
     }
 
     #[test]

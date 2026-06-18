@@ -18,7 +18,7 @@ use crate::http::{AppState, HttpError};
 
 use super::app_store::{LarkApp, LarkConnectTarget, NewLarkApp};
 use super::error::LarkError;
-use super::types::{LarkAppId, LarkAppSecret};
+use super::types::{LarkAppId, LarkAppSecret, LarkEncryptKey, LarkVerificationToken};
 
 /// The private (auth-gated) Lark admin router.
 ///
@@ -37,6 +37,13 @@ struct RegisterRequest {
     app_id: String,
     app_secret: String,
     agent_id: AgentId,
+    /// Card-callback Encrypt Key (#214). Provide together with
+    /// `card_verification_token` to enable the `/lark/card-actions` route for
+    /// this app; omit both for a long-connection-only bot.
+    #[serde(default)]
+    card_encrypt_key: Option<String>,
+    #[serde(default)]
+    card_verification_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -81,6 +88,23 @@ async fn register_app(
     require_admin(&state, &principal).await?;
     let app_id = LarkAppId::try_from(body.app_id).map_err(HttpError::Parse)?;
     let app_secret = LarkAppSecret::try_from(body.app_secret).map_err(HttpError::Parse)?;
+    // Card credentials are all-or-nothing: a single one is a misconfiguration
+    // that would leave the card-action route unverifiable.
+    if body.card_encrypt_key.is_some() != body.card_verification_token.is_some() {
+        return Err(HttpError::BadRequest(
+            "card_encrypt_key and card_verification_token must be set together".to_owned(),
+        ));
+    }
+    let card_encrypt_key = body
+        .card_encrypt_key
+        .map(LarkEncryptKey::try_from)
+        .transpose()
+        .map_err(HttpError::Parse)?;
+    let card_verification_token = body
+        .card_verification_token
+        .map(LarkVerificationToken::try_from)
+        .transpose()
+        .map_err(HttpError::Parse)?;
     let caller = Caller::new(principal.user_id, principal.active_org_id);
     lark.apps
         .register(
@@ -89,6 +113,8 @@ async fn register_app(
                 app_id: app_id.clone(),
                 agent_id: body.agent_id,
                 app_secret,
+                card_encrypt_key,
+                card_verification_token,
             },
         )
         .await

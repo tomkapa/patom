@@ -142,3 +142,9 @@ pub const MAX_LARK_DEFERRED_WIRE_LINKS: usize = 8;
 /// otherwise stack up and hold the callback's `tokio::join!` open after the
 /// credentials have already landed.
 pub const LARK_PING_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Max body size for the `POST /lark/card-actions` callback (issue #214).
+///
+/// A card-action payload is small (operator + action.value + context); cap
+/// generously at 96 KiB, matching the Slack webhook limit (§5).
+pub const LARK_CARD_WEBHOOK_MAX_BYTES: usize = 96 * 1024;

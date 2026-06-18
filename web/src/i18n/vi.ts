@@ -292,6 +292,11 @@ const vi: TranslationTable = {
   "agent.detail.integrations.lark.idPlaceholder": "cli_a8f3e21c9b0d4400",
   "agent.detail.integrations.lark.hint":
     "Tạo ứng dụng trong Lark Open Platform, bật bot và cấp quyền tin nhắn.",
+  "agent.detail.integrations.lark.encryptKeyLabel": "Encrypt Key (tùy chọn)",
+  "agent.detail.integrations.lark.verificationTokenLabel":
+    "Verification Token (tùy chọn)",
+  "agent.detail.integrations.lark.cardHelper":
+    "Cả hai đều tùy chọn và bật thẻ phê duyệt tương tác. Sao chép từ phần Event & Callback của ứng dụng, và trỏ Card Request URL tới /lark/card-actions.",
   "agent.detail.integrations.discord.name": "Discord",
   "agent.detail.integrations.discord.desc":
     "Kết nối bot theo guild để agent này có thể chat trong máy chủ Discord của bạn.",
