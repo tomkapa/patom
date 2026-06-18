@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::approvals::{
     ActionSummary, ApprovalId, ApproverPolicy, CreateOutcome, NewApproval, PlatformTarget,
@@ -208,18 +208,16 @@ impl AskApprovalTool {
 
         // Resolve which chat surface this thread is bound to BEFORE create, so the
         // row records the real platform and the button `custom_id` can carry the
-        // freshly-minted approval id. Best-effort: a resolve failure (or a
-        // web-origin thread) degrades to an in-thread / web-UI prompt.
-        // A genuine resolution failure must NOT degrade to `Web`: `create` is
-        // idempotent, so a `Web` row would permanently suppress the interactive
-        // card (the retry takes the `Existing` no-re-post path). Fail fast so the
-        // agent re-runs and re-resolves; only a true `None` (web-origin / unbound
-        // thread) is `Web`.
+        // freshly-minted approval id. A web-origin / unbound thread is a true
+        // `None` → an in-thread / web-UI prompt. A genuine resolution *error*
+        // must NOT degrade to `Web`: `create` is idempotent, so a `Web` row would
+        // permanently suppress the interactive card (the retry takes the
+        // `Existing` no-re-post path). Fail fast so the agent re-runs + re-resolves.
         let target = match self.outbound.resolve_target(ctx.org_id, thread).await {
             Ok(Some(t)) => t,
             Ok(None) => PlatformTarget::Web,
             Err(e) => {
-                warn!(error = %e, "ask_approval.resolve_target_failed");
+                error!(error = ?e, event = "ask_approval.resolve_target_failed");
                 return Err(ToolError::Backend(format!(
                     "ask_approval: resolve_target: {e}"
                 )));

@@ -455,6 +455,16 @@ impl DiscordPoster for HttpDiscordPoster {
         content: &str,
         components: &[ActionRow],
     ) -> Result<(), DiscordError> {
+        // This path doesn't chunk like `post`, so the single message + its
+        // components batch are capped before the body is built (§5).
+        assert!(
+            content.chars().count() <= DISCORD_MESSAGE_MAX,
+            "interaction edit content exceeds Discord's message cap"
+        );
+        assert!(
+            components.len() <= DISCORD_MESSAGE_ACTION_ROWS_MAX,
+            "interaction edit action rows exceed Discord's cap"
+        );
         let url = format!(
             "{}/webhooks/{}/{}/messages/@original",
             self.api_base,
@@ -475,6 +485,10 @@ impl DiscordPoster for HttpDiscordPoster {
         interaction_token: &InteractionToken,
         content: &str,
     ) -> Result<(), DiscordError> {
+        assert!(
+            content.chars().count() <= DISCORD_MESSAGE_MAX,
+            "ephemeral followup content exceeds Discord's message cap"
+        );
         let url = format!(
             "{}/webhooks/{}/{}",
             self.api_base,
@@ -516,7 +530,9 @@ impl HttpDiscordPoster {
             .send();
         let resp = match tokio::time::timeout(DISCORD_POST_TIMEOUT, send).await {
             Ok(Ok(r)) => r,
-            Ok(Err(e)) => return Err(e.into()),
+            // The URL embeds the short-lived interaction token; `without_url`
+            // strips it so a transport error's `Debug` can't leak it into logs.
+            Ok(Err(e)) => return Err(e.without_url().into()),
             Err(_) => return Err(DiscordError::PostTimeout(DISCORD_POST_TIMEOUT)),
         };
         let status = resp.status();
