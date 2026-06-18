@@ -99,7 +99,10 @@ pub(super) fn check_host(host: &Host<&str>) -> Result<(), UrlError> {
             // Block trivially obvious internal names. Real DNS-time defense lives in the
             // socket-level guard (a TODO worth taking seriously when the agent talks to
             // arbitrary networks).
-            let lowered = name.to_ascii_lowercase();
+            // Strip a trailing dot first: `localhost.` is an absolute-FQDN form
+            // that resolves the same as `localhost` but would otherwise slip
+            // past the equality / suffix checks below (SSRF bypass).
+            let lowered = name.trim_end_matches('.').to_ascii_lowercase();
             if lowered == "localhost"
                 || lowered.ends_with(".localhost")
                 || lowered.ends_with(".internal")

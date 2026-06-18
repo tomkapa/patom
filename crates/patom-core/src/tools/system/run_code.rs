@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use crate::assets::{AssetContentType, ObjectKey, SharedAssetStore, validate_attachment_bytes};
 use crate::auth::OrgId;
 use crate::clock::SharedClock;
-use crate::sandbox::limits::{MAX_INPUT_FILE_BYTES, RUN_CODE_OUTER_TIMEOUT};
+use crate::sandbox::limits::{MAX_INPUT_FILE_BYTES, MAX_INPUT_FILES, RUN_CODE_OUTER_TIMEOUT};
 use crate::sandbox::{
     EgressPolicy, InputFile, Language, RunOutput, RunRequest, RunTimeout, SandboxError,
     ScratchFileName, SharedOrgEgressStore, SharedSandbox, SourceCode,
@@ -142,6 +142,15 @@ impl RunCodeTool {
     /// Fetch-and-inject: pull each referenced asset's bytes and pair it with a
     /// validated scratch name. All I/O happens here, host-side, before exec.
     async fn stage_inputs(&self, refs: Vec<InputRef>) -> Result<Vec<InputFile>, ToolError> {
+        // §5: bound the fetch loop on entry — reject an over-count input before
+        // doing any I/O, rather than after `RunRequest::new` (a model supplying
+        // too many inputs is an operating error, so a Result, not an assert §6).
+        if refs.len() > MAX_INPUT_FILES {
+            return Err(ToolError::InvalidInput(format!(
+                "run_code: at most {MAX_INPUT_FILES} inputs allowed, got {}",
+                refs.len()
+            )));
+        }
         let mut staged = Vec::with_capacity(refs.len());
         for r in refs {
             let name = ScratchFileName::try_from(r.name)

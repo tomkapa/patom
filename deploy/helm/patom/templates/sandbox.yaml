@@ -57,9 +57,12 @@ spec:
       app.kubernetes.io/instance: {{ .Release.Name }}
   template:
     metadata:
+      # Explicit labels (not the patom.labels helper) so the executor's
+      # app.kubernetes.io/name is patom-sandbox-executor without an override.
       labels:
-        {{- include "patom.labels" . | nindent 8 }}
         app.kubernetes.io/name: patom-sandbox-executor
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/managed-by: {{ .Release.Service }}
     spec:
       # The isolation boundary: every pod of this Deployment runs under runsc, so
       # the untrusted subprocess it spawns is confined to gVisor's user-space

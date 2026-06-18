@@ -349,6 +349,14 @@ mod tests {
     }
 
     #[test]
+    fn egress_host_rejects_trailing_dot_fqdn() {
+        // `localhost.` is the absolute-FQDN form and must not slip past the
+        // deny floor (SSRF bypass).
+        let err = EgressHost::try_from("localhost.").expect_err("trailing-dot localhost blocked");
+        assert!(matches!(err, ParseError::Malformed { .. }));
+    }
+
+    #[test]
     fn egress_host_rejects_metadata_ip() {
         let err = EgressHost::try_from("169.254.169.254").expect_err("metadata blocked");
         assert!(matches!(err, ParseError::Malformed { .. }));

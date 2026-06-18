@@ -189,6 +189,13 @@ fn extract_xlsx(bytes: &[u8]) -> Result<String, AttachmentError> {
     Ok(out)
 }
 
+/// Per-entry read cap for the OOXML extractors, as a `u64` for [`std::io::Read::take`].
+/// The downstream scan + `truncate_to_char_boundary` cap the visible text; this
+/// caps the *read* so a hostile archive entry can't allocate without bound (§5).
+fn doc_extract_read_cap() -> u64 {
+    u64::try_from(MAX_DOC_EXTRACT_BYTES).unwrap_or(u64::MAX)
+}
+
 /// Unzip `word/document.xml` and scan its runs into plain text.
 fn extract_docx(bytes: &[u8]) -> Result<String, AttachmentError> {
     let cursor = Cursor::new(bytes);
@@ -199,7 +206,11 @@ fn extract_docx(bytes: &[u8]) -> Result<String, AttachmentError> {
         let mut entry = archive
             .by_name("word/document.xml")
             .map_err(|e| AttachmentError::Extract(format!("docx body: {e}")))?;
+        // §5: cap the read — a malicious .docx can embed an oversized body that
+        // would otherwise allocate unbounded before the downstream truncate.
         entry
+            .by_ref()
+            .take(doc_extract_read_cap())
             .read_to_string(&mut xml)
             .map_err(|e| AttachmentError::Extract(format!("docx read: {e}")))?;
     }
@@ -233,7 +244,10 @@ fn extract_pptx(bytes: &[u8]) -> Result<String, AttachmentError> {
             let mut entry = archive
                 .by_name(&name)
                 .map_err(|e| AttachmentError::Extract(format!("pptx slide: {e}")))?;
+            // §5: cap each slide's read (see extract_docx).
             entry
+                .by_ref()
+                .take(doc_extract_read_cap())
                 .read_to_string(&mut xml)
                 .map_err(|e| AttachmentError::Extract(format!("pptx read: {e}")))?;
         }

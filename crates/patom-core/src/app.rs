@@ -404,7 +404,7 @@ impl Collaborators {
                 let store: SharedAssetStore = Arc::new(S3AssetStore::new(cfg));
                 store
             });
-        let sandbox = select_sandbox_backend(settings, &http);
+        let sandbox = select_sandbox_backend(settings)?;
         let builtin_tools = build_builtin_tools(BuiltinToolDeps {
             http,
             settings,
@@ -606,13 +606,22 @@ struct BuiltinToolDeps<'a> {
 /// Select the sandbox backend from settings (#218). `None` ⇒ `run_code` stays
 /// unregistered. The gVisor backend reuses the shared HTTP client to reach its
 /// in-cluster executor sibling (§8 — no new transport dependency).
-fn select_sandbox_backend(settings: &Settings, http: &Client) -> Option<SharedSandbox> {
+fn select_sandbox_backend(settings: &Settings) -> Result<Option<SharedSandbox>, AppError> {
     match settings.sandbox_backend.as_ref() {
-        None => None,
+        None => Ok(None),
         Some(crate::config::SandboxBackendSettings::Gvisor { executor_url }) => {
-            let backend: SharedSandbox =
-                Arc::new(GvisorSandbox::new(executor_url.clone(), http.clone()));
-            Some(backend)
+            // Dedicated client with redirects DISABLED: the executor handles
+            // untrusted code, so a compromised executor must not be able to
+            // 3xx-redirect the request body (code + input bytes) to an
+            // attacker-controlled host (mirrors the auth/oidc.rs pattern).
+            let client = Client::builder()
+                .timeout(HTTP_DEFAULT_TIMEOUT)
+                .connect_timeout(HTTP_CONNECT_TIMEOUT)
+                .user_agent(HTTP_USER_AGENT)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?;
+            let backend: SharedSandbox = Arc::new(GvisorSandbox::new(executor_url.clone(), client));
+            Ok(Some(backend))
         }
     }
 }

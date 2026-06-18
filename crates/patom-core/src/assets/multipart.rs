@@ -381,9 +381,10 @@ mod tests {
     }
 
     #[test]
-    fn attachment_accepts_office_zip_for_xlsx_and_docx() {
+    fn attachment_accepts_office_zip_for_ooxml() {
         validate_attachment_bytes(ZIP_HEADER, AssetContentType::Xlsx, 1024).expect("xlsx ok");
         validate_attachment_bytes(ZIP_HEADER, AssetContentType::Docx, 1024).expect("docx ok");
+        validate_attachment_bytes(ZIP_HEADER, AssetContentType::Pptx, 1024).expect("pptx ok");
     }
 
     #[test]

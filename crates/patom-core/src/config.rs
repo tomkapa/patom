@@ -1741,6 +1741,38 @@ mod tests {
         assert!(s.object_storage.is_none());
     }
 
+    #[test]
+    fn sandbox_backend_unset_is_none() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        let s = Settings::try_from(raw).expect("valid");
+        assert!(s.sandbox_backend.is_none());
+    }
+
+    #[test]
+    fn sandbox_backend_valid_url_resolves_to_gvisor() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_sandbox_executor_url = Some("http://patom-sandbox-executor:8080".to_owned());
+        let s = Settings::try_from(raw).expect("valid");
+        assert!(matches!(
+            s.sandbox_backend,
+            Some(SandboxBackendSettings::Gvisor { .. })
+        ));
+    }
+
+    #[test]
+    fn sandbox_backend_invalid_url_is_rejected() {
+        let mut raw = empty_raw();
+        raw.anthropic_api_key = Some(secret("sk-ant"));
+        raw.patom_sandbox_executor_url = Some("ftp://executor".to_owned());
+        let err = Settings::try_from(raw).expect_err("invalid executor url");
+        assert!(matches!(
+            err,
+            SettingsError::InvalidSandboxExecutorUrl { .. }
+        ));
+    }
+
     fn with_smtp(raw: &mut RawSettings) {
         raw.patom_smtp_host = Some("smtp.example.com".to_string());
         raw.patom_smtp_username = Some(secret("smtp-user"));

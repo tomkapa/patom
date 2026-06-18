@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::SharedClock;
 use crate::sandbox::EgressPolicy;
 use crate::sandbox::error::SandboxError;
-use crate::sandbox::limits::RUN_CODE_OUTER_TIMEOUT;
+use crate::sandbox::limits::{MAX_OUTPUT_FILES, RUN_CODE_OUTER_TIMEOUT};
 use crate::sandbox::traits::Sandbox;
 use crate::sandbox::types::{ExitCode, OutputFile, RunOutput, RunRequest, ScratchFileName};
 use crate::types::ParseError;
@@ -183,6 +183,14 @@ impl GvisorSandbox {
 
 /// Decode the executor's base64 artifacts into validated [`OutputFile`]s.
 fn decode_artifacts(wire: Vec<WireFile>) -> Result<Vec<OutputFile>, SandboxError> {
+    // §5: bound the batch on entry — never trust the executor's count, even
+    // though the executor caps it too.
+    if wire.len() > MAX_OUTPUT_FILES {
+        return Err(SandboxError::OutputTooLarge(format!(
+            "executor returned {} artifacts (max {MAX_OUTPUT_FILES})",
+            wire.len()
+        )));
+    }
     let mut out = Vec::with_capacity(wire.len());
     for f in wire {
         let bytes = BASE64
@@ -200,6 +208,11 @@ fn decode_artifacts(wire: Vec<WireFile>) -> Result<Vec<OutputFile>, SandboxError
 
 #[async_trait]
 impl Sandbox for GvisorSandbox {
+    #[tracing::instrument(
+        name = "sandbox.gvisor.run",
+        skip_all,
+        fields(patom.sandbox.language = req.language().as_str()),
+    )]
     async fn run(&self, req: RunRequest, _clock: &SharedClock) -> Result<RunOutput, SandboxError> {
         let wire = Self::build_wire(&req);
         let endpoint = format!("{}/run", self.executor.as_str());
@@ -208,24 +221,41 @@ impl Sandbox for GvisorSandbox {
         // against an unresponsive executor (the tool wraps the whole call again).
         let resp = match tokio::time::timeout(RUN_CODE_OUTER_TIMEOUT, send).await {
             Err(_) => {
-                return Err(SandboxError::Backend(
-                    "executor request timed out".to_owned(),
-                ));
+                let e = SandboxError::Backend("executor request timed out".to_owned());
+                tracing::error!(error = ?e, event = "sandbox.gvisor.send.timeout");
+                return Err(e);
             }
-            Ok(Err(e)) => return Err(SandboxError::Spawn(format!("executor unreachable: {e}"))),
+            Ok(Err(e)) => {
+                let e = SandboxError::Spawn(format!("executor unreachable: {e}"));
+                tracing::error!(error = ?e, event = "sandbox.gvisor.send.failed");
+                return Err(e);
+            }
             Ok(Ok(r)) => r,
         };
         if !resp.status().is_success() {
-            return Err(SandboxError::Backend(format!(
-                "executor returned status {}",
-                resp.status()
-            )));
+            let e = SandboxError::Backend(format!("executor returned status {}", resp.status()));
+            tracing::error!(error = ?e, event = "sandbox.gvisor.status");
+            return Err(e);
         }
-        let body: WireResponse = resp
-            .json()
-            .await
-            .map_err(|e| SandboxError::Backend(format!("executor reply decode: {e}")))?;
-        Self::decode_response(body)
+        // §5: the send timeout covers headers only — fence the body read too so a
+        // wedged executor that stops mid-stream can't pin the task.
+        let body: WireResponse =
+            match tokio::time::timeout(RUN_CODE_OUTER_TIMEOUT, resp.json()).await {
+                Err(_) => {
+                    let e = SandboxError::Backend("executor reply decode timed out".to_owned());
+                    tracing::error!(error = ?e, event = "sandbox.gvisor.decode.timeout");
+                    return Err(e);
+                }
+                Ok(Err(e)) => {
+                    let e = SandboxError::Backend(format!("executor reply decode: {e}"));
+                    tracing::error!(error = ?e, event = "sandbox.gvisor.decode.failed");
+                    return Err(e);
+                }
+                Ok(Ok(body)) => body,
+            };
+        Self::decode_response(body).inspect_err(|e| {
+            tracing::error!(error = ?e, event = "sandbox.gvisor.decode_response.failed");
+        })
     }
 }
 
