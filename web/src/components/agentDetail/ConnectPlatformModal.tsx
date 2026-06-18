@@ -6,10 +6,21 @@ import { Banner } from "../molecules/Banner";
 import { useT } from "../../i18n";
 import type { Agent } from "../../types/api";
 
-/** Connect-a-bot modal shared by Lark and Discord. The two fields (id +
- *  secret) carry platform-specific labels; the agent is fixed to the page
- *  it opened from, shown read-only. The page maps `(idValue, secretValue)`
- *  onto the right request body. */
+/** An optional masked field rendered below the secret — e.g. Lark's card-action
+ *  Encrypt Key + Verification Token. Empty values are dropped, so they never
+ *  reach the request body. */
+export type ExtraField = {
+  id: string;
+  label: string;
+  placeholder?: string;
+  helper?: string;
+};
+
+/** Connect-a-bot modal shared by Lark and Discord. The two required fields (id +
+ *  secret) carry platform-specific labels; `extraFields` adds optional masked
+ *  inputs (Lark-only today). The agent is fixed to the page it opened from,
+ *  shown read-only. The page maps `(idValue, secretValue, extra)` onto the right
+ *  request body. */
 export function ConnectPlatformModal({
   open,
   onClose,
@@ -22,6 +33,7 @@ export function ConnectPlatformModal({
   hint,
   submitting,
   error,
+  extraFields,
   onSubmit,
 }: {
   open: boolean;
@@ -35,12 +47,19 @@ export function ConnectPlatformModal({
   hint: string;
   submitting: boolean;
   error?: string | null;
-  onSubmit: (idValue: string, secretValue: string) => void;
+  extraFields?: ExtraField[];
+  onSubmit: (
+    idValue: string,
+    secretValue: string,
+    extra: Record<string, string>,
+  ) => void;
 }) {
   const { t } = useT();
   const [idValue, setIdValue] = useState("");
   const [secretValue, setSecretValue] = useState("");
   const [reveal, setReveal] = useState(false);
+  const [extra, setExtra] = useState<Record<string, string>>({});
+  const [revealExtra, setRevealExtra] = useState<Record<string, boolean>>({});
 
   // Reset the form each time the modal opens so a prior platform's input
   // never bleeds into the next.
@@ -49,6 +68,8 @@ export function ConnectPlatformModal({
       setIdValue("");
       setSecretValue("");
       setReveal(false);
+      setExtra({});
+      setRevealExtra({});
     }
   }, [open]);
 
@@ -56,7 +77,15 @@ export function ConnectPlatformModal({
     idValue.trim().length > 0 && secretValue.trim().length > 0 && !submitting;
 
   const submit = () => {
-    if (canSubmit) onSubmit(idValue.trim(), secretValue.trim());
+    if (!canSubmit) return;
+    // Drop blank optional fields so an empty string never reaches the body
+    // (the backend treats absent ≠ "" — the latter fails validation).
+    const cleaned: Record<string, string> = {};
+    for (const [key, value] of Object.entries(extra)) {
+      const trimmed = value.trim();
+      if (trimmed) cleaned[key] = trimmed;
+    }
+    onSubmit(idValue.trim(), secretValue.trim(), cleaned);
   };
 
   return (
@@ -160,6 +189,46 @@ export function ConnectPlatformModal({
             {t("agent.detail.integrations.modal.secretHelper")}
           </p>
         </Field>
+
+        {/* Optional extra secrets (Lark card-action credentials) */}
+        {extraFields?.map((field) => (
+          <Field key={field.id} label={field.label}>
+            <FieldShell>
+              <input
+                type={revealExtra[field.id] ? "text" : "password"}
+                value={extra[field.id] ?? ""}
+                onChange={(e) =>
+                  setExtra((prev) => ({ ...prev, [field.id]: e.target.value }))
+                }
+                placeholder={field.placeholder ?? "••••••••••••••••"}
+                data-testid={`connect-extra-${field.id}`}
+                className="min-w-0 flex-1 bg-transparent font-[var(--font-mono)] text-[13px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-fg-muted)]"
+              />
+              <button
+                type="button"
+                aria-label={t("agent.detail.integrations.modal.secretToggle")}
+                onClick={() =>
+                  setRevealExtra((prev) => ({
+                    ...prev,
+                    [field.id]: !prev[field.id],
+                  }))
+                }
+                className="shrink-0 cursor-pointer text-[var(--color-fg-muted)] transition-colors duration-150 ease-out hover:text-[var(--color-ink)]"
+              >
+                {revealExtra[field.id] ? (
+                  <Eye className="h-3.5 w-3.5" strokeWidth={1.75} />
+                ) : (
+                  <EyeOff className="h-3.5 w-3.5" strokeWidth={1.75} />
+                )}
+              </button>
+            </FieldShell>
+            {field.helper ? (
+              <p className="font-[var(--font-mono)] text-[11px] text-[var(--color-fg-muted)]">
+                {field.helper}
+              </p>
+            ) : null}
+          </Field>
+        ))}
 
         {/* Agent — locked to the current page */}
         <Field label={t("agent.detail.integrations.modal.agentLabel")}>
