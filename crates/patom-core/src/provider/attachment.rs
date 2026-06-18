@@ -36,6 +36,8 @@ pub enum AttachmentMime {
     Xlsx,
     /// Word `.docx` (OOXML word-processing document).
     Docx,
+    /// PowerPoint `.pptx` (OOXML presentation).
+    Pptx,
     /// Any UTF-8 text file (`.md`, `.json`, `.toml`, `.txt`, `.csv`, `.yaml`,
     /// `.xml`, source code, …). Delivered to every provider — including
     /// text-only DeepSeek — as the decoded text.
@@ -54,6 +56,9 @@ impl AttachmentMime {
             Self::Pdf => "application/pdf",
             Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Self::Pptx => {
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            }
             Self::Text => "text/plain",
         }
     }
@@ -71,6 +76,7 @@ impl AttachmentMime {
             Self::Pdf => "pdf",
             Self::Xlsx => "xlsx",
             Self::Docx => "docx",
+            Self::Pptx => "pptx",
             Self::Text => "txt",
         }
     }
@@ -94,6 +100,9 @@ impl AttachmentMime {
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some(Self::Xlsx),
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
                 Some(Self::Docx)
+            }
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
+                Some(Self::Pptx)
             }
             // Any text/* type (markdown, csv, html, yaml, plain, …) plus the
             // common `application/*` text formats are treated as plain text.
@@ -122,12 +131,12 @@ impl AttachmentMime {
         matches!(self, Self::Pdf)
     }
 
-    /// Whether this is an Office format (xlsx/docx). Both providers receive it
-    /// as server-side extracted text — OpenAI's inline `file_data` is PDF-only,
-    /// and Anthropic has no native Office input.
+    /// Whether this is an Office format (xlsx/docx/pptx). Both providers receive
+    /// it as server-side extracted text — OpenAI's inline `file_data` is
+    /// PDF-only, and Anthropic has no native Office input.
     #[must_use]
     pub const fn is_office(self) -> bool {
-        matches!(self, Self::Xlsx | Self::Docx)
+        matches!(self, Self::Xlsx | Self::Docx | Self::Pptx)
     }
 
     /// Whether this is a plain-text file. Delivered to every provider as the

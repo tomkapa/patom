@@ -90,7 +90,9 @@ impl TryFrom<&str> for FetchUrl {
 }
 
 /// Re-check a host after it has been resolved or after a redirect lands on a new
-/// destination. Public so the HTTP redirect policy can call it.
+/// destination. Public so the HTTP redirect policy can call it; re-exported
+/// crate-wide from `tools/mod.rs` so the sandbox egress allowlist reuses the same
+/// SSRF deny floor.
 pub(super) fn check_host(host: &Host<&str>) -> Result<(), UrlError> {
     match host {
         Host::Domain(name) => {

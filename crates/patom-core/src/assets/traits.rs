@@ -93,6 +93,7 @@ pub enum AssetContentType {
     Pdf,
     Xlsx,
     Docx,
+    Pptx,
     /// Any UTF-8 text file (md/json/toml/csv/…); stored as `text/plain`.
     Text,
 }
@@ -110,6 +111,9 @@ impl AssetContentType {
             Self::Pdf => "application/pdf",
             Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Self::Pptx => {
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            }
             Self::Text => "text/plain",
         }
     }
@@ -126,6 +130,7 @@ impl AssetContentType {
             Self::Pdf => "pdf",
             Self::Xlsx => "xlsx",
             Self::Docx => "docx",
+            Self::Pptx => "pptx",
             Self::Text => "txt",
         }
     }
@@ -151,6 +156,9 @@ impl AssetContentType {
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some(Self::Xlsx),
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
                 Some(Self::Docx)
+            }
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
+                Some(Self::Pptx)
             }
             "application/json"
             | "application/toml"
@@ -184,6 +192,7 @@ impl AssetContentType {
             "pdf" => Some(Self::Pdf),
             "xlsx" => Some(Self::Xlsx),
             "docx" => Some(Self::Docx),
+            "pptx" => Some(Self::Pptx),
             "txt" | "text" | "md" | "markdown" | "json" | "toml" | "csv" | "yaml" | "yml"
             | "xml" | "log" | "tsv" | "ndjson" => Some(Self::Text),
             _ => None,
@@ -201,7 +210,9 @@ impl AssetContentType {
             Self::Png | Self::Jpeg | Self::Webp | Self::Gif | Self::Svg => {
                 MAX_ATTACHMENT_IMAGE_BYTES
             }
-            Self::Pdf | Self::Xlsx | Self::Docx | Self::Text => MAX_ATTACHMENT_FILE_BYTES,
+            Self::Pdf | Self::Xlsx | Self::Docx | Self::Pptx | Self::Text => {
+                MAX_ATTACHMENT_FILE_BYTES
+            }
         }
     }
 }
@@ -459,6 +470,15 @@ pub trait AssetStore: fmt::Debug + Send + Sync + 'static {
         bytes: Bytes,
         content_type: AssetContentType,
     ) -> Result<AssetUrl, AssetError>;
+
+    /// Authenticated read of a stored object's bytes, capped at `max_bytes`.
+    ///
+    /// Powers the sandbox tool's fetch-and-inject: Patom (trusted) pulls an
+    /// input asset's bytes and stages them into the credential-free scratch dir.
+    /// §5 — the size cap is checked against the object's reported length before
+    /// buffering, and again on the collected body, so an unbounded `TEXT`/blob
+    /// read can't slip through. A missing key is [`AssetError::NotFound`].
+    async fn get(&self, key: ObjectKey, max_bytes: usize) -> Result<Bytes, AssetError>;
 
     /// Delete an object. Idempotent — deleting a missing key is `Ok(())`.
     async fn delete(&self, key: ObjectKey) -> Result<(), AssetError>;

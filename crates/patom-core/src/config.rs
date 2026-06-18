@@ -106,6 +106,9 @@ pub enum SettingsError {
     #[error("s3: PATOM_S3_{field} must not be empty")]
     EmptyS3Field { field: &'static str },
 
+    #[error("sandbox: PATOM_SANDBOX_EXECUTOR_URL is not a valid http(s) URL ({reason})")]
+    InvalidSandboxExecutorUrl { reason: String },
+
     #[error(
         "smtp: partial configuration; set all of PATOM_SMTP_HOST, \
          PATOM_SMTP_USERNAME, PATOM_SMTP_PASSWORD, PATOM_EMAIL_FROM — or none"
@@ -181,12 +184,32 @@ pub struct Settings {
     /// configured" — deployments that don't care about avatar/icon uploads
     /// stay first-class.
     pub object_storage: Option<ObjectStorageSettings>,
+    /// Sandbox (`run_code`) backend. `None` is the default and a first-class
+    /// deployment: the code-execution tool is simply not registered, so an
+    /// agent never sees it. When `Some`, a backend is wired and `run_code`
+    /// appears — but only if object storage is *also* configured (artifacts need
+    /// somewhere to land), enforced at the registration seam (fail-closed).
+    pub sandbox_backend: Option<SandboxBackendSettings>,
     /// Outbound SMTP relay for transactional mail (member invites). Present
     /// iff the required `PATOM_SMTP_*` / `PATOM_EMAIL_FROM` env vars are set.
     /// When `None`, [`crate::orgs::LogMailer`] is wired and invite links are
     /// recoverable from the structured logs — a first-class deployment for
     /// local dev and operators who haven't provisioned a relay yet.
     pub smtp: Option<SmtpSettings>,
+}
+
+/// Which sandbox backend powers `run_code`, resolved at the config boundary.
+///
+/// A closed sum (§1) so the registration seam matches exhaustively and a future
+/// backend (E2B cloud, behind the `cloud` feature) is a compile error until it
+/// is handled. v1 ships only the self-host gVisor executor.
+#[derive(Debug, Clone)]
+pub enum SandboxBackendSettings {
+    /// Self-host gVisor executor sibling, reached over in-cluster HTTP at the
+    /// validated [`ExecutorUrl`](crate::sandbox::ExecutorUrl).
+    Gvisor {
+        executor_url: crate::sandbox::ExecutorUrl,
+    },
 }
 
 /// Outbound SMTP relay configuration for transactional mail.
@@ -666,6 +689,13 @@ struct RawSettings {
     patom_email_from: Option<String>,
     #[serde(default)]
     patom_email_from_name: Option<String>,
+
+    // Sandbox (`run_code`) backend. A single optional knob: the in-cluster URL
+    // of the gVisor executor sibling. Unset ⇒ the sandbox is disabled and
+    // `run_code` is not registered at all (fail-closed, never an unconfined
+    // fallback).
+    #[serde(default)]
+    patom_sandbox_executor_url: Option<String>,
 }
 
 fn default_web_dist() -> PathBuf {
@@ -1025,6 +1055,7 @@ impl TryFrom<RawSettings> for Settings {
             raw.patom_email_from,
             raw.patom_email_from_name,
         )?;
+        let sandbox_backend = resolve_sandbox_backend(raw.patom_sandbox_executor_url)?;
         let posthog_host = match raw.patom_posthog_host {
             Some(ref h) => Some(parse_origin(h, &["http", "https"]).map_err(|reason| {
                 SettingsError::InvalidPosthogHost {
@@ -1050,8 +1081,29 @@ impl TryFrom<RawSettings> for Settings {
             lark,
             discord,
             object_storage,
+            sandbox_backend,
             smtp,
         })
+    }
+}
+
+/// Resolve the optional sandbox backend from `PATOM_SANDBOX_EXECUTOR_URL`. Unset
+/// ⇒ `None` (the tool is not registered — fail-closed). When set, the URL is
+/// parsed through [`ExecutorUrl`](crate::sandbox::ExecutorUrl) at the boundary
+/// (§1) so an invalid value fails at startup, not on the first run.
+fn resolve_sandbox_backend(
+    executor_url: Option<String>,
+) -> Result<Option<SandboxBackendSettings>, SettingsError> {
+    match executor_url {
+        None => Ok(None),
+        Some(raw) => {
+            let url = crate::sandbox::ExecutorUrl::try_from(raw).map_err(|e| {
+                SettingsError::InvalidSandboxExecutorUrl {
+                    reason: e.to_string(),
+                }
+            })?;
+            Ok(Some(SandboxBackendSettings::Gvisor { executor_url: url }))
+        }
     }
 }
 
@@ -1299,6 +1351,7 @@ mod tests {
             patom_smtp_password: None,
             patom_email_from: None,
             patom_email_from_name: None,
+            patom_sandbox_executor_url: None,
         }
     }
 

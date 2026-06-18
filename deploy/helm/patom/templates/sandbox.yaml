@@ -1,0 +1,176 @@
+{{- if .Values.sandbox.enabled }}
+# run_code sandbox (#218). All objects here are gated behind `sandbox.enabled`.
+# The executor is a sibling Deployment running under the gVisor RuntimeClass:
+# every untrusted program executes behind runsc (host-kernel isolation) and a
+# default-deny NetworkPolicy (no network). The Patom app reaches it over
+# in-cluster HTTP at PATOM_SANDBOX_EXECUTOR_URL; the app pod never runs runsc and
+# never co-locates untrusted code with its credentials.
+{{- if .Values.sandbox.createRuntimeClass }}
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: {{ .Values.sandbox.runtimeClassName }}
+  labels:
+    {{- include "patom.labels" . | nindent 4 }}
+# Must match the runtime registered in containerd by the patom-infra `gvisor`
+# Ansible role (handler `runsc`).
+handler: runsc
+---
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: patom-sandbox-executor
+  labels:
+    {{- include "patom.labels" . | nindent 4 }}
+# The executor never calls the Kubernetes API — it runs code in-process behind
+# gVisor, no per-run pod creation, so no RBAC and no mounted token.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patom-sandbox-executor
+  labels:
+    {{- include "patom.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: patom-sandbox-executor
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.sandbox.service.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patom-sandbox-executor
+  labels:
+    {{- include "patom.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.sandbox.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: patom-sandbox-executor
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "patom.labels" . | nindent 8 }}
+        app.kubernetes.io/name: patom-sandbox-executor
+    spec:
+      # The isolation boundary: every pod of this Deployment runs under runsc, so
+      # the untrusted subprocess it spawns is confined to gVisor's user-space
+      # kernel — the shared-host-kernel LPE class (io_uring / Dirty-Pipe) a
+      # seccomp jail can't close is closed here.
+      runtimeClassName: {{ .Values.sandbox.runtimeClassName }}
+      serviceAccountName: patom-sandbox-executor
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: executor
+          image: "{{ .Values.sandbox.image.repository }}:{{ .Values.sandbox.image.tag }}"
+          imagePullPolicy: {{ .Values.sandbox.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.sandbox.service.port }}
+          env:
+            - name: PATOM_EXECUTOR_ADDR
+              value: "0.0.0.0:{{ .Values.sandbox.service.port }}"
+            - name: PATOM_EXECUTOR_TOTAL_MEMORY_BYTES
+              value: "{{ .Values.sandbox.totalMemoryBytes }}"
+            - name: PATOM_EXECUTOR_CPU_NUM
+              value: "{{ .Values.sandbox.cpuNum }}"
+            # Headless plotting + single-threaded BLAS so one run can't pin the
+            # node (mirrors the baked image env; set here too as the contract).
+            - name: MPLBACKEND
+              value: "Agg"
+            - name: OMP_NUM_THREADS
+              value: "1"
+            - name: OPENBLAS_NUM_THREADS
+              value: "1"
+            - name: MKL_NUM_THREADS
+              value: "1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            # Scratch space for staging inputs + harvesting outputs. tmpfs so it
+            # never touches the node disk and is wiped between runs.
+            - name: scratch
+              mountPath: /scratch
+          resources:
+            {{- toYaml .Values.sandbox.resources | nindent 12 }}
+      volumes:
+        - name: scratch
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+---
+# Default-deny on the executor pods: no ingress, no egress, except the two
+# explicit allows below. This is what enforces `--network=none` for the
+# untrusted program — the gVisor pod simply has no route off itself.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-executor-default-deny
+  labels:
+    {{- include "patom.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: patom-sandbox-executor
+  policyTypes: [Ingress, Egress]
+---
+# Allow the Patom app pod to POST run requests to the executor (ingress only).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-executor-allow-from-app
+  labels:
+    {{- include "patom.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: patom-sandbox-executor
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            {{- include "patom.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.sandbox.service.port }} }
+---
+# Let the Patom app reach the executor service (egress). The app's own
+# default-deny (templates/networkpolicy.yaml) would otherwise block this.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-sandbox-executor
+  labels:
+    {{- include "patom.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    {{- include "patom.selectorLabels" . | nindent 4 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: patom-sandbox-executor
+      ports:
+        - { protocol: TCP, port: {{ .Values.sandbox.service.port }} }
+{{- end }}

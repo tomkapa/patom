@@ -211,10 +211,16 @@ impl IntoResponse for HttpError {
             Self::Asset(AssetError::Timeout) => {
                 (StatusCode::GATEWAY_TIMEOUT, "asset upload timed out".into())
             }
-            Self::Asset(AssetError::StoragePut(_) | AssetError::StorageDelete(_)) => (
+            Self::Asset(
+                AssetError::StoragePut(_)
+                | AssetError::StorageDelete(_)
+                | AssetError::StorageGet(_),
+            ) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "asset storage error".into(),
             ),
+            #[allow(clippy::match_same_arms)]
+            Self::Asset(AssetError::NotFound) => (StatusCode::NOT_FOUND, "not found".into()),
             // Validation-style asset failures map to 400. The
             // `Asset(Parse)` arm shares its body with the
             // `Agent(Parse) | Mcp(Parse|...)` arm above; clippy

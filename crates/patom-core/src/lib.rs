@@ -34,6 +34,7 @@ pub mod pg_vector;
 pub mod prompts;
 pub mod provider;
 pub mod runtime;
+pub mod sandbox;
 pub mod scheduling;
 pub mod slack;
 pub mod threads;

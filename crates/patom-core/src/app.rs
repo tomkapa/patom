@@ -51,6 +51,7 @@ use crate::runtime::{
     SharedResponseSink, SharedResponseSource, SharedThreadStream, WorkerConfig, WorkerPool,
     WorkerPoolHandle,
 };
+use crate::sandbox::{GvisorSandbox, PgOrgEgressStore, SharedOrgEgressStore, SharedSandbox};
 use crate::scheduling::{
     DefaultTimezone, PgScheduledTaskStore, ScheduledTaskScheduler, SharedScheduledTaskStore,
     Timezone,
@@ -59,7 +60,7 @@ use crate::tools::system::{
     AskApprovalTool, CancelScheduledTaskTool, CreateAgentTool, ListScheduledTasksTool,
     MemoryForgetTool, MemoryToolDeps, MemoryUpdateTool, MemoryValidateTool, MemoryWriteTool,
     PgSessionTodoStore, ProfileWriteTool, ReadArtifactTool, ReadChannelTool, RecallTool,
-    RequestUserWireMcpTool, ScheduleTaskTool, SearchColleagueTool, SearchToolsTool,
+    RequestUserWireMcpTool, RunCodeTool, ScheduleTaskTool, SearchColleagueTool, SearchToolsTool,
     SendMessageTool, SharedSessionTodoStore, TodoToolDeps, TodoWriteTool, WebFetchTool,
     WebSearchTool,
 };
@@ -394,6 +395,16 @@ impl Collaborators {
         // The outbound router is composed later (after the chat-surface pumps);
         // hand `send_message` a deferred slot now, install the composite then.
         let outbound_deferred = Arc::new(crate::outbound::DeferredOutboundRouter::new());
+        // Sandbox seam (#218). The egress allowlist store is always built (cheap,
+        // pool-backed); the asset store and backend are optional — both must be
+        // present for `run_code` to register (fail-closed, enforced below).
+        let egress_store: SharedOrgEgressStore = Arc::new(PgOrgEgressStore::new(pool.clone()));
+        let sandbox_assets: Option<SharedAssetStore> =
+            settings.object_storage.as_ref().map(|cfg| {
+                let store: SharedAssetStore = Arc::new(S3AssetStore::new(cfg));
+                store
+            });
+        let sandbox = select_sandbox_backend(settings, &http);
         let builtin_tools = build_builtin_tools(BuiltinToolDeps {
             http,
             settings,
@@ -415,6 +426,9 @@ impl Collaborators {
             pool: pool.clone(),
             mcp_catalog: mcp_catalog.clone(),
             mcp_store: mcp_store.clone(),
+            sandbox,
+            assets: sandbox_assets,
+            egress: egress_store,
         })?;
 
         // `memory_store` is not held on `Collaborators`: it's a cheap-clone
@@ -578,13 +592,36 @@ struct BuiltinToolDeps<'a> {
     /// MCP server store consumed by `search_tools` for the wired-vs-unwired
     /// view and by `request_user_wire_mcp` for the already-wired guard.
     mcp_store: SharedMcpServerStore,
+    /// Sandbox backend for `run_code` (#218). `None` ⇒ the tool is not
+    /// registered (fail-closed); `Some` plus a configured asset store is what
+    /// actually surfaces it.
+    sandbox: Option<SharedSandbox>,
+    /// Asset store for harvesting `run_code` artifacts. Shared with the upload
+    /// routes; `None` (no object storage) also keeps `run_code` unregistered.
+    assets: Option<SharedAssetStore>,
+    /// Per-org egress allowlist backing `run_code`'s network policy (#218).
+    egress: SharedOrgEgressStore,
+}
+
+/// Select the sandbox backend from settings (#218). `None` ⇒ `run_code` stays
+/// unregistered. The gVisor backend reuses the shared HTTP client to reach its
+/// in-cluster executor sibling (§8 — no new transport dependency).
+fn select_sandbox_backend(settings: &Settings, http: &Client) -> Option<SharedSandbox> {
+    match settings.sandbox_backend.as_ref() {
+        None => None,
+        Some(crate::config::SandboxBackendSettings::Gvisor { executor_url }) => {
+            let backend: SharedSandbox =
+                Arc::new(GvisorSandbox::new(executor_url.clone(), http.clone()));
+            Some(backend)
+        }
+    }
 }
 
 /// Register every system tool into a [`ToolRegistry`]. Lives at the
 /// composition root so adding a tool is one new file in `tools/system/`
 /// + one `.with(...)` line here.
 fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppError> {
-    Ok(ToolRegistry::builder()
+    let builder = ToolRegistry::builder()
         .with(Arc::new(WebFetchTool::new()?))
         .with(Arc::new(ReadArtifactTool::new(deps.threads.clone())))
         .with(Arc::new(WebSearchTool::new(
@@ -641,7 +678,7 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
             deps.scheduled_tasks.clone(),
             deps.threads.clone(),
             deps.default_tz,
-            deps.clock,
+            deps.clock.clone(),
         )))
         .with(Arc::new(ListScheduledTasksTool::new(
             deps.scheduled_tasks.clone(),
@@ -650,8 +687,23 @@ fn build_builtin_tools(deps: BuiltinToolDeps<'_>) -> Result<ToolRegistry, AppErr
         .with(Arc::new(CancelScheduledTaskTool::new(
             deps.scheduled_tasks,
             deps.pool.clone(),
-        )))
-        .build())
+        )));
+
+    // Fail-closed (#218): `run_code` is registered only when a sandbox backend
+    // *and* an asset store are both configured — the tool needs somewhere to run
+    // and somewhere to land its artifacts. Missing either ⇒ the tool is absent
+    // entirely, never a silent unconfined fallback.
+    let builder = match (deps.sandbox, deps.assets) {
+        (Some(sandbox), Some(assets)) => builder.with(Arc::new(RunCodeTool::new(
+            sandbox,
+            assets,
+            deps.egress,
+            deps.clock,
+        ))),
+        _ => builder,
+    };
+
+    Ok(builder.build())
 }
 
 /// Seed material for the per-org preset recruiter in `language`.

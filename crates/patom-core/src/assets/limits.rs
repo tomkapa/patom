@@ -79,6 +79,13 @@ pub const STORAGE_PUT_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long we'll wait on a single S3 DeleteObject round-trip.
 pub const STORAGE_DELETE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long we'll wait on a single S3 GetObject round-trip (initiate + stream).
+///
+/// Used by the authenticated read path ([`crate::assets::AssetStore::get`]) that
+/// the sandbox tool's fetch-and-inject relies on. Matches the put budget — a
+/// download of a bounded object should be no slower than its upload.
+pub const STORAGE_GET_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Per-await cap on the multipart trust boundary.
 ///
 /// `next_field()`, `field.bytes()`, etc. each get this budget so a
