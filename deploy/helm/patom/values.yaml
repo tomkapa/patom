@@ -192,9 +192,12 @@ sandbox:
   # out-of-band (e.g. the Ansible role applies it) to avoid an ownership clash.
   createRuntimeClass: true
   image:
-    # Built from patom-infra/docker/sandbox-executor. Override to your registry.
+    # Built + pushed by patom-infra CI (.github/workflows/build-sandbox-executor.yml).
+    # Pinned to the stable `:1` tag (not `:latest`) for reproducible rollouts;
+    # bump on a breaking executor/wire change, or override to a `:<sha>` /
+    # your own registry.
     repository: ghcr.io/tomkapa/patom-sandbox-executor
-    tag: "latest"
+    tag: "1"
     pullPolicy: IfNotPresent
   service:
     port: 8080
