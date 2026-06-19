@@ -51,6 +51,12 @@ metadata:
     {{- include "patom.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.sandbox.replicaCount }}
+  # Recreate (not RollingUpdate): on a single small node with a namespace
+  # ResourceQuota, a surge pod (old + new running together) doesn't fit, which
+  # deadlocks the rollout. Kill the old pod before creating the new one — same
+  # reason the main app Deployment uses Recreate.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: patom-sandbox-executor
