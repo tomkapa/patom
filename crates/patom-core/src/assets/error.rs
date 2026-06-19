@@ -57,6 +57,17 @@ pub enum AssetError {
     #[error("storage delete object failed: {0}")]
     StorageDelete(String),
 
+    /// S3 GetObject round-trip failed (not a missing key — see
+    /// [`Self::NotFound`] for that).
+    #[error("storage get object failed: {0}")]
+    StorageGet(String),
+
+    /// The requested object key does not exist in storage. Distinct from
+    /// [`Self::StorageGet`] so a fetch-and-inject of a stale asset surfaces as a
+    /// clean "not found" rather than an opaque backend error.
+    #[error("object not found")]
+    NotFound,
+
     /// Per-call timeout fired before object storage responded. Distinct
     /// variant so retries and dashboards can separate "slow storage" from
     /// "broken storage".

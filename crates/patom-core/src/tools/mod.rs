@@ -32,3 +32,20 @@ pub use registry::{ToolRegistry, ToolRegistryBuilder};
 pub use toolbox::{DynamicToolSource, ToolBox};
 pub use traits::{ReductionIntent, SharedTool, Tool, ToolCallContext, ToolError, ToolResultPolicy};
 pub use url::{FetchUrl, UrlError};
+
+/// Run the `web_fetch` SSRF deny floor against a bare host string.
+///
+/// Lives here (not in the private `url` submodule) so the sandbox egress
+/// allowlist ([`crate::sandbox::egress::EgressHost`]) reuses one definition of
+/// "blocked range" — loopback / private / link-local / metadata — rather than
+/// duplicating it. Parses `raw` as a host, then defers to the same check the
+/// redirect guard uses.
+pub(crate) fn check_egress_host(raw: &str) -> Result<(), UrlError> {
+    let parsed = ::url::Host::parse(raw).map_err(|e| UrlError::Malformed(e.to_string()))?;
+    let borrowed = match &parsed {
+        ::url::Host::Domain(d) => ::url::Host::Domain(d.as_str()),
+        ::url::Host::Ipv4(ip) => ::url::Host::Ipv4(*ip),
+        ::url::Host::Ipv6(ip) => ::url::Host::Ipv6(*ip),
+    };
+    url::check_host(&borrowed)
+}

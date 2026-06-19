@@ -65,6 +65,13 @@ spec:
             - name: PATOM_CORS_ALLOWED_ORIGINS
               value: {{ join "," . | quote }}
             {{- end }}
+            {{- if .Values.sandbox.enabled }}
+            # #218: point the app at the in-cluster sandbox executor. Its presence
+            # is what makes `run_code` register (alongside object storage); unset
+            # ⇒ the tool is absent (fail-closed).
+            - name: PATOM_SANDBOX_EXECUTOR_URL
+              value: "http://patom-sandbox-executor:{{ .Values.sandbox.service.port }}"
+            {{- end }}
           envFrom:
             - secretRef:
                 name: patom-config

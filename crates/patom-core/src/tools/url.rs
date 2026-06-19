@@ -90,14 +90,19 @@ impl TryFrom<&str> for FetchUrl {
 }
 
 /// Re-check a host after it has been resolved or after a redirect lands on a new
-/// destination. Public so the HTTP redirect policy can call it.
+/// destination. Public so the HTTP redirect policy can call it; re-exported
+/// crate-wide from `tools/mod.rs` so the sandbox egress allowlist reuses the same
+/// SSRF deny floor.
 pub(super) fn check_host(host: &Host<&str>) -> Result<(), UrlError> {
     match host {
         Host::Domain(name) => {
             // Block trivially obvious internal names. Real DNS-time defense lives in the
             // socket-level guard (a TODO worth taking seriously when the agent talks to
             // arbitrary networks).
-            let lowered = name.to_ascii_lowercase();
+            // Strip a trailing dot first: `localhost.` is an absolute-FQDN form
+            // that resolves the same as `localhost` but would otherwise slip
+            // past the equality / suffix checks below (SSRF bypass).
+            let lowered = name.trim_end_matches('.').to_ascii_lowercase();
             if lowered == "localhost"
                 || lowered.ends_with(".localhost")
                 || lowered.ends_with(".internal")
@@ -187,7 +192,10 @@ mod tests {
     fn rejects_localhost_names() {
         for raw in [
             "https://localhost/",
+            // Absolute-FQDN forms (trailing dot) must not bypass the blocklist.
+            "https://localhost./",
             "https://app.localhost/",
+            "https://app.localhost./",
             "https://service.internal/",
             "https://my.local/",
         ] {

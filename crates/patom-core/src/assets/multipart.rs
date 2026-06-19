@@ -185,7 +185,9 @@ fn attachment_magic_matches(prefix: &[u8], claimed: AssetContentType) -> bool {
         // xlsx/docx are OOXML ZIP containers ("PK\x03\x04"). An empty
         // (PK\x05\x06) or spanned (PK\x07\x08) archive is not a real
         // document, so we require the local-file-header signature.
-        AssetContentType::Xlsx | AssetContentType::Docx => prefix.starts_with(b"PK\x03\x04"),
+        AssetContentType::Xlsx | AssetContentType::Docx | AssetContentType::Pptx => {
+            prefix.starts_with(b"PK\x03\x04")
+        }
         // Text has no magic bytes; require the prefix to be valid UTF-8 text so
         // a binary payload can't masquerade as a text file.
         AssetContentType::Text => looks_like_text(prefix),
@@ -379,9 +381,10 @@ mod tests {
     }
 
     #[test]
-    fn attachment_accepts_office_zip_for_xlsx_and_docx() {
+    fn attachment_accepts_office_zip_for_ooxml() {
         validate_attachment_bytes(ZIP_HEADER, AssetContentType::Xlsx, 1024).expect("xlsx ok");
         validate_attachment_bytes(ZIP_HEADER, AssetContentType::Docx, 1024).expect("docx ok");
+        validate_attachment_bytes(ZIP_HEADER, AssetContentType::Pptx, 1024).expect("pptx ok");
     }
 
     #[test]

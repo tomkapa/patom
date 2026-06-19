@@ -18,6 +18,7 @@ use aws_credential_types::Credentials;
 use aws_credential_types::provider::SharedCredentialsProvider;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::config::{BehaviorVersion, RequestChecksumCalculation, ResponseChecksumValidation};
+use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::primitives::ByteStream;
 use bytes::Bytes;
 use tokio::time::timeout;
@@ -26,7 +27,7 @@ use tracing::instrument;
 use crate::config::ObjectStorageSettings;
 
 use super::error::AssetError;
-use super::limits::{STORAGE_DELETE_TIMEOUT, STORAGE_PUT_TIMEOUT};
+use super::limits::{STORAGE_DELETE_TIMEOUT, STORAGE_GET_TIMEOUT, STORAGE_PUT_TIMEOUT};
 use super::traits::{AssetContentType, AssetStore, AssetUrl, ObjectKey};
 
 /// S3-compatible connection bundle. Cheap to clone — the inner `S3Client`
@@ -150,6 +151,55 @@ impl AssetStore for S3AssetStore {
         self.build_public_url(&key)
     }
 
+    #[instrument(name = "assets.get", skip(self), fields(patom.asset.key = %key))]
+    async fn get(&self, key: ObjectKey, max_bytes: usize) -> Result<Bytes, AssetError> {
+        let send = self
+            .client
+            .get_object()
+            .bucket(self.bucket.as_ref())
+            .key(key.as_str())
+            .send();
+        // Box::pin keeps the SDK's large output future off the stack
+        // (clippy::large_futures), matching the `put` path.
+        let output = match timeout(STORAGE_GET_TIMEOUT, Box::pin(send)).await {
+            Err(_) => return Err(AssetError::Timeout),
+            Ok(Err(e)) => {
+                if e.as_service_error()
+                    .is_some_and(GetObjectError::is_no_such_key)
+                {
+                    return Err(AssetError::NotFound);
+                }
+                return Err(AssetError::StorageGet(error_chain(&e)));
+            }
+            Ok(Ok(o)) => o,
+        };
+        // §5: refuse an oversized object by its declared length *before*
+        // buffering a single byte of it.
+        if let Some(len) = output.content_length() {
+            let len = usize::try_from(len).unwrap_or(usize::MAX);
+            if len > max_bytes {
+                return Err(AssetError::TooLarge {
+                    max: max_bytes,
+                    got: len,
+                });
+            }
+        }
+        let collected = match timeout(STORAGE_GET_TIMEOUT, output.body.collect()).await {
+            Err(_) => return Err(AssetError::Timeout),
+            Ok(Err(e)) => return Err(AssetError::StorageGet(e.to_string())),
+            Ok(Ok(agg)) => agg.into_bytes(),
+        };
+        // Defence in depth: a lying / absent Content-Length must not let an
+        // over-cap body through.
+        if collected.len() > max_bytes {
+            return Err(AssetError::TooLarge {
+                max: max_bytes,
+                got: collected.len(),
+            });
+        }
+        Ok(collected)
+    }
+
     #[instrument(name = "assets.delete", skip(self), fields(patom.asset.key = %key))]
     async fn delete(&self, key: ObjectKey) -> Result<(), AssetError> {
         let del = self
@@ -191,6 +241,21 @@ impl SdkOutcome {
             Self::Sdk(msg) => AssetError::StorageDelete(msg),
         }
     }
+}
+
+/// Flatten an error and its `source()` chain into one `::`-joined string, so
+/// operators see the inner SDK reason rather than the top-level summary. Shared
+/// by the `get` path (which inspects the typed error before stringifying) and
+/// mirrors what [`run_with_timeout`] does inline for put/delete.
+fn error_chain<E: std::error::Error>(e: &E) -> String {
+    let mut msg = e.to_string();
+    let mut cause: &dyn std::error::Error = e;
+    while let Some(next) = cause.source() {
+        msg.push_str(" :: ");
+        msg.push_str(&next.to_string());
+        cause = next;
+    }
+    msg
 }
 
 /// Wrap an async S3 future in `tokio::time::timeout` and surface the
@@ -241,9 +306,14 @@ impl InMemoryAssetStore {
         }
     }
 
-    /// Test helper — peek at the stored bytes + content type for a key.
-    pub async fn get(&self, key: &ObjectKey) -> Option<(Bytes, AssetContentType)> {
-        self.objects.lock().await.get(key.as_str()).cloned()
+    /// Test helper — peek at the stored content type for a key (the bytes are
+    /// readable through the trait [`AssetStore::get`]).
+    pub async fn content_type(&self, key: &ObjectKey) -> Option<AssetContentType> {
+        self.objects
+            .lock()
+            .await
+            .get(key.as_str())
+            .map(|(_, ct)| *ct)
     }
 
     /// Test helper — count of objects currently stored.
@@ -283,6 +353,23 @@ impl AssetStore for InMemoryAssetStore {
             .insert(key.as_str().to_owned(), (bytes, content_type));
         let raw = format!("{host}/{key}", host = self.public_host, key = key.as_str());
         AssetUrl::try_from(raw.as_str()).map_err(AssetError::from)
+    }
+
+    async fn get(&self, key: ObjectKey, max_bytes: usize) -> Result<Bytes, AssetError> {
+        let bytes = self
+            .objects
+            .lock()
+            .await
+            .get(key.as_str())
+            .map(|(b, _)| b.clone())
+            .ok_or(AssetError::NotFound)?;
+        if bytes.len() > max_bytes {
+            return Err(AssetError::TooLarge {
+                max: max_bytes,
+                got: bytes.len(),
+            });
+        }
+        Ok(bytes)
     }
 
     async fn delete(&self, key: ObjectKey) -> Result<(), AssetError> {

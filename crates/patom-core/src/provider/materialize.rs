@@ -132,6 +132,7 @@ pub fn attachment_to_text(mime: AttachmentMime, bytes: &[u8]) -> Result<String, 
     let mut text = match mime {
         AttachmentMime::Xlsx => extract_xlsx(bytes)?,
         AttachmentMime::Docx => extract_docx(bytes)?,
+        AttachmentMime::Pptx => extract_pptx(bytes)?,
         AttachmentMime::Text => decode_text(bytes),
         other => {
             return Err(AttachmentError::Extract(format!(
@@ -188,6 +189,13 @@ fn extract_xlsx(bytes: &[u8]) -> Result<String, AttachmentError> {
     Ok(out)
 }
 
+/// Per-entry read cap for the OOXML extractors, as a `u64` for [`std::io::Read::take`].
+/// The downstream scan + `truncate_to_char_boundary` cap the visible text; this
+/// caps the *read* so a hostile archive entry can't allocate without bound (§5).
+fn doc_extract_read_cap() -> u64 {
+    u64::try_from(MAX_DOC_EXTRACT_BYTES).unwrap_or(u64::MAX)
+}
+
 /// Unzip `word/document.xml` and scan its runs into plain text.
 fn extract_docx(bytes: &[u8]) -> Result<String, AttachmentError> {
     let cursor = Cursor::new(bytes);
@@ -198,11 +206,88 @@ fn extract_docx(bytes: &[u8]) -> Result<String, AttachmentError> {
         let mut entry = archive
             .by_name("word/document.xml")
             .map_err(|e| AttachmentError::Extract(format!("docx body: {e}")))?;
+        // §5: cap the read — a malicious .docx can embed an oversized body that
+        // would otherwise allocate unbounded before the downstream truncate.
         entry
+            .by_ref()
+            .take(doc_extract_read_cap())
             .read_to_string(&mut xml)
             .map_err(|e| AttachmentError::Extract(format!("docx read: {e}")))?;
     }
     Ok(docx_xml_to_text(&xml))
+}
+
+/// Unzip every `ppt/slides/slideN.xml` part and scan its runs into plain text,
+/// one slide after another. Bounded by [`MAX_DOC_EXTRACT_BYTES`] (§5).
+fn extract_pptx(bytes: &[u8]) -> Result<String, AttachmentError> {
+    let cursor = Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| AttachmentError::Extract(format!("pptx zip: {e}")))?;
+    // Collect slide part names up front (releasing the borrow on `archive`), so
+    // the per-entry reads below have exclusive access. Sorted for stable,
+    // slide-ordered output.
+    let mut slides: Vec<String> = archive
+        .file_names()
+        .filter(|n| n.starts_with("ppt/slides/slide") && n.ends_with(".xml"))
+        .map(ToOwned::to_owned)
+        .collect();
+    slides.sort();
+
+    let mut out = String::new();
+    // Bounded by the slide count (§5).
+    for name in slides {
+        if out.len() >= MAX_DOC_EXTRACT_BYTES {
+            break;
+        }
+        let mut xml = String::new();
+        {
+            let mut entry = archive
+                .by_name(&name)
+                .map_err(|e| AttachmentError::Extract(format!("pptx slide: {e}")))?;
+            // §5: cap each slide's read (see extract_docx).
+            entry
+                .by_ref()
+                .take(doc_extract_read_cap())
+                .read_to_string(&mut xml)
+                .map_err(|e| AttachmentError::Extract(format!("pptx read: {e}")))?;
+        }
+        pptx_xml_to_text(&xml, &mut out);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Minimal OOXML presentation text scan: emit the text inside `<a:t>` runs and a
+/// newline at each paragraph close (`</a:p>`), appending to `out`. Bounded by
+/// the input length (§5). Mirrors [`docx_xml_to_text`] for the drawing-ML text
+/// elements PowerPoint uses.
+fn pptx_xml_to_text(xml: &str, out: &mut String) {
+    let mut inside_text = false;
+    let mut rest = xml;
+    let max_steps = xml.len() + 1;
+    let mut steps = 0usize;
+    loop {
+        steps += 1;
+        assert!(steps <= max_steps, "pptx scan is bounded by input length");
+        let Some(lt) = rest.find('<') else {
+            break;
+        };
+        if inside_text {
+            push_unescaped(out, &rest[..lt]);
+        }
+        let after = &rest[lt..];
+        let Some(gt_off) = after.find('>') else {
+            break;
+        };
+        let tag = &after[1..gt_off];
+        match tag_name(tag) {
+            "a:t" => inside_text = true,
+            "/a:t" => inside_text = false,
+            "a:br" | "/a:p" => out.push('\n'),
+            _ => {}
+        }
+        rest = &after[gt_off + 1..];
+    }
 }
 
 /// Minimal OOXML word-processing text scan: emit the text inside `<w:t>` runs,
@@ -355,6 +440,26 @@ pub(crate) mod test_support {
         }
         buf
     }
+
+    /// Build a tiny valid `.pptx` (a ZIP holding one `ppt/slides/slide1.xml`
+    /// with one drawing-ML text run) for the Office → text path.
+    pub(crate) fn tiny_pptx(body: &str) -> Vec<u8> {
+        use std::io::Write as _;
+        use zip::write::SimpleFileOptions;
+
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            zip.start_file("ppt/slides/slide1.xml", SimpleFileOptions::default())
+                .expect("start");
+            let xml = format!(
+                "<p:sld><p:cSld><p:sp><a:p><a:r><a:t>{body}</a:t></a:r></a:p></p:sp></p:cSld></p:sld>"
+            );
+            zip.write_all(xml.as_bytes()).expect("write");
+            zip.finish().expect("finish");
+        }
+        buf
+    }
 }
 
 #[cfg(test)]
@@ -391,5 +496,20 @@ mod tests {
     #[test]
     fn extract_office_rejects_non_office() {
         assert!(attachment_to_text(AttachmentMime::Pdf, b"%PDF").is_err());
+    }
+
+    #[test]
+    fn pptx_scan_extracts_run_text() {
+        let xml = "<a:p><a:r><a:t>Slide &amp; title</a:t></a:r></a:p>";
+        let mut out = String::new();
+        pptx_xml_to_text(xml, &mut out);
+        assert!(out.contains("Slide & title"), "got: {out:?}");
+    }
+
+    #[test]
+    fn extract_pptx_reads_a_slide() {
+        let bytes = test_support::tiny_pptx("Quarterly review");
+        let text = attachment_to_text(AttachmentMime::Pptx, &bytes).expect("pptx extract");
+        assert!(text.contains("Quarterly review"), "got: {text:?}");
     }
 }

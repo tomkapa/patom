@@ -171,3 +171,45 @@ postgresql:
       memory: 384Mi
     limits:
       memory: 768Mi
+# Sandbox (`run_code`) backend — #218. OFF by default: with `sandbox.enabled:
+# false` the app does NOT register `run_code` at all (fail-closed; an agent never
+# sees a code-execution tool), and none of the manifests below are rendered. A
+# fresh self-host needs no sandbox.
+#
+# When enabled, this chart renders a gVisor-isolated executor Deployment (the
+# `runsc` RuntimeClass must already exist on the node — install it with the
+# patom-infra `gvisor` Ansible role FIRST) and wires PATOM_SANDBOX_EXECUTOR_URL
+# into the app so `run_code` registers. The executor pod runs every untrusted
+# program behind gVisor + a default-deny NetworkPolicy (no network). NOTE: object
+# storage (PATOM_S3_*) must ALSO be configured, or `run_code` still won't
+# register — artifacts need somewhere to land.
+sandbox:
+  enabled: false
+  # The runsc-backed RuntimeClass name. Must match the handler the gvisor
+  # Ansible role registers in containerd (`runsc`).
+  runtimeClassName: gvisor
+  # Render the RuntimeClass object from this chart. Set false if it is managed
+  # out-of-band (e.g. the Ansible role applies it) to avoid an ownership clash.
+  createRuntimeClass: true
+  image:
+    # Built + pushed by patom-infra CI (.github/workflows/build-sandbox-executor.yml).
+    # Pinned to the stable `:1` tag (not `:latest`) for reproducible rollouts;
+    # bump on a breaking executor/wire change, or override to a `:<sha>` /
+    # your own registry.
+    repository: ghcr.io/tomkapa/patom-sandbox-executor
+    tag: "1"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8080
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      # Mirrors the in-sandbox cgroup ceiling the executor enforces per run.
+      memory: 1Gi
+  # Per-run guards forwarded to the executor as env (defence-in-depth alongside
+  # the Rust-side limits.rs caps).
+  totalMemoryBytes: 1073741824 # 1 GiB
+  cpuNum: 1
