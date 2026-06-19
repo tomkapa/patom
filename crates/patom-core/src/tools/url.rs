@@ -192,7 +192,10 @@ mod tests {
     fn rejects_localhost_names() {
         for raw in [
             "https://localhost/",
+            // Absolute-FQDN forms (trailing dot) must not bypass the blocklist.
+            "https://localhost./",
             "https://app.localhost/",
+            "https://app.localhost./",
             "https://service.internal/",
             "https://my.local/",
         ] {
