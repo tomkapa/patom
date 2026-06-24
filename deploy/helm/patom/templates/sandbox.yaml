@@ -97,8 +97,11 @@ spec:
           env:
             - name: PATOM_EXECUTOR_ADDR
               value: "0.0.0.0:{{ .Values.sandbox.service.port }}"
+            # int64 forces plain-integer rendering — Helm parses YAML numbers as
+            # float64, so a bare interpolation emits "1.073741824e+09", which the
+            # executor's int(os.environ[...]) cannot parse (crash-loops on boot).
             - name: PATOM_EXECUTOR_TOTAL_MEMORY_BYTES
-              value: "{{ .Values.sandbox.totalMemoryBytes }}"
+              value: "{{ int64 .Values.sandbox.totalMemoryBytes }}"
             - name: PATOM_EXECUTOR_CPU_NUM
               value: "{{ .Values.sandbox.cpuNum }}"
             # Headless plotting + single-threaded BLAS so one run can't pin the
