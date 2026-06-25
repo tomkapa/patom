@@ -54,8 +54,15 @@ pub struct InboundMessage {
     /// `"group"` or `"p2p"` (DM).
     pub chat_type: String,
     pub message_id: LarkMessageId,
-    /// The reply-thread anchor, when the message is in a topic/thread.
+    /// The reply-thread anchor (`omt_…`), when the message is in a topic/thread.
+    /// Only present on replies, never on the thread's root message — so it is
+    /// *not* a stable thread key on its own (see [`InboundMessage::root_id`]).
     pub thread_id: Option<LarkThreadId>,
+    /// The id of the reply chain's root message. Lark sets this on every reply to
+    /// the root message's own `message_id`; the root message itself carries no
+    /// `root_id`. This is the value shared by the root and all its replies, so it
+    /// — falling back to `message_id` for the root — is the stable thread anchor.
+    pub root_id: Option<LarkMessageId>,
     /// The extracted text body (empty for image/file; the flattened runs for a
     /// rich-text `post`).
     pub text: String,
@@ -159,6 +166,9 @@ fn parse_message(header: &Header, ev: &Event) -> Result<InboundMessage, LarkErro
         )?,
         thread_id: opt_id(message.thread_id.as_deref())
             .map(|s| LarkThreadId::try_from(s.as_str()))
+            .transpose()?,
+        root_id: opt_id(message.root_id.as_deref())
+            .map(|s| LarkMessageId::try_from(s.as_str()))
             .transpose()?,
         text,
         resources,
@@ -362,6 +372,8 @@ struct Message {
     #[serde(default)]
     thread_id: Option<String>,
     #[serde(default)]
+    root_id: Option<String>,
+    #[serde(default)]
     message_type: Option<String>,
     #[serde(default)]
     content: Option<String>,
@@ -472,6 +484,49 @@ mod tests {
         };
         assert!(m.sender_user_id.is_none());
         assert_eq!(m.text, "hi");
+    }
+
+    #[test]
+    fn parses_thread_id_and_root_id_on_in_thread_reply() {
+        // A reply in a Lark topic/reply-thread: it carries `thread_id` (omt_…)
+        // and `root_id` (the root message's om_… id). Both must survive parsing
+        // so the bridge can anchor on the stable `root_id`.
+        let payload = br#"{
+          "header":{"event_id":"e","event_type":"im.message.receive_v1","tenant_key":"tk","app_id":"cli"},
+          "event":{"sender":{"sender_id":{"open_id":"ou_x","user_id":"u_x"},"sender_type":"user"},
+            "message":{"message_id":"om_reply","root_id":"om_root","parent_id":"om_root",
+              "thread_id":"omt_topic","chat_id":"oc","chat_type":"group","message_type":"text",
+              "content":"{\"text\":\"retry\"}"}}
+        }"#;
+        let LarkEvent::Message(m) = parse_event(payload).expect("parse") else {
+            panic!("message");
+        };
+        assert_eq!(m.message_id.as_str(), "om_reply");
+        assert_eq!(
+            m.thread_id.as_ref().map(LarkThreadId::as_str),
+            Some("omt_topic")
+        );
+        assert_eq!(
+            m.root_id.as_ref().map(LarkMessageId::as_str),
+            Some("om_root")
+        );
+    }
+
+    #[test]
+    fn root_message_has_no_root_id() {
+        // The thread's root message arrives with neither root_id nor thread_id.
+        let payload = br#"{
+          "header":{"event_id":"e","event_type":"im.message.receive_v1","tenant_key":"tk","app_id":"cli"},
+          "event":{"sender":{"sender_id":{"open_id":"ou_x","user_id":"u_x"},"sender_type":"user"},
+            "message":{"message_id":"om_root","chat_id":"oc","chat_type":"group","message_type":"text",
+              "content":"{\"text\":\"help me to scout\"}"}}
+        }"#;
+        let LarkEvent::Message(m) = parse_event(payload).expect("parse") else {
+            panic!("message");
+        };
+        assert_eq!(m.message_id.as_str(), "om_root");
+        assert!(m.root_id.is_none());
+        assert!(m.thread_id.is_none());
     }
 
     #[test]
