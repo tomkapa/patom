@@ -4,9 +4,12 @@ use super::error::ParseError;
 /// or silently truncate; we want to fail loudly at the boundary instead.
 pub const MAX_OUTPUT_TOKENS_CAP: u32 = 200_000;
 
-/// Hard ceiling on conversation turns per `Agent::reply` invocation. Defends against tool
-/// loops where the model never converges on a final answer.
-pub const MAX_TURNS_CAP: u32 = 64;
+/// Hard ceiling on conversation turns per `Agent::reply` invocation.
+///
+/// Defends against tool loops where the model never converges on a final answer. Kept
+/// above `DEFAULT_MAX_TURNS` (100) so the default — and any future per-agent override —
+/// stays provably within the bound.
+pub const MAX_TURNS_CAP: u32 = 128;
 
 /// Output token budget for a single model call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

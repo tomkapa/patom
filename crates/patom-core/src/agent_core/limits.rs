@@ -11,7 +11,14 @@ pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
 
 /// Default tool/turn iterations per `Agent::reply`. Above this the agent gives up rather
 /// than letting a model loop on a stuck plan.
-pub const DEFAULT_MAX_TURNS: u32 = 12;
+///
+/// One turn == one provider round-trip (model call + the tools it requests), matching the
+/// Claude Agent SDK's `maxTurns` semantics. Sized for tool-heavy autonomous turns (deep
+/// research fans out a dozen-plus web searches/fetches before converging): the old budget
+/// of 12 left non-converging loops no room to emit a final reply. The real backstops on a
+/// runaway turn are the wall-clock fence (`MAX_TURN_DURATION`) and the token/credit budget,
+/// not this counter.
+pub const DEFAULT_MAX_TURNS: u32 = 100;
 
 /// Hard cap on tool calls inside a single assistant turn. Defends against a model that
 /// fans out an unreasonable number of parallel calls.
@@ -165,3 +172,24 @@ const _: () = assert!(SEED_ANCHOR_MSGS >= 1);
 const _: () = assert!(IMPORTANCE_KEEP_SLACK < MAX_SUMMARY_TOKENS);
 const _: () = assert!(COMPACTION_FAILURE_ALERT_THRESHOLD > 0);
 const _: () = assert!(!DECISION_MARKERS.is_empty());
+
+#[cfg(test)]
+mod tests {
+    use super::DEFAULT_MAX_TURNS;
+    use crate::types::MaxTurns;
+
+    /// The agentic loop runs one provider round-trip per turn; tool-heavy agents
+    /// (deep research) routinely exhaust a low budget before emitting a final reply.
+    /// Pinned at 100 so a non-converging loop still has ample room to finish.
+    #[test]
+    fn default_max_turns_is_one_hundred() {
+        assert_eq!(DEFAULT_MAX_TURNS, 100);
+    }
+
+    /// The default must parse cleanly through its newtype, proving the hard ceiling
+    /// (`MAX_TURNS_CAP`) accommodates it.
+    #[test]
+    fn default_max_turns_is_within_cap() {
+        assert!(MaxTurns::try_from(DEFAULT_MAX_TURNS).is_ok());
+    }
+}
