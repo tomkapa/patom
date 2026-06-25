@@ -32,7 +32,13 @@ pub const MAX_TOOL_CALLS_PER_TURN: usize = 16;
 pub const MAX_HOOKS_PER_TURN: usize = 32;
 
 /// Per-call timeout for `LlmProvider::send`. CLAUDE.md §5: every I/O await is wrapped.
-pub const PROVIDER_CALL_TIMEOUT: Duration = Duration::from_mins(2);
+///
+/// Sized for slow large-context calls on high-latency providers (e.g.
+/// `deepseek-v4-pro` at 80k+ input tokens, where time-to-first-token alone can
+/// run into minutes). Below this a single in-flight call that stalls trips
+/// `AgentError::ProviderTimeout`; it bounds one provider call, not the whole
+/// turn (that fence is `runtime::limits::MAX_TURN_DURATION`).
+pub const PROVIDER_CALL_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Per-call timeout for any `Tool::execute`. The tool may have its own narrower timeout
 /// (e.g. fetch is 20 s); this is the outer fence.
