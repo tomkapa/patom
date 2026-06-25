@@ -508,6 +508,7 @@ const vi: TranslationTable = {
   "agent.detail.logs.scope.kind.normal": "Thường",
   "agent.detail.logs.scope.kind.reflection": "Phản tỉnh",
   "agent.detail.logs.scope.kind.resolution": "Giải quyết",
+  "agent.detail.logs.scope.kind.compaction": "Nén",
   "agent.detail.logs.scope.compare.prev": "Cửa sổ trước",
   "agent.detail.logs.scope.compare.none": "Không",
   "agent.detail.logs.scope.updated": "cập nhật {n}s trước · tự động",
@@ -527,6 +528,7 @@ const vi: TranslationTable = {
   "agent.detail.logs.chart.legend.normal": "Thường",
   "agent.detail.logs.chart.legend.reflection": "Phản tỉnh",
   "agent.detail.logs.chart.legend.resolution": "Giải quyết",
+  "agent.detail.logs.chart.legend.compaction": "Nén",
   "agent.detail.logs.chart.kpi.tokens": "TOKEN",
   "agent.detail.logs.chart.kpi.turns": "LƯỢT",
   "agent.detail.logs.chart.kpi.latency": "ĐỘ TRỄ p50 · p95",
@@ -538,7 +540,7 @@ const vi: TranslationTable = {
   "agent.detail.logs.chart.marker.labelMulti": "↑ v{first}–v{last} đã sửa",
   "agent.detail.logs.chart.tooltip.total": "tổng {tokens}",
   "agent.detail.logs.chart.tooltip.byKind":
-    "thường {normal} · phản tỉnh {reflection} · giải quyết {resolution}",
+    "thường {normal} · phản tỉnh {reflection} · giải quyết {resolution} · nén {compaction}",
 
   // Turns timeline
   "agent.detail.logs.turns.eyebrow": "LƯỢT · {count} TRONG CỬA SỔ",

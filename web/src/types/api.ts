@@ -832,14 +832,21 @@ export type MemoryEventsFilter = {
 
 // ─── Agent logs & metrics (doc/logs_metrics_tab.md) ────────────────────
 
-/** Turn kind label — mirrors `RequestKind` in src/runtime/types.rs. */
-export type TurnKind = "normal" | "reflection" | "resolution";
+/** Turn kind label — mirrors `MetricKind` in src/runtime/types.rs (the
+ *  `turn_metrics.kind` superset). `compaction` is a #182 context-compaction
+ *  fold; it has no `prompt_requests` peer but is still a metered LLM call. */
+export type TurnKind = "normal" | "reflection" | "resolution" | "compaction";
 
 /** One bucket in the token-spend chart. Aggregated server-side; the FE
  *  never recomputes counts or percentiles. */
 export type MetricsBucket = {
   start: string;
-  by_kind: { normal: number; reflection: number; resolution: number };
+  by_kind: {
+    normal: number;
+    reflection: number;
+    resolution: number;
+    compaction: number;
+  };
   latency_p50_ms: number;
   latency_p95_ms: number;
   failure_count: number;

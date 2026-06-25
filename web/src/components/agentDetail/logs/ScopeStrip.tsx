@@ -74,6 +74,10 @@ export function ScopeStrip({
             value: "resolution",
             label: t("agent.detail.logs.scope.kind.resolution"),
           },
+          {
+            value: "compaction",
+            label: t("agent.detail.logs.scope.kind.compaction"),
+          },
         ]}
         onChange={(v) => onKindChange(v as LogsKindFilter)}
         current={kind}
@@ -228,6 +232,7 @@ const KIND_KEYS = {
   normal: "agent.detail.logs.scope.kind.normal",
   reflection: "agent.detail.logs.scope.kind.reflection",
   resolution: "agent.detail.logs.scope.kind.resolution",
+  compaction: "agent.detail.logs.scope.kind.compaction",
 } as const;
 
 const COMPARE_KEYS = {

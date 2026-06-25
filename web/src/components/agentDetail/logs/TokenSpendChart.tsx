@@ -26,6 +26,7 @@ const KIND_COLOR = {
   normal: "var(--color-moss)",
   reflection: "var(--color-amber)",
   resolution: "var(--color-ink)",
+  compaction: "var(--color-rail)",
 } as const;
 
 /** Zero-dep stacked-bar chart. The pencil frame (`NJOCg`) drives the
@@ -148,7 +149,11 @@ function useGeometry(buckets: MetricsBucket[]) {
     const barW = Math.max(8, slotW * 0.7);
     let yMax = 0;
     const bars: Bar[] = buckets.map((b, i) => {
-      const total = b.by_kind.normal + b.by_kind.reflection + b.by_kind.resolution;
+      const total =
+        b.by_kind.normal +
+        b.by_kind.reflection +
+        b.by_kind.resolution +
+        b.by_kind.compaction;
       if (total > yMax) yMax = total;
       const x = PADDING.left + slotW * i + (slotW - barW) / 2;
       return { bucket: b, x, total, width: barW };
@@ -227,11 +232,17 @@ function BucketBar({
     normal: bar.bucket.by_kind.normal * scale,
     reflection: bar.bucket.by_kind.reflection * scale,
     resolution: bar.bucket.by_kind.resolution * scale,
+    compaction: bar.bucket.by_kind.compaction * scale,
   };
-  // Stack bottom-up: normal, reflection, resolution.
+  // Stack bottom-up: normal, reflection, resolution, compaction.
   let cursor = yChart;
   const segs: { key: keyof typeof heights; y: number; h: number }[] = [];
-  for (const key of ["normal", "reflection", "resolution"] as const) {
+  for (const key of [
+    "normal",
+    "reflection",
+    "resolution",
+    "compaction",
+  ] as const) {
     const h = heights[key];
     if (h <= 0) continue;
     cursor -= h;
@@ -383,6 +394,10 @@ function ChartHero({
           color="var(--color-ink)"
           label={t("agent.detail.logs.chart.legend.resolution")}
         />
+        <LegendSwatch
+          color="var(--color-rail)"
+          label={t("agent.detail.logs.chart.legend.compaction")}
+        />
       </div>
     </div>
   );
@@ -487,6 +502,7 @@ function Tooltip({
           normal: bar.bucket.by_kind.normal,
           reflection: bar.bucket.by_kind.reflection,
           resolution: bar.bucket.by_kind.resolution,
+          compaction: bar.bucket.by_kind.compaction,
         })}
       </span>
     </div>
