@@ -40,7 +40,7 @@ use crate::auth::{
 use crate::colleagues::ColleagueId;
 use crate::mcp::McpServerId;
 use crate::provider::{Model, ProviderId};
-use crate::runtime::RequestKind;
+use crate::runtime::MetricKind;
 use crate::tools::{DEFAULT_TOOL_CALLS_PAGE, MAX_TOOL_CALLS_PAGE, ToolCallRowId};
 use crate::types::AvatarUrl;
 
@@ -646,6 +646,10 @@ struct ByKind {
     normal: i64,
     reflection: i64,
     resolution: i64,
+    /// #182 context-compaction folds (migration 84 admits `kind='compaction'`
+    /// on `turn_metrics`). Counted so the chart's stacked bar reflects the full
+    /// metered spend, not just the three dispatchable job kinds.
+    compaction: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -703,6 +707,7 @@ struct BucketAggRow {
     normal: Option<i64>,
     reflection: Option<i64>,
     resolution: Option<i64>,
+    compaction: Option<i64>,
     p50: Option<f64>,
     p95: Option<f64>,
     failures: Option<i64>,
@@ -811,6 +816,7 @@ async fn fetch_buckets(
                 COUNT(*) FILTER (WHERE kind = 'normal')     AS normal, \
                 COUNT(*) FILTER (WHERE kind = 'reflection') AS reflection, \
                 COUNT(*) FILTER (WHERE kind = 'resolution') AS resolution, \
+                COUNT(*) FILTER (WHERE kind = 'compaction') AS compaction, \
                 percentile_cont(0.5)  WITHIN GROUP (ORDER BY duration_ms) AS p50, \
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95, \
                 COUNT(*) FILTER (WHERE is_failure)          AS failures \
@@ -950,6 +956,7 @@ fn bucket_row_into_response(r: BucketAggRow) -> TimeseriesBucketRow {
             normal: r.normal.unwrap_or(0),
             reflection: r.reflection.unwrap_or(0),
             resolution: r.resolution.unwrap_or(0),
+            compaction: r.compaction.unwrap_or(0),
         },
         latency_p50_ms: f64_ms_to_i64(r.p50.unwrap_or(0.0)),
         latency_p95_ms: f64_ms_to_i64(r.p95.unwrap_or(0.0)),
@@ -993,7 +1000,7 @@ struct TurnsListQuery {
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
     /// Filter by `turn_metrics.kind` — `normal` / `reflection` /
-    /// `resolution`. Omitted = all kinds.
+    /// `resolution` / `compaction`. Omitted = all kinds.
     kind: Option<String>,
     /// Opaque exclusive cursor — pass the previous page's `next_cursor`
     /// verbatim to walk backwards in time. Encodes `(started_at, id)`; see
@@ -1009,7 +1016,12 @@ struct TurnRow {
     id: TurnMetricsId,
     request_id: crate::runtime::PromptRequestId,
     started_at: DateTime<Utc>,
-    kind: RequestKind,
+    /// `turn_metrics.kind` is the [`MetricKind`] superset, not the narrower
+    /// dispatch enum [`RequestKind`](crate::runtime::RequestKind): a #182
+    /// context-compaction fold meters a `kind='compaction'` row (migration 84)
+    /// that has no `prompt_requests` peer. Decoding it as `RequestKind` 500'd
+    /// the whole timeline on the first compaction an agent did.
+    kind: MetricKind,
     model: Model,
     provider: ProviderId,
     input_tokens: i32,
@@ -1072,13 +1084,15 @@ async fn list_agent_turns(
         return Err(HttpError::NotFound);
     }
 
-    // Parse the optional `kind` filter into the closed `RequestKind`
-    // enum so the SQL bind is the typed form. "all"/empty map to "no
-    // filter" — the chart strip's default for a fresh load.
-    let kind_filter: Option<RequestKind> = match params.kind.as_deref() {
+    // Parse the optional `kind` filter into the closed `MetricKind`
+    // enum so the SQL bind is the typed form. `MetricKind` (not the narrower
+    // `RequestKind`) so the timeline can filter to `compaction` folds too.
+    // "all"/empty map to "no filter" — the chart strip's default for a fresh
+    // load.
+    let kind_filter: Option<MetricKind> = match params.kind.as_deref() {
         None | Some("" | "all") => None,
         Some(raw) => Some(
-            RequestKind::parse(raw).ok_or_else(|| HttpError::BadRequest("unknown kind".into()))?,
+            MetricKind::parse(raw).ok_or_else(|| HttpError::BadRequest("unknown kind".into()))?,
         ),
     };
 
@@ -1120,7 +1134,7 @@ async fn fetch_turn_rows(
     agent_id: AgentId,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
-    kind_filter: Option<RequestKind>,
+    kind_filter: Option<MetricKind>,
     cursor: Option<(DateTime<Utc>, TurnMetricsId)>,
     limit: i64,
 ) -> Result<Vec<TurnRow>, HttpError> {

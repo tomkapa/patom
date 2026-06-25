@@ -1146,19 +1146,24 @@ function buildTimeseriesFixture() {
   const now = Date.now();
   const bucketMs = 3 * 60 * 60 * 1000; // 3-hour buckets across a 24h window
   const buckets = [
-    { normal: 38, reflection: 6, resolution: 0, tokens: 480_000, p50: 2_800, p95: 6_200, failures: 0 },
-    { normal: 42, reflection: 8, resolution: 1, tokens: 520_000, p50: 3_000, p95: 6_800, failures: 0 },
-    { normal: 47, reflection: 5, resolution: 0, tokens: 590_000, p50: 3_200, p95: 7_400, failures: 1 },
-    { normal: 30, reflection: 4, resolution: 0, tokens: 390_000, p50: 2_600, p95: 5_900, failures: 0 },
-    { normal: 52, reflection: 9, resolution: 1, tokens: 640_000, p50: 3_400, p95: 9_100, failures: 1 },
-    { normal: 48, reflection: 7, resolution: 0, tokens: 560_000, p50: 3_300, p95: 8_400, failures: 0 },
-    { normal: 40, reflection: 6, resolution: 0, tokens: 470_000, p50: 3_100, p95: 7_700, failures: 0 },
-    { normal: 50, reflection: 10, resolution: 1, tokens: 600_000, p50: 3_500, p95: 9_500, failures: 1 },
+    { normal: 38, reflection: 6, resolution: 0, compaction: 0, tokens: 480_000, p50: 2_800, p95: 6_200, failures: 0 },
+    { normal: 42, reflection: 8, resolution: 1, compaction: 1, tokens: 520_000, p50: 3_000, p95: 6_800, failures: 0 },
+    { normal: 47, reflection: 5, resolution: 0, compaction: 2, tokens: 590_000, p50: 3_200, p95: 7_400, failures: 1 },
+    { normal: 30, reflection: 4, resolution: 0, compaction: 0, tokens: 390_000, p50: 2_600, p95: 5_900, failures: 0 },
+    { normal: 52, reflection: 9, resolution: 1, compaction: 2, tokens: 640_000, p50: 3_400, p95: 9_100, failures: 1 },
+    { normal: 48, reflection: 7, resolution: 0, compaction: 1, tokens: 560_000, p50: 3_300, p95: 8_400, failures: 0 },
+    { normal: 40, reflection: 6, resolution: 0, compaction: 0, tokens: 470_000, p50: 3_100, p95: 7_700, failures: 0 },
+    { normal: 50, reflection: 10, resolution: 1, compaction: 3, tokens: 600_000, p50: 3_500, p95: 9_500, failures: 1 },
   ].map((b, i) => {
     const start = new Date(now - (8 - i) * bucketMs).toISOString();
     return {
       start,
-      by_kind: { normal: b.normal, reflection: b.reflection, resolution: b.resolution },
+      by_kind: {
+        normal: b.normal,
+        reflection: b.reflection,
+        resolution: b.resolution,
+        compaction: b.compaction,
+      },
       latency_p50_ms: b.p50,
       latency_p95_ms: b.p95,
       failure_count: b.failures,

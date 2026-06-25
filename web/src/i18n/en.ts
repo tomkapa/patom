@@ -517,6 +517,7 @@ const en = {
   "agent.detail.logs.scope.kind.normal": "Normal",
   "agent.detail.logs.scope.kind.reflection": "Reflection",
   "agent.detail.logs.scope.kind.resolution": "Resolution",
+  "agent.detail.logs.scope.kind.compaction": "Compaction",
   "agent.detail.logs.scope.compare.prev": "Prev window",
   "agent.detail.logs.scope.compare.none": "None",
   "agent.detail.logs.scope.updated": "updated {n}s ago · auto",
@@ -536,6 +537,7 @@ const en = {
   "agent.detail.logs.chart.legend.normal": "Normal",
   "agent.detail.logs.chart.legend.reflection": "Reflection",
   "agent.detail.logs.chart.legend.resolution": "Resolution",
+  "agent.detail.logs.chart.legend.compaction": "Compaction",
   "agent.detail.logs.chart.kpi.tokens": "TOKENS",
   "agent.detail.logs.chart.kpi.turns": "TURNS",
   "agent.detail.logs.chart.kpi.latency": "LATENCY p50 · p95",
@@ -547,7 +549,7 @@ const en = {
   "agent.detail.logs.chart.marker.labelMulti": "↑ v{first}–v{last} edited",
   "agent.detail.logs.chart.tooltip.total": "total {tokens}",
   "agent.detail.logs.chart.tooltip.byKind":
-    "normal {normal} · reflection {reflection} · resolution {resolution}",
+    "normal {normal} · reflection {reflection} · resolution {resolution} · compaction {compaction}",
 
   // Turns timeline
   "agent.detail.logs.turns.eyebrow": "TURNS · {count} IN WINDOW",

@@ -13,6 +13,7 @@ import type {
   IssuedInvite,
   LarkApp,
   Language,
+  LogsKindFilter,
   SlackInstallResponse,
   SlackWorkspaceSummary,
   ListMembersQuery,
@@ -426,7 +427,7 @@ export const api = {
     params: {
       from?: string;
       to?: string;
-      kind?: "normal" | "reflection" | "resolution" | "all";
+      kind?: LogsKindFilter;
       cursor?: string;
     },
   ) => {
