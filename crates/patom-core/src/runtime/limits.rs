@@ -23,7 +23,7 @@ pub const MAX_PENDING_PER_SESSION: u32 = 32;
 /// heartbeat (`LEASE_TTL` / `LEASE_HEARTBEAT_INTERVAL`), so a genuinely stuck turn is
 /// still reclaimed within `LEASE_TTL` of the worker dying; this fence only bounds a
 /// *live* turn that refuses to converge.
-pub const MAX_TURN_DURATION: Duration = Duration::from_mins(60);
+pub const MAX_TURN_DURATION: Duration = Duration::from_hours(1);
 
 /// Lease lifetime granted at claim time. Sized so the heartbeat cadence
 /// (`LEASE_TTL / 3`) still leaves >1 chance to renew before expiry under normal load.
