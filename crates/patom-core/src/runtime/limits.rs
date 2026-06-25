@@ -16,7 +16,14 @@ pub const MAX_PENDING_PER_SESSION: u32 = 32;
 
 /// Outer fence on a single turn (provider call + tool calls + persistence). Above this
 /// the worker abandons the turn so a stuck call can never hold a lease forever.
-pub const MAX_TURN_DURATION: Duration = Duration::from_mins(3);
+///
+/// Sized for long tool-use loops on slow providers (e.g. multi-round research turns
+/// on high-latency models): the cumulative turn time — not any single provider call —
+/// is what pushes against this fence. The lease keeps renewing across the turn via the
+/// heartbeat (`LEASE_TTL` / `LEASE_HEARTBEAT_INTERVAL`), so a genuinely stuck turn is
+/// still reclaimed within `LEASE_TTL` of the worker dying; this fence only bounds a
+/// *live* turn that refuses to converge.
+pub const MAX_TURN_DURATION: Duration = Duration::from_mins(60);
 
 /// Lease lifetime granted at claim time. Sized so the heartbeat cadence
 /// (`LEASE_TTL / 3`) still leaves >1 chance to renew before expiry under normal load.
