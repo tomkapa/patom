@@ -172,6 +172,7 @@ fn dm_message(event_id: &str, text: &str) -> InboundWork {
             chat_type: "p2p".to_owned(),
             message_id: LarkMessageId::try_from("om_dm_1").expect("message id"),
             thread_id: None,
+            root_id: None,
             text: text.to_owned(),
             resources: Vec::new(),
             mentions: Vec::new(),
@@ -334,6 +335,7 @@ async fn ambient_group_message_ingests_without_trigger(pool: PgPool) {
             chat_type: "group".to_owned(),
             message_id: LarkMessageId::try_from("om_amb_1").expect("message id"),
             thread_id: None,
+            root_id: None,
             text: "just chatting, no mention".to_owned(),
             resources: Vec::new(),
             mentions: Vec::new(),
@@ -402,6 +404,7 @@ async fn ambient_image_message_is_downloaded_and_rehosted(pool: PgPool) {
             chat_type: "group".to_owned(),
             message_id: LarkMessageId::try_from("om_img_1").expect("message id"),
             thread_id: None,
+            root_id: None,
             text: String::new(),
             resources: vec![LarkResource {
                 file_key: LarkFileKey::try_from("img_v3_pic").expect("file key"),

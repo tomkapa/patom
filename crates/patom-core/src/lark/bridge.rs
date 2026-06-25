@@ -43,7 +43,7 @@ use super::roster;
 use super::stream_pump::{AttachRequest, LarkRecipient, SharedLarkPumpHandle};
 use super::thread_map::SharedLarkThreadStore;
 use super::token::SharedTokenProvider;
-use super::types::{LarkOpenId, LarkThreadId};
+use super::types::{LarkMessageId, LarkOpenId, LarkThreadId};
 
 /// A decoded event plus the receiving bot's own `open_id` (so a group
 /// bot-mention can be told from ambient chatter). The WS manager fills
@@ -341,13 +341,24 @@ async fn ingest_lark_resource(
     Ok(Some(UserContent::from(attachment)))
 }
 
-/// The Lark thread anchor: the message's `thread_id` if it is in a topic, else
-/// the message's own id (so a top-level message roots a fresh thread).
+/// The Lark thread anchor: the reply chain's **root message id**, shared by the
+/// root message and every in-thread reply.
+///
+/// A reply carries `root_id` == the root message's own `message_id`; the root
+/// message carries no `root_id`, so we fall back to its `message_id`. Both paths
+/// therefore yield the same value, keeping the whole conversation on one Patom
+/// thread.
+///
+/// We deliberately do **not** anchor on `thread_id` (`omt_…`): Lark only sets it
+/// on replies, never on the root, so keying on it forks the root away from its
+/// replies — splitting one Lark conversation across two Patom threads (and an
+/// agent on the reply side then sees none of the root-side history).
 fn thread_anchor(m: &InboundMessage) -> Result<LarkThreadId, LarkError> {
-    match &m.thread_id {
-        Some(t) => Ok(t.clone()),
-        None => Ok(LarkThreadId::try_from(m.message_id.as_str())?),
-    }
+    let anchor = m
+        .root_id
+        .as_ref()
+        .map_or_else(|| m.message_id.as_str(), LarkMessageId::as_str);
+    Ok(LarkThreadId::try_from(anchor)?)
 }
 
 /// Resolve the bound Patom thread, or create + bind one on first sight.
@@ -448,4 +459,68 @@ async fn enqueue_and_attach(
         event = "lark.bridge.enqueued",
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lark::event::InboundMessage;
+    use crate::lark::types::{
+        LarkAppId, LarkChatId, LarkEventId, LarkMessageId, LarkThreadId, TenantKey,
+    };
+
+    /// Build a minimal inbound message with the threading ids under test; every
+    /// other field is a fixed placeholder the anchor logic never reads.
+    fn inbound(message_id: &str, thread_id: Option<&str>, root_id: Option<&str>) -> InboundMessage {
+        InboundMessage {
+            event_id: LarkEventId::try_from("evt").expect("event id"),
+            app_id: LarkAppId::try_from("cli").expect("app id"),
+            tenant_key: TenantKey::try_from("tk").expect("tenant key"),
+            sender_open_id: LarkOpenId::try_from("ou_x").expect("open id"),
+            sender_user_id: None,
+            sender_type: "user".to_owned(),
+            chat_id: LarkChatId::try_from("oc").expect("chat id"),
+            chat_type: "group".to_owned(),
+            message_id: LarkMessageId::try_from(message_id).expect("message id"),
+            thread_id: thread_id.map(|t| LarkThreadId::try_from(t).expect("thread id")),
+            root_id: root_id.map(|r| LarkMessageId::try_from(r).expect("root id")),
+            text: String::new(),
+            resources: Vec::new(),
+            mentions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn root_and_in_thread_reply_share_one_anchor() {
+        // The thread's root message: no root_id, no thread_id yet.
+        let root = inbound("om_root", None, None);
+        // A reply in that thread: Lark stamps thread_id (omt_…) and root_id
+        // (== the root's message_id).
+        let reply = inbound("om_reply", Some("omt_topic"), Some("om_root"));
+
+        let root_anchor = thread_anchor(&root).expect("root anchor");
+        let reply_anchor = thread_anchor(&reply).expect("reply anchor");
+
+        // Both must resolve to the root message id — one Patom thread, not two.
+        assert_eq!(root_anchor.as_str(), "om_root");
+        assert_eq!(reply_anchor.as_str(), "om_root");
+        assert_eq!(root_anchor, reply_anchor);
+    }
+
+    #[test]
+    fn anchor_ignores_thread_id() {
+        // Even with a thread_id present, the anchor is the root_id, never omt_….
+        let reply = inbound("om_reply", Some("omt_topic"), Some("om_root"));
+        let anchor = thread_anchor(&reply).expect("anchor");
+        assert_ne!(anchor.as_str(), "omt_topic");
+        assert_eq!(anchor.as_str(), "om_root");
+    }
+
+    #[test]
+    fn standalone_message_anchors_on_its_own_id() {
+        // No thread, no root: a fresh top-level message roots its own thread.
+        let solo = inbound("om_solo", None, None);
+        let anchor = thread_anchor(&solo).expect("anchor");
+        assert_eq!(anchor.as_str(), "om_solo");
+    }
 }
