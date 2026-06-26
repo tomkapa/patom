@@ -8,6 +8,7 @@ use sqlx::PgPool;
 
 use crate::auth::run_privileged;
 use crate::clock::SharedClock;
+use crate::threads::AgentThreadId;
 
 use super::error::TurnRecorderError;
 use super::store::TurnMetricsStore;
@@ -88,5 +89,32 @@ impl TurnMetricsStore for PgTurnMetricsStore {
             Ok(())
         })
         .await
+    }
+
+    async fn latest_full_prompt_input_tokens(
+        &self,
+        state_id: AgentThreadId,
+    ) -> Result<Option<u32>, TurnRecorderError> {
+        // Read keyed by `(state_id, started_at DESC)` — the index installed in
+        // migration 63 — and excludes `compaction` fold sub-calls so only the
+        // last assembled full-prompt turn is returned. Privileged like the
+        // insert: this is an internal trigger read, not a tenant query path.
+        let tokens: Option<i32> =
+            run_privileged::<Option<i32>, TurnRecorderError>(&self.pool, async |tx| {
+                let row: Option<i32> = sqlx::query_scalar(
+                    "SELECT input_tokens FROM turn_metrics \
+                         WHERE state_id = $1 AND kind <> 'compaction' \
+                         ORDER BY started_at DESC \
+                         LIMIT 1",
+                )
+                .bind(state_id)
+                .fetch_optional(&mut **tx)
+                .await?;
+                Ok(row)
+            })
+            .await?;
+        // The column CHECKs `>= 0`, so it fits u32; saturate defensively rather
+        // than narrowing with `as` (CLAUDE.md §7).
+        Ok(tokens.map(|t| u32::try_from(t).unwrap_or(0)))
     }
 }

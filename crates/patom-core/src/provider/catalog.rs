@@ -205,17 +205,17 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     // `deepseek-chat` / `deepseek-reasoner` aliases retire 2026-07-24 and are
     // intentionally omitted; both modes are reachable via v4-flash + the
     // thinking/non-thinking switch.
-    // DeepSeek v4 ships a 128k-token window.
+    // DeepSeek v4 ships a 1M-token window (both pro and flash).
     CatalogEntry {
         name: "deepseek-v4-pro",
         provider: ProviderId::Deepseek,
-        context_window: ContextWindow(128_000),
+        context_window: ContextWindow(1_000_000),
         capabilities: ModelCapabilities::TEXT_ONLY,
     },
     CatalogEntry {
         name: "deepseek-v4-flash",
         provider: ProviderId::Deepseek,
-        context_window: ContextWindow(128_000),
+        context_window: ContextWindow(1_000_000),
         capabilities: ModelCapabilities::TEXT_ONLY,
     },
 ];
