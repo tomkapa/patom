@@ -48,6 +48,14 @@ fn text_response(s: &str) -> ChatResponse {
     }
 }
 
+/// A turn reply that reports a specific real `input_tokens` (the provider's
+/// view of the prompt size), used to exercise the real-token compaction trigger.
+fn text_response_with_input_tokens(s: &str, input_tokens: u32) -> ChatResponse {
+    let mut resp = text_response(s);
+    resp.usage.input_tokens = input_tokens;
+    resp
+}
+
 /// Replays `fold_reply` for any summarizer fold and `turn_reply` for the actual
 /// turn, recording every request. Lets a test inspect the fold and the turn
 /// independently regardless of ordering.
@@ -56,16 +64,28 @@ struct SplitProvider {
     fold_reply: String,
     turn_reply: String,
     fold_fails: bool,
+    /// Real `input_tokens` the turn reply reports — the provider's prompt size.
+    turn_input_tokens: u32,
     fold_calls: AtomicUsize,
     seen: std::sync::Mutex<Vec<ChatRequest>>,
 }
 
 impl SplitProvider {
     fn new(fold_reply: &str, turn_reply: &str, fold_fails: bool) -> Self {
+        Self::with_turn_tokens(fold_reply, turn_reply, fold_fails, 0)
+    }
+
+    fn with_turn_tokens(
+        fold_reply: &str,
+        turn_reply: &str,
+        fold_fails: bool,
+        turn_input_tokens: u32,
+    ) -> Self {
         Self {
             fold_reply: fold_reply.to_string(),
             turn_reply: turn_reply.to_string(),
             fold_fails,
+            turn_input_tokens,
             fold_calls: AtomicUsize::new(0),
             seen: std::sync::Mutex::new(Vec::new()),
         }
@@ -99,7 +119,10 @@ impl LlmProvider for SplitProvider {
             }
             return Ok(text_response(&self.fold_reply));
         }
-        Ok(text_response(&self.turn_reply))
+        Ok(text_response_with_input_tokens(
+            &self.turn_reply,
+            self.turn_input_tokens,
+        ))
     }
 }
 
@@ -310,6 +333,92 @@ async fn overflow_triggers_inline_compaction_and_meters(pool: PgPool) {
     .await
     .expect("count");
     assert_eq!(compaction_metrics, 1, "the fold was metered");
+}
+
+/// #182 calibration: the trigger compares the provider's *real* `input_tokens`
+/// from the last full turn, not the crude `chars/4` byte estimate. A thread
+/// whose byte-estimate exceeds the budget must NOT compact when the measured
+/// prompt was comfortably small — the estimate overcounts tool/JSON-heavy
+/// content and was firing compaction far too early.
+#[sqlx::test]
+async fn real_input_tokens_suppresses_estimate_overcount(pool: PgPool) {
+    // A short thread first, so the opening turn records a real `normal` metric.
+    let h = setup(&pool, 2, 320).await;
+    let pv = prompt_version(&pool, h.agent_id).await;
+    let metrics: patom::agent_core::turn_metrics::SharedTurnMetricsStore =
+        Arc::new(patom::agent_core::turn_metrics::PgTurnMetricsStore::new(
+            pool.clone(),
+            SystemClock::shared(),
+        ));
+
+    // The provider reports a tiny real prompt (50 tokens) — far under the
+    // test-model budget (window 2000 / 2 = 1000).
+    let provider = Arc::new(SplitProvider::with_turn_tokens("SUMM", "done", false, 50));
+    let shared: SharedProvider = provider.clone();
+    let agent = build_agent(&h, shared, Some((metrics, pv)));
+    let viewer = agent_participant(&pool, h.org_id, h.agent_id).await;
+
+    // Turn 1: small thread, no compaction; records a `normal` metric (50 tokens).
+    let r1 = enqueue(&h).await;
+    agent
+        .reply_in_thread(
+            h.state,
+            h.thread,
+            viewer,
+            r1,
+            r1,
+            h.caller,
+            RequestKindPayload::Normal {},
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("turn 1");
+    assert_eq!(provider.fold_calls(), 0, "short thread: no compaction yet");
+
+    // Now bloat the byte-estimate well past budget (22 posts ~ 1800 est tokens).
+    seed_posts(
+        &h.threads,
+        &h.caller,
+        h.thread,
+        h.human,
+        h.agent_col,
+        20,
+        320,
+        2,
+    )
+    .await;
+
+    // Turn 2: chars/4 alone would trigger a fold, but the real measured prompt
+    // (50 tokens) is tiny, so the trigger holds and no fold runs.
+    let r2 = enqueue(&h).await;
+    agent
+        .reply_in_thread(
+            h.state,
+            h.thread,
+            viewer,
+            r2,
+            r2,
+            h.caller,
+            RequestKindPayload::Normal {},
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("turn 2");
+    assert_eq!(
+        provider.fold_calls(),
+        0,
+        "real input_tokens suppresses the chars/4 overcount"
+    );
+
+    // And nothing was persisted as a compaction.
+    let comp = h
+        .threads
+        .load_compaction(h.thread, h.agent_id)
+        .await
+        .expect("load");
+    assert!(comp.is_none(), "no compaction persisted");
 }
 
 /// Stage 10: when the summarizer fails, the turn still completes (the windowing

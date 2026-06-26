@@ -78,7 +78,7 @@ pub fn estimate_tokens<'a>(
     summary: Option<&str>,
     tail: impl IntoIterator<Item = &'a ChatMessage>,
 ) -> TokenEstimate {
-    let mut chars: usize = summary.map_or(0, str::len);
+    let mut chars: usize = summary.map_or(0, |s| s.chars().count());
     for message in tail {
         chars = chars.saturating_add(message_chars(message));
     }
@@ -86,20 +86,26 @@ pub fn estimate_tokens<'a>(
 }
 
 /// Sum the char length of every text-bearing field in one message.
+///
+/// Counts Unicode scalar values (`chars().count()`), not UTF-8 bytes — the
+/// `chars/4` heuristic is per-char, so byte length would inflate the estimate
+/// on any multibyte text (CJK, accented Latin, emoji) and trip compaction early.
 fn message_chars(message: &ChatMessage) -> usize {
     let mut chars: usize = 0;
     match message {
         ChatMessage::User(contents) => {
             for content in contents {
                 let len = match content {
-                    UserContent::Text(text) => text.len(),
-                    UserContent::ToolResult(result) => result.output.len(),
+                    UserContent::Text(text) => text.chars().count(),
+                    UserContent::ToolResult(result) => result.output.chars().count(),
                     // Attachments are references, not text — their real token
                     // cost isn't derivable from the reference (precise
                     // attachment tokenization is the calibration follow-up,
                     // #195). Count the mime label so they aren't invisible to
                     // the estimate; the windowing floor is the hard bound.
-                    UserContent::Image(att) | UserContent::File(att) => att.mime().as_mime().len(),
+                    UserContent::Image(att) | UserContent::File(att) => {
+                        att.mime().as_mime().chars().count()
+                    }
                 };
                 chars = chars.saturating_add(len);
             }
@@ -107,10 +113,12 @@ fn message_chars(message: &ChatMessage) -> usize {
         ChatMessage::Assistant(contents) => {
             for content in contents {
                 let len = match content {
-                    AssistantContent::Text(text) | AssistantContent::Reasoning(text) => text.len(),
+                    AssistantContent::Text(text) | AssistantContent::Reasoning(text) => {
+                        text.chars().count()
+                    }
                     // Tool-call inputs are arbitrary JSON; its serialized form
                     // is what the provider bills, so estimate against that.
-                    AssistantContent::ToolCall(call) => call.input.to_string().len(),
+                    AssistantContent::ToolCall(call) => call.input.to_string().chars().count(),
                 };
                 chars = chars.saturating_add(len);
             }
@@ -780,6 +788,30 @@ impl Agent {
         }
     }
 
+    /// The provider-reported prompt size of this `(thread, agent)`'s last full
+    /// turn, if known. Degrades to `None` (so the caller falls back to the
+    /// `chars/4` estimate) when no metrics store is bound, the agent has no
+    /// prior turn, or the read fails — the trigger must never block on
+    /// observability (CLAUDE.md §6).
+    async fn last_full_prompt_tokens(&self, state_id: AgentThreadId) -> Option<u32> {
+        let binding = self.turn_metrics()?;
+        match binding
+            .store
+            .latest_full_prompt_input_tokens(state_id)
+            .await
+        {
+            Ok(tokens) => tokens,
+            Err(e) => {
+                tracing::warn!(
+                    event = "patom.compaction.metrics_read_failed",
+                    patom.state.id = %state_id,
+                    error = ?e,
+                );
+                None
+            }
+        }
+    }
+
     /// Assemble `agent`'s bounded context for a turn: the rolling summary (system
     /// prefix) + the verbatim tail (messages). The windowing floor in
     /// `context_tail` bounds the prompt unconditionally; this adds the best-effort
@@ -813,8 +845,15 @@ impl Agent {
 
         let budget = context_token_budget(self.model());
         let est = estimate_tokens(prev.as_deref(), tail.rows.iter().map(|r| &r.message));
+        // Prefer the provider's real prompt size from the last full turn over
+        // the crude `chars/4` estimate — the estimate overcounts tool/JSON-heavy
+        // content (~2x) and was firing compaction far too early (#182). Falls
+        // back to the estimate on the first turn (no prior metric) or if the
+        // metrics read is unavailable.
+        let measured = self.last_full_prompt_tokens(state_id).await;
+        let size = measured.unwrap_or_else(|| est.get());
         let max_msgs = usize::try_from(MAX_CONTEXT_MESSAGES).unwrap_or(usize::MAX);
-        if est.get() <= budget && tail.len() <= max_msgs {
+        if size <= budget && tail.len() <= max_msgs {
             return Ok(floor_context(prev, tail)); // COMMON PATH — no LLM
         }
 
